@@ -1,0 +1,39 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools >= 61.0"]
+
+[project]
+# version="0.8rc4"
+authors = [{ name = 'AMD' }]
+classifiers = [
+    'Development Status :: 5 - Production/Stable',
+    'Intended Audience :: Developers',
+    'Intended Audience :: Education',
+    'Intended Audience :: Science/Research',
+    'Operating System :: OS Independent',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.9',
+    'Topic :: Scientific/Engineering :: Artificial Intelligence',
+]
+description = "AMD Quark is a comprehensive cross-platform toolkit designed to simplify and enhance the quantization of deep learning models. Supporting both PyTorch and ONNX models, AMD Quark empowers developers to optimize their models for deployment on a wide range of hardware backends, achieving significant performance gains without compromising accuracy."
+dynamic = ["dependencies", "version"]
+keywords = ["quantization", "pytorch", "onnx"]
+license = {file = "LICENSE"}
+maintainers = [
+    { name = "AMD Quark Maintainers", email = "quark.maintainers@amd.com" },
+]
+name = "amd-quark"
+readme = "README.md"
+requires-python = ">= 3.9"
+
+[project.urls]
+documentation = "https://quark.docs.amd.com"
+homepage = "https://github.com/amd/quark"
+issues = "https://github.com/amd/quark/issues"
+repository = "https://github.com/amd/quark.git"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+version = { attr = 'quark.__version__' }

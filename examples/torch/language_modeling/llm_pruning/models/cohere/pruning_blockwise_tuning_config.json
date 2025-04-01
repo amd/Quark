@@ -1,0 +1,9 @@
+{
+    "epochs": 5,
+    "weight_lr": 0.0001,
+    "weight_decay": 0.0,
+    "min_lr_factor": 20.0,
+    "max_grad_norm": 0.3,
+    "model_decoder_layers": "model.layers",
+    "trainable_modules": ["mlp.up_proj", "mlp.gate_proj", "mlp.down_proj"]
+}

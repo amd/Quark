@@ -1,0 +1,31 @@
+{
+    "module_names":["transformer", "vae", "text_encoder", "text_encoder_2", "text_encoder_3"],
+
+    "quant_configs": {
+        "transformer": {
+            "quant_scheme": "w_fp8_a_fp8",
+            "exclude_layers": [],
+            "algo_configs": []
+        },
+        "vae": {
+            "quant_scheme": "w_fp8_a_fp8",
+            "exclude_layers": [],
+            "algo_configs": []
+        },
+        "text_encoder": {
+            "quant_scheme": "w_fp8_a_fp8",
+            "exclude_layers": [],
+            "algo_configs": []
+        },
+        "text_encoder_2": {
+            "quant_scheme": "w_fp8_a_fp8",
+            "exclude_layers": [],
+            "algo_configs": []
+        },
+        "text_encoder_3": {
+            "quant_scheme": "w_fp8_a_fp8",
+            "exclude_layers": [],
+            "algo_configs": []
+        }
+    }
+}

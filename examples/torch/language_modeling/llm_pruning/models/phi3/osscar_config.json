@@ -1,0 +1,14 @@
+{
+    "inside_layer_modules": [
+        "self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj"
+    ],
+
+    "mlp_pruning_modules": ["mlp.down_proj"],
+    "mlp_pruning_ratio": 0.25,
+    "mlp_scaling_layers": {
+        "mlp.down_proj": ["mlp.gate_up_proj"]
+    },
+
+    "mlp_intermediate_size_name": "intermediate_size",
+    "model_decoder_layers": "model.layers"
+}

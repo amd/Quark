@@ -1,0 +1,5 @@
+numpy
+onnx>=1.16.0
+onnxruntime>=1.17.0,<=1.20.1
+onnxruntime_extensions
+opencv-python

@@ -1,0 +1,13 @@
+.highlight > pre {
+    white-space: pre-wrap;
+}
+
+.toggle > .header {
+    font-weight: bold;
+    font-style: italic;
+    content: "Show code ▼"
+}
+
+.toggle div:not(:first-child) {
+    display: none;
+}

@@ -1,0 +1,14 @@
+{
+    "inside_layer_modules": [
+        "self_attention.query_key_value", "self_attention.dense", "mlp.dense_h_to_4h", "mlp.dense_4h_to_h"
+    ],
+
+    "mlp_pruning_modules": ["mlp.dense_4h_to_h"],
+    "mlp_pruning_ratio": 0.25,
+    "mlp_scaling_layers": {
+        "mlp.dense_4h_to_h": ["mlp.dense_h_to_4h"]
+    },
+
+    "mlp_intermediate_size_name": "ffn_hidden_size",
+    "model_decoder_layers": "transformer.encoder.layers"
+}

@@ -1,0 +1,14 @@
+{
+    "inside_layer_modules": [
+        "self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.out_proj", "fc1", "fc2"
+    ],
+
+    "mlp_pruning_modules": ["fc2"],
+    "mlp_pruning_ratio": 0.25,
+    "mlp_scaling_layers": {
+        "fc2": ["fc1"]
+    },
+
+    "mlp_intermediate_size_name": "ffn_dim",
+    "model_decoder_layers": "model.decoder.layers"
+}

@@ -1,0 +1,661 @@
+#
+# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+
+import math
+from functools import partial
+import pytest
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+from quark.torch import ModelQuantizer
+from quark.torch.quantization.config.type import Dtype
+from quark.torch.quantization.observer.observer import PerBlockMXObserver
+from quark.torch.quantization import Config, QuantizationConfig, MXSpec, MX6Spec, MX9Spec
+
+from quark.torch.quantization.utils import reshape_to_blocks, get_dtype_params
+from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
+
+
+class SimpleNetwork(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1, bias=False)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.fc1 = nn.Linear(8 * 8, 32)
+        self.fc2 = nn.Linear(32, 10)
+
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))
+        x = self.pool(torch.relu(self.conv2(x)))
+        x = x.view(-1, 8 * 8)
+        x = torch.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+
+input_tensor = torch.ones(1, 3, 32, 32)
+
+
+class SimpleDataset(Dataset):
+
+    def __init__(self):
+        return
+
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, _):
+        return input_tensor.squeeze(0)
+
+
+def create_quantize_run_simple_network(config: Config):
+    model = SimpleNetwork()
+    model(input_tensor)
+    dataset = SimpleDataset()
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    quantizer = ModelQuantizer(config)
+    quantized_model = quantizer.quantize_model(model, dataloader)
+    quantized_model(input_tensor)
+
+
+valid_configs = [
+    ("mx", False, "fp8_e4m3", 4, True),
+    ("mx", False, "fp8_e4m3", 4, False),
+    ("mx", False, "fp8_e4m3", 32, True),
+    ("mx", False, "fp8_e4m3", 32, False),
+    ("mx", False, "fp8_e5m2", 4, True),
+    ("mx", False, "fp8_e5m2", 4, False),
+    ("mx", False, "fp8_e5m2", 32, True),
+    ("mx", False, "fp8_e5m2", 32, False),
+    ("mx", False, "fp6_e2m3", 4, True),
+    ("mx", False, "fp6_e2m3", 4, False),
+    ("mx", False, "fp6_e2m3", 32, True),
+    ("mx", False, "fp6_e2m3", 32, False),
+    ("mx", False, "fp6_e3m2", 4, True),
+    ("mx", False, "fp6_e3m2", 4, False),
+    ("mx", False, "fp6_e3m2", 32, True),
+    ("mx", False, "fp6_e3m2", 32, False),
+    ("mx", False, "fp4", 4, True),
+    ("mx", False, "fp4", 4, False),
+    ("mx", False, "fp4", 32, True),
+    ("mx", False, "fp4", 32, False),
+    ("mx", False, "int8", 4, True),
+    ("mx", False, "int8", 4, False),
+    ("mx", False, "int8", 32, True),
+    ("mx", False, "int8", 32, False),
+    ("mx6", False, None, 16, True),
+    ("mx6", False, None, 16, False),
+    ("mx9", False, None, 16, True),
+    ("mx9", False, None, 16, False),
+]
+
+
+@pytest.mark.parametrize("dtype, is_dynamic, mx_element_dtype, group_size, weight_only",
+                         valid_configs)
+def test_mx_valid_config_verification(dtype, is_dynamic, mx_element_dtype, group_size,
+                                      weight_only):
+    if dtype == "mx":
+        partial_spec = partial(MXSpec,
+                               mx_element_dtype=mx_element_dtype,
+                               block_size=group_size,
+                               is_dynamic=is_dynamic)
+    elif dtype == "mx6":
+        partial_spec = partial(MX6Spec, block_size=group_size, is_dynamic=is_dynamic)
+    else:
+        partial_spec = partial(MX9Spec, block_size=group_size, is_dynamic=is_dynamic)
+
+    if weight_only:
+        linear_config = QuantizationConfig(weight=partial_spec(ch_axis=-1).to_quantization_spec())
+        conv_config = QuantizationConfig(weight=partial_spec(ch_axis=1).to_quantization_spec())
+    else:
+        linear_config = QuantizationConfig(input_tensors=partial_spec(ch_axis=-1).to_quantization_spec(),
+                                           weight=partial_spec(ch_axis=-1).to_quantization_spec())
+        conv_config = QuantizationConfig(input_tensors=partial_spec(ch_axis=1).to_quantization_spec(),
+                                         weight=partial_spec(ch_axis=1).to_quantization_spec())
+    config = Config(global_quant_config=QuantizationConfig(),
+                    layer_type_quant_config={
+                        nn.Linear: linear_config,
+                        nn.Conv2d: conv_config
+                    })
+    # import pdb; pdb.set_trace()
+    create_quantize_run_simple_network(config)
+
+
+reshape_args = [
+    (torch.Size([10, 10]), 32, 0,
+     torch.Size([10, 1,
+                 32])),  # the output shape is the same as the output is reshaped to have the blocked dimension last
+    (torch.Size([10, 10]), 32, 1, torch.Size([10, 1, 32])),
+    (torch.Size([10, 10]), 32, 2, None),  # axis is greater than number of axes in tensor
+    (torch.Size([10, 10]), 5, 0, torch.Size([10, 2, 5])),  # block size smaller than axis so needs to be tiled - however
+    (torch.Size([10, 10]), 5, 1, torch.Size([10, 2, 5]))
+]
+
+
+@pytest.mark.parametrize("tensor_shape, block_size, axis, expected_shape", reshape_args)
+def test_mx_reshape_to_blocks(tensor_shape, block_size, axis, expected_shape):
+    a = torch.ones(tensor_shape)
+
+    if expected_shape is None:
+        with pytest.raises(IndexError):
+            reshaped = reshape_to_blocks(a, block_size, axis)
+    else:
+        reshaped = reshape_to_blocks(a, block_size, axis)
+        assert reshaped.shape == expected_shape
+
+
+def test_mx_reshape_to_blocks_axis0():
+    a = torch.ones(10, 10)
+    for row_idx in range(10):
+        a[row_idx] = a[row_idx] * row_idx
+
+    block_size = 10
+    block_a = reshape_to_blocks(a, block_size, 0)
+
+    assert block_a.shape == torch.Size([10, 1, block_size])
+
+    for row_idx in range(10):
+        for cell_idx in range(10):
+            assert block_a[row_idx, 0, cell_idx] == cell_idx
+
+
+def test_mx_reshape_to_blocks_axis1():
+    a = torch.ones(10, 10)
+    for row_idx in range(10):
+        a[row_idx] = a[row_idx] * row_idx
+
+    block_size = 10
+    block_a = reshape_to_blocks(a, block_size, 1)
+
+    assert block_a.shape == torch.Size([10, 1, block_size])
+
+    for row_idx in range(10):
+        for cell_idx in range(10):
+            assert block_a[row_idx, 0, cell_idx] == row_idx
+
+
+def test_mx_reshape_to_blocks_more_detail():
+    a = torch.zeros(2, 10)
+    for i in range(10):
+        a[0, i] = -5 + i
+        a[1, i] = 5 - i
+
+    # 'a' should look like this
+    # [
+    #    [ -5, -4, -3, -2, -1, 0, 1, 2, 3, 4],
+    #    [ 5, 4, 3, 2, 1, 0 , -1, -2, -3, -4]
+    # ]
+    block_size = 5
+    reshaped_a = reshape_to_blocks(a, block_size, 1)
+    # 'reshaped_a' should look like
+    # [
+    #    [[ -5, -4, -3, -2, -1], [0, 1, 2, 3, 4]],
+    #    [[ 5, 4, 3, 2, 1], [0, -1, -2, -3, -4]]
+    # ]
+    assert reshaped_a.dim() == 3
+    assert reshaped_a.shape[0] == 2
+    assert reshaped_a.shape[1] == 2, 'Incorrect number of block tiles'
+    assert reshaped_a.shape[2] == block_size
+
+    # first block
+    for idx, val in enumerate([-5, -4, -3, -2, -1]):
+        assert reshaped_a[0, 0, idx] == val
+
+    # second block
+    for idx, val in enumerate([0, 1, 2, 3, 4]):
+        assert reshaped_a[0, 1, idx] == val
+
+    # third block
+    for idx, val in enumerate([5, 4, 3, 2, 1]):
+        assert reshaped_a[1, 0, idx] == val
+
+    # fourth block
+    for idx, val in enumerate([0, -1, -2, -3, -4]):
+        assert reshaped_a[1, 1, idx] == val
+
+
+def create_4d_tensor_with_interesting_pattern():
+    # let's create a tensor with a nice pattern we can inspect
+    # tensor([[[[ 10.,  20.,  30.,  40.],
+    #           [ 20.,  40.,  60.,  80.],
+    #           [ 30.,  60.,  90., 120.]],
+    #           [[110., 120., 130., 140.],
+    #           [120., 140., 160., 180.],
+    #           [130., 160., 190., 220.]]]])
+    result = torch.zeros(1, 2, 3, 4)
+    for x0 in range(result.shape[0]):
+        for x1 in range(result.shape[1]):
+            for x2 in range(result.shape[2]):
+                for x3 in range(result.shape[3]):
+                    result[x0, x1, x2, x3] = (x3 + 1.0) * (10 * (x2 + 1.0)) + 100.0 * x1
+    return result
+
+
+def test_per_block_simple_scale():
+    element_dtype = "fp8_e4m3"
+
+    spec = MXSpec(mx_element_dtype=element_dtype, ch_axis=1).to_quantization_spec()
+    observer = PerBlockMXObserver(qspec=spec)
+
+    a = torch.zeros(10, 10)
+    for i in range(10):
+        a[i, i] = -5 + i
+
+    observer(a)
+
+    _, _, emax = get_dtype_params(Dtype.fp8_e4m3)
+
+    for i in range(10):
+        amax = abs(-5 + i)
+        if amax != 0:
+            scale_val = math.pow(2.0, math.floor(math.log2(amax)) - emax)
+        else:
+            scale_val = observer.eps
+        # these values should be directly representable by floating point so direct comparison is valid here
+        scale, _ = observer.calculate_qparams()
+        assert scale[i, 0, 0] == scale_val
+
+
+def test_per_block_scale_tiled():
+    a = torch.zeros(2, 10)
+    for i in range(10):
+        a[0, i] = -5 + i
+        a[1, i] = 5 - i
+
+    # a should look like this
+    # [
+    #    [ -5, -4, -3, -2, -1, 0, 1, 2, 3, 4],
+    #    [ 5, 4, 3, 2, 1, 0 , -1, -2, -3, -4]
+    # ]
+    element_dtype = "fp8_e4m3"
+    spec = MXSpec(mx_element_dtype=element_dtype, ch_axis=1, block_size=5).to_quantization_spec()
+    observer = PerBlockMXObserver(qspec=spec)
+    observer(a)
+
+    _, _, emax = get_dtype_params(Dtype.fp8_e4m3)
+    scale, _ = observer.calculate_qparams()
+    assert scale[0, 0, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
+    assert scale[0, 1, 0] == math.pow(2.0, math.floor(math.log2(4)) - emax)
+    assert scale[1, 0, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
+    assert scale[1, 1, 0] == math.pow(2.0, math.floor(math.log2(4)) - emax)
+
+
+per_block_to_quantize_mx = [("int8", 1, 8), ("fp8_e4m3", 1, 8), ("fp8_e5m2", 1, 8), ("fp6_e3m2", 1, 8),
+                            ("fp6_e2m3", 1, 8), ("fp4", 1, 8)]
+
+
+@pytest.mark.parametrize("element_dtype, axis, block_size", per_block_to_quantize_mx)
+def test_per_block_to_fake_quantize_mx(element_dtype, axis, block_size):
+    x_orig = create_4d_tensor_with_interesting_pattern()
+    fake_quantize_mx(x_orig, axis, block_size, mx_element_dtype=element_dtype)
+
+
+@pytest.mark.parametrize("torch_dtype,qdtype,axis,block_size,expected_output", [
+    (torch.float32, "mx6", -1, 16,
+     torch.tensor([[[[10., 20., 32., 40.], [20., 40., 64., 80.], [32., 60., 88., 120.]],
+                    [[112., 120., 128., 144.], [128., 144., 160., 176.], [128., 160., 192., 224.]]]])),
+    (torch.float32, "mx9", -1, 16,
+     torch.tensor([[[[10., 20., 30., 40.], [20., 40., 60., 80.], [30., 60., 90., 120.]],
+                    [[110., 120., 130., 140.], [120., 140., 160., 180.], [130., 160., 190., 220.]]]])),
+    (torch.float16, "mx6", -1, 16,
+     torch.tensor([[[[10., 20., 32., 40.], [20., 40., 64., 80.], [32., 60., 88., 120.]],
+                    [[112., 120., 128., 144.], [128., 144., 160., 176.], [128., 160., 192., 224.]]]],
+                  dtype=torch.float16)),
+    (torch.float16, "mx9", -1, 16,
+     torch.tensor([[[[10., 20., 30., 40.], [20., 40., 60., 80.], [30., 60., 90., 120.]],
+                    [[110., 120., 130., 140.], [120., 140., 160., 180.], [130., 160., 190., 220.]]]],
+                  dtype=torch.float16)),
+    (torch.bfloat16, "mx6", -1, 16,
+     torch.tensor([[[[10., 20., 32., 40.], [20., 40., 64., 80.], [32., 60., 88., 120.]],
+                    [[112., 120., 128., 144.], [128., 144., 160., 176.], [128., 160., 192., 224.]]]],
+                  dtype=torch.bfloat16)),
+    (torch.bfloat16, "mx9", -1, 16,
+     torch.tensor([[[[10., 20., 30., 40.], [20., 40., 60., 80.], [30., 60., 90., 120.]],
+                    [[110., 120., 130., 140.], [120., 140., 160., 180.], [130., 160., 190., 220.]]]],
+                  dtype=torch.bfloat16)),
+])
+def test_per_block_to_fake_quantize_mx6_mx9(torch_dtype, qdtype, axis, block_size, expected_output):
+    x_orig = create_4d_tensor_with_interesting_pattern().to(torch_dtype)
+    output_tensor = torch.ops.quark.non_scaled_fake_quantize(x_orig, qdtype, "", axis, block_size)
+    assert torch.all(torch.isclose(output_tensor, expected_output))
+
+
+def generate_test_case_input_normal():
+    normal_input = torch.tensor(
+        [[0, 0, -53, -61, 0, 64, 92, -60, 0, 0, 99, 67, 0, 0, 41, -60, 0, 0, -54, 67, 0, -128, -111, 67, 0, -128, -123, 67, 0, 0, -113, 67],
+         [0, 64, 11, -60, 0, -128, -4, 67, 0, 0, 47, -61, 0, 0, 124, -61,
+             0, -128, 1, -60, 0, 0, 8, -61, 0, 0, 6, -61, 0, -128, 119, 68],
+         [0, 0, 20, -61, 0, -128, -50, 67, 0, 0, -83, -61, 0, -128, 110, -
+             60, 0, 0, 59, 68, 0, 64, 91, -60, 0, 0, 73, -61, 0, 0, -87, 67],
+         [0, 0, -125, -61, 0, -128, -38, 67, 0, -64, 60, 68, 0, 0, 61, 68,
+             0, 0, 65, 68, 0, -64, 63, 68, 0, 0, 114, 68, 0, 64, 119, -60],
+         [0, 0, -88, 67, 0, 0, 24, -62, 0, 64, 22, 68, 0, 0, 34, -61, 0,
+             64, 18, 68, 0, -128, 43, -60, 0, -128, 24, 68, 0, 0, -60, 66],
+         [0, -128, 51, -60, 0, 64, 111, 68, 0, -128, 85, -60, 0, 64, 118, -60,
+             0, -128, 14, -60, 0, 64, 119, 68, 0, -128, 65, -60, 0, -64, 45, 68],
+         [0, 0, 49, 68, 0, 0, -114, -62, 0, -64, 87, 68, 0, 0, -126, 67, 0,
+             0, 124, -61, 0, -128, 11, 68, 0, -128, 59, -60, 0, 64, 84, -60],
+         [0, 0, -58, -61, 0, -128, 118, -60, 0, -128, -92, -61, 0, -128, 75, 68, 0, 0, -86, -61, 0, -128, -111, -61, 0, 0, 13, 67, 0, 0, 68, 68]], dtype=torch.int8)
+    return normal_input
+
+
+def generate_test_case_input_float():
+    float_input = torch.tensor([[45, 42, 125, 63, -48, 89, 124, 63, 126, -17, 81, 63,
+                                 69, 23, 108, 63, -101, 108, 92, 63, -68, -32, 16, 62,
+                                 -88, -27, -109, 61, 78, -7, -101, 62],
+                                [-125, 65, 84, 63, -74, -5, 122, 63, 26, -79, 124, 63,
+                                 104, -85, -92, 61, 66, -26, 109, 63, -12, -74, -33, 62,
+                                 -16, 110, 53, 63, 48, 10, -14, 61],
+                                [-96, -116, 53, 62, -60, -32, 116, 63, 125, 19, 39, 63,
+                                 -8, 4, 25, 63, -67, 50, 3, 63, 64, -28, -127, 60,
+                                 88, -40, 58, 63, 111, 58, 16, 63],
+                                [71, 33, 22, 63, -106, 8, -18, 62, 52, 53, -25, 62,
+                                 -52, 80, 5, 62, 74, -83, -68, 62, 32, 93, -2, 61,
+                                 -80, 17, 108, 63, -106, 28, 90, 63],
+                                [47, 29, 40, 63, 84, 86, -44, 62, 90, -89, 109, 63,
+                                 -38, -51, 104, 63, -44, -21, 46, 63, 126, -11, -62, 62,
+                                 -63, -2, 8, 63, -90, 106, -7, 62],
+                                [8, 112, -107, 61, -93, -123, 91, 63, -2, -73, 13, 63,
+                                 -124, 34, 35, 62, 47, 43, 35, 63, -42, 91, -20, 62,
+                                 -90, 65, -67, 62, -24, 88, 84, 63],
+                                [21, -98, 87, 63, 55, 26, 1, 63, 69, 127, 52, 63,
+                                 -28, 51, 48, 62, 2, -97, -10, 62, -43, 74, 61, 63,
+                                 68, 75, -8, 62, 80, 125, 57, 62],
+                                [-128, -70, 23, 60, -64, 45, -81, 61, 115, -74, 66, 63,
+                                 -47, -116, 20, 63, 121, -122, 63, 63, -16, 61, -125, 62,
+                                 64, 97, -66, 60, 88, -118, 61, 62]], dtype=torch.int8)
+    return float_input
+
+
+def generate_test_case_input():
+    test_data = {
+        'normal':
+        generate_test_case_input_normal(),
+        'float':
+        generate_test_case_input_float(),
+        'zeros':
+        torch.tensor(
+            [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+             [0, 64, 11, -60, 0, -128, -4, 67, 0, 0, 47, -61, 0, 0, 124, -61,
+              0, -128, 1, -60, 0, 0, 8, -61, 0, 0, 6, -61, 0, -128, 119, 68],
+             [0, 0, 20, -61, 0, -128, -50, 67, 0, 0, -83, -61, 0, -128, 110,
+              -60, 0, 0, 59, 68, 0, 64, 91, -60, 0, 0, 73, -61, 0, 0, -87, 67],
+             [0, 0, -125, -61, 0, -128, -38, 67, 0, -64, 60, 68, 0, 0, 61, 68,
+              0, 0, 65, 68, 0, -64, 63, 68, 0, 0, 114, 68, 0, 64, 119, -60],
+             [0, 0, -88, 67, 0, 0, 24, -62, 0, 64, 22, 68, 0, 0, 34, -61, 0,
+              64, 18, 68, 0, -128, 43, -60, 0, -128, 24, 68, 0, 0, -60, 66],
+             [0, -128, 51, -60, 0, 64, 111, 68, 0, -128, 85, -60, 0, 64, 118, -60,
+              0, -128, 14, -60, 0, 64, 119, 68, 0, -128, 65, -60, 0, -64, 45, 68],
+             [0, 0, 49, 68, 0, 0, -114, -62, 0, -64, 87, 68, 0, 0, -126, 67, 0,
+              0, 124, -61, 0, -128, 11, 68, 0, -128, 59, -60, 0, 64, 84, -60],
+             [0, 0, -58, -61, 0, -128, 118, -60, 0, -128, -92, -61, 0, -128, 75, 68, 0, 0, -86, -61, 0, -128, -111, -61, 0, 0, 13, 67, 0, 0, 68, 68]], dtype=torch.int8),
+        'nan':
+        torch.tensor(
+            [[0, 0, -53, -61, 0, 0, -64, 127, 0, 0, 99, 67,
+              0, 0, 41, -60, 0, 0, -54, 67, 0, -128, -111, 67,
+              0, -128, -123, 67, 0, 0, -113, 67],
+             [0, 64, 11, -60, 0, -128, -4, 67, 0, 0, 47, -61,
+              0, 0, 124, -61, 0, -128, 1, -60, 0, 0, 8, -61,
+              0, 0, 6, -61, 0, -128, 119, 68],
+             [0, 0, 20, -61, 0, -128, -50, 67, 0, 0, -83, -61,
+              0, -128, 110, -60, 0, 0, 59, 68, 0, 64, 91, -60,
+              0, 0, 73, -61, 0, 0, -87, 67],
+             [0, 0, -125, -61, 0, -128, -38, 67, 0, -64, 60, 68,
+              0, 0, 61, 68, 0, 0, 65, 68, 0, -64, 63, 68,
+              0, 0, 114, 68, 0, 64, 119, -60],
+             [0, 0, -88, 67, 0, 0, 24, -62, 0, 64, 22, 68,
+              0, 0, 34, -61, 0, 64, 18, 68, 0, -128, 43, -60,
+              0, -128, 24, 68, 0, 0, -60, 66],
+             [0, -128, 51, -60, 0, 64, 111, 68, 0, -128, 85, -60,
+              0, 64, 118, -60, 0, -128, 14, -60, 0, 64, 119, 68,
+              0, -128, 65, -60, 0, -64, 45, 68],
+             [0, 0, 49, 68, 0, 0, -114, -62, 0, -64, 87, 68,
+              0, 0, -126, 67, 0, 0, 124, -61, 0, -128, 11, 68,
+              0, -128, 59, -60, 0, 64, 84, -60],
+             [0, 0, -58, -61, 0, -128, 118, -60, 0, -128, -92, -61,
+              0, -128, 75, 68, 0, 0, -86, -61, 0, -128, -111, -61,
+              0, 0, 13, 67, 0, 0, 68, 68]], dtype=torch.int8),
+        'inf':
+        torch.tensor(
+            [[0, 0, -53, -61, 0, 0, -128, 127, 0, 0, 99, 67,
+              0, 0, 41, -60, 0, 0, -54, 67, 0, -128, -111, 67,
+              0, -128, -123, 67, 0, 0, -113, 67],
+             [0, 64, 11, -60, 0, -128, -4, 67, 0, 0, 47, -61,
+              0, 0, 124, -61, 0, -128, 1, -60, 0, 0, 8, -61,
+              0, 0, 6, -61, 0, -128, 119, 68],
+             [0, 0, 20, -61, 0, -128, -50, 67, 0, 0, -83, -61,
+              0, -128, 110, -60, 0, 0, 59, 68, 0, 64, 91, -60,
+              0, 0, 73, -61, 0, 0, -87, 67],
+             [0, 0, -125, -61, 0, -128, -38, 67, 0, -64, 60, 68,
+              0, 0, 61, 68, 0, 0, 65, 68, 0, -64, 63, 68,
+              0, 0, 114, 68, 0, 64, 119, -60],
+             [0, 0, -88, 67, 0, 0, 24, -62, 0, 64, 22, 68,
+              0, 0, 34, -61, 0, 64, 18, 68, 0, -128, 43, -60,
+              0, -128, 24, 68, 0, 0, -60, 66],
+             [0, -128, 51, -60, 0, 64, 111, 68, 0, -128, 85, -60,
+              0, 64, 118, -60, 0, -128, 14, -60, 0, 64, 119, 68,
+              0, -128, 65, -60, 0, -64, 45, 68],
+             [0, 0, 49, 68, 0, 0, -114, -62, 0, -64, 87, 68,
+              0, 0, -126, 67, 0, 0, 124, -61, 0, -128, 11, 68,
+              0, -128, 59, -60, 0, 64, 84, -60],
+             [0, 0, -58, -61, 0, -128, 118, -60, 0, -128, -92, -61,
+              0, -128, 75, 68, 0, 0, -86, -61, 0, -128, -111, -61,
+              0, 0, 13, 67, 0, 0, 68, 68]], dtype=torch.int8),
+        'maximum':
+        torch.tensor(
+            [[0, 0, -53, -61, -27, -19, -68, 106, 0, 0, 99, 67,
+              0, 0, 41, -60, 0, 0, -54, 67, 0, -128, -111, 67,
+              0, -128, -123, 67, 0, 0, -113, 67],
+             [0, 64, 11, -60, 0, -128, -4, 67, 0, 0, 47, -61,
+              0, 0, 124, -61, 0, -128, 1, -60, 0, 0, 8, -61,
+              0, 0, 6, -61, 0, -128, 119, 68],
+             [0, 0, 20, -61, 0, -128, -50, 67, 0, 0, -83, -61,
+              0, -128, 110, -60, 0, 0, 59, 68, 0, 64, 91, -60,
+              0, 0, 73, -61, 0, 0, -87, 67],
+             [0, 0, -125, -61, 0, -128, -38, 67, 0, -64, 60, 68,
+              0, 0, 61, 68, 0, 0, 65, 68, 0, -64, 63, 68,
+              0, 0, 114, 68, 0, 64, 119, -60],
+             [0, 0, -88, 67, 0, 0, 24, -62, 0, 64, 22, 68,
+              0, 0, 34, -61, 0, 64, 18, 68, 0, -128, 43, -60,
+              0, -128, 24, 68, 0, 0, -60, 66],
+             [0, -128, 51, -60, 0, 64, 111, 68, 0, -128, 85, -60,
+              0, 64, 118, -60, 0, -128, 14, -60, 0, 64, 119, 68,
+              0, -128, 65, -60, 0, -64, 45, 68],
+             [0, 0, 49, 68, 0, 0, -114, -62, 0, -64, 87, 68,
+              0, 0, -126, 67, 0, 0, 124, -61, 0, -128, 11, 68,
+              0, -128, 59, -60, 0, 64, 84, -60],
+             [0, 0, -58, -61, 0, -128, 118, -60, 0, -128, -92, -61,
+              0, -128, 75, 68, 0, 0, -86, -61, 0, -128, -111, -61,
+              0, 0, 13, 67, 0, 0, 68, 68]], dtype=torch.int8),
+    }
+    return test_data
+
+def load_test_case_result():
+    result = {
+        'input': generate_test_case_input_normal(),
+        'fp8_e4m3': {
+            'torchao_result':
+            torch.tensor(
+                [[-416., -896., 224., -704., 416., 288., 256., 288.],
+                 [-576., 512., -176., -256., -512., -128., -128., 896.],
+                 [-144., 416., -352., -896., 768., -896., -208., 352.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 576., -160., 576., -704., 640., 96.],
+                 [-704., 896., -832., -896., -576., 896., -768., 704.],
+                 [704., -72., 832., 256., -256., 576., -768., -832.],
+                 [-384., -896., -320., 832., -352., -288., 144., 768.]],
+                dtype=torch.float32),
+            'MX_result':
+            torch.tensor(
+                [[-416., -896., 224., -704., 416., 288., 256., 288.],
+                 [-576., 512., -176., -256., -512., -128., -128., 896.],
+                 [-144., 416., -352., -896., 768., -896., -208., 352.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 576., -160., 576., -704., 640., 96.],
+                 [-704., 896., -832., -896., -576., 896., -768., 704.],
+                 [704., -72., 832., 256., -256., 576., -768., -832.],
+                 [-384., -896., -320., 832., -352., -288., 144., 768.]],
+                dtype=torch.float32),
+        },
+        'fp8_e5m2': {
+            'torchao_result':
+            torch.tensor(
+                [[-384., -896., 224., -640., 384., 320., 256., 256.],
+                 [-512., 512., -160., -256., -512., -128., -128., 896.],
+                 [-160., 384., -320., -896., 768., -896., -192., 320.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 640., -160., 640., -640., 640., 96.],
+                 [-768., 896., -896., -896., -512., 896., -768., 640.],
+                 [768., -64., 896., 256., -256., 512., -768., -896.],
+                 [-384., -896., -320., 768., -320., -320., 128., 768.]],
+                dtype=torch.float32),
+            'MX_result':
+            torch.tensor(
+                [[-384., -896., 224., -640., 384., 320., 256., 256.],
+                 [-512., 512., -160., -256., -512., -128., -128., 896.],
+                 [-160., 384., -320., -896., 768., -896., -192., 320.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 640., -160., 640., -640., 640., 96.],
+                 [-768., 896., -896., -896., -512., 896., -768., 640.],
+                 [768., -64., 896., 256., -256., 512., -768., -896.],
+                 [-384., -896., -320., 768., -320., -320., 128., 768.]],
+                dtype=torch.float32),
+        },
+        'fp6_e3m2': {
+            'torchao_result':
+            torch.tensor(
+                [[-384., -896., 224., -640., 384., 320., 256., 256.],
+                 [-512., 512., -160., -256., -512., -128., -128., 896.],
+                 [-160., 384., -320., -896., 768., -896., -192., 320.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 640., -160., 640., -640., 640., 96.],
+                 [-768., 896., -896., -896., -512., 896., -768., 640.],
+                 [768., -64., 896., 256., -256., 512., -768., -896.],
+                 [-384., -896., -320., 768., -320., -320., 128., 768.]],
+                dtype=torch.float32),
+            'MX_result':
+            torch.tensor(
+                [[-384., -896., 224., -640., 384., 320., 256., 256.],
+                 [-512., 512., -160., -256., -512., -128., -128., 896.],
+                 [-160., 384., -320., -896., 768., -896., -192., 320.],
+                 [-256., 448., 768., 768., 768., 768., 896., -896.], [320., -40., 640., -160., 640., -640., 640., 96.],
+                 [-768., 896., -896., -896., -512., 896., -768., 640.],
+                 [768., -64., 896., 256., -256., 512., -768., -896.],
+                 [-384., -896., -320., 768., -320., -320., 128., 768.]],
+                dtype=torch.float32),
+        },
+        'fp6_e2m3': {
+            'torchao_result':
+            torch.tensor(
+                [[-416., -896., 224., -704., 416., 288., 256., 288.],
+                 [-576., 512., -176., -256., -512., -128., -128., 960.],
+                 [-144., 416., -352., -960., 768., -896., -208., 352.],
+                 [-256., 448., 768., 768., 768., 768., 960., -960.], [320., -32., 576., -160., 576., -704., 640., 96.],
+                 [-704., 960., -832., -960., -576., 960., -768., 704.],
+                 [704., -64., 832., 256., -256., 576., -768., -832.],
+                 [-384., -960., -320., 832., -352., -288., 144., 768.]],
+                dtype=torch.float32),
+            'MX_result':
+            torch.tensor(
+                [[-416., -896., 224., -704., 416., 288., 256., 288.],
+                 [-576., 512., -176., -256., -512., -128., -128., 960.],
+                 [-144., 416., -352., -960., 768., -896., -208., 352.],
+                 [-256., 448., 768., 768., 768., 768., 960., -960.], [320., -32., 576., -160., 576., -704., 640., 96.],
+                 [-704., 960., -832., -960., -576., 960., -768., 704.],
+                 [704., -64., 832., 256., -256., 576., -768., -832.],
+                 [-384., -960., -320., 832., -352., -288., 144., 768.]],
+                dtype=torch.float32),
+        },
+        'fp4': {
+            'torchao_result':
+            torch.tensor(
+                [[-384., -768., 256., -768., 384., 256., 256., 256.],
+                 [-512., 512., -192., -256., -512., -128., -128., 768.],
+                 [-128., 384., -384., -768., 768., -768., -192., 384.],
+                 [-256., 384., 768., 768., 768., 768., 768., -768.], [384., -64., 512., -192., 512., -768., 512., 128.],
+                 [-768., 768., -768., -768., -512., 768., -768., 768.],
+                 [768., -64., 768., 256., -256., 512., -768., -768.],
+                 [-384., -768., -384., 768., -384., -256., 128., 768.]],
+                dtype=torch.float32),
+            'MX_result':
+            torch.tensor(
+                [[-384., -768., 256., -768., 384., 256., 256., 256.],
+                 [-512., 512., -192., -256., -512., -128., -128., 768.],
+                 [-128., 384., -384., -768., 768., -768., -192., 384.],
+                 [-256., 384., 768., 768., 768., 768., 768., -768.], [384., -64., 512., -192., 512., -768., 512., 128.],
+                 [-768., 768., -768., -768., -512., 768., -768., 768.],
+                 [768., -64., 768., 256., -256., 512., -768., -768.],
+                 [-384., -768., -384., 768., -384., -256., 128., 768.]],
+                dtype=torch.float32),
+        }
+    }
+    return result
+
+quark_mx_dtype_lst = [Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e3m2, Dtype.fp6_e2m3, Dtype.fp4, Dtype.int8]
+
+@pytest.mark.parametrize("quark_mx_dtype", quark_mx_dtype_lst)
+def test_fake_quantize_mx(quark_mx_dtype):
+    test_data = generate_test_case_input()
+    for scene, test_tensor in test_data.items():
+        test_tensor = test_tensor.view(torch.float32)
+        block_size = 32
+        axis = 1
+        mx_element_dtype = quark_mx_dtype
+        _, _, emax = get_dtype_params(mx_element_dtype)
+
+        block_x = reshape_to_blocks(test_tensor, block_size, axis)
+        scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
+        scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+
+        fake_quantize_mx(input_tensor=test_tensor.clone(),
+                         scale=scale,
+                         mx_element_dtype=mx_element_dtype,
+                         axis=axis,
+                         block_size=block_size)
+
+quark_supported_elem_dtype = {
+    "fp8_e4m3": Dtype.fp8_e4m3,
+    "fp8_e5m2": Dtype.fp8_e5m2,
+    "fp6_e3m2": Dtype.fp6_e3m2,
+    "fp6_e2m3": Dtype.fp6_e2m3,
+    "fp4": Dtype.fp4,
+    "int8": Dtype.int8,
+}
+elem_dtype_lst = ["fp8_e4m3", "fp8_e5m2", "fp6_e3m2", "fp6_e2m3", "fp4"]
+
+@pytest.mark.parametrize("elem_dtype", elem_dtype_lst)
+def test_compare_quark_ao_mx_repo(elem_dtype):
+    """
+    compare the performance of quark, torchao, MX
+    quark: 0.1.0+559df62f
+    torchao: 0.3.1
+    """
+    result = load_test_case_result()
+    test_tensor = result["input"]
+    test_tensor = test_tensor.view(torch.float32)
+
+    block_size, axis = 32, 1
+    mx_element_dtype = quark_supported_elem_dtype[elem_dtype]
+    _, _, emax = get_dtype_params(mx_element_dtype)
+    block_x = reshape_to_blocks(test_tensor, block_size, axis)
+    scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
+    scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+
+    quark_output_tensor = fake_quantize_mx(input_tensor=test_tensor.clone(),
+                                           scale=scale,
+                                           mx_element_dtype=mx_element_dtype,
+                                           axis=axis,
+                                           block_size=block_size)
+    torchao_result = result[elem_dtype]["torchao_result"]
+    MX_result = result[elem_dtype]["MX_result"]
+
+    max_diff_ao = torch.max(abs(quark_output_tensor - torchao_result))
+    max_diff_MX = torch.max(abs(quark_output_tensor - MX_result))
+    assert max_diff_ao == 0, f"The {elem_dtype} quantization result of quark and torchao is different"
+    assert max_diff_MX == 0, f"The {elem_dtype} quantization result of quark and MX is different"
+
+
+if __name__ == "__main__":
+    # test_per_block_simple_scale()
+    test_mx_valid_config_verification("mx", False, "fp8_e4m3", 4, True)

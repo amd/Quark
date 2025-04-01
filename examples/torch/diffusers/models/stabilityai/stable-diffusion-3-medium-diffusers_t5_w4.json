@@ -1,0 +1,11 @@
+{
+    "module_names":["text_encoder_3"],
+
+    "quant_configs": {
+        "text_encoder_3": {
+            "quant_scheme": "w_int4_per_channel_sym",
+            "exclude_layers": [],
+            "algo_configs": []
+        }
+    }
+}

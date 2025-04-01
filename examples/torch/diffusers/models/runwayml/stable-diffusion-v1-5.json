@@ -1,0 +1,11 @@
+{
+    "module_names":["unet"],
+
+    "quant_configs": {
+        "unet": {
+            "quant_scheme": "w_int8_a_int8",
+            "exclude_layers": [],
+            "algo_configs": []
+        }
+    }
+}

@@ -1,0 +1,9 @@
+accelerate==1.0.1
+brevitas==0.10.3
+gguf==0.6.0
+matplotlib
+onnx
+onnxoptimizer
+pytest
+pytest-cov>=6.0.0
+transformers==4.45

@@ -1,0 +1,2 @@
+recursive-include quark/torch/kernel/hw_emulation/csrc *
+recursive-include quark/onnx/operators/custom_ops *

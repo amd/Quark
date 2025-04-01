@@ -1,0 +1,41 @@
+{
+    "module_names":["unet", "vae", "text_encoder", "text_encoder_2"],
+
+    "quant_configs": {
+        "unet": {
+            "quant_scheme": "w_int8_a_int8",
+            "exclude_layers": ["*time_embedding*", "*time_emb_proj*", "*conv_in*", "*conv_out*", "*conv_shortcut*", "*add_embedding*"],
+            "algo_configs": [
+                {
+                    "name": "smooth",
+                    "alpha": 0.9
+                }
+            ]
+        },
+        "vae": {
+            "quant_scheme": "w_int8_a_int8",
+            "exclude_layers": [],
+            "algo_configs": [
+                {
+                    "name": "smooth",
+                    "alpha": 0.9
+                }
+            ]
+        },
+        "text_encoder": {
+            "quant_scheme": "w_int8_a_int8",
+            "exclude_layers": [],
+            "algo_configs": [
+                {
+                    "name": "smooth",
+                    "alpha": 0.8
+                }
+            ]
+        },
+        "text_encoder_2": {
+            "quant_scheme": "w_int8_a_int8",
+            "exclude_layers": [],
+            "algo_configs": []
+        }
+    }
+}

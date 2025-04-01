@@ -1,0 +1,36 @@
+{#
+{% macro top_level_header(branch, latest_version, release_candidate_version) -%}
+    {% if branch in ["dev", "develop", "master", "main"] %}
+        {% set version_name = "Future Release" %}
+    {% elif release_candidate_version in branch %}
+        {% set version_name = release_candidate_version %}
+    {% elif branch == "latest" %}
+        {% set version_name = latest_version ~ " (latest)" %}
+    {% else %}
+        {% set version_name = branch ~ " development branch" %}
+    {% endif %}
+    <a class="klavika-font hover-opacity" href="{{ projects['quark'] }}">Quark {{ version_name }}</a>
+{%- endmacro -%}
+#}
+# TODO: Fix version_name. Getting latest_version from ROCm template by mistake
+{% macro top_level_header(branch, latest_version, release_candidate_version) -%}
+    <a class="klavika-font hover-opacity" href="{{ projects['quark'] }}">Quark</a>
+{%- endmacro -%}
+{% macro version_list() -%}
+    <a class="header-all-versions" href="https://quark.docs.amd.com/latest/versions.html">Version List</a>
+{%- endmacro -%}
+
+{%
+set nav_secondary_items = {
+    "GitHub": theme_repository_url|replace("-docs", "")
+}
+%}
+
+{% set repo_url = theme_repository_url %}
+
+{%
+set nav_secondary_items = {
+    "GitHub": repo_url,
+    "Support": repo_url + "/issues/new/choose"
+}
+%}

@@ -1,0 +1,11 @@
+{
+    "module_names":["unet"],
+
+    "quant_configs": {
+        "unet": {
+            "quant_scheme": "w_int8_per_tensor_sym",
+            "exclude_layers": ["*time_embedding*", "*time_emb_proj*", "*conv_in*", "*conv_out*", "*conv_shortcut*", "*add_embedding*"],
+            "algo_configs": []
+        }
+    }
+}
