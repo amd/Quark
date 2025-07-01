@@ -5,44 +5,44 @@
 
 #pragma once
 
+#include <stdint.h>
 #include <algorithm>
 #include <vector>
 #include <cmath>
-#include <cstdint>
 
-namespace vai_q {
+namespace quark_onnx {
 
 typedef union value_convert {
-  std::uint32_t u;
-  std::int32_t i;
+  uint32_t u;
+  int32_t i;
   float f;
 } value_convert_t;
 
-static inline std::uint32_t f_to_u(float data) {
+static inline uint32_t f_to_u(float data) {
   value_convert_t vc{};
   vc.f = data;
   return vc.u;
 }
 
-static inline float u_to_f(std::uint32_t data) {
+static inline float u_to_f(uint32_t data) {
   value_convert_t vc{};
   vc.u = data;
   return vc.f;
 }
-static inline std::int32_t f_to_i(float data) {
+static inline int32_t f_to_i(float data) {
   value_convert_t vc{};
   vc.f = data;
   return vc.i;
 }
 
-static inline float i_to_f(std::int32_t data) {
+static inline float i_to_f(int32_t data) {
   value_convert_t vc{};
   vc.i = data;
   return vc.f;
 }
 
 inline float float2bfloat_cpu(const float x, std::string str = "false") {
-  std::uint32_t itmp = f_to_u(x);           // float32 bitwise to int32
+  uint32_t itmp = f_to_u(x);           // float32 bitwise to int32
   if ((itmp & 0x00008000) == 0x00008000) {  // half even
     if ((itmp & 0xFFFF) > 0x00008000 ||
         (((itmp & 0xFFFF) == 0x00008000) && (itmp & 0x10000) == 0x10000)) {
@@ -118,7 +118,7 @@ void calculate_mean_var(const float* pinput,
 
            float input = float2bfloat_cpu(*pdata);
 
-           square_diff_sum += pow((input - mean), 2);
+           square_diff_sum += std::pow((input - mean), 2);
        }
        float variance = float2bfloat_cpu(square_diff_sum * (float)(1.0 / size));
        variances.push_back(variance);
@@ -181,4 +181,4 @@ void instance_normalization(const float* pinput,
    }
 }
 
-}  // namespace vai_q
+}  // namespace quark_onnx

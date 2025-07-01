@@ -4,6 +4,7 @@
 #
 
 # Update source/sphinx/requirements.txt from source/sphinx/requirements.in
+pip install --upgrade pip
 pip install pip-tools
 rm -f source/sphinx/requirements.txt
 LC_ALL=C pip-compile source/sphinx/requirements.in

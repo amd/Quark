@@ -13,13 +13,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import Config, QuantizationConfig, AWQConfig, SmoothQuantConfig, RotationConfig, QuaRotConfig, \
     Float16Spec, Bfloat16Spec, FP8E4M3PerTensorSpec, FP8E5M2PerTensorSpec, Int4PerTensorSpec, Int4PerChannelSpec, Int4PerGroupSpec, \
-    Uint4PerGroupSpec, Uint8PerGroupSpec, Int8PerTensorSpec, AutoSmoothQuantConfig
+    Uint4PerGroupSpec, Uint8PerGroupSpec, Int8PerTensorSpec, AutoSmoothQuantConfig, Int2PerGroupSpec
 from quark.torch.quantization.observer.observer import PerTensorPercentileObserver, PerTensorMSEObserver
 from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
 from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelExporter
 from quark.torch import save_params, load_params
 from quark.shares.utils.testing_utils import use_temporary_directory
+from quark.testing import slow_test
+
 import tempfile
 
 # Quant_Spec
@@ -30,6 +32,14 @@ BFLOAT16_SPEC = Bfloat16Spec().to_quantization_spec()
 FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
 
 FP8_E5M2_PER_TENSOR_SPEC = FP8E5M2PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
+
+
+INT2_PER_GROUP_ASYM_SPEC = Int2PerGroupSpec(symmetric=False,
+                                            scale_type="float",
+                                            round_method="half_even",
+                                            ch_axis=1,
+                                            is_dynamic=False,
+                                            group_size=128).to_quantization_spec()
 
 INT4_PER_TENSOR_SPEC = Int4PerTensorSpec(observer_method="min_max",
                                          symmetric=True, scale_type="float",
@@ -95,6 +105,8 @@ DEFAULT_W_FP8E5M2_A_FP8E5M2_OFP8E5M2_PER_TENSOR_CONFIG = QuantizationConfig(inpu
                                                                             output_tensors=FP8_E5M2_PER_TENSOR_SPEC)
 
 # Per tensor config
+DEFAULT_W_INT2_PER_GROUP_CONFIG = QuantizationConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
+
 DEFAULT_W_INT4_PER_TENSOR_CONFIG = QuantizationConfig(weight=INT4_PER_TENSOR_SPEC)
 
 DEFAULT_W_INT4_BIAS_INT4_PER_TENSOR_CONFIG = QuantizationConfig(weight=INT4_PER_TENSOR_SPEC, bias=INT4_PER_TENSOR_SPEC)
@@ -190,6 +202,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
 
 
 @pytest.mark.parametrize("quant_config", [
+    (DEFAULT_W_INT2_PER_GROUP_CONFIG),
     (DEFAULT_FLOAT16_CONFIG),
     (DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG),
     (DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG),
@@ -256,7 +269,7 @@ def test_smoke_fp8_attn_quant(global_config, softmax_quant_spec):
             #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
             for multi_gpu in [False]:
                 model = quantize_model(quant_config, multi_gpu=multi_gpu)
-                exporter.export_quark_model(model, quant_config=quant_config)
+                exporter.export_safetensors_model(model, quant_config=quant_config)
 
 @pytest.mark.parametrize("global_config,observer_cls", [
     (DEFAULT_W_INT4_PER_TENSOR_CONFIG, PerTensorPercentileObserver),
@@ -523,6 +536,7 @@ def test_smoke_smooth_quant_quantization():
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
 
 
+@slow_test
 def test_smoke_awq_quantization():
     '''
     Test Features:
@@ -535,6 +549,7 @@ def test_smoke_awq_quantization():
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
 
 
+@slow_test
 def test_smoke_autosmoothquant_quantization():
     '''
     Test Features:
@@ -565,6 +580,7 @@ def test_smoke_autosmoothquant_quantization():
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
 
 
+@slow_test
 def test_smoke_smooth_quant_and_awq_quantization():
     '''
     Test Features:
@@ -579,12 +595,49 @@ def test_smoke_smooth_quant_and_awq_quantization():
     quant_config.algo_config = set_config_for_awq_or_smooth(quant_config.algo_config)
     quantize_model(quant_config)
 
+def set_config_for_rotation_quarot():
+    scaling_layers = {
+        "first_layer": [
+            {
+                "prev_modules": ["model.embed_tokens"],
+                "norm_module": "model.layers.layer_id.input_layernorm",
+                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+            },
+            {
+                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+            }
+        ],
+        "middle_layers": [
+            {
+                "prev_modules": ["model.layers.pre_layer_id.mlp.down_proj"],
+                "norm_module": "model.layers.layer_id.input_layernorm",
+                "next_modules": ["model.layers.layer_id.self_attn.q_proj", "model.layers.layer_id.self_attn.k_proj", "model.layers.layer_id.self_attn.v_proj"]
+            },
+            {
+                "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+            }
+        ],
+        "last_layer": [
+            {
+                "prev_modules": ["model.layers.layer_id.mlp.down_proj"],
+                "norm_module": "model.norm",
+                "next_modules": ["lm_head"]
+            }
+        ]
+    }
+    return scaling_layers
+
 def test_smoke_rotation():
     '''
     Test Features:
         Pre-Quant Optimization:   Rotation
     '''
-    rotation_config = RotationConfig(scaling_layers= [{"prev_modules": ["model.embed_tokens"], "norm_module": "model.layers.0.input_layernorm", "next_modules": ["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj", "model.layers.0.self_attn.v_proj"]}, {"prev_modules": ["model.layers.0.self_attn.o_proj"], "norm_module": "model.layers.0.post_attention_layernorm", "next_modules": ["model.layers.0.mlp.up_proj", "model.layers.0.mlp.gate_proj"]}])  # type: ignore
+    rotation_config = RotationConfig(scaling_layers=set_config_for_rotation_quarot(),
+                                     model_decoder_layers="model.layers")
 
     quant_config = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG,
                           pre_quant_opt_config=[rotation_config,],
@@ -597,7 +650,7 @@ def test_smoke_quarot():
     Test Features:
         Pre-Quant Optimization:   QuaRot
     '''
-    quarot_config = QuaRotConfig(scaling_layers= [{"prev_modules": ["model.embed_tokens"], "norm_module": "model.layers.0.input_layernorm", "next_modules": ["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj", "model.layers.0.self_attn.v_proj"]}, {"prev_modules": ["model.layers.0.self_attn.o_proj"], "norm_module": "model.layers.0.post_attention_layernorm", "next_modules": ["model.layers.0.mlp.up_proj", "model.layers.0.mlp.gate_proj"]}],
+    quarot_config = QuaRotConfig(scaling_layers=set_config_for_rotation_quarot(),
                                  backbone="model",
                                  model_decoder_layers="model.layers",
                                  v_proj="self_attn.v_proj",

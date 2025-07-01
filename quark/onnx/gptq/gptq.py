@@ -9,6 +9,7 @@ import math
 import numpy as np
 from tqdm.auto import tqdm
 import copy
+import tempfile
 
 import onnx
 import onnxruntime
@@ -228,27 +229,27 @@ class GptqProcessor():
 
     def __init__(
             self,
-            model_path: str,
             float_model: Union[ModelProto, str],
-            quantized_model: Union[ModelProto, str],
+            quant_model: Union[ModelProto, str],
             dataloader: torch.utils.data.DataLoader,  # type: ignore
             extra_options: Dict[str, Any],
-            is_large: bool = True,
+            use_external_data_format: bool = False,
             providers: List[str] = ["CPUExecutionProvider"]) -> None:
-        self.float_model = onnx.load(float_model) if isinstance(float_model, str) else float_model
-        self.quantized_model = onnx.load(quantized_model) if isinstance(quantized_model, str) else quantized_model
+        self.float_model = copy.deepcopy(float_model) if isinstance(float_model, ModelProto) else onnx.load(float_model)
+        self.quant_model = copy.deepcopy(quant_model) if isinstance(quant_model, ModelProto) else onnx.load(quant_model)
         self.onnx_model_float = OnnxModel(self.float_model)
-        self.onnx_model_quant = OnnxModel(self.quantized_model)
+        self.onnx_model_quant = OnnxModel(self.quant_model)
 
         self.quant_node_list: List[NodeProto] = []
         self.ln_outputs: List[str] = []
         self.out_dict: Dict[str, TensorProto] = {}
         self.extend_output_nodes: List[str] = []
         self.dataloader = dataloader
-        self.base_dir = os.path.dirname(model_path)
+
+        self.base_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.gptq.").name
         self.gptq_model_path = os.path.join(self.base_dir, "decoder_model_gptq.onnx")
         self.tmp_model_path = os.path.join(self.base_dir, "decoder_model_tmp.onnx")
-        self.is_large = is_large
+        self.use_external_data_format = use_external_data_format
         self.providers = providers
         self.extra_options = extra_options
 
@@ -281,7 +282,7 @@ class GptqProcessor():
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self.is_large:
+        if self.use_external_data_format:
             self.onnx_model_float.save_model_to_file(self.tmp_model_path,
                                                      use_external_data_format=True,
                                                      all_tensors_to_one_file=True)
@@ -301,10 +302,6 @@ class GptqProcessor():
         for node in self.extend_output_nodes:
             if onnx.ValueInfoProto(name=node) in self.float_model.graph.output:
                 self.float_model.graph.output.remove(onnx.ValueInfoProto(name=node))
-
-    def get_gptq_model(self) -> ModelProto:
-        model = OnnxModel(onnx.load(self.gptq_model_path))
-        return model  # type:ignore
 
     def apply(self) -> ModelProto:
         # pre-processing
@@ -426,7 +423,7 @@ class GptqProcessor():
 
         return matmul_q4_node, new_inits
 
-    def apply_matmul4bits(self) -> ModelProto:
+    def apply_matmul4bits(self) -> OnnxModel:
         # pre-processing
         self.init_gptq_quant()
         graph = self.onnx_model_float.model.graph
@@ -462,8 +459,21 @@ class GptqProcessor():
         graph.node.extend(new_nodes)
         self.remove_extend_output_node()
 
-        self.onnx_model_float.save_model_to_file(self.gptq_model_path,
-                                                 use_external_data_format=self.is_large,
-                                                 all_tensors_to_one_file=True)
+        if self.use_external_data_format:
+            self.onnx_model_float.save_model_to_file(self.gptq_model_path,
+                                                     use_external_data_format=self.use_external_data_format,
+                                                     all_tensors_to_one_file=True)
+            return OnnxModel(onnx.load(self.gptq_model_path))
+        else:
+            self.onnx_model_float.topological_sort()
 
-        return self.get_gptq_model()
+            ms_opset = [opset for opset in self.onnx_model_float.model.opset_import if opset.domain == "com.microsoft"]
+            # Check whether there is custom op in top level graph (our fusion is on top level right now).
+            # May need to extend to subgraph if our fusion are extended to subgraphs.
+            ms_node = [node for node in self.onnx_model_float.model.graph.node if node.domain == "com.microsoft"]
+            if ms_node and not ms_opset:
+                opset = self.onnx_model_float.model.opset_import.add()
+                opset.version = 1
+                opset.domain = "com.microsoft"
+
+            return self.onnx_model_float

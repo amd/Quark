@@ -10,7 +10,7 @@ import onnxruntime
 from pathlib import Path
 from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
-from quark.onnx.operators.custom_ops import get_library_path
+from quark.onnx.operators.custom_ops import get_library_path, _COP_DOMAIN, _COP_MX_OP_NAME
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 
@@ -18,10 +18,10 @@ def create_custom_op(output_dir: str) -> None:
     graph_def = helper.make_graph(
         nodes=[
             helper.make_node(
-                "MXFixNeuron",
+                _COP_MX_OP_NAME,
                 ["input"],
                 ["out"],
-                domain="com.vai.quantize",
+                domain=_COP_DOMAIN,
                 scale_dtype='e8m0',
                 # element_dtype='fp8_e5m2',
                 # element_dtype='fp8_e4m3',
@@ -49,7 +49,7 @@ def run(output_dir: str) -> None:
     onnx_model_path = Path(output_dir, 'test.onnx').as_posix()
     so = onnxruntime.SessionOptions()
     so.register_custom_ops_library(get_library_path("CPU"))
-    ort_session = onnxruntime.InferenceSession(onnx_model_path, so, providers=['CPUExecutionProvider', 'CUDAExecutionProvider'])
+    ort_session = onnxruntime.InferenceSession(onnx_model_path, so, providers=['CPUExecutionProvider'])
     inp = np.array([[1.1031372, 0.05104101, 0.8381394, 0.5155692, 0.64676553, 0.36488876]]).astype(np.float32)
     for _ in range(5):
         ort_inputs = {"input": inp}

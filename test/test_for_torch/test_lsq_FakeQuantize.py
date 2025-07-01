@@ -7,7 +7,7 @@ from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 from quark.torch.quantization.config.config import QuantizationSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
-from quark.shares.utils.testing_utils import require_torch_gpu, torch_device
+from quark.shares.utils.testing_utils import require_torch_cuda, torch_device
 
 DEFAULT_QAT_INT8_PER_CHANNEL_SPEC_LSQ_WEIGHT = QuantizationSpec(
     dtype=Dtype.int8,
@@ -30,7 +30,7 @@ DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT = QuantizationSpec(
 seed = 11
 torch.manual_seed(seed=seed)
 
-@require_torch_gpu
+@require_torch_cuda
 def test_lsq_FakeQuantize():
     data = torch.randn((1, 3, 16, 16)).to(torch_device)
     lsq_quantizer_weight = ScaledFakeQuantize(

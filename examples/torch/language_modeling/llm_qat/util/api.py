@@ -4,9 +4,6 @@
 #
 
 import os
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from llm_utils.export_import_hf_model import export_hf_model
 import time
 
 import torch
@@ -21,7 +18,6 @@ from quark.torch.quantization.config.config import Config, QuantizationSpec, Qua
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
 
-from quark.torch.export import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
 
 def weight_only_quantize(model, loader, quant_scheme, group_size):
     if quant_scheme in ["w_uint4_asym", "w_int4_sym"]:
@@ -65,7 +61,7 @@ def full_finetune(model, tokenizer, finetune_loader, optimizer, num_epoch, outpu
 
     for epoch in range(num_epoch):
         model.train()
-        print(f"\n[QUARK-INFO]: Start Fine-Tuning - Epoch {epoch+1}:")
+        print(f"\n[QUARK-INFO]: Start Fine-Tuning - Epoch {epoch + 1}:")
         for i_iter, sample in enumerate(finetune_loader):
             input = sample[0].to(main_device)
             output = model(input).logits.to(main_device)
@@ -93,7 +89,7 @@ def full_finetune(model, tokenizer, finetune_loader, optimizer, num_epoch, outpu
                 print(msg)
 
         ppl = ppl_eval(model, testenc, main_device)
-        print(f"\n[QUARK-INFO]: Perplexity Test of Wikitext2 after Fine-Tuning - Epoch {epoch+1}: {ppl}")
+        print(f"\n[QUARK-INFO]: Perplexity Test of Wikitext2 after Fine-Tuning - Epoch {epoch + 1}: {ppl}")
 
         torch.save({
                     "epoch": epoch + 1,
@@ -108,10 +104,3 @@ def full_finetune(model, tokenizer, finetune_loader, optimizer, num_epoch, outpu
                     "ppl": ppl,
             }, os.path.join(output_dir, 'best.pth'))
     return
-
-def export_safetensor(model, model_dir, quant_config, export_path):
-    NO_MERGE_REALQ_CONFIG = JsonExporterConfig(weight_format="real_quantized", pack_method="reorder")
-    with torch.no_grad():
-        export_config = ExporterConfig(json_export_config=NO_MERGE_REALQ_CONFIG,
-                                       onnx_export_config=OnnxExporterConfig())
-        export_hf_model(model, export_config, model_dir, export_path, quant_config, custom_mode="quark")

@@ -56,8 +56,8 @@ def parse_args() -> Namespace:
 
 def convert(onnx_model: onnx.ModelProto,
             support_op_types: list[str] = [],
-            prefix: str = "duplicated") -> onnx.ModelProto:
-
+            prefix: str = "duplicated",
+            only_bias: bool = False) -> onnx.ModelProto:
     if support_op_types == []:
         support_op_types = []
         for node_idx in range(len(onnx_model.graph.node)):
@@ -78,6 +78,8 @@ def convert(onnx_model: onnx.ModelProto,
             inputs_name = onnx_model.graph.node[i].input
             for idx, input_name in enumerate(inputs_name):
                 # get the initializer from the input
+                if only_bias and (idx != 2):
+                    continue
                 if input_name in all_initializer_names:
                     # copy initializer for shared initializer or pass
                     if input_name in list(ini_used_static.keys()):

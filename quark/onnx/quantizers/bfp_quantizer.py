@@ -25,11 +25,11 @@ from onnxruntime.quantization.quant_utils import (
 from ..quant_utils import (
     __producer__,
     __version__,
-    VitisQuantFormat,
-    BFPFIX_OP_NAME,
-    BFPFIX_OP_DEFAULT_ATTRS,
-    MXFIX_OP_NAME,
-    MXFIX_OP_DEFAULT_ATTRS,
+    ExtendedQuantType,
+    COP_BFP_OP_NAME,
+    BFP_OP_DEFAULT_ATTRS,
+    COP_MX_OP_NAME,
+    MX_OP_DEFAULT_ATTRS,
     COP_DOMAIN,
     get_annotate_tensors,
     get_qdq_to_remove,
@@ -49,7 +49,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
                  per_channel: bool,
                  reduce_range: bool,
                  mode: QuantizationMode.QLinearOps,
-                 quant_format: Any,
                  static: bool,
                  weight_qType: Any,
                  activation_qType: Any,
@@ -69,26 +68,29 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             self.int32_bias = extra_options["Int32Bias"]
             logger.warning("Will not quantize Bias since do not support Int32Bias in BFP/MX mode")
 
+        if extra_options is not None and "Int16Bias" in extra_options and extra_options["Int16Bias"]:
+            self.int16_bias = extra_options["Int16Bias"]
+            if self.int16_bias:
+                self.int32_bias = True
+            logger.warning("Will not quantize Bias since do not support Int16Bias in BFP/MX mode")
+
         self.is_activation_symmetric = True
         if "ActivationSymmetric" in self.extra_options and not self.extra_options["ActivationSymmetric"]:
             self.is_activation_symmetric = self.extra_options["ActivationSymmetric"]
             logger.warning("Setting ActivationSymmetric to False has no effect on BFP/MX mode")
 
-        self.quant_format = quant_format
-        assert self.quant_format in [VitisQuantFormat.BFPFixNeuron, VitisQuantFormat.MXFixNeuron]
-
-        self.fn_name = ""
-        self.fn_attrs = {}
-        if self.quant_format == VitisQuantFormat.BFPFixNeuron:
-            self.fn_name = BFPFIX_OP_NAME
-            self.fn_attrs = copy.deepcopy(BFPFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for BFPFixNeuron
+        self.fn_name = COP_BFP_OP_NAME
+        self.fn_attrs = BFP_OP_DEFAULT_ATTRS
+        if weight_qType == ExtendedQuantType.QBFP and activation_qType == ExtendedQuantType.QBFP:
+            self.fn_name = COP_BFP_OP_NAME
+            self.fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
+            # Get attributes for custom BFP ops
             if extra_options is not None and "BFPAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["BFPAttributes"])
-        else:
-            self.fn_name = MXFIX_OP_NAME
-            self.fn_attrs = copy.deepcopy(MXFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for MXFixNeuron
+        elif weight_qType == ExtendedQuantType.QMX and activation_qType == ExtendedQuantType.QMX:
+            self.fn_name = COP_MX_OP_NAME
+            self.fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
+            # Get attributes for custom MX ops
             if extra_options is not None and "MXAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["MXAttributes"])
 

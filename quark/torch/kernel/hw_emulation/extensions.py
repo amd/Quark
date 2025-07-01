@@ -4,7 +4,9 @@
 #
 
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Type
+from types import TracebackType
+import traceback
 import torch
 from torch.utils.cpp_extension import load, _get_build_directory
 import os
@@ -13,6 +15,33 @@ from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 path = Path(__file__).parent
+
+
+class set_rocm_user_architecture():
+    """Fetches set of detected devices for local machine only, to prevent the processing of all HIP architectures."""
+
+    def __enter__(self) -> None:
+        """Assigns the detected gpu architectures to PYTORCH_ROCM_ARCH environment variable, to ensure kernel compilation for only the detected HIP architectures."""
+        if (torch.version.hip is not None) and (os.getenv('PYTORCH_ROCM_ARCH') is None):
+            num_devices = torch.cuda.device_count()
+            detected_architectures = set()
+            for device in range(num_devices):
+                device_properties = torch.cuda.get_device_properties(device)
+                if hasattr(device_properties, "gcnArchName"):
+                    user_arch = (device_properties.gcnArchName).split(":", 1)[0]
+                    detected_architectures.add(user_arch)
+            if detected_architectures:
+                os.environ['PYTORCH_ROCM_ARCH'] = ";".join(detected_architectures)
+
+    def __exit__(self, exc_type: Optional[Type[BaseException]], exc_value: Optional[BaseException],
+                 exc_traceback: Optional[TracebackType]) -> None:
+        """Unsets the PYTORCH_ROCM_ARCH environment variable to prevent future complications or issues."""
+        if exc_type is None:
+            if (torch.version.hip is not None) and (os.getenv('PYTORCH_ROCM_ARCH') is not None):
+                os.environ.pop('PYTORCH_ROCM_ARCH', None)
+        else:
+            print(f"Exception Occurred of type {exc_value}. Traceback:")
+            traceback.print_tb(exc_traceback)
 
 
 def compile_kernel(kernel_name: str, compile_dir: Optional[str], extra_cuda_cflags: List[str],
@@ -47,18 +76,23 @@ def compile_kernel(kernel_name: str, compile_dir: Optional[str], extra_cuda_cfla
             sources.append(str(path / "csrc/mx/funcs.cu"))
             sources.append(str(path / "csrc/tqt/tqt.cu"))
             sources.append(str(path / "csrc/tqt/cu_utils.cc"))
+
+            sources.append(str(path / "csrc/mxfp4/dequantize.cu"))
+            sources.append(str(path / "csrc/mxfp4/fake.cu"))
+
             extra_cflags.append("-DUSE_CUDA")
             extra_cuda_cflags.append("-DUSE_CUDA")
 
         logger.info("C++ kernel build directory " + compile_dir)
         logger.info("C++ kernel loading. First-time compilation may take a few minutes...")
-        return load(name=kernel_name,
-                    sources=sources,
-                    build_directory=compile_dir,
-                    extra_cuda_cflags=extra_cuda_cflags,
-                    extra_cflags=extra_cflags,
-                    extra_include_paths=[str(path / "csrc")],
-                    verbose=verbose_flag)
+        with set_rocm_user_architecture():
+            return load(name=kernel_name,
+                        sources=sources,
+                        build_directory=compile_dir,
+                        extra_cuda_cflags=extra_cuda_cflags,
+                        extra_cflags=extra_cflags,
+                        extra_include_paths=[str(path / "csrc")],
+                        verbose=verbose_flag)
     except Exception as e:
         logger.exception("C++ kernel compile error\n" + str(e))  # TODO: actually raise here?
     return None

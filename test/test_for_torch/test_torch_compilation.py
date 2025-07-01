@@ -145,5 +145,6 @@ def test_mx_for_torch_compile(dtype, element_dtype):
                                   ch_axis=-1,
                                   group_size=16,
                                   round_method=RoundType.half_even,
-                                  is_dynamic=False)
+                                  is_dynamic=False,
+                                  scale_calculation_mode="floor")
     quantize_and_compile_model(torch_device, QUANT_SPEC)

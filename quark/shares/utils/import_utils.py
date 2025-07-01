@@ -64,6 +64,8 @@ _torch_available, _torch_version = _is_package_available("torch")  # pragma: no 
 _accelerate_available, _ = _is_package_available("accelerate")  # pragma: no cover
 _transformers_available, _ = _is_package_available("transformers")  # pragma: no cover
 _matplotlib_available, _ = _is_package_available("matplotlib")  # pragma: no cover
+_safetensors_available, _ = _is_package_available("safetensors")  # pragma: no cover
+_triton_available, _ = _is_package_available("triton")  # pragma: no cover
 
 
 def is_torch_available() -> bool:  # pragma: no cover
@@ -72,6 +74,10 @@ def is_torch_available() -> bool:  # pragma: no cover
 
 def is_torch_greater_or_equal_2_5() -> bool:
     return version.parse(_torch_version) >= version.parse("2.5")
+
+
+def is_torch_greater_or_equal_2_7() -> bool:
+    return version.parse(_torch_version) >= version.parse("2.7")
 
 
 def is_accelerate_available() -> bool:  # pragma: no cover
@@ -84,3 +90,11 @@ def is_transformers_available() -> bool:  # pragma: no cover
 
 def is_matplotlib_available() -> bool:  # pragma: no cover
     return _matplotlib_available
+
+
+def is_safetensors_available() -> bool:  # pragma: no cover
+    return _safetensors_available
+
+
+def is_triton_available() -> bool:  # pragma: no cover
+    return _triton_available

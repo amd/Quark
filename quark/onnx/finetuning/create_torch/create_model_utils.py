@@ -17,7 +17,7 @@ from quark.shares.utils.log import ScreenLogger, log_errors
 logger = ScreenLogger(__name__)
 
 ComputeOperations = ('Conv', 'ConvTranspose', 'Gemm', 'MatMul')
-NormalizationOperations = ("InstanceNormalization", "VitisInstanceNormalization", "LayerNormalization")
+NormalizationOperations = ("InstanceNormalization", "ExtendedInstanceNormalization", "LayerNormalization")
 ActivationMapping = {
     'Relu': torch.nn.ReLU(inplace=True),
     'PRelu': torch.nn.PReLU(),
@@ -29,9 +29,9 @@ ActivationMapping = {
     'Gelu': torch.nn.GELU(),
 }
 
-QuantizeLinearOps = ("QuantizeLinear", "VitisQuantizeLinear")
-DequantizeLinearOps = ("DequantizeLinear", "VitisDequantizeLinear")
-FixNeuronOps = ("FixNeuron", "BFPFixNeuron", "MXFixNeuron")
+QuantizeLinearOps = ("QuantizeLinear", "ExtendedQuantizeLinear")
+DequantizeLinearOps = ("DequantizeLinear", "ExtendedDequantizeLinear")
+FixNeuronOps = ("FixNeuron", "BFPQuantizeDequantize", "MXQuantizeDequantize")
 
 AttributeType = dict(
     UNDEFINED=0,

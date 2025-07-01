@@ -22,7 +22,7 @@ This technique is particularly useful for low-precision computations in modern d
 What is Microexponents Quantization?
 ------------------------------------
 
-`This paper <https://arxiv.org/abs/2302.08007>`__ introduces several specific formats, including MX4, MX6, and MX9. We have implemented these formats in AMD Quark ONNX quantizer through a custom op named BFPFixNeuron. This op supports classical BFP and Microexponents both by setting attribute ``bfp_method`` to ``to_bfp`` for BFP or ``to_bfp_prime`` for Microexponents. To select MX4, MX6, and MX9, set the value for the ``bit_width`` attribute according to the following table.
+`This paper <https://arxiv.org/abs/2302.08007>`__ introduces several specific formats, including MX4, MX6, and MX9. We have implemented these formats in AMD Quark ONNX quantizer through a custom op named "BFPQuantizeDequantize". This op supports classical BFP and Microexponents both by setting attribute ``bfp_method`` to ``to_bfp`` for BFP or ``to_bfp_prime`` for Microexponents. To select MX4, MX6, and MX9, set the value for the ``bit_width`` attribute according to the following table.
 
 +-------------------+------------------------+
 | Formats           | "bit_width" values     |
@@ -44,14 +44,14 @@ MX9 in AMD Quark for ONNX.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantType, VitisQuantFormat
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.BFPFixNeuron,
-                                     activation_type=quark.onnx.VitisQuantType.QBFP,
-                                     weight_type=quark.onnx.VitisQuantType.QBFP,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFP,
+                                     weight_type=ExtendedQuantType.QBFP,
                                      extra_options={
                                        'BFPAttributes': {
                                            'bfp_method': "to_bfp_prime",
@@ -98,15 +98,15 @@ If you want to further improve the effectiveness of MX9 quantization after apply
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=quark.onnx.VitisQuantFormat.BFPFixNeuron,
-       activation_type=quark.onnx.VitisQuantType.QBFP,
-       weight_type=quark.onnx.VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFP,
        include_fast_ft=True,
        extra_options={
           'BFPAttributes': {

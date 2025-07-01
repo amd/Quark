@@ -1,75 +1,90 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.onnx import quantize_static, PowerOfTwoMethod  # type: ignore
-import argparse
-import os
-from quark.shares.utils.log import ScreenLogger
-from typing import Optional
+'''
+Quantize a float model without calibration dataset.
 
-logger = ScreenLogger(__name__)
+Use the random_quantize.py to quantize a float model without calibration dataset:
 
+```
+python randome_quantize.py --input_model_path $FLOAT_MODEL_PATH --output_model_path $QUANTIZED_MODEL_PATH
+```
 
-def is_valid_path(path: Optional[str]) -> bool:
-    if not path:
-        logger.warning("path is null")
-        return False
+'''
 
-    directory = os.path.dirname(path)
-    if not os.path.exists(directory):
-        logger.warning(f"path is not exist: {directory}")
-        return False
+import re
+import copy
+from typing import List, Tuple
+from argparse import ArgumentParser, Namespace
 
-    if not os.path.isdir(directory):
-        logger.warning(f"path is not directory: {directory}")
-        return False
-
-    if os.path.exists(path) and not os.access(path, os.W_OK):
-        logger.warning(f"the file is read-only: {path}")
-        return False
-
-    return True
+from quark.onnx.quant_utils import PowerOfTwoMethod
+from quark.onnx.quantization.config.config import Config
+from quark.onnx.quantization.config.custom_config import get_default_config
+from quark.onnx.quantization.api import ModelQuantizer
 
 
-def onnx_random_quantize() -> None:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+def parse_args() -> Namespace:
+    parser = ArgumentParser()
+    parser.add_argument("--input_model_path", type=str, default="", help="input onnx model file path.")
+    parser.add_argument("--quantized_model_path", type=str, default="", help="output quant model file path.")
+    parser.add_argument("--config",
+                        type=str,
+                        default="XINT8",
+                        help="The configuration for quantization",
+                        required=False)
+    parser.add_argument("--exclude_nodes", type=str, default='', help="The names of excluding nodes", required=False)
+    parser.add_argument("--exclude_subgraphs",
+                        type=str,
+                        default='',
+                        help="The lists of excluding subgraphs",
+                        required=False)
+    parser.add_argument('--save_as_external_data', action='store_true')
+    args, _ = parser.parse_known_args()
+    return args
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input_model", type=str, default="", help="input onnx model file path.")
-    parser.add_argument("--quant_model", type=str, default="", help="output quant model file path.")
-    FLAGS, uparsed = parser.parse_known_args()
 
-    if not os.path.isfile(FLAGS.input_model):
-        logger.warning("Input model file '{}' does not exist!".format(FLAGS.input_model))
-        logger.warning("Usage: python -m quark.onnx.tools.random_quantize "
-                       "--input_model INPUT_MODEL_PATH --quant_model QUANT_MODEL_PATH.")
-        exit()
+def parse_subgraphs_list(exclude_subgraphs: str) -> List[Tuple[List[str]]]:
+    subgraphs_list = []
+    tuples = exclude_subgraphs.split(";")
+    for tup in tuples:
+        tup = tup.strip()
+        pattern = r'\[.*?\]'
+        matches = re.findall(pattern, tup)
+        assert len(matches) == 2
+        start_nodes = matches[0].strip("[").strip("]").split(",")
+        start_nodes = [node.strip() for node in start_nodes]
+        end_nodes = matches[1].strip("[").strip("]").split(",")
+        end_nodes = [node.strip() for node in end_nodes]
+        subgraphs_list.append((start_nodes, end_nodes))
+    return subgraphs_list  # type: ignore
 
-    if not is_valid_path(FLAGS.quant_model):
-        logger.warning("Usage: python -m quark.onnx.tools.random_quantize "
-                       "--input_model INPUT_MODEL_PATH --quant_model QUANT_MODEL_PATH.")
-        exit()
 
-    # `input_model_path` is the path to the original, unquantized ONNX model.
-    model_input = FLAGS.input_model
+def main(args: Namespace) -> None:
+    # Prepare quantization config
+    quant_config = get_default_config(args.config)
+    config_copy = copy.deepcopy(quant_config)
+    config_copy.extra_options["UseRandomData"] = True
+    config_copy.use_external_data_format = args.save_as_external_data
+    if args.config == "XINT8":
+        config_copy.calibrate_method = PowerOfTwoMethod.NonOverflow
+    if args.exclude_nodes:
+        exclude_nodes = args.exclude_nodes.split(";")
+        exclude_nodes = [node_name.strip() for node_name in exclude_nodes]
+        config_copy.nodes_to_exclude = exclude_nodes
+    if args.exclude_subgraphs:
+        exclude_subgraphs = parse_subgraphs_list(args.exclude_subgraphs)
+        config_copy.subgraphs_to_exclude = exclude_subgraphs
 
-    # `quant_model_path` is the path where the quantized model will be saved.
-    model_output = FLAGS.quant_model
+    # Cablibration datareader is None
+    calib_datareader = None
 
-    calibration_data_reader = None
-    quantize_static(model_input,
-                    model_output,
-                    calibration_data_reader,
-                    calibrate_method=PowerOfTwoMethod.NonOverflow,
-                    enable_dpu=True,
-                    extra_options={
-                        'ActivationSymmetric': True,
-                        "UseRandomData": True
-                    })
-
-    logger.info(f'Calibrated and quantized model saved at: {model_output}')
+    # Run the quantization
+    quant_config = Config(global_quant_config=config_copy)
+    quantizer = ModelQuantizer(quant_config)
+    quantizer.quantize_model(args.input_model_path, args.quantized_model_path, calib_datareader)
 
 
 if __name__ == '__main__':
-    onnx_random_quantize()
+    args = parse_args()
+    main(args)

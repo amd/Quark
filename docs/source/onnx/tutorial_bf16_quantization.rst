@@ -20,14 +20,14 @@ Here is a simple example of how to enable BF16 quantization.
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantType, VitisQuantFormat
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=VitisQuantType.QBFloat16,
-                                     weight_type=VitisQuantType.QBFloat16,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFloat16,
+                                     weight_type=ExtendedQuantType.QBFloat16,
                                      extra_options={'BF16QDQToCast': True}
                                      )
 
@@ -52,9 +52,9 @@ in extra options if you are seeing overflow issues.
 .. code:: python
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=VitisQuantType.QBFloat16,
-                                     weight_type=VitisQuantType.QBFloat16,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFloat16,
+                                     weight_type=ExtendedQuantType.QBFloat16,
                                      extra_options={
                                          'WeightScaled': True,
                                          'ActivationScaled': True,
@@ -93,9 +93,9 @@ There is no explicit rounding in BF16 quantization, so only AdaQuant can be used
 .. code:: python
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=VitisQuantType.QBFloat16,
-                                     weight_type=VitisQuantType.QBFloat16,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFloat16,
+                                     weight_type=ExtendedQuantType.QBFloat16,
                                      extra_options={
                                          'FastFinetune': {
                                              'NumIterations': 1000,

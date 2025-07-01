@@ -24,9 +24,6 @@ logger = ScreenLogger(__name__)
 
 __all__ = ["BlockwiseTuningProcessor"]
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-
 CPU = torch.device("cpu")
 CUDA = torch.device("cuda")
 
@@ -35,6 +32,9 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
 
     def __init__(self, fp_model: nn.Module, model: nn.Module, algo_config: BlockwiseTuningConfig,
                  data_loader: DataLoader[torch.Tensor]) -> None:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
+
         self.fp_model = fp_model
         self.model = model
         self.epochs = algo_config.epochs

@@ -45,6 +45,9 @@ def set_device_map(model: nn.Module, device_map: Dict[str, Any]) -> nn.Module:
     else:
         for name, module in model.named_modules(remove_duplicate=False):
             if name in device_map:
+                # if cpu or disk, you can't move them
+                if device_map[name] == "cpu" or device_map[name] == "disk":
+                    break
                 module.to(torch.device(device_map[name])) if isinstance(device_map[name], int) else model.to(
                     device_map[name])
     return model

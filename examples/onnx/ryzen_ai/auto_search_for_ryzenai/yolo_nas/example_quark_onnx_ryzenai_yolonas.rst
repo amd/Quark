@@ -10,11 +10,7 @@ Install the necessary python packages. Because of compatibility issue, we'd bett
 
 .. code-block:: bash
 
-    pip install super-gradients==3.7.1
-    pip install numpy==1.23.0
-    pip install onnx==1.17.0
-    pip install onnxruntime==1.18.1
-    pip install onnxruntime_extensions==0.12.0
+    bash env.sh
 
 Prepare model
 -------------

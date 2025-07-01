@@ -202,6 +202,7 @@ def convert_matmul(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: 
     """Use to convert MatMul ONNX node to Torch module.
 
        This function supports onnx's MatMul from 6.
+
        :param node : ONNX node.
        :param layer_params : Layer weight parameters.
        :param layer_qinfos : Layer quantization informations.

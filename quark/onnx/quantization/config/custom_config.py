@@ -11,7 +11,7 @@ from quark.onnx.quantization.config.config import QuantizationConfig
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType, QuantFormat
 
-from quark.onnx.quant_utils import (PowerOfTwoMethod, VitisQuantType, VitisQuantFormat)
+from quark.onnx.quant_utils import (PowerOfTwoMethod, ExtendedQuantType, ExtendedQuantFormat)
 
 DEFAULT_ADAROUND_PARAMS = {
     'DataSize': 1000,
@@ -157,14 +157,14 @@ U8U8_AAWA_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percent
                                       })
 
 S16S8_ASWS_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                       quant_format=VitisQuantFormat.QDQ,
-                                       activation_type=VitisQuantType.QInt16,
+                                       quant_format=ExtendedQuantFormat.QDQ,
+                                       activation_type=ExtendedQuantType.QInt16,
                                        weight_type=QuantType.QInt8,
                                        extra_options={'ActivationSymmetric': True})
 
 S16S8_ASWS_ADAROUND_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                                quant_format=VitisQuantFormat.QDQ,
-                                                activation_type=VitisQuantType.QInt16,
+                                                quant_format=ExtendedQuantFormat.QDQ,
+                                                activation_type=ExtendedQuantType.QInt16,
                                                 weight_type=QuantType.QInt8,
                                                 include_fast_ft=True,
                                                 extra_options={
@@ -173,8 +173,8 @@ S16S8_ASWS_ADAROUND_CONFIG = QuantizationConfig(calibrate_method=CalibrationMeth
                                                 })
 
 S16S8_ASWS_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                                quant_format=VitisQuantFormat.QDQ,
-                                                activation_type=VitisQuantType.QInt16,
+                                                quant_format=ExtendedQuantFormat.QDQ,
+                                                activation_type=ExtendedQuantType.QInt16,
                                                 weight_type=QuantType.QInt8,
                                                 include_fast_ft=True,
                                                 extra_options={
@@ -183,7 +183,7 @@ S16S8_ASWS_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMeth
                                                 })
 
 A8W8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                 quant_format=VitisQuantFormat.QDQ,
+                                 quant_format=ExtendedQuantFormat.QDQ,
                                  activation_type=QuantType.QInt8,
                                  weight_type=QuantType.QInt8,
                                  extra_options={
@@ -193,9 +193,35 @@ A8W8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                      'AlignConcat': True
                                  })
 
+A8W8_ADAROUND_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                          quant_format=ExtendedQuantFormat.QDQ,
+                                          activation_type=QuantType.QInt8,
+                                          weight_type=QuantType.QInt8,
+                                          include_fast_ft=True,
+                                          extra_options={
+                                              'ActivationSymmetric': True,
+                                              'AlignSlice': False,
+                                              'FoldRelu': True,
+                                              'AlignConcat': True,
+                                              'FastFinetune': DEFAULT_ADAROUND_PARAMS
+                                          })
+
+A8W8_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                          quant_format=ExtendedQuantFormat.QDQ,
+                                          activation_type=QuantType.QInt8,
+                                          weight_type=QuantType.QInt8,
+                                          include_fast_ft=True,
+                                          extra_options={
+                                              'ActivationSymmetric': True,
+                                              'AlignSlice': False,
+                                              'FoldRelu': True,
+                                              'AlignConcat': True,
+                                              'FastFinetune': DEFAULT_ADAQUANT_PARAMS
+                                          })
+
 A16W8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                  quant_format=VitisQuantFormat.QDQ,
-                                  activation_type=VitisQuantType.QInt16,
+                                  quant_format=ExtendedQuantFormat.QDQ,
+                                  activation_type=ExtendedQuantType.QInt16,
                                   weight_type=QuantType.QInt8,
                                   extra_options={
                                       'ActivationSymmetric': True,
@@ -205,50 +231,78 @@ A16W8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       'AlignEltwiseQuantType': True
                                   })
 
+A16W8_ADAROUND_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                           quant_format=ExtendedQuantFormat.QDQ,
+                                           activation_type=ExtendedQuantType.QInt16,
+                                           weight_type=QuantType.QInt8,
+                                           include_fast_ft=True,
+                                           extra_options={
+                                               'ActivationSymmetric': True,
+                                               'AlignSlice': False,
+                                               'FoldRelu': True,
+                                               'AlignConcat': True,
+                                               'AlignEltwiseQuantType': True,
+                                               'FastFinetune': DEFAULT_ADAROUND_PARAMS
+                                           })
+
+A16W8_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                           quant_format=ExtendedQuantFormat.QDQ,
+                                           activation_type=ExtendedQuantType.QInt16,
+                                           weight_type=QuantType.QInt8,
+                                           include_fast_ft=True,
+                                           extra_options={
+                                               'ActivationSymmetric': True,
+                                               'AlignSlice': False,
+                                               'FoldRelu': True,
+                                               'AlignConcat': True,
+                                               'AlignEltwiseQuantType': True,
+                                               'FastFinetune': DEFAULT_ADAQUANT_PARAMS
+                                           })
+
 U16S8_AAWS_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                       quant_format=VitisQuantFormat.QDQ,
-                                       activation_type=VitisQuantType.QUInt16,
+                                       quant_format=ExtendedQuantFormat.QDQ,
+                                       activation_type=ExtendedQuantType.QUInt16,
                                        weight_type=QuantType.QInt8)
 
 U16S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                                quant_format=VitisQuantFormat.QDQ,
-                                                activation_type=VitisQuantType.QUInt16,
+                                                quant_format=ExtendedQuantFormat.QDQ,
+                                                activation_type=ExtendedQuantType.QUInt16,
                                                 weight_type=QuantType.QInt8,
                                                 include_fast_ft=True,
                                                 extra_options={'FastFinetune': DEFAULT_ADAROUND_PARAMS})
 
 U16S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                                quant_format=VitisQuantFormat.QDQ,
-                                                activation_type=VitisQuantType.QUInt16,
+                                                quant_format=ExtendedQuantFormat.QDQ,
+                                                activation_type=ExtendedQuantType.QUInt16,
                                                 weight_type=QuantType.QInt8,
                                                 include_fast_ft=True,
                                                 extra_options={'FastFinetune': DEFAULT_ADAQUANT_PARAMS})
 
 FP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                 quant_format=VitisQuantFormat.QDQ,
-                                 activation_type=VitisQuantType.QFloat16,
-                                 weight_type=VitisQuantType.QFloat16)
+                                 quant_format=ExtendedQuantFormat.QDQ,
+                                 activation_type=ExtendedQuantType.QFloat16,
+                                 weight_type=ExtendedQuantType.QFloat16)
 
 FP16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                          quant_format=VitisQuantFormat.QDQ,
-                                          activation_type=VitisQuantType.QFloat16,
-                                          weight_type=VitisQuantType.QFloat16,
+                                          quant_format=ExtendedQuantFormat.QDQ,
+                                          activation_type=ExtendedQuantType.QFloat16,
+                                          weight_type=ExtendedQuantType.QFloat16,
                                           include_fast_ft=True,
                                           extra_options={'FastFinetune': DEFAULT_ADAQUANT_PARAMS})
 
 BF16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                 quant_format=VitisQuantFormat.QDQ,
-                                 activation_type=VitisQuantType.QBFloat16,
-                                 weight_type=VitisQuantType.QBFloat16,
+                                 quant_format=ExtendedQuantFormat.QDQ,
+                                 activation_type=ExtendedQuantType.QBFloat16,
+                                 weight_type=ExtendedQuantType.QBFloat16,
                                  extra_options={
                                      'QuantizeAllOpTypes': True,
                                      'ForceQuantizeNoInputCheck': True
                                  })
 
 BF16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                          quant_format=VitisQuantFormat.QDQ,
-                                          activation_type=VitisQuantType.QBFloat16,
-                                          weight_type=VitisQuantType.QBFloat16,
+                                          quant_format=ExtendedQuantFormat.QDQ,
+                                          activation_type=ExtendedQuantType.QBFloat16,
+                                          weight_type=ExtendedQuantType.QBFloat16,
                                           include_fast_ft=True,
                                           extra_options={
                                               'QuantizeAllOpTypes': True,
@@ -257,7 +311,9 @@ BF16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Min
                                           })
 
 BFP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                  quant_format=VitisQuantFormat.BFPFixNeuron,
+                                  quant_format=ExtendedQuantFormat.QDQ,
+                                  activation_type=ExtendedQuantType.QBFP,
+                                  weight_type=ExtendedQuantType.QBFP,
                                   extra_options={
                                       'BFPAttributes': {
                                           **DEFAULT_BFP_PARAMS
@@ -265,7 +321,9 @@ BFP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                   })
 
 BFP16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                           quant_format=VitisQuantFormat.BFPFixNeuron,
+                                           quant_format=ExtendedQuantFormat.QDQ,
+                                           activation_type=ExtendedQuantType.QBFP,
+                                           weight_type=ExtendedQuantType.QBFP,
                                            include_fast_ft=True,
                                            extra_options={
                                                'BFPAttributes': {
@@ -275,7 +333,9 @@ BFP16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Mi
                                            })
 
 MX4_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                quant_format=VitisQuantFormat.BFPFixNeuron,
+                                quant_format=ExtendedQuantFormat.QDQ,
+                                activation_type=ExtendedQuantType.QBFP,
+                                weight_type=ExtendedQuantType.QBFP,
                                 extra_options={
                                     'BFPAttributes': {
                                         **DEFAULT_MICROEXPONENTS_PARAMS, 'bit_width': 11
@@ -283,7 +343,9 @@ MX4_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                 })
 
 MX4_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                         quant_format=VitisQuantFormat.BFPFixNeuron,
+                                         quant_format=ExtendedQuantFormat.QDQ,
+                                         activation_type=ExtendedQuantType.QBFP,
+                                         weight_type=ExtendedQuantType.QBFP,
                                          include_fast_ft=True,
                                          extra_options={
                                              'BFPAttributes': {
@@ -293,7 +355,9 @@ MX4_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinM
                                          })
 
 MX6_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                quant_format=VitisQuantFormat.BFPFixNeuron,
+                                quant_format=ExtendedQuantFormat.QDQ,
+                                activation_type=ExtendedQuantType.QBFP,
+                                weight_type=ExtendedQuantType.QBFP,
                                 extra_options={
                                     'BFPAttributes': {
                                         **DEFAULT_MICROEXPONENTS_PARAMS, 'bit_width': 13
@@ -301,7 +365,9 @@ MX6_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                 })
 
 MX6_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                         quant_format=VitisQuantFormat.BFPFixNeuron,
+                                         quant_format=ExtendedQuantFormat.QDQ,
+                                         activation_type=ExtendedQuantType.QBFP,
+                                         weight_type=ExtendedQuantType.QBFP,
                                          include_fast_ft=True,
                                          extra_options={
                                              'BFPAttributes': {
@@ -311,7 +377,9 @@ MX6_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinM
                                          })
 
 MX9_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                quant_format=VitisQuantFormat.BFPFixNeuron,
+                                quant_format=ExtendedQuantFormat.QDQ,
+                                activation_type=ExtendedQuantType.QBFP,
+                                weight_type=ExtendedQuantType.QBFP,
                                 extra_options={
                                     'BFPAttributes': {
                                         **DEFAULT_MICROEXPONENTS_PARAMS, 'bit_width': 16
@@ -319,7 +387,9 @@ MX9_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                 })
 
 MX9_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                         quant_format=VitisQuantFormat.BFPFixNeuron,
+                                         quant_format=ExtendedQuantFormat.QDQ,
+                                         activation_type=ExtendedQuantType.QBFP,
+                                         weight_type=ExtendedQuantType.QBFP,
                                          include_fast_ft=True,
                                          extra_options={
                                              'BFPAttributes': {
@@ -329,7 +399,9 @@ MX9_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinM
                                          })
 
 MXFP8E5M2_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'MXAttributes': {
                                               **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'fp8_e5m2'
@@ -337,7 +409,9 @@ MXFP8E5M2_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       })
 
 MXFP8E5M2_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                               quant_format=VitisQuantFormat.MXFixNeuron,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QMX,
+                                               weight_type=ExtendedQuantType.QMX,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'MXAttributes': {
@@ -347,7 +421,9 @@ MXFP8E5M2_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMetho
                                                })
 
 MXFP8E4M3_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'MXAttributes': {
                                               **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'fp8_e4m3'
@@ -355,7 +431,9 @@ MXFP8E4M3_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       })
 
 MXFP8E4M3_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                               quant_format=VitisQuantFormat.MXFixNeuron,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QMX,
+                                               weight_type=ExtendedQuantType.QMX,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'MXAttributes': {
@@ -365,7 +443,9 @@ MXFP8E4M3_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMetho
                                                })
 
 MXFP6E3M2_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'MXAttributes': {
                                               **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'fp6_e3m2'
@@ -373,7 +453,9 @@ MXFP6E3M2_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       })
 
 MXFP6E3M2_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                               quant_format=VitisQuantFormat.MXFixNeuron,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QMX,
+                                               weight_type=ExtendedQuantType.QMX,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'MXAttributes': {
@@ -383,7 +465,9 @@ MXFP6E3M2_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMetho
                                                })
 
 MXFP6E2M3_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'MXAttributes': {
                                               **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'fp6_e2m3'
@@ -391,7 +475,9 @@ MXFP6E2M3_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       })
 
 MXFP6E2M3_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                               quant_format=VitisQuantFormat.MXFixNeuron,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QMX,
+                                               weight_type=ExtendedQuantType.QMX,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'MXAttributes': {
@@ -401,7 +487,9 @@ MXFP6E2M3_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMetho
                                                })
 
 MXFP4E2M1_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'MXAttributes': {
                                               **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'fp4_e2m1'
@@ -409,7 +497,9 @@ MXFP4E2M1_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                       })
 
 MXFP4E2M1_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                               quant_format=VitisQuantFormat.MXFixNeuron,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QMX,
+                                               weight_type=ExtendedQuantType.QMX,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'MXAttributes': {
@@ -419,7 +509,9 @@ MXFP4E2M1_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMetho
                                                })
 
 MXINT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                   quant_format=VitisQuantFormat.MXFixNeuron,
+                                   quant_format=ExtendedQuantFormat.QDQ,
+                                   activation_type=ExtendedQuantType.QMX,
+                                   weight_type=ExtendedQuantType.QMX,
                                    extra_options={
                                        'MXAttributes': {
                                            **DEFAULT_MICROSCALING_PARAMS, 'element_dtype': 'int8'
@@ -427,7 +519,9 @@ MXINT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                    })
 
 MXINT8_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                            quant_format=VitisQuantFormat.MXFixNeuron,
+                                            quant_format=ExtendedQuantFormat.QDQ,
+                                            activation_type=ExtendedQuantType.QMX,
+                                            weight_type=ExtendedQuantType.QMX,
                                             include_fast_ft=True,
                                             extra_options={
                                                 'MXAttributes': {
@@ -437,13 +531,14 @@ MXINT8_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.M
                                             })
 
 S16S16_MIXED_S8S8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                              quant_format=VitisQuantFormat.QDQ,
-                                              activation_type=VitisQuantType.QInt16,
-                                              weight_type=VitisQuantType.QInt16,
+                                              quant_format=ExtendedQuantFormat.QDQ,
+                                              activation_type=ExtendedQuantType.QInt16,
+                                              weight_type=ExtendedQuantType.QInt16,
                                               include_auto_mp=True,
                                               extra_options={
                                                   'Percentile': 99.9999,
                                                   'Int32Bias': False,
+                                                  'Int16Bias': False,
                                                   'AutoMixprecision': {
                                                       'ActTargetQuantType': QuantType.QInt8,
                                                       'WeightTargetQuantType': QuantType.QInt8,
@@ -451,10 +546,31 @@ S16S16_MIXED_S8S8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod
                                                   }
                                               })
 
+BF16_MIXED_BFP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                             quant_format=ExtendedQuantFormat.QDQ,
+                                             activation_type=ExtendedQuantType.QBFloat16,
+                                             weight_type=ExtendedQuantType.QBFloat16,
+                                             include_auto_mp=True,
+                                             extra_options={
+                                                 'ActivationSymmetric': True,
+                                                 'QuantizeBias': False,
+                                                 'DedicateDQNode': True,
+                                                 'CalibDataSize': 1,
+                                                 'AutoMixprecision': {
+                                                     'ActTargetQuantType': ExtendedQuantType.QBFP,
+                                                     'WeightTargetQuantType': ExtendedQuantType.QBFP,
+                                                     'DualQuantNodes': True,
+                                                     'OutputIndex': 0,
+                                                 },
+                                                 'BFPAttributes': {
+                                                     **DEFAULT_BFP_PARAMS
+                                                 },
+                                             })
+
 BF16_MIXED_BFP16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                                      quant_format=VitisQuantFormat.QDQ,
-                                                      activation_type=VitisQuantType.QBFloat16,
-                                                      weight_type=VitisQuantType.QBFloat16,
+                                                      quant_format=ExtendedQuantFormat.QDQ,
+                                                      activation_type=ExtendedQuantType.QBFloat16,
+                                                      weight_type=ExtendedQuantType.QBFloat16,
                                                       include_auto_mp=True,
                                                       include_fast_ft=True,
                                                       extra_options={
@@ -463,17 +579,64 @@ BF16_MIXED_BFP16_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=Calibrati
                                                           'DedicateDQNode': True,
                                                           'CalibDataSize': 1,
                                                           'AutoMixprecision': {
-                                                              'ActTargetQuantType': VitisQuantType.QBFP,
-                                                              'WeightTargetQuantType': VitisQuantType.QBFP,
+                                                              'ActTargetQuantType': ExtendedQuantType.QBFP,
+                                                              'WeightTargetQuantType': ExtendedQuantType.QBFP,
                                                               'OutputIndex': 0,
+                                                          },
+                                                          'BFPAttributes': {
+                                                              **DEFAULT_BFP_PARAMS
                                                           },
                                                           'FastFinetune': DEFAULT_ADAQUANT_PARAMS
                                                       })
 
+BF16_MIXED_MXINT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                              quant_format=ExtendedQuantFormat.QDQ,
+                                              activation_type=ExtendedQuantType.QBFloat16,
+                                              weight_type=ExtendedQuantType.QBFloat16,
+                                              include_auto_mp=True,
+                                              extra_options={
+                                                  'ActivationSymmetric': True,
+                                                  'QuantizeBias': False,
+                                                  'DedicateDQNode': True,
+                                                  'CalibDataSize': 1,
+                                                  'AutoMixprecision': {
+                                                      'ActTargetQuantType': ExtendedQuantType.QMX,
+                                                      'WeightTargetQuantType': ExtendedQuantType.QMX,
+                                                      'DualQuantNodes': True,
+                                                      'OutputIndex': 0,
+                                                  },
+                                                  'MXAttributes': {
+                                                      **DEFAULT_MICROSCALING_PARAMS
+                                                  },
+                                              })
+
+BF16_MIXED_MXINT8_ADAQUANT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                                       quant_format=ExtendedQuantFormat.QDQ,
+                                                       activation_type=ExtendedQuantType.QBFloat16,
+                                                       weight_type=ExtendedQuantType.QBFloat16,
+                                                       include_auto_mp=True,
+                                                       include_fast_ft=True,
+                                                       extra_options={
+                                                           'ActivationSymmetric': True,
+                                                           'QuantizeBias': False,
+                                                           'DedicateDQNode': True,
+                                                           'CalibDataSize': 1,
+                                                           'AutoMixprecision': {
+                                                               'ActTargetQuantType': ExtendedQuantType.QMX,
+                                                               'WeightTargetQuantType': ExtendedQuantType.QMX,
+                                                               'DualQuantNodes': True,
+                                                               'OutputIndex': 0,
+                                                           },
+                                                           'MXAttributes': {
+                                                               **DEFAULT_MICROSCALING_PARAMS
+                                                           },
+                                                           'FastFinetune': DEFAULT_ADAQUANT_PARAMS
+                                                       })
+
 BF16_BFP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                       quant_format=VitisQuantFormat.QDQ,
-                                       activation_type=VitisQuantType.QBFloat16,
-                                       weight_type=VitisQuantType.QBFP,
+                                       quant_format=ExtendedQuantFormat.QDQ,
+                                       activation_type=ExtendedQuantType.QBFloat16,
+                                       weight_type=ExtendedQuantType.QBFP,
                                        extra_options={
                                            'BFPAttributes': {
                                                **DEFAULT_BFP_PARAMS
@@ -481,9 +644,9 @@ BF16_BFP16_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax
                                        })
 
 BF16_MXINT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                        quant_format=VitisQuantFormat.QDQ,
-                                        activation_type=VitisQuantType.QBFloat16,
-                                        weight_type=VitisQuantType.QMX,
+                                        quant_format=ExtendedQuantFormat.QDQ,
+                                        activation_type=ExtendedQuantType.QBFloat16,
+                                        weight_type=ExtendedQuantType.QMX,
                                         extra_options={
                                             'MXAttributes': {
                                                 **DEFAULT_MICROSCALING_PARAMS
@@ -491,8 +654,8 @@ BF16_MXINT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMa
                                         })
 
 MX9_INT8_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=VitisQuantType.QBFP,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFP,
                                      weight_type=QuantType.QInt8,
                                      extra_options={
                                          'BFPAttributes': {
@@ -507,9 +670,9 @@ INT8_CNN_DEFAULT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.
                                              weight_type=QuantType.QInt8)
 
 INT16_CNN_DEFAULT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                              quant_format=VitisQuantFormat.QDQ,
-                                              activation_type=VitisQuantType.QUInt16,
-                                              weight_type=VitisQuantType.QInt16)
+                                              quant_format=ExtendedQuantFormat.QDQ,
+                                              activation_type=ExtendedQuantType.QUInt16,
+                                              weight_type=ExtendedQuantType.QInt16)
 
 INT8_TRANSFORMER_DEFAULT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
                                                      quant_format=QuantFormat.QDQ,
@@ -519,9 +682,9 @@ INT8_TRANSFORMER_DEFAULT_CONFIG = QuantizationConfig(calibrate_method=Calibratio
                                                      extra_options={"CalibMovingAverage": True})
 
 INT16_TRANSFORMER_DEFAULT_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                                      quant_format=VitisQuantFormat.QDQ,
-                                                      activation_type=VitisQuantType.QUInt16,
-                                                      weight_type=VitisQuantType.QInt16,
+                                                      quant_format=ExtendedQuantFormat.QDQ,
+                                                      activation_type=ExtendedQuantType.QUInt16,
+                                                      weight_type=ExtendedQuantType.QInt16,
                                                       enable_npu_transformer=True,
                                                       extra_options={"CalibMovingAverage": True})
 
@@ -536,9 +699,9 @@ INT8_CNN_ACCURATE_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod
                                               })
 
 INT16_CNN_ACCURATE_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                               quant_format=VitisQuantFormat.QDQ,
-                                               activation_type=VitisQuantType.QUInt16,
-                                               weight_type=VitisQuantType.QInt16,
+                                               quant_format=ExtendedQuantFormat.QDQ,
+                                               activation_type=ExtendedQuantType.QUInt16,
+                                               weight_type=ExtendedQuantType.QInt16,
                                                include_fast_ft=True,
                                                extra_options={
                                                    'Percentile': 99.9999,
@@ -557,9 +720,9 @@ INT8_TRANSFORMER_ACCURATE_CONFIG = QuantizationConfig(calibrate_method=Calibrati
                                                       })
 
 INT16_TRANSFORMER_ACCURATE_CONFIG = QuantizationConfig(calibrate_method=CalibrationMethod.Percentile,
-                                                       quant_format=VitisQuantFormat.QDQ,
-                                                       activation_type=VitisQuantType.QUInt16,
-                                                       weight_type=VitisQuantType.QInt16,
+                                                       quant_format=ExtendedQuantFormat.QDQ,
+                                                       activation_type=ExtendedQuantType.QUInt16,
+                                                       weight_type=ExtendedQuantType.QInt16,
                                                        enable_npu_transformer=True,
                                                        include_fast_ft=True,
                                                        extra_options={
@@ -593,7 +756,11 @@ DefaultConfigMapping = {
     'S16S8_ASWS_ADAROUND': S16S8_ASWS_ADAROUND_CONFIG,
     'S16S8_ASWS_ADAQUANT': S16S8_ASWS_ADAQUANT_CONFIG,
     'A8W8': A8W8_CONFIG,
+    'A8W8_ADAROUND': A8W8_ADAROUND_CONFIG,
+    'A8W8_ADAQUANT': A8W8_ADAQUANT_CONFIG,
     'A16W8': A16W8_CONFIG,
+    'A16W8_ADAROUND': A16W8_ADAROUND_CONFIG,
+    'A16W8_ADAQUANT': A16W8_ADAQUANT_CONFIG,
     'U16S8_AAWS': U16S8_AAWS_CONFIG,
     'U16S8_AAWS_ADAROUND': U16S8_AAWS_ADAROUND_CONFIG,
     'U16S8_AAWS_ADAQUANT': U16S8_AAWS_ADAQUANT_CONFIG,
@@ -622,7 +789,10 @@ DefaultConfigMapping = {
     'MXINT8': MXINT8_CONFIG,
     'MXINT8_ADAQUANT': MXINT8_ADAQUANT_CONFIG,
     'S16S16_MIXED_S8S8': S16S16_MIXED_S8S8_CONFIG,
+    'BF16_MIXED_BFP16': BF16_MIXED_BFP16_CONFIG,
     'BF16_MIXED_BFP16_ADAQUANT': BF16_MIXED_BFP16_ADAQUANT_CONFIG,
+    'BF16_MIXED_MXINT8': BF16_MIXED_MXINT8_CONFIG,
+    'BF16_MIXED_MXINT8_ADAQUANT': BF16_MIXED_MXINT8_ADAQUANT_CONFIG,
     'BF16_BFP16': BF16_BFP16_CONFIG,
     'BF16_MXINT8': BF16_MXINT8_CONFIG,
     'MX9_INT8': MX9_INT8_CONFIG,

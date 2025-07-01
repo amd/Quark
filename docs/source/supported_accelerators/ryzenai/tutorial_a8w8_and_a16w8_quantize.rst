@@ -132,13 +132,13 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, QuantType, QuantFormat, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, QuantType, QuantFormat, ExtendedQuantFormat, ExtendedQuantType
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=QuantType.QInt8, # Replace with "activation_type=VitisQuantType.QInt16," when using A16W8
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=QuantType.QInt8, # Replace with "activation_type=ExtendedQuantType.QInt16," when using A16W8
                                      weight_type=QuantType.QInt8,
                                      include_fast_ft=True,
                                      extra_options={
@@ -165,13 +165,13 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, QuantType, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, QuantType, ExtendedQuantFormat, ExtendedQuantType
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=QuantType.QInt8, # Replace with "activation_type=VitisQuantType.QInt16," when using A16W8
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=QuantType.QInt8, # Replace with "activation_type=ExtendedQuantType.QInt16," when using A16W8
                                      weight_type=QuantType.QInt8,
                                      include_fast_ft=True,
                                      extra_options={

@@ -10,10 +10,20 @@ from dataclasses import replace
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, GPTQConfig
+from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, GPTQConfig, Int2PerGroupSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
-from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver, PerGroupMinMaxObserver
+from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver, PerGroupMinMaxObserver, PerBlockMXObserver
 from quark.shares.utils.testing_utils import torch_device
+from quark.testing import slow_test
+
+INT2_PER_GROUP_ASYM_SPEC = Int2PerGroupSpec(symmetric=False,
+                                            scale_type="float",
+                                            round_method="half_even",
+                                            ch_axis=1,
+                                            is_dynamic=False,
+                                            group_size=128).to_quantization_spec()
+
+DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG = QuantizationConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
 
 INT4_PER_CHANNEL_SPEC = QuantizationSpec(dtype=Dtype.int4,
                                          observer_cls=PerChannelMinMaxObserver,
@@ -49,6 +59,20 @@ DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4,
 
 DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
 
+def MXFP4_SPEC(is_dynamic):
+    return QuantizationSpec(dtype=Dtype.fp4,
+                            observer_cls=PerBlockMXObserver,
+                            symmetric=None,
+                            scale_type=ScaleType.float,
+                            scale_format="e8m0",
+                            scale_calculation_mode="even",
+                            round_method=RoundType.half_even,
+                            qscheme=QSchemeType.per_group,
+                            group_size=32,
+                            ch_axis=0,
+                            is_dynamic=is_dynamic)
+
+DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG = QuantizationConfig(input_tensors=MXFP4_SPEC(True), weight=MXFP4_SPEC(False), output_tensors=MXFP4_SPEC(True))
 
 # Per channel GPTQ Config.
 PERCHANNEL_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_INT4_PER_CHANNEL_CONFIG, algo_config=GPTQConfig())
@@ -59,8 +83,13 @@ PERGROUP_GPTQ_NEG_ONE_GROUPSIZE_CONFIG = Config(global_quant_config=DEFAULT_GPTQ
 # Per group dynamic group GPTQ Config.
 PERGROUP_DYNAMIC_GROUP_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=GPTQConfig(static_groups=False))
 
+# MX FP4 dynamic group GPTQ Config.
+MXFP4_DYNAMIC_GROUP_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG, algo_config=GPTQConfig(static_groups=False))
+
 # Default GPTQ Config
 DEFAULT_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=GPTQConfig())
+
+DEFAULT_GPTQ_INT2_CONFIG = Config(global_quant_config=DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG, algo_config=GPTQConfig())
 
 EXCLUDE_LAYERS = ["lm_head"]
 
@@ -73,18 +102,32 @@ def get_dataloader(model_name: str, device: torch.device):
     calib_dataloader = DataLoader(tokenized_outputs['input_ids'].to(device))
     return calib_dataloader
 
-def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False):
+def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False, multi_device=False):
 
     # Get quantizer
-    quantizer = ModelQuantizer(quant_config)
-
-    if multi_gpu:
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", trust_remote_code=True)
-        model.eval()
+    if not multi_device:
+        quantizer = ModelQuantizer(quant_config)
+        if multi_gpu:
+            model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", trust_remote_code=True)
+            model.eval()
+        else:
+            model = AutoModelForCausalLM.from_pretrained(model_name)
+            model.eval()
+            model = model.to(torch_device)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
-        model.eval()
-        model = model.to(torch_device)
+        max_memory = {"cpu": "100GB"}
+        # cpu and one gpu; This one is the best for opt
+        if torch.cuda.is_available():
+            first_gpu = 0
+            max_memory[first_gpu] = "0.2GB"
+            if torch.cuda.device_count() > 1:
+                for i in range(1, torch.cuda.device_count()):
+                    max_memory[i] = "0GB"
+
+        quantizer = ModelQuantizer(quant_config, multi_device=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True)
+        print(model.hf_device_map)
+
     # Get dataloader, if multi_gpu, give the first layer's device
     calib_dataloader = get_dataloader(model_name, model.device)
 
@@ -96,15 +139,31 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
     return quant_model
 
 
-
+@slow_test
 def test_smoke_gptq_quantization():
     '''
         Quant Algorithm:          GPTQ
     '''
-    for quant_config in [DEFAULT_GPTQ_CONFIG, PERCHANNEL_GPTQ_CONFIG, PERGROUP_GPTQ_NEG_ONE_GROUPSIZE_CONFIG, PERGROUP_DYNAMIC_GROUP_GPTQ_CONFIG]:
+    for quant_config in [DEFAULT_GPTQ_CONFIG, PERCHANNEL_GPTQ_CONFIG, PERGROUP_GPTQ_NEG_ONE_GROUPSIZE_CONFIG, PERGROUP_DYNAMIC_GROUP_GPTQ_CONFIG, MXFP4_DYNAMIC_GROUP_GPTQ_CONFIG]:
         quant_config.algo_config.inside_layer_modules = ["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.out_proj", "fc1", "fc2"]
         quant_config.algo_config.model_decoder_layers = "model.decoder.layers"
         quant_config.algo_config.embedding_layers = ["model.decoder.embed_tokens", "model.decoder.embed_positions"]
         quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
         quantize_model(quant_config)
         # quantize_model(quant_config, multi_gpu=True) # TODO: uncomment after ROCM support multi-GPU
+
+@slow_test
+def test_smoke_gptq_multi_device_quantization():
+    '''
+        Quant Algorithm:          GPTQ
+    '''
+    quant_config = DEFAULT_GPTQ_INT2_CONFIG
+    quant_config.algo_config.inside_layer_modules = ["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.out_proj", "fc1", "fc2"]
+    quant_config.algo_config.model_decoder_layers = "model.decoder.layers"
+    quant_config.algo_config.embedding_layers = ["model.decoder.embed_tokens", "model.decoder.embed_positions"]
+    quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
+    quantize_model(quant_config, multi_device=True)
+
+if __name__ == "__main__":
+    test_smoke_gptq_quantization()
+    test_smoke_gptq_multi_device_quantization()

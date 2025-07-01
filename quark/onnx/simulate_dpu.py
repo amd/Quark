@@ -7,9 +7,11 @@ from quark.shares.utils.log import ScreenLogger
 import math
 from typing import Any, Callable, List
 
+import numpy as np
 import onnx
 
-from .quant_utils import (dpu_leaky_relu_alpha, HARD_SIGMOID_SCALE, check_hard_sigmoid_condition, remove_nodes)
+from .quant_utils import (dpu_leaky_relu_alpha, HARD_SIGMOID_SCALE, check_hard_sigmoid_condition, remove_nodes,
+                          COP_DOMAIN, COP_IN_OP_NAME, get_clip_min_max)
 from .simulate_dpu_softmax import SimulateDPUSoftmax
 
 logger = ScreenLogger(__name__)
@@ -88,7 +90,7 @@ class SimulateDPU(object):
         for node in self.model.graph.node:
             if node.op_type == 'HardSigmoid' and check_hard_sigmoid_condition(node) and self.should_simulate_node(node):
                 self.insert_mul(node, HARD_SIGMOID_SCALE)
-                logger.info(f"Found HardSigmoid node {node.name} with alpha={1./6.}. "
+                logger.info(f"Found HardSigmoid node {node.name} with alpha={1. / 6.}. "
                             f"Convert to DPU version.")
 
     def convert_avg_pool_to_dpu_version(self) -> None:
@@ -272,10 +274,10 @@ class SimulateDPU(object):
             if node.op_type == 'InstanceNormalization' and self.should_quantize_node(node):
                 epsilon = next((attr.f for attr in node.attribute if attr.name == 'epsilon'), 1e-05)
                 new_node = onnx.helper.make_node(
-                    "VitisInstanceNormalization",
+                    COP_IN_OP_NAME,
                     node.input,
                     node.output,
-                    domain="com.vai.quantize",
+                    domain=COP_DOMAIN,
                     name=node.name,
                     epsilon=epsilon,
                 )
@@ -285,6 +287,59 @@ class SimulateDPU(object):
                     node.name, new_node.op_type))
         self.model = remove_nodes(self.model, nodes_to_remove)
         self.model.graph.node.extend(nodes_to_add)
+
+    def convert_clip_to_dpu_version(self) -> None:
+        """Convert Clip to DPU version.
+        """
+        nodes_to_remove: list[Any] = []
+        nodes_to_add: list[Any] = []
+        for node in self.model.graph.node:
+            if node.op_type == 'Clip' and self.should_quantize_node(node):
+                min_value, max_value, para_type = get_clip_min_max(self.model, node)
+
+                if para_type != 1:  # Get from initializers
+                    logger.warning(
+                        f"The min and max of Clip node '{node.name}' are not initializers, conversion to the DPU version is not supported yet."
+                    )
+                    continue
+
+                if min_value is not None:
+                    min_value = max(-128, min(127, round(min_value)))
+                    new_min_value = np.array(min_value, dtype=np.float32)
+                    for initializer in self.model.graph.initializer:
+                        if initializer.name == node.input[1]:
+                            new_tensor = onnx.numpy_helper.from_array(new_min_value, name=node.input[1])
+                            initializer.CopyFrom(new_tensor)
+                            break
+                elif min_value is None:
+                    assert node.input[1] == '' and node.attribute == []
+                    min_value = -128
+                    new_min_value = np.array(min_value, dtype=np.float32)
+                    new_weight_name = node.name + "_dpu_min"
+                    node.input[1] = new_weight_name
+                    new_weight_tensor = onnx.numpy_helper.from_array(new_min_value, name=new_weight_name)
+                    self.model.graph.initializer.append(new_weight_tensor)
+
+                if max_value is not None:
+                    max_value = max(-128, min(127, round(max_value)))
+                    new_max_value = np.array(max_value, dtype=np.float32)
+                    for initializer in self.model.graph.initializer:
+                        if initializer.name == node.input[2]:
+                            new_tensor = onnx.numpy_helper.from_array(new_max_value, name=node.input[2])
+                            initializer.CopyFrom(new_tensor)
+                            break
+                elif max_value is None:
+                    assert node.input[2] == '' and node.attribute == []
+                    max_value = 127
+                    new_max_value = np.array(max_value, dtype=np.float32)
+                    new_weight_name = node.name + "_dpu_max"
+                    node.input[2] = new_weight_name
+                    new_weight_tensor = onnx.numpy_helper.from_array(new_max_value, name=new_weight_name)
+                    self.model.graph.initializer.append(new_weight_tensor)
+
+                logger.info(
+                    f"Clip node '{node.name}' is converted to DPU version, min is {new_min_value}, max is {new_max_value}."
+                )
 
 
 def simulate_transforms(
@@ -299,6 +354,7 @@ def simulate_transforms(
     convert_reduce_mean_to_dpu_version: bool = True,
     convert_softmax_to_dpu_version: bool = True,
     convert_instance_norm_to_dpu_version: bool = True,
+    convert_clip_to_dpu_version: bool = True,
 ) -> tuple[onnx.ModelProto, List[str]]:
     """Transforming models to meet the DPU constraints."""
 
@@ -324,5 +380,8 @@ def simulate_transforms(
 
     if convert_instance_norm_to_dpu_version:
         simulate_dpu.convert_instance_norm_to_dpu_version()
+
+    if convert_clip_to_dpu_version:
+        simulate_dpu.convert_clip_to_dpu_version()
 
     return simulate_dpu.model, simulate_dpu.nodes_to_exclude

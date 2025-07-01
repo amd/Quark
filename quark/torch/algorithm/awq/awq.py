@@ -22,6 +22,8 @@ from collections import defaultdict
 from quark.torch.algorithm.utils.prepare import get_layers_for_scaling, get_model_layers, init_device_map
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 import inspect
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, NonScaledFakeQuantize
+import math
 
 __all__ = ["AwqProcessor"]
 
@@ -245,11 +247,10 @@ class AwqProcessor(BaseAlgoProcessor):
         w = w.reshape(w.shape[0], 1, -1, group_size)
 
         oc_batch_size = 256 if w.shape[0] % 256 == 0 else 64  # prevent OOM
-        assert w.shape[0] % oc_batch_size == 0
         w_all = w
         best_max_val_all = []
 
-        for i_b in range(w.shape[0] // oc_batch_size):
+        for i_b in range(math.ceil(w.shape[0] / oc_batch_size)):
             w = w_all[i_b * oc_batch_size:(i_b + 1) * oc_batch_size]
 
             org_max_val = w.abs().amax(dim=-1, keepdim=True)  # co, 1, n_group, 1
@@ -301,6 +302,8 @@ class AwqProcessor(BaseAlgoProcessor):
                 inp = inp.to(next(layer.parameters()).device)
         # get output as next layer's input
 
+        if "kwargs" in self.module_kwargs and self.module_kwargs["kwargs"] is None:
+            self.module_kwargs.pop("kwargs")
         output = layer(self.inps[0], **self.module_kwargs)
         self.inps = [output[0]] if isinstance(output, tuple) else [output]
 
@@ -316,9 +319,8 @@ class AwqProcessor(BaseAlgoProcessor):
                                w: torch.Tensor,
                                linear_layer: nn.Linear,
                                get_scale_zp: bool = False) -> torch.Tensor:
-        from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
                 module.enable_observer()
                 module.enable_fake_quant()
 
@@ -336,10 +338,10 @@ class AwqProcessor(BaseAlgoProcessor):
         else:
             w_q = linear_layer._weight_quantizer(w)
 
-        linear_layer._weight_quantizer.observer.reset_min_max_vals()
+        linear_layer._weight_quantizer.observer.reset_state()
         linear_layer._weight_quantizer.observer.to(self.device)
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
                 module.disable_observer()
                 module.disable_fake_quant()
 

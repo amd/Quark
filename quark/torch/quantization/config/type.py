@@ -39,6 +39,9 @@ class Dtype(Enum):
 
     - `int8`: Signed 8-bit integer, range from -128 to 127.
     - `uint8`: Unsigned 8-bit integer, range from 0 to 255.
+    - `int16`: Signed 16-bit integer, range from -2**15(-32768) to 2**15 - 1(32767).
+    - `uint16`: USigned 16-bit integer, range from 0 to 65535.
+    - `int32`: Signed 32-bit integer, range from -2**31 to 2**31 - 1.
     - `int4`: Signed 4-bit integer, range from -8 to 7.
     - `uint4`: Unsigned 4-bit integer, range from 0 to 15.
     - `bfloat16`: Bfloat16 format.
@@ -54,6 +57,9 @@ class Dtype(Enum):
     """
     int8 = "int8"
     uint8 = "uint8"
+    uint16 = "uint16"
+    int16 = "int16"
+    int32 = "int32"
     int4 = "int4"
     uint4 = "uint4"
     int2 = "int2"
@@ -70,6 +76,13 @@ class Dtype(Enum):
     bfp16 = "bfp16"
 
     @staticmethod
+    def from_torch_dtype(torch_dtype: torch.dtype) -> "Dtype":
+        if torch_dtype in DTYPE_MAP:
+            return DTYPE_MAP[torch_dtype]
+        else:
+            raise ValueError(f"The torch dtype {torch_dtype} does not correspond to a dtype in quark.")
+
+    @staticmethod
     def from_str(s: str) -> "Dtype":
         assert (s is not None), "String dtype is None"
         s = s.lower()
@@ -81,6 +94,8 @@ class Dtype(Enum):
     def to_bitwidth(self) -> int:  # pragma: no cover
         if self.value in ["int8", "uint8", "fp8_e5m2", "fp8_e4m3", "mx"]:
             return 8
+        elif self.value in ["int16", "uint16"]:
+            return 16
         elif self.value in ["int4", "uint4", "fp4"]:
             return 4
         elif self.value in ["bfloat16", "float16"]:
@@ -97,21 +112,38 @@ class Dtype(Enum):
     def to_torch_packed_dtype(self) -> torch.dtype:  # pragma: no cover
         if self.value == "int8":
             return torch.int8
-        elif self.value == "uint8":
+        elif self.value in ["uint8", "fp4", "fp6_e3m2", "fp6_e2m3"]:
             return torch.uint8
+        elif self.value in ["int16", "uint16"]:
+            return torch.int16
         elif self.value == "fp8_e5m2":
             return torch.float8_e5m2
         elif self.value == "fp8_e4m3":
             return torch.float8_e4m3fn
+        elif self.value == "int2":
+            return torch.int32  # need to optimize
         elif self.value in ["int4", "uint4"]:
             return torch.int32  # Packing of uint4/int4 data is always done on torch.int32.
-        elif self.value in ["int2", "fp6_e3m2", "fp6_e2m3", "fp4", "mx", "mx6", "mx9"]:
+        elif self.value in ["int2", "mx", "mx6", "mx9"]:
             # Not supported by `ModelExporter.export_model_info`.
             raise NotImplementedError(
-                "Serialization of int2, float6, float4, OCP MX, MX6 and MX9 models is not yet supported in Quark. Please open an issue."
+                "Serialization of int2, OCP MX, MX6 and MX9 models is not yet supported in Quark. Please open an issue."
             )
         else:
             raise ValueError("Unknown Dtype")
+
+
+DTYPE_MAP = {
+    torch.int8: Dtype.int8,
+    torch.uint8: Dtype.uint8,
+    torch.float8_e4m3fn: Dtype.fp8_e4m3,
+    torch.float8_e5m2: Dtype.fp8_e5m2,
+    torch.int32: Dtype.int32,
+    torch.int16: Dtype.int16,
+    torch.uint16: Dtype.uint16,
+    torch.bfloat16: Dtype.bfloat16,
+    torch.float16: Dtype.float16,
+}
 
 
 class ScaleType(Enum):

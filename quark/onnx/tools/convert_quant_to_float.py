@@ -11,8 +11,8 @@ from onnx import numpy_helper, ModelProto
 import numpy as np
 from onnxruntime.quantization.onnx_model import ONNXModel
 from argparse import ArgumentParser, Namespace
-
-from typing import Dict, Tuple
+from pathlib import Path
+from typing import Dict, Tuple, Any, Union, Optional
 
 
 def convert_initializers_to_float(model: ModelProto, initializers_to_convert: Dict[str, Dict[str, str]]) -> ModelProto:
@@ -85,10 +85,10 @@ def remove_quantize_dequantize_nodes(model: ModelProto) -> Tuple[ModelProto, Dic
     return model, initializers_to_convert
 
 
-def convert_quant_to_float(quant_model_path: str, float_model_path: str) -> None:
+def convert_quant_to_float(quant_model: Union[str, Path, ModelProto],
+                           float_model: Optional[Union[str, Path]] = None) -> Any:
     # Load the ONNX model
-    model_path = quant_model_path
-    model = onnx.load(model_path)
+    model = quant_model if isinstance(quant_model, ModelProto) else onnx.load(quant_model)
 
     # Remove QuantizeLinear and DequantizeLinear nodes
     model, initializers_to_convert = remove_quantize_dequantize_nodes(model)
@@ -101,9 +101,12 @@ def convert_quant_to_float(quant_model_path: str, float_model_path: str) -> None
     topo_model = ONNXModel(model)
     topo_model.topological_sort()
     topo_model.clean_initializers()
-    output_model = topo_model.model
-    onnx.save_model(model, float_model_path, save_as_external_data=True)
-    print(f"Converted model saved to {float_model_path}")
+
+    if float_model is None:
+        return topo_model.model
+
+    use_external_data_format = topo_model.model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
+    topo_model.save_model_to_file(float_model, use_external_data_format=use_external_data_format)
 
 
 def parse_args() -> Namespace:

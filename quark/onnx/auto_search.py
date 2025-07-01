@@ -20,9 +20,11 @@ from typing import Union, Optional, Any, Dict, Tuple
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
+from quark.onnx.quant_utils import CachedDataReader
 from quark.onnx.quantization.config.config import Config
 from quark.onnx.quantization.api import ModelQuantizer
 from quark.onnx.quant_utils import PowerOfTwoMethod
+from quark.onnx.calibrate import LayerWiseMethod
 from quark.onnx.operators.custom_ops import get_library_path
 
 Level1_config_keys = [
@@ -92,6 +94,7 @@ Level2_config_keys = [
     'ConvertSigmoidToHardSigmoid',
     'ConvertHardSigmoidToDPUVersion',
     'ConvertAvgPoolToDPUVersion',
+    'ConvertClipToDPUVersion',
     'ConvertReduceMeanToDPUVersion',
     'ConvertSoftmaxToDPUVersion',
     'NPULimitationCheck',
@@ -264,13 +267,13 @@ def split_config_levels(input_config: Dict[str, Any]) -> Tuple[Dict[str, Any], D
     return temp_level1_space_config, temp_level2_space_config, temp_level3_space_config
 
 
-def buildin_eval_func(onnx_path: str, data_reader: Any, save_path: str = '', save_prefix: str = "iter_x_") -> str:
+def buildin_eval_func(onnx_path: str, data_loader: Any, save_path: str = '', save_prefix: str = "iter_x_") -> str:
     """
-    Buildin evalation function using data_reader
+    Buildin evalation function using data_loader
 
     Args:
         onnx_path: onnx model path that will excute evalution, it can be  either float porint or quantized onnx model
-        data_reader: user defined data_reader
+        data_loader: user defined data_loader
         save_path: path used to save the output result
         save_prefix: prefix string used to name the saved output
 
@@ -291,7 +294,7 @@ def buildin_eval_func(onnx_path: str, data_reader: Any, save_path: str = '', sav
     so.register_custom_ops_library(get_library_path(device))
     ort_session = ort.InferenceSession(onnx_path, so, providers=providers)
 
-    for excute_idx, data in enumerate(data_reader):
+    for excute_idx, data in enumerate(data_loader):
         output = ort_session.run(None, data)
         excute_idx += 1
         if save_path is not None:
@@ -330,7 +333,7 @@ class AutoSearchConfig:
     search_space: Dict[str, Any] = {
         "calibrate_method": [
             PowerOfTwoMethod.MinMSE, PowerOfTwoMethod.NonOverflow, CalibrationMethod.MinMax, CalibrationMethod.Entropy,
-            CalibrationMethod.Percentile
+            CalibrationMethod.Percentile, LayerWiseMethod.LayerWisePercentile
         ],
         "activation_type": [QuantType.QInt8, QuantType.QInt16],
         "weight_type": [QuantType.QInt8, QuantType.QInt16],
@@ -373,8 +376,8 @@ class AssembleIdxs():
     """
     List all the combination of one list.
     Example:
-            input_idxs: [[1,2,], [3,4]]
-            output: [[1,3], [1,4], [2,3], [2,4]]
+        input_idxs: [[1,2,], [3,4]]
+        output: [[1,3], [1,4], [2,3], [2,4]]
 
     Args:
         values_idxs
@@ -723,7 +726,7 @@ class AutoSearch():
         self.auto_search_config = auto_search_config
         self.model_input = model_input
         self.model_output = model_output
-        self.calibration_data_reader = calibration_data_reader
+        self.calibration_data_reader = CachedDataReader(calibration_data_reader)
         self.calibration_data_path = calibration_data_path
         self.eval_dataloader = eval_dataloader if eval_dataloader is not None else calibration_data_reader
         self.searched_space: Dict[int, float] = {}
@@ -750,7 +753,11 @@ class AutoSearch():
 
         self.evaluator = self.build_evaluator()
         self.quantizer = self.build_quantize_instance()
-        self.all_configs = self.build_all_configs(search_space_config=self.auto_search_config.search_space)
+        search_space_config = None
+        if hasattr(self.auto_search_config, "search_space"):
+            search_space_config = self.auto_search_config.search_space
+        if search_space_config is not None:
+            self.all_configs = self.build_all_configs(search_space_config=search_space_config)
 
         # search stop conditions initilization
         self.iterations = 0
@@ -784,8 +791,7 @@ class AutoSearch():
                 f"{self.auto_search_config.search_algo} is not supported yet! return grid_search method!")
             return input_idxs
 
-    def runner(self, one_config: Dict[str, Any], data_reader: Any) -> None:
-
+    def runner(self, one_config: Dict[str, Any]) -> None:
         # step 1: set the search config to the self.config
         temp_level1_config, temp_level2_config, temp_level3_config = split_config_levels(one_config)
         if (temp_level1_config != {}) and (temp_level2_config != {}) and \
@@ -805,7 +811,7 @@ class AutoSearch():
             for temp_level1_key in level1_keys:
                 self.config.global_quant_config.__setattr__(temp_level1_key, temp_level1_config[temp_level1_key])
             # set level3 config
-            self.config.global_quant_config.extra_options = {"FastFinetune": temp_level3_config}
+            self.config.global_quant_config.extra_options["FastFinetune"] = temp_level3_config
 
         elif (temp_level1_config != {}) and (temp_level2_config != {}) and \
                 (temp_level3_config != {}):
@@ -834,9 +840,10 @@ class AutoSearch():
 
         # step2: change the config and run
         quantize_start_time = time.time()
+        self.calibration_data_reader.reset_iter()
         self.quantizer.config = self.config.global_quant_config
         temp_output_path = os.path.join(self.cache_dir, f"iter_{self.iterations}.onnx")
-        self.quantizer.quantize_model(self.model_input, temp_output_path, data_reader)
+        self.quantizer.quantize_model(self.model_input, temp_output_path, self.calibration_data_reader)
         quantize_end_time = time.time()
 
         quantize_time_consumed = quantize_end_time - quantize_start_time
@@ -855,7 +862,10 @@ class AutoSearch():
         else:
             self.quantized_model_output = self.evaluator(temp_output_path)
 
-        self.logger.info(f"config_index:{self.iterations}")
+        if self.auto_search_config.search_evaluator is None:
+            self.logger.info(f"config_index:{self.iterations}")
+        else:
+            self.logger.info(f"config_index:{self.iterations}, custom metric:{self.quantized_model_output}")
         self.logger.info(f"config: {one_config}")
         self.logger.info(f"quantized time consumed:{quantize_time_consumed}s")
 
@@ -915,6 +925,7 @@ class AutoSearch():
                                                     save_prefix=prefix)
         else:
             self.base_model_output = self.evaluator(self.model_input)
+            self.logger.info(f"float model baseline metric:{self.base_model_output}")
 
         # step 3: use sampler to sample the configs
         all_configs = self.sampler(all_configs)
@@ -935,8 +946,7 @@ class AutoSearch():
 
         while not stop_flag:
             # set the initial data reader and run the config
-            data_reader_temp = copy.deepcopy(self.calibration_data_reader)
-            self.runner(all_configs[self.iterations], data_reader=data_reader_temp)
+            self.runner(all_configs[self.iterations])
             self.iterations += 1
 
             # stop condition list

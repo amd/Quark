@@ -11,7 +11,7 @@
 #undef ORT_API_MANUAL_INIT
 
 
-namespace vai_q {
+namespace quark_onnx {
 
 struct KernelCustomInstanceNormalization {
   KernelCustomInstanceNormalization(const OrtApi& api,
@@ -40,4 +40,4 @@ struct KernelCustomInstanceNormalization {
     std::vector<float> variances_;
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

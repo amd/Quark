@@ -7,7 +7,6 @@ A huge thank you goes out to the dedicated AMD Quark core team and the vibrant c
 * Aakar Dwivedi
 * Abigail O'Leary
 * Anton Gerdelan
-* Ashish Sirasao
 * Bowen Bao
 * Chao Li
 * Dehua Tang
@@ -61,4 +60,3 @@ A huge thank you goes out to the dedicated AMD Quark core team and the vibrant c
 * Rahul Bharadwaj
 * Sreeharsha A S S K
 * Uday Das
-

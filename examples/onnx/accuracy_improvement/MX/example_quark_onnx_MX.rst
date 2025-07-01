@@ -122,10 +122,13 @@ The quantizer takes the float model and produces a MX quantized model.
 
 There are several built-in configurations within the quantizer for MX formats, that
 are named as 'MX4', 'MX6', 'MX9', 'MXFP8E5M2', 'MXFP8E4M3', 'MXFP6E3M2', 'MXFP6E2M3',
-'MXFP4E2M1' and 'MXINT8'. We can choose one of the formats by passing the name of
-the configuration to the script.
+'MXFP4E2M1' and 'MXINT8'. For each data format, there is a corresponding configuration
+enabled fast fine-tuning for accuracy improvement. These configurations all end with
+'_ADAQUANT' because we used the AdaQuant algorithm in the fast fine-tuning. For example,
+configuration 'MXINT8_ADAQUANT' will apply AdaQuant algorithm to improve 'MXINT8' accuracy.
 
-Here is an example of MXINT8 quantization:
+We can pass one of the configurations to the quantization script. Here is an example of
+MXINT8 quantization:
 
 .. code-block:: bash
 
@@ -161,27 +164,36 @@ If you want to run faster with GPU support, you can also execute the following c
 Here are the comparison results of these data types:
 
 +---------------------+---------------------+---------------------+---------------------+
-| Data Type           |     Model Size      |         Top1        |         Top5        |
+| DataType / Config   |     Model Size      |         Top1        |         Top5        |
 +=====================+=====================+=====================+=====================+
 | Float               |       97.82 MB      |       74.114 %      |       91.716 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MX4                 |       97.47 MB      |       0.764 %       |       2.742 %       |
+| MX4_ADAQUANT        |       97.47 MB      |       0.952 %       |       3.294 %       |
 +---------------------+---------------------+---------------------+---------------------+
 | MX6                 |       97.47 MB      |       67.642 %      |       88.182 %      |
+| MX6_ADAQUANT        |       97.47 MB      |       68.452 %      |       88.712 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MX9                 |       97.47 MB      |       73.996 %      |       91.658 %      |
+| MX9_ADAQUANT        |       97.47 MB      |       74.000 %      |       91.628 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXFP8E5M2           |       97.47 MB      |       64.076 %      |       87.248 %      |
+| MXFP8E5M2_ADAQUANT  |       97.47 MB      |       66.878 %      |       88.870 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXFP8E4M3           |       97.47 MB      |       70.052 %      |       89.922 %      |
+| MXFP8E4M3_ADAQUANT  |       97.47 MB      |       71.314 %      |       90.838 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXFP6E3M2           |       97.47 MB      |       64.090 %      |       87.256 %      |
+| MXFP6E3M2_ADAQUANT  |       97.47 MB      |       66.912 %      |       88.786 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXFP6E2M3           |       97.47 MB      |       71.766 %      |       90.684 %      |
+| MXFP6E2M3_ADAQUANT  |       97.47 MB      |       72.700 %      |       91.280 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXFP4E2M1           |       97.47 MB      |       18.446 %      |       41.512 %      |
+| MXFP4E2M1_ADAQUANT  |       97.47 MB      |       21.490 %      |       46.068 %      |
 +---------------------+---------------------+---------------------+---------------------+
 | MXINT8              |       97.47 MB      |       73.920 %      |       91.662 %      |
+| MXINT8_ADAQUANT     |       97.47 MB      |       74.054 %      |       91.722 %      |
 +---------------------+---------------------+---------------------+---------------------+
 
 .. note::

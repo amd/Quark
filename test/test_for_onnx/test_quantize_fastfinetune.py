@@ -21,6 +21,7 @@ from quark.onnx.finetuning.create_torch.base_qdq_quantizers import (default_roun
                                                                     INTQuantizer, FPQuantizer)
 from quark.onnx.finetuning.create_torch.base_fn_quantizers import (BFPQuantizer, MXQuantizer)
 from quark.onnx.finetuning.create_torch.quant_base_ops import (create_fn_quantizer, QuantizationModule)
+from quark.onnx.quant_utils import COP_BFP_OP_NAME, COP_MX_OP_NAME
 
 input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.06221361, 0.98258356, 0.38635129, 0.06492238],
@@ -127,6 +128,7 @@ def prepare_config():
             'OptimAlgorithm': 'adaround',
             'TargetOpType': ['Conv', 'LayerNormalization'],  # Try skipping MatMul
             'OutputQDQ': True,
+            'MemOptLevel': 0,
         }
     }
     quant_config = Config(global_quant_config=config_copy)
@@ -231,9 +233,9 @@ class TestTensorQuantize(unittest.TestCase):
         bfp = BFPQuantizer({})
         mx = MXQuantizer({})
 
-        create_fn_quantizer({'op_type': 'MXFixNeuron', 'op_attrs': {}})
+        create_fn_quantizer({'op_type': COP_MX_OP_NAME, 'op_attrs': {}})
 
-        QuantizationModule({'op_type': 'BFPFixNeuron', 'op_attrs': {}})
+        QuantizationModule({'op_type': COP_BFP_OP_NAME, 'op_attrs': {}})
         QuantizationModule((np.array([1]), np.array([0]), np.array([-128]), np.array([128]),
                             np.array([0]), False, onnx.onnx_pb.TensorProto.INT8))
 

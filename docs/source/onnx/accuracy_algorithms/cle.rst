@@ -30,7 +30,7 @@ CrossLayerEqualization (CLE) can equalize the weights of consecutive convolution
 Arguments
 ---------
 
-- **include_cle**: (Boolean) This parameter is a flag that determines whether to optimize the models using CrossLayerEqualization; it can improve the accuracy of some models. The default is False.
+- **include_cle**: (Boolean) This parameter is a flag that determines whether to optimize the models using CrossLayerEqualization; it can improve the accuracy of some models. The default is True.
 
 - **extra_options**: (Dictionary or None) Contains key-value pairs for various options in different cases. Options related to CLE are:
 

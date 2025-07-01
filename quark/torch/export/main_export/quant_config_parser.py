@@ -137,7 +137,6 @@ class QuantConfigParser:
         Returns the custom configuration that is required by external libraries for specific quantization schemes.
         """
         custom_mode = "quark"
-
         if self._config.global_quant_config is None:
             return {}, custom_mode  # pragma: no cover
 
@@ -152,10 +151,20 @@ class QuantConfigParser:
         custom_config = {}
         is_custom = True
 
+        if any(isinstance(qspec, list) for qspec in [weight_config, bias_config, input_config, output_config]):
+            return {}, custom_mode
+
+        weight_config = weight_config if isinstance(weight_config, QuantizationSpec) else None
+        bias_config = bias_config if isinstance(bias_config, QuantizationSpec) else None
+        input_config = input_config if isinstance(input_config, QuantizationSpec) else None
+        output_config = output_config if isinstance(output_config, QuantizationSpec) else None
+
         if self._config.layer_type_quant_config is not None and len(self._config.layer_type_quant_config) > 0:
             return {}, custom_mode  # pragma: no cover
 
         if self._config.layer_quant_config is not None and len(self._config.layer_quant_config) > 0:
+            # check experts layers configuration in this layer_quant_config,
+            # and check the experts layers configuration is the same as
             self.fp8_kv_cache_check(self._config.layer_quant_config)
             if self._fp8_kv_cache_scheme is None:
                 return {}, custom_mode  # pragma: no cover

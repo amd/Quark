@@ -54,7 +54,7 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
     try:
         onnx_model = ONNXModel(model)
         for node in graph.node:
-            if node.op_type in {'VitisQuantizeLinear', 'VitisDequantizeLinear'}:
+            if node.op_type in ['ExtendedQuantizeLinear', 'ExtendedDequantizeLinear']:
                 # Check if second input (scale) and third input (zero_point) meet the conditions
                 is_valid, scale_value = check_second_third_input(graph, node)
 
@@ -62,18 +62,18 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
                     # If scale is not 1, prepare the scale or reciprocal of scale for Mul node
                     if scale_value is not None and np.all(scale_value != 1):
                         scale_tensor_name = f"{node.name}_scale"
-                        reciprocal_scale = 1.0 / scale_value if node.op_type == 'VitisQuantizeLinear' else scale_value
+                        reciprocal_scale = 1.0 / scale_value if node.op_type == 'ExtendedQuantizeLinear' else scale_value
 
                         # Convert scale to ndarray and add to initializers
                         scale_initializer = helper.make_tensor(name=scale_tensor_name,
                                                                data_type=onnx.TensorProto.FLOAT,
                                                                dims=scale_value.shape,
                                                                vals=reciprocal_scale.flatten() if node.op_type
-                                                               == 'VitisQuantizeLinear' else scale_value.flatten())
+                                                               == 'ExtendedQuantizeLinear' else scale_value.flatten())
                         graph.initializer.append(scale_initializer)
 
                     # Replace node with Cast and Mul if scale != 1
-                    if node.op_type == 'VitisQuantizeLinear':
+                    if node.op_type == 'ExtendedQuantizeLinear':
                         # Add Mul before the Cast with scale's reciprocal
                         if scale_value is not None and np.all(scale_value != 1):
                             mul_before_cast = helper.make_node(
@@ -94,7 +94,7 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
                             to=onnx.TensorProto.BFLOAT16)
                         new_nodes.append(cast_to_bfloat16)
 
-                    elif node.op_type == 'VitisDequantizeLinear':
+                    elif node.op_type == 'ExtendedDequantizeLinear':
                         # Create Cast to Float
                         cast_to_float = helper.make_node(
                             'Cast',
@@ -127,10 +127,9 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
         onnx_model.clean_initializers()
         onnx_model.topological_sort()
 
-        logger.info(
-            "Replaced Bfloat16 VitisQuantizeLinear and VitisDequantizeLinear to Cast with optional Mul for scale.")
+        logger.info("Replaced Bfloat16 Q/DQ to Cast with optional Mul for scale.")
     except Exception as e:
-        logger.warning(f"Exception in replacing Bfloat16 VitisQuantizeLinear and VitisDequantizeLinear to Cast: {e}")
+        logger.warning(f"Exception in replacing Bfloat16 Q/DQ to Cast: {e}")
 
     return onnx_model.model
 
@@ -148,7 +147,7 @@ def main() -> None:
         logger.error("Usage: python script.py --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH.")
         exit()
 
-    # Replace Vitis nodes with Cast
+    # Replace custom Q/DQ with Cast
     origin_model = onnx.load(FLAGS.input_model)
     model = replace_bfloat16_qdq_cast(origin_model)
     onnx.save(model, FLAGS.output_model)

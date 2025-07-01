@@ -256,9 +256,9 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
         if quantizer is None:
             return w
 
-        from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+        from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, NonScaledFakeQuantize
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
                 module.enable_observer()
                 module.enable_fake_quant()
 
@@ -276,10 +276,10 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
         else:
             w_q = quantizer(w)
 
-        quantizer.observer.reset_min_max_vals()
+        quantizer.observer.reset_state()
         quantizer.observer.to(linear_layer.weight.device)
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
                 module.disable_observer()
                 module.disable_fake_quant()
 

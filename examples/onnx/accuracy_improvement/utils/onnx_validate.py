@@ -137,16 +137,25 @@ def main():
     if args.onnx_output_opt:
         sess_options.optimized_model_filepath = args.onnx_output_opt
     if args.gpu:
-        providers = ['CUDAExecutionProvider']
-        sess_options.register_custom_ops_library(get_library_path("CUDA"))
+        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'ROCM'
+            providers = ['ROCMExecutionProvider']
+        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'CUDA'
+            providers = ['CUDAExecutionProvider']
+        else:
+            device = 'CPU'
+            providers = ['CPUExecutionProvider']
+            print("Warning: GPU is not available, use CPU instead.")
     else:
+        device = 'CPU'
         providers = ['CPUExecutionProvider']
-        sess_options.register_custom_ops_library(get_library_path("CPU"))
+    sess_options.register_custom_ops_library(get_library_path(device))
 
     if args.onnx_input:
         val_loader = load_loader(args.model_name, args.data, args.batch_size, args.workers)
         f_top1, f_top5 = evaluate(args.onnx_input, sess_options, providers, val_loader, args.print_freq)
-        print(f' * Prec@1 {f_top1.avg:.3f} ({100-f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100.-f_top5.avg:.3f})')
+        print(f' * Prec@1 {f_top1.avg:.3f} ({100 - f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100. - f_top5.avg:.3f})')
     elif args.onnx_float and args.onnx_quant:
         val_loader = load_loader(args.model_name, args.data, args.batch_size, args.workers)
         f_top1, f_top5 = evaluate(args.onnx_float, sess_options, providers, val_loader, args.print_freq)

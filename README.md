@@ -22,7 +22,7 @@
 
 | Feature Set            | PyTorch backend                                                                                                                     | ONNX backend                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Data Types             | int4, uint4, int8, uint8, float16, bfloat16, OCP FP8 E4M3/E5M2, OCP MX int8, OCP MX FP4, OCP MX FP6 E3M2/E2M3, OCP MX FP8 E4M3/E5M2 | int8, uint8, int16, uint16, int32, uint32, float16, bfloat16                              |
+| Data Types             | int4, uint4, int8, uint8, float16, bfloat16, OCP FP8 E4M3/E5M2, OCP MX INT8, OCP MX FP4, OCP MX FP6 E3M2/E2M3, OCP MX FP8 E4M3/E5M2 | int4, uint4, int8, uint8, int16, uint16, int32, uint32, float16, bfloat16, BFP16, MX4/MX6/MX9, OCP MX INT8, OCP MX FP4, OCP MX FP6 E3M2/E2M3, OCP MX FP8 E4M3/E5M2                              |
 | Quant Mode             | eager mode, FX graph mode                                                                                                           | ONNX graph mode                                                                           |
 | Quant Strategy         | static quant, dynamic quant, weight-only                                                                                            | static quant, dynamic quant, weight-only                                                  |
 | Quant Scheme           | per-tensor, per-channel, per-group                                                                                                  | per-tensor, per-channel                                                                   |
@@ -30,12 +30,12 @@
 | Calibration Method     | MinMax, Percentile, MSE                                                                                                             | MinMax, Percentile, MinMSE, Entropy, NonOverflow                                          |
 | Scale Type             | float16, float32                                                                                                                    | float16, float32                                                                          |
 | KV-Cache Quant         | FP8 KV-Cache Quant                                                                                                                  | N/A                                                                                       |
-| Supported Ops.         | `nn.Linear`, `nn.Conv2d`, `nn.ConvTranspose2d`, `nn.Embedding`, `nn.EmbeddingBag`,                                                  | Most ONNX ops.                                                                            |
-|                        | `nn.BatchNorm2d`, `nn.BatchNorm3d`, `nn.LeakyReLU`, `nn.AvgPool2d`, `nn.AdaptiveAvgPool2d`                                          | [Full List](docs/onnx/user_guide_supported_optype_datatype.html#quark-onnx-supported-ops) |
-| Pre-Quant Optimization | SmoothQuant                                                                                                                         | QuaRot, SmoothQuant (Single_GPU/CPU), CLE, Bias Correction                                |
-| Quantization Algorithm | AWQ, GPTQ                                                                                                                           | AdaQuant, AdaRound, GPTQ                                                                  |
+| Supported Ops.         | `nn.Linear`, `nn.Conv2d`, `nn.ConvTranspose2d`, `nn.Embedding`, `nn.EmbeddingBag`,                                                  | Almost all ONNX ops,                                                                            |
+|                        | `nn.BatchNorm2d`, `nn.BatchNorm3d`, `nn.LeakyReLU`, `nn.AvgPool2d`, `nn.AdaptiveAvgPool2d`                                          | see [Full List](https://quark.docs.amd.com/latest/onnx/user_guide_supported_optype_datatype.html) |
+| Pre-Quant Optimization | SmoothQuant                                                                                                                         | QuaRot, SmoothQuant, CLE                                |
+| Quantization Algorithm | AWQ, GPTQ                                                                                                                           | AdaQuant, AdaRound, GPTQ, Bias Correction                                                                  |
 | Export Format          | ONNX, JSON-Safetensors, GGUF(Q4_1)                                                                                                  | N/A                                                                                       |
-| Operating  Systems     | Linux {ROCm, CUDA, CPU}, Windows {CPU}                                                                                              | Linux {ROCm, CUDA, CPU}, Windows {CPU}                                                    |
+| Operating  Systems     | Linux {ROCm, CUDA, CPU}, Windows {CPU}                                                                                              | Linux {ROCm, CUDA, CPU}, Windows {CUDA, CPU}                                                    |
 
 ## Model Support Table
 
@@ -55,7 +55,8 @@ Official releases of AMD Quark are available on PyPI https://pypi.org/project/am
 pip install amd-quark
 ```
 
-For full instructions to install AMD Quark from Python wheels or ZIP files, refer to our [🛠️Installation Guide](https://quark.docs.amd.com/latest/install.html). The Installation Guide also contains verification steps that apply to building from source.
+> [!NOTE]\
+> For full instructions to install AMD Quark from Python wheels or ZIP files, refer to our [🛠️Installation Guide](https://quark.docs.amd.com/latest/install.html). The Installation Guide also contains verification steps that apply to building from source.
 
 ### Installing from Source
 

@@ -766,7 +766,7 @@ def test(data,
         providers = ["VitisAIExecutionProvider"]
         provider_options = [{"config_file": provider_config}]
     else:
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        providers = ['CPUExecutionProvider', 'ROCMExecutionProvider', 'CUDAExecutionProvider']
         provider_options = None
 
     onnx_model = onnxruntime.InferenceSession(

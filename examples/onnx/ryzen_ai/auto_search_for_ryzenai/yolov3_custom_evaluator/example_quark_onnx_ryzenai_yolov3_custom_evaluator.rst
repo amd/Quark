@@ -1,7 +1,7 @@
 Auto-Search for Ryzen AI Yolov3 ONNX Model Quantization with Custom Evaluator
 =============================================================================
 
-This guide explains how to use the Auto Search framework to perform optimal quantization of an ONNX model on the RyzenAI platform. The framework automatically searches for the best configuration to balance accuracy, search time by adjusting quantization settings.
+This guide explains how to use the Auto Search framework to perform optimal quantization of an ONNX model on the AMD Ryzen AI platform. The framework automatically searches for the best configuration to balance accuracy, search time by adjusting quantization settings.
 
 Search Config Settings
 ----------------------

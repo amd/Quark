@@ -11,7 +11,7 @@ from quark.torch.quantization.config.config import Config, QuantizationSpec, Qua
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
 
-from quark.shares.utils.testing_utils import require_torch_gpu, torch_device, require_accelerate
+from quark.shares.utils.testing_utils import require_torch_cuda, torch_device, require_accelerate
 
 DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4,
                                                      observer_cls=PerGroupMinMaxObserver,
@@ -36,7 +36,7 @@ def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
     return calib_dataloader
 
 
-@require_torch_gpu
+@require_torch_cuda
 @require_accelerate
 @pytest.mark.accelerate_test
 def test_smoke_multi_gpu_load_to_cpu_or_disk():

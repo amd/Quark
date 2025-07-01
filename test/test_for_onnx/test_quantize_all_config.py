@@ -17,7 +17,8 @@ from quark.onnx.quantization.config.custom_config import (
         MX4_CONFIG, MX4_ADAQUANT_CONFIG, MX6_CONFIG, MX6_ADAQUANT_CONFIG, MX9_CONFIG, MX9_ADAQUANT_CONFIG,
         MXFP8E5M2_CONFIG, MXFP8E5M2_ADAQUANT_CONFIG, MXFP8E4M3_CONFIG, MXFP8E4M3_ADAQUANT_CONFIG, MXFP6E3M2_CONFIG, MXFP6E3M2_ADAQUANT_CONFIG,
         MXFP6E2M3_CONFIG, MXFP6E2M3_ADAQUANT_CONFIG, MXFP4E2M1_CONFIG, MXFP4E2M1_ADAQUANT_CONFIG, MXINT8_CONFIG, MXINT8_ADAQUANT_CONFIG,
-        BF16_MIXED_BFP16_ADAQUANT_CONFIG, BF16_BFP16_CONFIG, BF16_MXINT8_CONFIG, MX9_INT8_CONFIG,
+        BF16_MIXED_BFP16_CONFIG, BF16_MIXED_BFP16_ADAQUANT_CONFIG, BF16_MIXED_MXINT8_CONFIG, BF16_MIXED_MXINT8_ADAQUANT_CONFIG,
+        BF16_BFP16_CONFIG, BF16_MXINT8_CONFIG, MX9_INT8_CONFIG,
         INT16_CNN_ACCURATE_CONFIG, INT16_CNN_DEFAULT_CONFIG, INT8_CNN_ACCURATE_CONFIG, INT8_CNN_DEFAULT_CONFIG,
         S16S8_ASWS_ADAQUANT_CONFIG, S16S8_ASWS_ADAROUND_CONFIG, S16S16_MIXED_S8S8_CONFIG)
 from testing_utils import prepare_model
@@ -227,10 +228,25 @@ MXINT8_ADAQUANT_golden_output = np.array([[[[0.25, 0.15820312, 0.0222168, -0.049
                                             [0.12109375, 0.265625, 0.421875, 0.11230469],
                                             [0.1484375, 0.13476562, 0.234375, 0.28515625]]]]).astype(np.float32)
 
+BF16_MIXED_BFP16_golden_output = np.array([[[[0.25195312, 0.16210938, 0.02453613, -0.04858398],
+                                             [0.14941406, -0.01672363, 0.13964844, 0.03857422],
+                                             [0.12207031, 0.2734375, 0.41992188, 0.11474609],
+                                             [0.15234375, 0.13769531, 0.23828125, 0.28710938]]]]).astype(np.float32)
+
 BF16_MIXED_BFP16_ADAQUANT_golden_output = np.array([[[[0.24902344, 0.15917969, 0.02087402, -0.05029297],
                                                       [0.14453125, -0.02246094, 0.13378906, 0.03662109],
                                                       [0.11914062, 0.265625, 0.41796875, 0.11279297],
                                                       [0.14941406, 0.13476562, 0.23242188, 0.28320312]]]]).astype(np.float32)
+
+BF16_MIXED_MXINT8_golden_output = np.array([[[[0.25195312, 0.16210938, 0.02453613, -0.04858398],
+                                              [0.14941406, -0.01672363, 0.13964844, 0.03857422],
+                                              [0.12207031, 0.2734375, 0.41992188, 0.11474609],
+                                              [0.15234375, 0.13769531, 0.23828125, 0.28710938]]]]).astype(np.float32)
+
+BF16_MIXED_MXINT8_ADAQUANT_golden_output = np.array([[[[0.25, 0.16015625, 0.02416992, -0.04858398],
+                                                       [0.14550781, -0.01831055, 0.13867188, 0.03808594],
+                                                       [0.12011719, 0.26757812, 0.41992188, 0.11425781],
+                                                       [0.15039062, 0.13671875, 0.23632812, 0.28515625]]]]).astype(np.float32)
 
 BF16_BFP16_golden_output = np.array([[[[0.25195312, 0.16210938, 0.02490234, -0.04833984],
                                        [0.1484375, -0.01635742, 0.13867188, 0.03881836],
@@ -630,10 +646,31 @@ class TestTensorQuantize(unittest.TestCase):
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory
+    def test_quantize_BF16_MIXED_BFP16(self, tmpdir: str):
+        config = BF16_MIXED_BFP16_CONFIG
+        output = tensor_quantize(config, tmpdir)
+        comp_equal = np.allclose(output, BF16_MIXED_BFP16_golden_output, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
     def test_quantize_BF16_MIXED_BFP16_ADAQUANT(self, tmpdir: str):
         config = BF16_MIXED_BFP16_ADAQUANT_CONFIG
         output = tensor_quantize(config, tmpdir)
         comp_equal = np.allclose(output, BF16_MIXED_BFP16_ADAQUANT_golden_output, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_BF16_MIXED_MXINT8(self, tmpdir: str):
+        config = BF16_MIXED_MXINT8_CONFIG
+        output = tensor_quantize(config, tmpdir)
+        comp_equal = np.allclose(output, BF16_MIXED_MXINT8_golden_output, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_BF16_MIXED_MXINT8_ADAQUANT(self, tmpdir: str):
+        config = BF16_MIXED_MXINT8_ADAQUANT_CONFIG
+        output = tensor_quantize(config, tmpdir)
+        comp_equal = np.allclose(output, BF16_MIXED_MXINT8_ADAQUANT_golden_output, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory

@@ -7,17 +7,19 @@ import sys
 import os
 import argparse
 import copy
-from typing import Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from llm_utils.model_preparation import MODEL_NAME_KV_LAYERS_MAP, MODEL_NAME_EXCLUDE_LAYERS_MAP, MODEL_NAME_Q_LAYERS_MAP
+from llm_utils.model_preparation import MODEL_NAME_KV_LAYERS_MAP, MODEL_NAME_EXCLUDE_LAYERS_MAP, MODEL_NAME_Q_LAYERS_MAP, MOE_MODEL_NAME_EXPERTS_LAYERS_MAP
 
-from quark.torch.quantization import Config, QuantizationConfig, FP8E4M3PerTensorSpec, \
-    Int4PerChannelSpec, Int4PerGroupSpec, Uint4PerGroupSpec, MXSpec, \
-    load_pre_optimization_config_from_file, load_quant_algo_config_from_file, RotationConfig, AWQConfig, AutoSmoothQuantConfig
+from quark.torch.quantization import Config, QuantizationConfig, FP8E4M3PerTensorSpec, Int4PerChannelSpec, ProgressiveSpec, load_pre_optimization_config_from_file, load_quant_algo_config_from_file, AWQConfig, AutoSmoothQuantConfig
 from quark.torch.export import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
+from quark.shares.utils.log import ScreenLogger
 
-from customized_configuration import get_global_config, INT8_PER_TENSOR_SPEC, INT8_PER_TOKEN_DYNAMIC_SPEC, INT8_PER_TENSOR_DYNAMIC_SPEC, UINT4_PER_CHANNEL_ASYM_DYNAMIC_SPEC
+from customized_configuration import get_global_config, INT8_PER_TENSOR_SPEC, INT8_PER_TOKEN_DYNAMIC_SPEC, INT8_PER_TENSOR_DYNAMIC_SPEC, \
+    UINT4_PER_CHANNEL_ASYM_DYNAMIC_SPEC, FP4_PER_GROUP_SYM_SPEC, OCP_MXFP4_SPEC, FP6_E2M3_PER_GROUP_SYM_SPEC, OCP_MXFP6_E2M3_SPEC, \
+    FP6_E3M2_PER_GROUP_SYM_SPEC, OCP_MXFP6_E3M2_SPEC, OCP_MXFP8_E4M3_SPEC, DEPRECATED_QUANT_SCHEME
+
+logger = ScreenLogger(__name__)
 
 '''
 Instructions for Setting Up Quark Quantization Configuration:
@@ -44,90 +46,57 @@ INT4_PER_CHANNEL_SPEC = Int4PerChannelSpec(symmetric=True,
                                            round_method="half_even",
                                            ch_axis=0,
                                            is_dynamic=False).to_quantization_spec()
-INT4_PER_GROUP_SYM_SPEC = Int4PerGroupSpec(symmetric=True,
-                                           scale_type="float",
-                                           round_method="half_even",
-                                           ch_axis=1,
-                                           is_dynamic=False,
-                                           group_size=128).to_quantization_spec()
-UINT4_PER_GROUP_ASYM_SPEC = Uint4PerGroupSpec(symmetric=False,
-                                              scale_type="float",
-                                              round_method="half_even",
-                                              ch_axis=1,
-                                              is_dynamic=False,
-                                              group_size=128).to_quantization_spec()
-MX_FP8_PER_GROUP_SYM_SPEC = MXSpec(mx_element_dtype="fp8_e4m3",
-                                   ch_axis=-1,
-                                   block_size=32,
-                                   is_dynamic=True).to_quantization_spec()
-MX_FP6E2M3_PER_GROUP_SYM_SPEC = MXSpec(mx_element_dtype="fp6_e2m3",
-                                       ch_axis=-1,
-                                       block_size=32,
-                                       is_dynamic=True).to_quantization_spec()
-MX_FP6E3M2_PER_GROUP_SYM_SPEC = MXSpec(mx_element_dtype="fp6_e3m2",
-                                       ch_axis=-1,
-                                       block_size=32,
-                                       is_dynamic=True).to_quantization_spec()
-
-# Step 2: Establish `QuantizationConfig` for nn.Module. Define the QuantizationSpec of input_tensors, output_tensors, weight, and bias. More customer settings refer customized_configuration.py
-W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
-W_INT4_PER_CHANNEL_CONFIG = QuantizationConfig(weight=INT4_PER_CHANNEL_SPEC)
-W_INT4_PER_GROUP_SYM_CONFIG = QuantizationConfig(weight=INT4_PER_GROUP_SYM_SPEC)
-W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
+MXFP8_PER_GROUP_SPEC = OCP_MXFP8_E4M3_SPEC(is_dynamic=True)
 
 
 # Step 3: Set up the overall `Config` for the model.
-def get_config(
-    quant_scheme: str,
-    group_size: int,
-    model_dir: str,
-    kv_cache_dtype: Optional[str],
-    fp8_attention_quant: bool,
-    exclude_layers: Optional[str],
-    pre_quantization_optimization: Optional[str],
-    pre_optimization_config_file_path: str,
-    quant_algo: Optional[str],
-    quant_algo_config_file_path: str,
-    model_type: str,
-    group_size_per_layer: Optional[list[tuple[str, int]]],
-) -> Config:
+def get_config(args: argparse.Namespace, model_type: str) -> Config:
+    quant_scheme = args.quant_scheme
+    group_size = args.group_size
+    model_dir = args.model_dir
+    kv_cache_dtype = args.kv_cache_dtype
+    fp8_attention_quant = args.fp8_attention_quant
+    moe_experts_second_step_config = args.moe_experts_second_step_config
+    exclude_layers = args.exclude_layers
+    pre_quantization_optimization = args.pre_quantization_optimization
+    pre_optimization_config_file_path = args.pre_optimization_config_file_path
+    quant_algo = args.quant_algo
+    quant_algo_config_file_path = args.quant_algo_config_file_path
+    group_size_per_layer = args.group_size_per_layer
+    scale_format = args.scale_format
+    scale_calculation_mode = args.scale_calculation_mode
 
-    # Set up `global_quant_config`(required).
-    if quant_scheme == 'w_fp8_a_fp8':
-        global_quant_config = W_FP8_A_FP8_PER_TENSOR_CONFIG
-    elif quant_scheme == 'w_int4_per_channel_sym':
-        global_quant_config = W_INT4_PER_CHANNEL_CONFIG
-    elif quant_scheme == 'w_int4_per_group_sym':
-        global_quant_config = W_INT4_PER_GROUP_SYM_CONFIG
-        global_quant_config.weight.set_group_size(group_size)
-    elif quant_scheme == 'w_uint4_per_group_asym':
-        global_quant_config = W_UINT4_PER_GROUP_CONFIG
-        global_quant_config.weight.set_group_size(group_size)
-    else:
-        global_quant_config = get_global_config(quant_scheme, group_size)
+    if quant_scheme in DEPRECATED_QUANT_SCHEME:
+        print(f"[WARNING] The quantization scheme `'{quant_scheme}'` is deprecated and will be removed in the next AMD Quark release in favor of `'{DEPRECATED_QUANT_SCHEME[quant_scheme]}'`. Please use `--quant_scheme {DEPRECATED_QUANT_SCHEME[quant_scheme]}`.")
+
+        quant_scheme = DEPRECATED_QUANT_SCHEME[quant_scheme]
+
+    supported_kv_cache_type = {
+        "fp8": FP8_PER_TENSOR_SPEC,
+        "fp8_dynamic": FP8_PER_TENSOR_SPEC_DYNAMIC,
+        "int8_per_tensor_static": INT8_PER_TENSOR_SPEC,
+        "int8_per_tensor_dynamic": INT8_PER_TENSOR_DYNAMIC_SPEC,
+        "int8_per_token": INT8_PER_TOKEN_DYNAMIC_SPEC,
+        'uint4': UINT4_PER_CHANNEL_ASYM_DYNAMIC_SPEC,
+        'mxfp8': MXFP8_PER_GROUP_SPEC,
+        'fp4_per_group': FP4_PER_GROUP_SYM_SPEC(group_size, scale_format, None, True),
+        'mxfp4': OCP_MXFP4_SPEC(scale_calculation_mode, True),
+        'fp6e2m3_per_group': FP6_E2M3_PER_GROUP_SYM_SPEC(group_size, scale_format, None, True),
+        'mxfp6_e2m3': OCP_MXFP6_E2M3_SPEC(scale_calculation_mode, True),
+        'fp6e3m2_per_group': FP6_E3M2_PER_GROUP_SYM_SPEC(group_size, scale_format, None, True),
+        'mxfp6_e3m2': OCP_MXFP6_E3M2_SPEC(scale_calculation_mode, True),
+    }
+
+    if kv_cache_dtype is not None and kv_cache_dtype not in supported_kv_cache_type:
+        raise ValueError(f"The kv_cache_dtype='{kv_cache_dtype}' is not supported, only {supported_kv_cache_type} are.")
+
+    global_quant_config = get_global_config(quant_scheme, group_size, scale_format, scale_calculation_mode)
 
     # Set up `layer_quant_config` and `kv_cache_quant_config`
     layer_quant_config = {}
     kv_cache_quant_config = {}
     if kv_cache_dtype is not None:
-        if kv_cache_dtype == "fp8":
-            KV_CACHE_SPEC = FP8_PER_TENSOR_SPEC
-        elif kv_cache_dtype == "fp8_dynamic":
-            KV_CACHE_SPEC = FP8_PER_TENSOR_SPEC_DYNAMIC
-        elif kv_cache_dtype == "int8_per_tensor_static":
-            KV_CACHE_SPEC = INT8_PER_TENSOR_SPEC
-        elif kv_cache_dtype == "int8_per_tensor_dynamic":
-            KV_CACHE_SPEC = INT8_PER_TENSOR_DYNAMIC_SPEC
-        elif kv_cache_dtype == "int8_per_token":
-            KV_CACHE_SPEC = INT8_PER_TOKEN_DYNAMIC_SPEC
-        elif kv_cache_dtype == 'uint4':
-            KV_CACHE_SPEC = UINT4_PER_CHANNEL_ASYM_DYNAMIC_SPEC
-        elif kv_cache_dtype == 'mx_fp8':
-            KV_CACHE_SPEC = MX_FP8_PER_GROUP_SYM_SPEC
-        elif kv_cache_dtype == 'mx_fp6e2m3':
-            KV_CACHE_SPEC = MX_FP6E2M3_PER_GROUP_SYM_SPEC
-        elif kv_cache_dtype == 'mx_fp6e3m2':
-            KV_CACHE_SPEC = MX_FP6E3M2_PER_GROUP_SYM_SPEC
+        kv_cache_spec = supported_kv_cache_type[kv_cache_dtype]
 
         if model_type not in MODEL_NAME_KV_LAYERS_MAP.keys():
             raise ValueError(f"KV cache configuration of {model_type} could not be supported automaticly,"
@@ -137,7 +106,7 @@ def get_config(
         for layer_name in kv_layers_name:
             kv_cache_quant_config[layer_name] = QuantizationConfig(input_tensors=global_quant_config.input_tensors,
                                                                    weight=global_quant_config.weight,
-                                                                   output_tensors=KV_CACHE_SPEC)
+                                                                   output_tensors=kv_cache_spec)
         layer_quant_config = kv_cache_quant_config.copy()
 
     group_size_per_layer = group_size_per_layer or []
@@ -166,6 +135,25 @@ def get_config(
     else:
         attn_qspec = None
 
+    #  Add MoE experts second step quantization configuration
+    if moe_experts_second_step_config is not None:
+        assert moe_experts_second_step_config in ['w_int4_per_channel_sym'], \
+            "Currently, only w_int4_per_channel_sym is supported for MoE experts second step quantization, " \
+            "please add the MoE experts second step quantization configuration in quantize_quark.py"
+
+        assert model_type in MOE_MODEL_NAME_EXPERTS_LAYERS_MAP.keys(), \
+            f"Currently, {model_type} is not supported for MoE experts second step quantization, " \
+            f"please add {model_type} model in MOE_MODEL_NAME_EXPERTS_LAYERS_MAP"
+
+        if moe_experts_second_step_config == 'w_int4_per_channel_sym':
+            weight_quant_spec = ProgressiveSpec(first_stage=global_quant_config.weight, second_stage=INT4_PER_CHANNEL_SPEC)
+
+        experts_layers_name = MOE_MODEL_NAME_EXPERTS_LAYERS_MAP[model_type]
+        for layer_name in experts_layers_name:
+            layer_quant_config[layer_name] = QuantizationConfig(input_tensors=global_quant_config.input_tensors,
+                                                                weight=weight_quant_spec.to_quantization_spec(),
+                                                                output_tensors=global_quant_config.output_tensors)
+
     # Set up `exclude`
     if "c4ai-command-r-08-2024" in model_dir.lower():  # no quantization for particular layer
         MODEL_NAME_EXCLUDE_LAYERS_MAP["cohere"].append("*2.down_proj")
@@ -186,7 +174,9 @@ def get_config(
     # Set up `pre_opt_config`
     pre_optimization_configs = []
     if "rotation" in pre_quantization_optimization:
-        pre_optimization_configs.append(RotationConfig())
+        pre_optimization_config_file_path = pre_optimization_config_file_path if pre_optimization_config_file_path else 'models/' + model_type + '/rotation_config.json'
+        pre_quant_opt_config = load_pre_optimization_config_from_file(pre_optimization_config_file_path)
+        pre_optimization_configs.append(pre_quant_opt_config)
     if "quarot" in pre_quantization_optimization:
         pre_optimization_config_file_path = pre_optimization_config_file_path if pre_optimization_config_file_path else 'models/' + model_type + '/quarot_config.json'
         pre_quant_opt_config = load_pre_optimization_config_from_file(pre_optimization_config_file_path)
@@ -239,7 +229,8 @@ def load_algo_config(quant_algo, quant_scheme, quant_algo_config_file_path, mode
     elif quant_algo == 'autosmoothquant':
         default_algo_config_file = 'models/' + model_type + '/autosmoothquant_config.json'
     elif quant_algo == 'gptq':
-        assert quant_scheme in ['w_uint4_per_group_asym', 'w_uint4_per_channel_asym']  # GPTQ is only tested with uint4_per_group and w_uint4_per_channel_asym quantization in Quark
+        if quant_scheme not in ['w_uint4_per_group_asym', 'w_uint4_per_channel_asym', 'w_mxfp4_a_mxfp4']:
+            logger.warning(f"GPTQ is only tested with uint4_per_group, w_uint4_per_channel_asym, and w_mxfp4_a_mxfp4 quantization in Quark, be careful to apply GPTQ on {quant_scheme}.")
         default_algo_config_file = 'models/' + model_type + '/gptq_config.json'
     quant_algo_config_file_path = quant_algo_config_file_path if quant_algo_config_file_path else default_algo_config_file
     if os.path.exists(quant_algo_config_file_path):

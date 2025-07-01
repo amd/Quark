@@ -25,6 +25,7 @@ one can enable debugging features using the following environment variables:
 * ``QUARK_DEBUG``: Path to a folder that will store statistics and distribution plots of the quantized weights/activations.
 * ``QUARK_DEBUG_ACT_HIST``: Whether to plot histograms for activations distributions. This is disabled by default, ``QUARK_DEBUG_ACT_HIST=1`` should be used to enable the feature.
 * ``QUARK_DEBUG_INPUT_PICKLE``: Path to a pickled model input (typically a ``.pt`` file saved using ``torch.save``) that should be used to collect activations statistics (and optionally, distributions histograms). If this argument is not specified, the ``dataloader`` first batch will be used instead.
+* ``QUARK_DEBUG_NAN``: Whether to raise an exception if a NaN is detected during the quantization process. This is disabled by default.
 
 Relevant metrics and plots are saved in the folder specified by the ``QUARK_DEBUG`` environment variable, for example:
 

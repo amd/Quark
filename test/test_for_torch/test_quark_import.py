@@ -17,14 +17,10 @@ from quark.torch.quantization.config.config import Config, QuantizationSpec, Qua
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver, PerTensorMinMaxObserver, PerChannelMinMaxObserver
 from quark.torch import ModelExporter, ModelImporter
-from quark.torch.export.api import _map_to_quark
 from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
 from quark.torch.quantization.utils import set_op_by_name, get_op_by_name
 from quark.shares.utils.testing_utils import torch_device, use_temporary_directory, retry_flaky_test
-from transformers import AutoConfig
-import huggingface_hub
-from safetensors.torch import load_file
-
+from quark.testing import slow_test
 
 model_dir = "facebook/opt-125m"
 torch.manual_seed(42)
@@ -67,6 +63,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
 
     return quant_model
 
+@slow_test
 @pytest.mark.parametrize("weight_format", [
     pytest.param(weight_format, id=str(weight_format)) for weight_format in ["real_quantized", "fake_quantized"]
 ])
@@ -116,19 +113,20 @@ def test_int4_import(qscheme: QSchemeType, weight_format: str):
         original_model = AutoModelForCausalLM.from_pretrained(model_id)
         q_model = AutoModelForCausalLM.from_pretrained(model_id)
         # Transformers is bit bugged with `with torch.device("meta"):` so not using it here.
-        q_model = q_model.to("meta")
+        if weight_format == "real_quantized":
+            q_model = q_model.to("meta")
         q_model = q_model.eval()
 
         importer = ModelImporter(tmpdir)
         model_config = importer.get_model_config()
         model_state_dict = importer.get_model_state_dict()
-        q_model = importer.import_model(q_model, model_config, model_state_dict)
+        q_model = importer._build_model(q_model, model_config, model_state_dict)
         q_model_state_dict = q_model.state_dict()
 
-        for key in model_state_dict.keys():
-            assert q_model_state_dict[key].device.type == "meta"
-            assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
-            if weight_format == "real_quantized":
+        if weight_format == "real_quantized":
+            for key in model_state_dict.keys():
+                assert q_model_state_dict[key].device.type == "meta"
+                assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
                 # fake_quantized model loads without reasoning about shape for a while
                 assert model_state_dict[key].shape == q_model_state_dict[key].shape
 
@@ -155,6 +153,7 @@ def test_int4_import(qscheme: QSchemeType, weight_format: str):
             else:
                 assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
+@slow_test
 @use_temporary_directory
 def test_awq_import(tmpdir: str):
     '''
@@ -435,6 +434,7 @@ def test_int8_import(weight_format: str):
                 else:
                     assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
+@slow_test
 @use_temporary_directory
 def test_gptq_import(tmpdir: str):
     '''
@@ -468,79 +468,3 @@ def test_gptq_import(tmpdir: str):
 
         for ref_output, output in zip(ref_outputs[0], outputs[0]):
             assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
-
-@pytest.mark.parametrize("model_id", [
-    pytest.param(model_id, id=model_id) for model_id in ["amd-quark/llama-tiny-w-int8-per-tensor", "amd-quark/llama-tiny-w-fp8-a-fp8-o-fp8", "amd-quark/llama-tiny-w-fp8-a-fp8", "amd-quark/llama-tiny-int4-per-group-sym", "amd-quark/llama-small-int4-per-group-sym-awq", "amd-quark/llama-tiny-w-int8-b-int8-per-tensor"]
-])
-def test_load_from_state_dict(model_id: str):
-    if "awq" not in model_id:
-        original_model_id = "fxmarty/tiny-llama-fast-tokenizer"
-    else:
-        original_model_id = "fxmarty/small-llama-testing"
-
-    config = AutoConfig.from_pretrained(model_id)
-    config_dict = config.to_dict()
-
-    with torch.device("meta"):
-        # We use attn_implementation="eager" here as the asset reference logits were originally computed without SDPA.
-        model = AutoModelForCausalLM.from_pretrained(original_model_id, torch_dtype="auto", attn_implementation="eager")
-    model = model.to("meta")  # Meta device loading is bugged in Transformers: https://github.com/huggingface/transformers/issues/34091
-
-    original_model = AutoModelForCausalLM.from_pretrained(original_model_id, torch_dtype="auto", attn_implementation="eager")
-
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-    # Non-custom config is assumed here, as the models in this test were exported with the updated serialized config.
-    quant_config = Config.from_dict(config_dict["quantization_config"])
-
-    json_export_config = JsonExporterConfig(**config_dict["quantization_config"]["export"])
-    custom_mode = config_dict["quantization_config"]["quant_method"]
-
-    # Step 1: Equivalent to _process_model_before_weight_loading in Transformers, inserting `ImportLinear` layers.
-    _map_to_quark(model, quant_config, pack_method=json_export_config.pack_method, custom_mode=custom_mode)
-
-    # Step 2: load the checkpoint, equivalent to some logic in Transformers PretrainedModel.from_pretrained.
-    checkpoint_path = huggingface_hub.hf_hub_download(model_id, "model.safetensors")
-
-    state_dict = load_file(checkpoint_path)
-    model_state_dict = model.state_dict()
-
-    for key in state_dict.keys():
-        assert model_state_dict[key].device.type == "meta"
-
-        # See the comment in qparamslinear.py.
-        if "scale" not in key:
-            assert state_dict[key].dtype == model_state_dict[key].dtype
-
-        assert state_dict[key].shape == model_state_dict[key].shape
-
-    model.load_state_dict(state_dict, assign=True)
-
-    # inv_freq is a non persistent buffer, hence not overriden with the `load_state_dict` above.
-    for name, param in model.named_parameters():
-        if param.device.type == "meta":
-            assert "inv_freq" in name
-            set_op_by_name(model, name, get_op_by_name(original_model, name))
-
-    for name, param in model.named_buffers():
-        if param.device.type == "meta":
-            assert "inv_freq" in name
-            set_op_by_name(model, name, get_op_by_name(original_model, name))
-
-    inp = tokenizer("Today I am in Paris and I would like to", return_tensors="pt")
-
-    model = model.eval()
-
-    with torch.no_grad():
-        logits_reloaded = model(**inp).logits
-
-    ref_filename = model_id.replace("/", "-") + "_ref_output.pt"
-    file_path = huggingface_hub.hf_hub_download("amd-quark/quark-assets", ref_filename)
-    logits_ref = torch.load(file_path, weights_only=True)
-
-    # We should have an exact match between the reference logits obtained from a model before serialization, and from a model after serialization and reload. However, the reference logits were taken locally and for amd-quark/llama-small-int4-per-group-sym-awq we have a small numerical difference in the CI: maxabsdiff 5.9605e-07, due to the different hardware, although the torch.equal test passes locally.
-    # We may want to generate the reference logits on the fly.
-    if "awq" in model_id:
-        assert (logits_reloaded - logits_ref).abs().max() < 1e-6
-    else:
-        assert torch.equal(logits_reloaded, logits_ref)

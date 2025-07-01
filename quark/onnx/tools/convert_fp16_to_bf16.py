@@ -106,9 +106,9 @@ def convert(args: Namespace) -> None:
 
     else:
         fp32_model = float16.convert_float16_to_float(fp16_model)
-        fp32_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
+        fp32_path = tempfile.TemporaryDirectory(prefix="quark_onnx.tools.")
         fp32_input_path = Path(fp32_path.name).joinpath("fp32.onnx").as_posix()
-        onnx.save_model(fp32_model, fp32_input_path, save_as_external_data=args.save_as_external_data)
+        onnx.save(fp32_model, fp32_input_path, save_as_external_data=args.save_as_external_data)
         config_copy = copy.deepcopy(BF16_CONFIG)
         config_copy.extra_options["UseRandomData"] = True
         if args.save_as_external_data:
@@ -119,7 +119,7 @@ def convert(args: Namespace) -> None:
             config_copy.extra_options['EnableVaimlBF16'] = True
         quant_config = Config(global_quant_config=config_copy)
         quantizer = ModelQuantizer(quant_config)
-        bf16_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
+        bf16_path = tempfile.TemporaryDirectory(prefix="quark_onnx.tools.")
         bf16_with_fp32_input_output_path = Path(bf16_path.name).joinpath("bf16.onnx").as_posix()
         quantizer.quantize_model(fp32_input_path, bf16_with_fp32_input_output_path, None)
         bf16_with_fp32_input_output_model = onnx.load(bf16_with_fp32_input_output_path)

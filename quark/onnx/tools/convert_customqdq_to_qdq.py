@@ -20,7 +20,7 @@ def convert_customqdq_to_qdq(model: onnx.ModelProto) -> Any:
     :return: converted model
     """
     from onnxruntime.quantization.onnx_model import ONNXModel
-    OpMapping = {"VitisQuantizeLinear": "QuantizeLinear", "VitisDequantizeLinear": "DequantizeLinear"}
+    OpMapping = {"ExtendedQuantizeLinear": "QuantizeLinear", "ExtendedDequantizeLinear": "DequantizeLinear"}
     OpDomain = "com.microsoft"  # Q/DQ of this domain supports 16bit
     OpQuantType = (onnx.TensorProto.INT8, onnx.TensorProto.UINT8, onnx.TensorProto.INT16, onnx.TensorProto.UINT16,
                    onnx.TensorProto.INT32)
@@ -47,7 +47,7 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
     :param model: source model
     :return: converted model
     """
-    CustomOps = ("VitisQuantizeLinear", "VitisDequantizeLinear", "VitisInstanceNormalization")
+    CustomOps = ["ExtendedQuantizeLinear", "ExtendedDequantizeLinear", "ExtendedInstanceNormalization", "ExtendedLSTM"]
 
     has_customop = False
 

@@ -11,7 +11,7 @@
 #include <limits>
 
 
-namespace vai_q {
+namespace quark_onnx {
 
 // InT : [float]; T : [uint8/int8, uint16/int16, uint32/int32]
 // formula is Y = X / Scale + ZeroPoint
@@ -169,4 +169,4 @@ namespace vai_q {
     }                                                                                \
   };                                                                                 \
 
-}  // namespace vai_q
+}  // namespace quark_onnx

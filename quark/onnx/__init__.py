@@ -8,10 +8,11 @@ from onnxruntime.quantization.quant_utils import (QuantizationMode, QuantFormat,
 from .calibrate import (create_calibrator_power_of_two, create_calibrator_float_scale)
 from .calibrate import LayerWiseMethod
 from .qdq_quantizer import VitisExtendedQuantizer
-from .quant_utils import (PowerOfTwoMethod, VitisQuantType, VitisQuantFormat, dump_model, Int16Method)
+from .quant_utils import (PowerOfTwoMethod, ExtendedQuantType, ExtendedQuantFormat, VitisQuantType, VitisQuantFormat,
+                          dump_model, Int16Method)
 from .quantize import quantize_static
 from .auto_search import AutoSearch, SearchSpace
 
 from quark.onnx.quantization.api import ModelQuantizer
 
-from quark.onnx.operators.custom_ops import (_COP_DOMAIN, _COP_VERSION, _DEVICE_SUFFIX, get_library_path)
+from quark.onnx.operators.custom_ops import (_COP_DOMAIN, _COP_VERSION, get_library_path)

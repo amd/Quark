@@ -31,11 +31,11 @@ Typically, quantization can be performed without calibration data. However, feed
 2.1. Quantization without Calibration Data
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Models can be quantized without calibration data. For such, AMD Quark provides an API to perform quantization using auto generated random data. The command line below shows how to quantize a float model without calibration data. Here we are going to use the default quantization config is **XINT8**, you can also use **A8W8**, **A16W8**, and so on. Refer to :doc:`Quark-ONNX Configuration page <../../onnx/user_guide_config_description>` to learn more about the supported data type and quantization configuration.
+Models can be quantized without calibration data. For such, AMD Quark provides an API to perform quantization using auto generated random data. The command line below shows how to quantize a float model without calibration data. Here we are going to use the default quantization config is **A8W8**, you can also use **XINT8**, **A16W8**, and so on. Refer to :doc:`Quark-ONNX Configuration page <../../onnx/user_guide_config_description>` to learn more about the supported data type and quantization configuration.
 
 .. code-block:: bash
 
-    python -m quark.onnx.tools.random_quantize --input_model_path models/resnet50-v1-12.onnx --quantized_model_path models/resnet50-v1-12_random_quantized.onnx --config XINT8
+    python -m quark.onnx.tools.random_quantize --input_model_path models/resnet50-v1-12.onnx --quantized_model_path models/resnet50-v1-12_random_quantized.onnx --config A8W8
 
 .. note::
 
@@ -108,7 +108,7 @@ Next, implement the calibration data reader API as shown:
 3. Set the quantization configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The code below shows how to quantize a float model with **XINT8**. For more detailed information about basic quantization, please see :doc:`Basic Usage <../../onnx/basic_usage_onnx>`.
+The code below shows how to quantize a float model with **A8W8**. For more detailed information about basic quantization, please see :doc:`Basic Usage <../../onnx/basic_usage_onnx>`.
 
 .. code-block:: python
 
@@ -116,10 +116,14 @@ The code below shows how to quantize a float model with **XINT8**. For more deta
     from quark.onnx import ModelQuantizer
 
     # Set up quantization with a specified configuration
-    # For example, use "XINT8" for Ryzen AI INT8 quantization
-    xint8_config = get_default_config("XINT8")
-    quantization_config = Config(global_quant_config=xint8_config)
+    # For example, use "A8W8" for Ryzen AI INT8 quantization
+    a8w8_config = get_default_config("A8W8")
+    quantization_config = Config(global_quant_config=a8w8_config)
     quantizer = ModelQuantizer(quantization_config)
+
+.. note::
+
+    The A8W8 configuration is our default setup. To minimize quantization time, accuracy-improvement strategies such as AdaRound or AdaQuant are not applied by default, which may lead to suboptimal accuracy in some cases. For better quantization accuracy, please refer to Section **How to Improve Quantization Accuracy** of :doc:`Float Scales (A8W8 and A16W8) Quantization <tutorial_a8w8_and_a16w8_quantize>` page for details.
 
 4. Quantize the model
 ~~~~~~~~~~~~~~~~~~~~~
@@ -136,16 +140,16 @@ The code below shows how to quantize a float model with **XINT8**. For more deta
 4.1 Quantize the model with Advanced Features
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By this point, the model has been quantized and a certain level of performance was observed. many times the achieved performance is not sufficient and users might be interested in using Advanced Features to improve the results. AMD Quark advanced features include **ADAROUND** and **ADAQUANT**. Compared to basic quantization, the user only needs to update the quantization configuration. For example, user could replace **XINT8** with **XINT8_ADAROUND** or **XINT8_ADAQUANT**.
+By this point, the model has been quantized and a certain level of performance was observed. many times the achieved performance is not sufficient and users might be interested in using Advanced Features to improve the results. AMD Quark advanced features include **ADAROUND** and **ADAQUANT**. Compared to basic quantization, the user only needs to update the quantization configuration. For example, user could replace **A8W8** with **A8W8_ADAROUND** or **A8W8_ADAQUANT**.
 
 Let's try replacing the above corresponding two lines with the following a few lines of code.
 
 .. code-block:: python
 
-    xint8_adaround_config = get_default_config("XINT8_ADAROUND")
-    # xint8_adaquant_config = get_default_config("XINT8_ADAQUANT")
-    quantization_config = Config(global_quant_config=xint8_adaround_config)
-    # quantization_config = Config(global_quant_config=xint8_adaquant_config)
+    a8w8_adaround_config = get_default_config("A8W8_ADAROUND")
+    # a8w8_adaquant_config = get_default_config("A8W8_ADAQUANT")
+    quantization_config = Config(global_quant_config=a8w8_adaround_config)
+    # quantization_config = Config(global_quant_config=a8w8_adaquant_config)
 
 For more detailed information about AdaRound and AdaQuant, please see :doc:`Quantization Using AdaQuant and AdaRound <../../onnx/accuracy_algorithms/ada>`.
 
@@ -224,9 +228,9 @@ As shown in the table below, random quantization results in a very large L2 loss
    * -
      - Float Model
      - Quantized Model without Calibration Data
-     - Quantized Model with XINT8 Config
-     - Quantized Model with XINT8 + AdaRound Config
-     - Quantized Model with xint8 + AdaQuant Config
+     - Quantized Model with A8W8 Config
+     - Quantized Model with A8W8 + AdaRound Config
+     - Quantized Model with A8W8 + AdaQuant Config
    * - Model Size
      - 99 MB
      - 25 MB

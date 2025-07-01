@@ -8,17 +8,15 @@ from torch.ao.quantization.quantizer import EdgeOrNode
 from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
 from quark.torch.quantization.config.config import QuantizationSpec
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
 from torch.ao.quantization.pt2e.prepare import _get_edge_or_node_to_qspec, _get_edge_or_node_to_group_id
+from quark.torch.quantization.graph.torch_utils import QUANT_CONV_LIKE_MODULE, QUANT_CONV_WITH_BN
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 # conv like opeartion, with two parameters: weight & bias
-# NOTE: QuantizedConvBatchNorm2d has more parameters
-QUANT_CONV_MODULE = (QuantLinear, QuantConv2d, QuantConvTranspose2d, QuantizedConvBatchNorm2d)
+#  QUANT_CONV_LIKE_MODULE
+# NOTE: QuantizedConvBatchNorm2d and QuantConvTransposeBatchNorm2d has more parameters
 
 
 def _create_fakequantize_from_qspec(quantization_spec: Optional[QuantizationSpec]) -> FakeQuantizeBase:
@@ -26,7 +24,9 @@ def _create_fakequantize_from_qspec(quantization_spec: Optional[QuantizationSpec
     """
     assert quantization_spec is not None
     assert isinstance(quantization_spec, QuantizationSpec)
-    return FakeQuantizeBase.get_fake_quantize(quantization_spec)
+    quantizer = FakeQuantizeBase.get_fake_quantize(quantization_spec)
+    assert isinstance(quantizer, FakeQuantizeBase), "quantizer should be a FakeQuantizeBase instance"
+    return quantizer
 
 
 def _get_node_to_fakequantize_map(
@@ -49,7 +49,7 @@ def _insert_quantizer_for_quantized_module(model: GraphModule) -> None:
     for node in model.graph.nodes:
         if node.op != "call_module":
             continue
-        if not isinstance(getattr(model, node.target), QUANT_CONV_MODULE):
+        if not isinstance(getattr(model, node.target), QUANT_CONV_LIKE_MODULE):
             continue
         quantized_mod = getattr(model, node.target)
 
@@ -62,7 +62,7 @@ def _insert_quantizer_for_quantized_module(model: GraphModule) -> None:
                 node.meta["weight_quantizer_quant_config"]).to(model_device)
 
         # insert quantizer for BIAS
-        if quantized_mod.bias is not None or (isinstance(quantized_mod, QuantizedConvBatchNorm2d)
+        if quantized_mod.bias is not None or (isinstance(quantized_mod, QUANT_CONV_WITH_BN)
                                               and quantized_mod.bn.track_running_stats is True):
             if node.meta.get("bias_quantizer_quant_config", None) is None:
                 logger.warning("None: {}'s ({}) bias is not quantized".format(node.name,

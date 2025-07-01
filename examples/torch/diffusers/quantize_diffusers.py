@@ -262,7 +262,7 @@ class DumpDatasetFrom(Dataset):
 
     def __getitem__(self, index):
         device_count = torch.cuda.device_count()
-        map_location = torch.device(f"cuda:{device_count-1}") if device_count > 0 else torch.device("cpu")
+        map_location = torch.device(f"cuda:{device_count - 1}") if device_count > 0 else torch.device("cpu")
         dump_data = torch.load(self.data_list[index], map_location=map_location)
         if self.is_fp32:
             dump_data['args'] = list(dump_data['args'])

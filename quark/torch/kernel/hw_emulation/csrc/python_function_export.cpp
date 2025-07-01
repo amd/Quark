@@ -7,6 +7,9 @@
 #include <torch/extension.h>
 #include "mx/funcs.cuh"
 
+#include "mxfp4/dequantize.h"
+#include "mxfp4/fake.h"
+
 #ifdef USE_CUDA
 torch::Tensor fake_quantize_per_tensor_affine(const torch::Tensor& input, const torch::Tensor& scale, const torch::Tensor& zero_point, int64_t quant_min, int64_t quant_max, int64_t round_mode);
 #elif ! defined(USE_CUDA)
@@ -52,4 +55,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 	py::arg("logt"),
 	py::arg("grad_output")
   );
+  m.def("dq_uint8_mxfp4_to_half", &dq_uint8_mxfp4_to_half, "dq_uint8_mxfp4_to_half");
+  m.def("qdq_mxfp4", &qdq_mxfp4, "qdq_mxfp4");
+  m.def("qdq_mxfp4_", &qdq_mxfp4_, "qdq_mxfp4_");
 }

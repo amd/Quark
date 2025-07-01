@@ -31,7 +31,7 @@ def parse_args() -> Namespace:
 def convert_a8w8_npu_to_a8w8_cpu(model: onnx.ModelProto) -> onnx.ModelProto:
     conv_node_list = []
     for node in model.graph.node:
-        if node.op_type == "Conv":
+        if node.op_type in ["Conv", "ConvTranspose", "Gemm"]:
             conv_node_list.append(node)
     conv_qdq_node_list = []
 

@@ -11,7 +11,7 @@ import onnxruntime as ort
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
 from quark.onnx.quantization.config import (Config, get_default_config)
-from quark.onnx.quant_utils import (PowerOfTwoMethod, VitisQuantType, VitisQuantFormat)
+from quark.onnx.quant_utils import (PowerOfTwoMethod, ExtendedQuantType, ExtendedQuantFormat)
 from quark.onnx import auto_search
 
 
@@ -141,18 +141,18 @@ class AutoSearchConfig_Default:
     # for BF16
     search_space_bf16: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax],
-        "activation_type": [VitisQuantType.QBFloat16],
-        "weight_type": [VitisQuantType.QBFloat16],
-        "quant_format": [VitisQuantFormat.QDQ],
+        "activation_type": [ExtendedQuantType.QBFloat16],
+        "weight_type": [ExtendedQuantType.QBFloat16],
+        "quant_format": [ExtendedQuantFormat.QDQ],
         "include_cle": [False],
         "include_fast_ft": [False],
     }
 
     search_space_bf16_advanced: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax],
-        "activation_type": [VitisQuantType.QBFloat16],
-        "weight_type": [VitisQuantType.QBFloat16],
-        "quant_format": [VitisQuantFormat.QDQ],
+        "activation_type": [ExtendedQuantType.QBFloat16],
+        "weight_type": [ExtendedQuantType.QBFloat16],
+        "quant_format": [ExtendedQuantFormat.QDQ],
         "include_cle": [False],
         "include_fast_ft": [True],
         "extra_options": {
@@ -173,7 +173,9 @@ class AutoSearchConfig_Default:
     #  for BFP16
     search_space_bfp16: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax],
-        "quant_format": [VitisQuantFormat.BFPFixNeuron],
+        "activation_type": [ExtendedQuantType.QBFP],
+        "weight_type": [ExtendedQuantType.QBFP],
+        "quant_format": [ExtendedQuantFormat.QDQ],
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
@@ -189,7 +191,9 @@ class AutoSearchConfig_Default:
 
     search_space_bfp16_advanced: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax],
-        "quant_format": [VitisQuantFormat.BFPFixNeuron],
+        "activation_type": [ExtendedQuantType.QBFP],
+        "weight_type": [ExtendedQuantType.QBFP],
+        "quant_format": [ExtendedQuantFormat.QDQ],
         "include_cle": [False],
         "include_fast_ft": [True],
         "extra_options": {

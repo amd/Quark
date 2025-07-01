@@ -14,6 +14,7 @@ from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
 from quark.torch.quantization.utils import set_op_by_name, get_op_by_name
 from quark.torch.export.utils import find_patterns_groups
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.tensor_quantize import SequentialQuantize
 
 logger = ScreenLogger(__name__)
 
@@ -56,11 +57,15 @@ class ModelPostProcessor:
         logger.info("Model post process start.")
         logger.info("Simplifying quantized operators...")
         named_modules = dict(self._model.named_modules(remove_duplicate=False))
+
         if self._config.weight_format == "real_quantized":
             logger.info("Real_quantized: Doing real quantization for operators...")
             for name, module in tqdm(named_modules.items()):
                 if isinstance(module, QuantLinear):
                     self._name_module_map[name] = module
+                    # In export flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
+                    module.register_buffer('export_enabled', torch.tensor([1], dtype=torch.uint8), persistent=False)
+                    # w b at cpu, scale zero_point at gpu
                     export_linear = QParamsLinear.from_module(
                         module,
                         self.custom_mode,
@@ -69,6 +74,11 @@ class ModelPostProcessor:
                     set_op_by_name(self._model, name, export_linear)
         elif self._config.weight_format == "fake_quantized":
             logger.info("Fake_quantized: save float_w, scale and zero_point for operators...")
+            for name, module in tqdm(named_modules.items()):
+                if isinstance(module, QuantLinear):
+                    self._name_module_map[name] = module
+                    # In export flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
+                    module.register_buffer('export_enabled', torch.tensor([1], dtype=torch.uint8), persistent=False)
         named_modules = dict(self._model.named_modules(remove_duplicate=False))
         has_dbrx_experts = any(module.__class__.__name__ == "DbrxExperts_" for module in named_modules.values())
         if has_dbrx_experts:
@@ -84,7 +94,9 @@ class ModelPostProcessor:
 
         logger.info("Resetting model to frozen model...")
         for name, module in self._name_module_map.items():
-            set_op_by_name(self._model, name, module)
+            if self._config.weight_format == "real_quantized":
+                set_op_by_name(self._model, name, module)
+            module.export_enabled[0] = 0
         return self._model
 
     def _virtual_merge_weight_matrix(self) -> None:
@@ -103,6 +115,14 @@ class ModelPostProcessor:
         weight_quant_or_not = all(getattr(module, "_weight_quantizer", None) is not None for module in module_group)
         if not weight_quant_or_not:
             return
+
+        weight_sequential_quant = any(
+            isinstance(module._weight_quantizer, SequentialQuantize) for module in module_group)
+        if weight_sequential_quant:
+            logger.warning(
+                "SequentialQuantize is not supported for weight merge, please raise an issue if you need this feature.")
+            return
+
         static_quant_or_not = all(module._weight_quantizer.quant_spec.is_dynamic is False for module in module_group)
         if not static_quant_or_not:
             return
@@ -127,6 +147,13 @@ class ModelPostProcessor:
 
         output_quant_or_not = all(getattr(module, "output_quantizer", None) is not None for module in module_group)
         if not output_quant_or_not:
+            return
+
+        output_sequential_quant = any(
+            isinstance(module.output_quantizer, SequentialQuantize) for module in module_group)
+        if output_sequential_quant:
+            logger.warning(
+                "SequentialQuantize is not supported for weight merge, please raise an issue if you need this feature.")
             return
         static_quant_or_not = all(module.output_quantizer.quant_spec.is_dynamic is False for module in module_group)
         if not static_quant_or_not:
@@ -169,6 +196,15 @@ class ModelPostProcessor:
         output_quant_or_not = all(getattr(module, "output_quantizer", None) is not None for module in module_group)
         if not output_quant_or_not:
             return
+
+        # currently, sequential quantizer is not supported for kv cache
+        output_sequential_quant = any(
+            isinstance(module.output_quantizer, SequentialQuantize) for module in module_group)
+        if output_sequential_quant:
+            logger.warning(
+                "SequentialQuantize is not supported for kv cache, please raise an issue if you need this feature.")
+            return
+
         static_quant_or_not = all(module.output_quantizer.quant_spec.is_dynamic is False for module in module_group)
         if not static_quant_or_not:
             return

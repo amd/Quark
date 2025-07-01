@@ -7,10 +7,10 @@ import numpy as np
 import onnxruntime
 import copy
 from onnxruntime.quantization import CalibrationDataReader
-from quark.onnx import ModelQuantizer
+from quark.onnx import ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import BFP16_CONFIG
 from quark.onnx.quantization.config.config import Config
-from quark.shares.utils.testing_utils import require_torch_gpu
+from quark.shares.utils.testing_utils import require_torch_cuda
 from quark.shares.utils.testing_utils import use_temporary_directory
 from testing_utils import prepare_model
 
@@ -51,14 +51,14 @@ class DataReader(CalibrationDataReader):
         self.index = 0
 
 
-def prepare_config(op_device='cpu', in_device='cpu'):
+def prepare_config(op_device='CPU', in_device='CPU'):
     config_copy = copy.deepcopy(BFP16_CONFIG)
     config_copy.include_fast_ft = True
 
     def device_config(device):
-        if device == 'cpu':
+        if device == 'CPU':
             true_device = 'cpu'
-        elif device == 'cuda':
+        elif device == 'CUDA':
             true_device = "cuda:0"
         else:
             true_device = 'cpu'
@@ -94,25 +94,24 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     return output_model_path
 
 
-def infer_quantized_model(quantized_model_path, device='cpu'):
+def infer_quantized_model(quantized_model_path, device='CPU'):
+    if device != 'CPU':
+        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'ROCM'
+            providers = ['ROCMExecutionProvider']
+        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'CUDA'
+            providers = ['CUDAExecutionProvider']
+        else:
+            device = 'CPU'
+            providers = ['CPUExecutionProvider']
+    else:
+        device = 'CPU'
+        providers = ['CPUExecutionProvider']
 
     so = onnxruntime.SessionOptions()
-    from quark.onnx import get_library_path as vai_lib_path
-    if device == 'cpu':
-        provider = ['CPUExecutionProvider']
-    elif device == 'cuda':
-        provider = ['CUDAExecutionProvider']
-    else:
-        provider = ['CPUExecutionProvider']
-
-    providers = onnxruntime.get_available_providers()
-    if 'CUDAExecutionProvider' not in providers:
-        provider = ['CPUExecutionProvider']
-        device = 'cpu'
-
-    so.register_custom_ops_library(vai_lib_path(device))
-
-    sess = onnxruntime.InferenceSession(quantized_model_path, so, providers=provider)
+    so.register_custom_ops_library(get_library_path(device))
+    sess = onnxruntime.InferenceSession(quantized_model_path, so, providers=providers)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor
@@ -121,7 +120,7 @@ def infer_quantized_model(quantized_model_path, device='cpu'):
     return output
 
 
-def tensor_quantize(output_dir: str, torch_device='cpu', ort_device='cpu'):
+def tensor_quantize(output_dir: str, torch_device='CPU', ort_device='CPU'):
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
     quant_config = prepare_config(torch_device, ort_device)
@@ -134,27 +133,28 @@ def tensor_quantize(output_dir: str, torch_device='cpu', ort_device='cpu'):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_BFP_cpu_cpu_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, 'cpu', 'cpu')
+        output = tensor_quantize(tmpdir, 'CPU', 'CPU')
         comp_equal = np.allclose(output, output_tensor, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory
-    @require_torch_gpu
+    @require_torch_cuda
     def test_quantize_BFP_cuda_cpu_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, 'cuda', 'cpu')
+        output = tensor_quantize(tmpdir, 'CUDA', 'CPU')
         comp_equal = np.allclose(output, output_tensor, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory
+    @require_torch_cuda
     def test_quantize_BFP_cpu_cuda_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, 'cpu', 'cuda')
+        output = tensor_quantize(tmpdir, 'CPU', 'CUDA')
         comp_equal = np.allclose(output, output_tensor, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory
-    @require_torch_gpu
+    @require_torch_cuda
     def test_quantize_BFP_cuda_cuda_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, 'cuda', 'cuda')
+        output = tensor_quantize(tmpdir, 'CUDA', 'CUDA')
         comp_equal = np.allclose(output, output_tensor, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 

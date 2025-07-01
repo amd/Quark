@@ -55,6 +55,10 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
         )
         self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
             "Int32Bias"]
+        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
+            "Int16Bias"]
+        if self.int16_bias:
+            self.int32_bias = True
 
     def quantize_model(self) -> Any:
         annotate_tensors = get_annotate_tensors(self.model.model)

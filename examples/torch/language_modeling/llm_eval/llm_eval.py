@@ -5,19 +5,17 @@
 
 import sys
 import os
-from evaluation import ppl_eval, ppl_eval_for_kv_cache, rouge_meteor_generations, rouge_eval, meteor_eval
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from evaluation import ppl_eval, ppl_eval_for_kv_cache, rouge_meteor_generations, rouge_eval, meteor_eval, mlperf_rouge_eval
 from typing import Optional, Type
 import lm_eval
 from lm_eval import utils
 from lm_eval.__main__ import cli_evaluate, parse_eval_args, setup_parser
 from lm_eval.api.model import T
-from llm_utils.model_preparation import get_model, get_model_type, get_tokenizer
+
 import datasets
 from datasets import load_dataset
 from torch import nn as nn
 from transformers import AutoTokenizer, tokenization_utils_base, AutoConfig
-from llm_utils.export_import_hf_model import import_hf_model
 
 from optimum.onnxruntime import ORTModelForCausalLM
 from onnxruntime import InferenceSession
@@ -30,8 +28,11 @@ import json
 import custom_lm_eval_harness
 import argparse
 
-
 from quark.torch import ModelImporter
+
+# TODO: Using sys.path.append is bad practice.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from llm_utils.model_preparation import get_model, get_model_type, get_tokenizer
 
 # Get model for PPL
 def prepare_model(model_dir: str, model_reload: bool, import_file_format: str, import_model_dir: str, seq_len: int, device: str, multi_gpu: bool, ppl: bool) -> tuple[nn.Module, AutoTokenizer, tokenization_utils_base.BatchEncoding]:
@@ -50,13 +51,10 @@ def prepare_model(model_dir: str, model_reload: bool, import_file_format: str, i
             model_obj = ORTModelForCausalLM(session, config, use_cache=True, use_io_binding=False)
     else:
         if model_reload:
-            if import_file_format == "quark_format":
-                print("\nRestore quantized model from quark_format file ...")
-                importer = ModelImporter(model_info_dir=import_model_dir)
-                model = importer.import_model_info(model)
-            elif import_file_format == "hf_format":
-                print("\nRestore quantized model from hf_format file ...")
-                model = import_hf_model(model, model_info_dir=import_model_dir)
+            print(f"\nRestore quantized model from {import_file_format} file ...")
+            importer = ModelImporter(model_info_dir=import_model_dir, saved_format=import_file_format)
+
+            model = importer.import_model_info(model)
         model_obj = model
 
 
@@ -109,11 +107,9 @@ def create_from_arg_obj(
 
     if model_reload:
         import_file_format = arg_dict.pop("import_file_format", None)
-        if import_file_format == "quark_format":
-            importer = ModelImporter(model_info_dir=import_model_dir)
-            importer.import_model_info(model_obj.model)
-        elif import_file_format == "hf_format":
-            import_hf_model(model_obj.model, model_info_dir=import_model_dir)
+
+        importer = ModelImporter(model_info_dir=import_model_dir, saved_format=import_file_format)
+        importer.import_model_info(model_obj.model)
 
     return model_obj
 
@@ -121,9 +117,13 @@ def create_from_arg_obj(
 def get_dataset(task_name, num_fewshot, limit=None, cache_requests=False, rewrite_requests_cache=False, system_instruction=None, apply_chat_template=False, fewshot_as_multiturn=False):
 
     def save_data(data, filename):
-        with open(filename, "w") as file:
+        with open(filename + ".txt", "w") as file:
             for sample in data:
-                file.write(sample + "\n")
+                file.write(sample + "\n<EOR>\n")
+
+        with open(filename + ".json", "w") as f:
+            json.dump(data, f, indent=4)
+
     if limit is not None:
         limit = int(limit)
 
@@ -162,13 +162,12 @@ def get_dataset(task_name, num_fewshot, limit=None, cache_requests=False, rewrit
 
             references.append(task.doc_to_target(doc))
 
-        with open(f"{task_name}_inputs_limit-{str(limit)}.json", "w") as f:
-            json.dump(inputs, f, indent=4)
-        with open(f"{task_name}_references_limit-{str(limit)}.json", "w") as f:
-            json.dump(references, f, indent=4)
+        # SAVING BOTH JSON AND TXT FILES
+        save_data(inputs, f"{task_name}_inputs_limit-{str(limit)}")
+        save_data(references, f"{task_name}_references_limit-{str(limit)}")
 
-    print("Inputs saved")
-    print("References saved")
+    print("Task Inputs saved -- coming from lm-evaluation-harness")
+    print("Task References saved -- coming from lm-evaluation-harness")
 
 def setup_parser_with_modelopt_args():
     """
@@ -207,6 +206,13 @@ def setup_parser_with_modelopt_args():
     parser.add_argument("--meteor", action="store_true")
     parser.add_argument("--datasets", help="comma seperated dataset selection for rouge or meteor evaluation", type=str, metavar="datset1,dataset2")
     parser.add_argument("--mode", help="standard (end-to-end generation & evals), offline (decoupled generation and evals)", default="standard", type=str)
+    parser.add_argument("--mlperf_rouge", action="store_true")
+    parser.add_argument("--eval_data_dir", help="Dataset for evaluation", type=str, default=None)
+
+    # setting all the random seeds -- aligned with the default vals in lm_eval_harness
+    parser.add_argument('--random_seed', type=int, required=False, default=0, help='random seed')
+    parser.add_argument('--numpy_random_seed', type=int, required=False, default=1234, help='np rand seed')
+    parser.add_argument('--torch_random_seed', type=int, required=False, default=1234, help='torch rand seed')
 
     # arguments for offline mode
     parser.add_argument('--eor', type=str, required=False, default='<EOR>', help='token differentiating between responses--needed for parsing')
@@ -215,12 +221,8 @@ def setup_parser_with_modelopt_args():
     parser.add_argument('--eval_mode', help='run evaluation on provided predictions.txt for specified task', action="store_true")
     parser.add_argument("--oga_references", help="get OGA model references for pretrained model", action="store_true")
     parser.add_argument("--inputs_path", type=str, help="directory of inputs.txt", default=None)
-    parser.add_argument("--dtype", type=str, required=False, help="load torch model in dtype", default="fp32", choices=["fp16", "bf16", "fp32"])
-    # setting all the random seeds -- aligned with the default vals in lm_eval_harness
-    parser.add_argument('--random_seed', type=int, required=False, default=0, help='random seed')
-    parser.add_argument('--numpy_random_seed', type=int, required=False, default=1234, help='np rand seed')
-    parser.add_argument('--torch_random_seed', type=int, required=False, default=1234, help='torch rand seed')
-
+    parser.add_argument('--model_name', type=str, required=False, default="modelName", help="offline_mode model name")
+    parser.add_argument("--case", type=str, help="Offline mode case to run", default="default", choices=["default", "psu_prompt", "psu_prompt_eos_stop"])
     return parser
 
 
@@ -248,7 +250,7 @@ if __name__ == "__main__":
         results = {}
 
         # PPL
-        if args.ppl or args.use_ppl_eval_for_kv_cache or args.rouge or args.meteor:
+        if args.ppl or args.use_ppl_eval_for_kv_cache or args.rouge or args.meteor or args.mlperf_rouge:
             # load the model
             model_obj, tokenizer, testenc = prepare_model(model_args['pretrained'], args.model_reload, args.import_file_format, args.import_model_dir, args.seq_len, args.device, args.multi_gpu, args.ppl)
 
@@ -274,6 +276,10 @@ if __name__ == "__main__":
                         meteor_scores = meteor_eval(dataset, generations)
                         print(f'\n[INFO] {dataset} METEOR: {meteor_scores}')
                         quark_metrics[f"{dataset} METEOR"] = meteor_scores
+
+            # eval model mlperf_rouge
+            if args.mlperf_rouge:
+                mlperf_rouge_eval(args, model_obj, model_args['pretrained'], args.device, args.batch_size)
 
         # LM EVAL HARNESS TASKS
         if args.tasks is not None:
@@ -330,15 +336,9 @@ if __name__ == "__main__":
             # parse the inputs.json file
             with open(str(args.inputs_path), "r") as f:
                 inputs = json.load(f)
-            filename = args.inputs_path.replace("inputs", "oga-references")
-            filename = filename.replace(".json", ".txt")
+            filename = f"{args.model_name}_{args.tasks}_limit-{args.limit}_{args.case}.txt"
             if(args.import_file_format == "onnx_format"):
-                references = oga_generation(args, inputs, args.import_model_dir)
-                filename = args.import_file_format + "_" + filename
-            # save oga references
-            with open(filename, "w") as file:
-                for reference in references:
-                    file.write(reference + f"\n{args.eor}\n")
+                references = oga_generation(args, inputs, args.import_model_dir, filename)
 
     # save evaluation results
     if args.metrics_output_dir is not None:

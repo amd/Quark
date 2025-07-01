@@ -300,7 +300,9 @@ def fake_quantize_bfp(test_scene, is_dynamic: bool = True):
         observer_cls=PerBlockBFPObserver,
         qscheme=QSchemeType.per_group,
         ch_axis=-1, group_size=8,
-        is_dynamic=is_dynamic, round_method=RoundType.half_even)
+        is_dynamic=is_dynamic,
+        round_method=RoundType.half_even,
+        scale_calculation_mode="floor")
 
     quantizer = NonScaledFakeQuantize(quant_spec=spec)
     quantizer.enable_observer()

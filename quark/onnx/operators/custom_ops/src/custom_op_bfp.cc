@@ -2,16 +2,21 @@
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
-// #include "bfp.h"
 
-#define ORT_API_MANUAL_INIT
-#include "core/session/onnxruntime_cxx_api.h"
-#undef ORT_API_MANUAL_INIT
+#include "custom_op_bfp.h"
+#include "bfp/bfp.h"
+#include <stdint.h>
+#include <vector>
+#include <cmath>
+#include <mutex>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <stdexcept>
 #ifdef USE_CUDA
 #include "cuda_runtime.h"
 #include "cuda_runtime_api.h"
 #endif
-#include "custom_op_bfp.h"
 
 Buffer::Buffer(size_t size) {
   #ifdef USE_CUDA
@@ -32,26 +37,6 @@ void Buffer::release() {
     delete[] data_;
   #endif
 }
-
-namespace vai_q {
-  extern float float2bfloat_cpu(const float x, std::string str = "false");
-}
-#include <vector>
-#include <cmath>
-#include <mutex>
-#include <iostream>
-#include <vector>
-#include <string>
-#include <stdexcept>
-#include "bfp/bfp.h"
-
-#ifdef _WIN32
-#include <stdint.h>
-#endif
-
-#ifdef USE_CUDA
-#include "cuda_runtime_api.h"
-#endif
 
 BFPFixNeuronKernel::BFPFixNeuronKernel(
     const OrtApi& ort_api, 

@@ -1,188 +1,232 @@
 Vision Model Quantization Using Quark FX Graph Mode
-====================================================
+===================================================
 
-This example demonstrates a vision model quantization workflow. You specify a ``nn.Module`` and transform the model to ``torch.fx.GraphModule`` format using the PyTorch API. During the quantization process, after annotation and insertion of quantizers, this modified ``fx.GraphModule`` can be used to perform PTQ (Post-Training Quantization) and/or QAT (Quantization Aware Training). Demonstration code is provided to show how you can assign ``quant config``.
+What content on this page:
 
-In this example, we present a vision model quantization workflow. The
-user specified a ``nn.Module`` and transformed the model to
-``torch.fx.GraphModule`` format by using PyTorch API. During the
-quantization process, after annotation and insertion quantizers, this
-modified ``fx.GraphModule`` can be used to perform PTQ (Post Training
-Quantization), or/and QAT (Quantization Aware Training). We supply a
-demonstration code and show how users assign ``quant config``, more
-information can be found in User Guide.
+- What is PyTorch Fx graph and advantages.
+- Overall brief feature & usage instruction.
+- Some experiments Result.
 
-Get example code and script
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-After unzip ``amd_quark.zip`` (referring to :doc:`Installation Guide <../install>`).
-The example folder is in amd_quark.zip. In folder ``/examples/torch/vision``, user can get the detailed explanation of
-image classification and object detection quantization demonstration code.
+
+PyTorch Fx Graph & Quark Quantization Tool
+------------------------------------------
+
+Advantage about the fx graph
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Unlike ``nn.Module``, the  `torch.fx.GraphModule <https://pytorch.org/docs/stable/fx.html#torch.fx.GraphModule>`_ contains detailed graph information that describes the network forward execution process. In graph, each operation (e.g torch/python function, nn.Module, torch.aten) will be represented as a node and the linking direction represent the computation flow.
+
+Quark Fx quantization tool
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In Quark, we take advantage of the ``fx.GraphModule``, Once we get the fully described computation graph, we parse it and do the quantization in the way we demand.
+
+**Utilize Graph information to perform fine-grained quantization.**
+
+- In `eager-mode quantization <https://pytorch.org/docs/stable/quantization.html#eager-mode-quantization>`_ method, that uses traditional ``nn.Module`` as input/output. And do the direct replacement on model’s component (e.g. ``nn.Conv2d`` to ``QuantizedConv2d``). This method can not recognize and quantize the Python inner operation (e.g. ``x = x + 10``), meaning this quantization method can only quant a small part of the model. Seems little possible to deploy on the demand hardware.
+- In Quark Fx model quantization, we use the ``torch.fx.GraphModule`` as the inner interpretation. The ``fx.GraphModule`` contain every operation relationship in the computation graph. Quark Fx tool utilize this characteristics to parse the computation graph and insert the Quantizer at the proper place. Meaning the model can be fully quantized. The quantized model are more friendly to AMD NPU etc. device.
+
+
+
+Key Feature & Brief Usage instruction.
+--------------------------------------
+
+Key Feature
+^^^^^^^^^^^
+
+- **AMD hardware friendly**: Compatible with AMD's NPU-related hardware, these devices have runtime and latency requirements. The quantized models can be easily deployed on these devices with low-bit (e.g. INT8) & hardware (e.g. Pow of two quant) requirements. And for accelerate computation.
+- **Easy-to-use**: Equal with Quark eager mode quantization tool. Users take their PyTorch ``nn.Module`` as input and the related dataset (e.g. data used for calibration/test/training) and take care less about ``fx.GraphModule``, all quantization will be finished by Quark.
+- **PTQ & QAT**: As ``fx.GraphModule`` is Autograd safe, supports the training as typical ``nn.Module``, Quark Fx graph-based quantization tool supports both PTQ (Post Training Quantization) and QAT (Quantization Aware Training).
+- **Multi quantization schema**: This tool is mainly used for hardware-related deployment, we also support part/fully quantization, with kinds of quantization schema and Quantizer supported. (e.g. float/Pow-of-two quantization).
+
+
+Quantization Work Flow
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+    '''
+    float_model(Python)                                            example_inputs
+        \                                                                 /
+    —------------------------------------------------------------------------------—
+    |          # Step 1. Get the torch.fx.GraphModule (Use PyTorch API)            |
+    | exported_model = export_for_training(float_model, example_inputs).module()   |
+    —------------------------------------------------------------------------------—
+                                          |
+                                   FX Graph in ATen
+                                          |
+    —------------------------------------------------------------------------------—
+    |                          Quark Fx Quantization  (Inner Process)              |
+    |             # Step 2.  model optimization before quant                       |
+    |             # Step 3.  annotate the Graph node to convey quant demand        |
+    |             # Step 4.  Insert Quantizer based on annotation information      |
+    |             # Step 5.  Use calibration data to Perform PTQ (Optional)        |
+    —------------------------------------------------------------------------------—
+                                          |
+                                   Quantized_Model
+                                          |
+                         train(Quantized_Model)  QAT (Optional)
+                                          |
+    —-----------------------—-------------------------------------------------------
+    |                        Quark Fx Quantization  (Inner Process)                |
+    |             # Step 6. Post optimization to align hardware requirements       |
+    |             # Step 7. Explicitly call function to export to ONNX model       |
+    —-------------------------------------------------------------------------------
+                                           |
+                          Compile & Deploy to AMD NPU device
+    '''
+
+Some Key Tech Feature
+^^^^^^^^^^^^^^^^^^^^^
+
+- **Quantization is realized by the Fakequantize**. In the forward pass, the tensor will be fake quantized in the QDQ manner, known as QDQ (Quantize-DeQuantize) model.
+- **Observer**: Typically, each Fakequantizer contains an observer, which is used to record the FP32 tensor value and use specific algorithms to compute the quantization parameter (e.g. scale, zero point). The scale and zero point, quant min, and quant max are used for quantization. In Quark Fx tool, two additoon types of observers are supported in QAT.
+  - **`LSQ <https://arxiv.org/abs/1902.08153>`_** adapts a float format scale that adjusts the scale during training.
+  - **`TQT <https://arxiv.org/abs/1903.08066>`_** uses a pow-of-2 format scale and will adjust the scale during the training loss, which is more friendly for hardware deployment.
+
+
+Brief using instruction
+^^^^^^^^^^^^^^^^^^^^^^^
+
+In this section, we give an overall method of using the Quark Fx quantization tool.
+
+1. Prepare the PyTorch model and the related dataset.
+
+   .. code-block:: python
+
+      import torch
+      class SimpleConv(torch.nn.Module):
+          def __init__(self) -> None:
+              self.conv = torch.nn.Conv2d(3, 16, 3, padding=1)
+              ...
+              self.relu = torch.nn.ReLU()
+          def forward(self, x: torch.Tensor) -> torch.Tensor:
+              a = self.conv(x)
+              ...
+              return self.relu(a)
+
+      model = SimpleConv()
+      # Assume the model is pre-trained in FP32 format
+      model.load_state_dict(torch.load(PRE_TRAINED_WEIGHT))
+      calib_loader # data user for calibration (PTQ)
+      train_loader, val_loader # data user for train (QAT)
+
+2. Prepare fx model and specify the desired quantization schema.
+
+   .. code-block:: python
+
+      # Prepare the fx model using PyTorch API
+      example_inputs = (torch.rand(1, 3, 224, 224),)
+      graph_model = torch.export.export_for_training(model.eval(), example_inputs).module()
+
+      # Prepare the Quantization config to convey the quant demand
+      # More details can be found in the example codes
+      from quark.torch import ModelQuantizer, ...
+      INT8_PER_TENSOR = QuantizationSpec(dtype=Dtype.int8, qscheme=QSchemeType.per_tensor,
+          observer_cls=PerTensorMinMaxObserver, symmetric=True,scale_type=ScaleType.float,
+          round_method=RoundType.half_even, is_dynamic=False)
+      quant_config = QuantizationConfig( weight=INT8_PER_TENSOR,input_tensors=INT8_PER_TENSOR,
+           output_tensors=INT8_PER_TENSOR, bias=INT8_PER_TENSOR)
+      quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+
+3. Perform quantization (PTQ/QAT)
+
+   .. code-block:: python
+
+      quantizer = ModelQuantizer(quant_config)
+      # PTQ: use calib_loader to perform PTQ.
+      quantized_model = quantizer.quantize_model(graph_model, calib_loader)
+      # NOTE: if calib_loader is empty (e.g []), will not perform PTQ.
+      # QAT: User can train the model just as the traditional PyTorch model
+      train(quantized_model, train_loader)
+
+4. Verify the accuracy, Export to onnx, and Deploy to AMD hardware. (Optional)
+
+   Call ``quantizer.freeze`` will perform some AMD hardware specific optimization, which is used for better board deployment.
+
+   .. code-block:: python
+
+      validate(val_loader, quantized_model) # use the quantized_model to validate the accuracy
+      from quark.torch import ModelExporter
+      from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+      # Export to ONNX model
+      freezeded_model = quantizer.freeze(quantized_model.eval())
+      config = ExporterConfig(json_export_config=JsonExporterConfig())
+      exporter = ModelExporter(config=config, export_dir=args.export_dir)
+      # NOTE: using batch size 1 for better hardware deploy compile
+      example_inputs = (torch.rand(1, 3, 224, 224),)
+      exporter.export_onnx_model(freezed_model, example_inputs[0])
+
 .. note::
+   The above gives a brief workflow about the Quark Fx-Graph quantization, code can not be directly run.
+   The runnable code can be found in the example folder.
 
-   For information on accessing Quark PyTorch examples, refer to `Accessing PyTorch Examples <pytorch_examples>`_.
-   This example and the relevant files are available at ``/torch/vision``.
 
-PTQ
-~~~
+Experiments:
+------------
 
-In Post-Training Quantization (PTQ), after inserting ``FakeQuantize``, the ``observer`` is activated during calibration to record the tensor's distribution. Values such as minimum and maximum are recorded to calculate quantization parameters, without performing fake quantization. This ensures all calculations are under FP32 precision. After calibration, you can activate the fake quantizer to perform quantization and evaluation.
+As this is a long-term project, more and detailed experiments and Python script will be added.
 
-QAT
-~~~
-
-Similar to Post-Training Quantization (PTQ), after preparing the model, both the ``observer`` and ``fake_quant`` are active during the training process. The ``observer`` records the tensor's distribution, including minimum and maximum values, to calculate quantization parameters. The tensor is then quantized by ``fake_quant``.
-
-TQT
-~~~
-
-This method involves uniform symmetric quantizers using standard backpropagation and gradient descent. Unlike Quantization-Aware Training (QAT), Trained Quantization Thresholds (TQT) add a gradient for scale factors. Unlike Learned Step Size Quantization (LSQ), which directly trains scale factors and may encounter stability issues, TQT constrains scale factors to powers of two and uses a gradient formulation to train log-thresholds instead. Theoretically, TQT is superior to LSQ, and LSQ is superior to QAT. For efficient fixed-point implementations, TQT constrains the quantization scheme to use symmetric quantization, per-tensor scaling, and power-of-two scaling. Currently, TQT supports only signed data. More experimental results are forthcoming.
-
-Quick Start
------------
-
-Perform Post-Training Quantization (PTQ) to obtain the quantized model and export it to ONNX:
-
-.. code-block:: bash
-
-   python3 quantize.py --data_dir [Train and Test Data folder] \
-                       --model_name [mobilenetv2 or resnet18] \
-                       --pretrained [Pre-trained model file address] \
-                       --model_export onnx \
-                       --export_dir [directory to save exported model]
-
-You can also choose to perform Quantization-Aware Training (QAT) to further enhance classification accuracy. Typically, some training parameters need to be adjusted for higher accuracy:
-
-.. code-block:: bash
-
-   python3 quantize.py --data_dir [Train and Test Data folder] \
-                       --model_name [mobilenetv2 or resnet18] \
-                       --pretrained [Pre-trained model file address] \
-                       --model_export onnx \
-                       --export_dir [directory to save exported model] \
-                       --qat True
-
-LSQ and TQT are optimized methods for QAT that can theoretically improve accuracy. The parameters ``--tqt True`` and ``--lsq True`` are available for you to try. Model export is not supported at this time.
-
-Fine-Grained User Guide
------------------------
-
-**Step 1: Prepare the floating-point model, dataset, and loss function**
-
-.. code-block:: python
-
-   from torchvision.models import resnet18
-   float_model = resnet18(pretrained=False)
-   float_model.load_state_dict(torch.load(pretrained))
-   calib_loader = prepare_calib_dataset(args.data_dir, device, calib_length=args.train_batch_size * 10)
-   train_loader, val_loader = prepare_data_loaders(args.data_dir)
-   criterion = nn.CrossEntropyLoss().to(device)
-
-**Step 2: Transform the ``torch.nn.Module`` to ``torch.fx.GraphModule``**
-
-.. code-block:: python
-
-   from torch._export import capture_pre_autograd_graph
-   example_inputs = (torch.rand(args.train_batch_size, 3, 224, 224).to(device), )
-   graph_model = capture_pre_autograd_graph(float_model, example_inputs)
-
-**Step 3: Initialize the quantizer and quantization configuration**
-
-.. code-block:: python
-
-   from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
-   from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-   from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-   INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                           qscheme=QSchemeType.per_tensor,
-                                           observer_cls=PerTensorMinMaxObserver,
-                                           symmetric=True,
-                                           scale_type=ScaleType.float,
-                                           round_method=RoundType.half_even,
-                                           is_dynamic=False)
-   quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                         output_tensors=INT8_PER_TENSOR_SPEC,
-                                         weight=INT8_PER_TENSOR_SPEC,
-                                         bias=INT8_PER_TENSOR_SPEC)
-   quant_config = Config(global_quant_config=quant_config,
-                         quant_mode=QuantizationMode.fx_graph_mode)
-   quantizer = ModelQuantizer(quant_config)
-
-**Step 4: Generate the quantized graph model by performing calibration**
-
-.. code-block:: python
-
-   quantized_model = quantizer.quantize_model(graph_model, calib_loader)
-
-**Step 5 (Optional): Perform QAT for higher accuracy**
-
-.. code-block:: python
-
-   train(quantized_model, train_loader, val_loader, criterion, device_ids)
-
-**Step 6: Validate model performance and export**
-
-.. code-block:: python
-
-   acc1_quant = validate(val_loader, quantized_model, criterion, device)
-   freezed_model = quantizer.freeze(prepared_model)
-   acc1_freeze = validate(val_loader, freezed_model, criterion, device)
-   # Check whether acc1_quant == acc1_freeze
-
-   # ============== Export to ONNX ==================
-   from quark.torch import ModelExporter
-   from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-   config = ExporterConfig(json_export_config=JsonExporterConfig())
-   exporter = ModelExporter(config=config, export_dir=args.export_dir)
-   example_inputs = (torch.rand(batch_size, 3, 224, 224).to(device),)
-   exporter.export_onnx_model(freezed_model, example_inputs[0])
-
-   # ========== Export using torch.export ============
-   example_inputs = (next(iter(val_loader))[0].to(device),)
-   model_file_path = os.path.join(args.export_dir, args.model_name + ".pth")
-   exported_model = torch.export.export(freezed_model, example_inputs)
-   torch.export.save(exported_model, model_file_path)
-
-Experiment Results
-------------------
-
-1. Image Classification Task PTQ/QAT Results
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-We conduct PTQ and QAT on both ResNet-18 and MobileNet-V2. In these models, all weights, biases, and activations are quantized. All types of tensors are quantized in INT8, per-tensor, symmetric (zero point is 0). The scale factor is in float format. The following table shows the validation accuracy on the ImageNet dataset produced by the above script.
+Image Classification Task
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
    :header-rows: 1
 
-   * - Method
-     - ResNet-18
-     - MobileNetV2
-   * - Float Model
-     - 69.764 / 89.085
-     - 71.881 / 90.301
-   * - PTQ (INT8)
-     - 69.084 / 88.648
-     - 65.291 / 86.254
-   * - QAT (INT8)
-     - 69.469 / 88.872
-     - 68.562 / 88.484
+   * - Model Name
+     - Method
+     - Result (Acc@1/Acc@5)
+   * - ResNet-18
+     - Original Float model
+     - 69.76 / 89.08
+   * - (Torchvision)
+     - QAT: NON Overflow, pow-of-2 scale
+     - 69.69 / 89.01
+   * -
+     - PTQ: float scale
+     - 69.08 / 88.65
+   * - MobileNet-V2
+     - Original Float model
+     - 71.87 / 90.29
+   * - (Torchvision)
+     - QAT: TQT, pow-of-2 scale
+     - 71.49 / 90.09
+   * -
+     - PTQ: float scale
+     - 65.74 / 86.62
 
-2. Object Detection Task PTQ/QAT Results
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-We conduct PTQ and QAT on YOLO-NAS. In this model quantization, we partially quantize the model by assigning the configuration.
+Object Detection Task
+^^^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
    :header-rows: 1
 
-   * - Metric
-     - FP32 model
-     - INT8 PTQ
-     - INT8 QAT
-   * - mAP@0.50
-     - 0.6466
-     - 0.6236
-     - 0.6239
-   * - mAP@0.50:0.95
+   * - Model Name
+     - Method
+     - Result (mAP @0.50:0.95)
+   * - `YOLO-NAS <https://github.com/Deci-AI/super-gradients>`_
+     - Original Float model
      - 0.4759
-     - 0.4537
-     - 0.4532
+   * -
+     - PTQ: NON flow quantizer
+     - 0.3244
+   * -
+     - QAT: NON flow quantizer
+     - 0.3416
+
+As we quantize the entire model (containing the detection head), the training model is different from the eval model. Obtaining a high quantization accuracy is relatively hard in the YOLO-NAS model.
+
+.. note::
+   The detailed materials (e.g. PTQ/QAT code, training parameters, etc.) can be found in the corresponding example folder.
+
+
+Detailed Experiments script
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Below we share a list of recipies that about the vision task.
+
+.. toctree::
+   :maxdepth: 1
+
+   example_quark_fx_image_classification.rst
+   sample_yolo_nas_quant.rst
+   sample_yolo_x_tiny_quant.rst

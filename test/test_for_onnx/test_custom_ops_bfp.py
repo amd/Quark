@@ -10,14 +10,14 @@ import onnxruntime
 from pathlib import Path
 from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
-from quark.onnx.operators.custom_ops import get_library_path
+from quark.onnx.operators.custom_ops import get_library_path, _COP_DOMAIN, _COP_BFP_OP_NAME
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 
 def create_custom_op(output_dir: str) -> None:
     graph_def = helper.make_graph(nodes=[
-        helper.make_node("BFPFixNeuron", ["input"], ["out"],
-                         domain="com.vai.quantize",
+        helper.make_node(_COP_BFP_OP_NAME, ["input"], ["out"],
+                         domain=_COP_DOMAIN,
                          bit_width=13,
                          block_size=16,
                          rounding_mode=0,
@@ -38,8 +38,8 @@ def create_custom_op(output_dir: str) -> None:
 def run(output_dir: str) -> None:
     onnx_model_path = Path(output_dir, 'test.onnx').as_posix()
     so = onnxruntime.SessionOptions()
-    so.register_custom_ops_library(get_library_path("CPU"))
-    ort_session = onnxruntime.InferenceSession(onnx_model_path, so, providers=['CUDAExecutionProvider'])
+    so.register_custom_ops_library(get_library_path())
+    ort_session = onnxruntime.InferenceSession(onnx_model_path, so)
     inpt = np.random.rand(6).astype(np.float32)
     for _ in range(5):
         ort_inputs = {"input": inpt}

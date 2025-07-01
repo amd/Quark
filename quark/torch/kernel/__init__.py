@@ -25,6 +25,7 @@
 
 import os
 import torch
+import warnings
 from torch.library import Library, impl
 from types import ModuleType
 from typing import Any, List, Optional
@@ -36,6 +37,18 @@ from typing import Any, Union
 from torch.onnx._internal import jit_utils
 from torch.onnx import errors, symbolic_helper
 import torch._C._onnx as _C_onnx
+from torch.distributed._tensor.placement_types import DTensorSpec
+from torch.distributed._tensor import distribute_tensor, DTensor, Replicate, Shard
+
+try:
+    from torch.distributed._tensor.experimental import register_sharding
+    register_sharding_exist = True
+except ImportError as e:
+    register_sharding_exist = False
+    warnings.warn(
+        "Quark tensor parallelism requires PyTorch >= 2.5 because `register_sharding` "
+        "was only introduced in PyTorch 2.5. "
+        "Please upgrade PyTorch to 2.5 or later to enable full functionality.", UserWarning)
 
 
 class QuantE4M3Function(Function):
@@ -103,6 +116,40 @@ dequant_fp8_e5m2 = DequantE5M2Function.apply
 
 
 class ScaledFakeQuantizeFunction(Function):
+    if register_sharding_exist:
+
+        @register_sharding(ops.quark.scaled_fake_quantize.default)
+        def custom_scale_fake_quantize_sharding(
+            ctx: Any,
+            quant_dtype: str,
+            inputs: torch.Tensor,
+            scale: torch.Tensor,
+            zero_point: Optional[torch.Tensor],
+            axis: Optional[int],
+            group_size: Optional[int],
+            quant_min: Union[int, float],
+            quant_max: Union[int, float],
+            round_mode: Optional[int],
+            qscheme: Optional[str],
+        ):
+            dim = 1
+
+            acceptable_shardings = []
+
+            acceptable_shardings.append((
+                [Shard(dim)],
+                [Shard(dim), Replicate(), Replicate()],
+            ))
+
+            for sharding_dim in range(inputs.ndim):
+                if sharding_dim != dim:
+                    all_sharded = (
+                        [Shard(sharding_dim)],
+                        [Shard(sharding_dim), Replicate(), Replicate()],
+                    )
+                    acceptable_shardings.append(all_sharded)
+
+            return acceptable_shardings
 
     @staticmethod
     def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor,
@@ -154,14 +201,42 @@ class ScaledFakeQuantizeFunction(Function):
             zero_point = torch.tensor(0, dtype=torch.float8_e5m2)
             quantized = g.op("QuantizeLinear", inputs, scale, zero_point, axis_i=axis)
             return g.op("DequantizeLinear", quantized, scale, zero_point, axis_i=axis)
-        elif quant_dtype in ["int4", "uint4", "int8", "uint8"]:
-            if (quant_min, quant_max) not in [(0, 255), (-128, 127), (-8, 7), (0, 15)]:
+        elif quant_dtype in ["int4", "uint4", "int8", "uint8", "int16", "uint16", "int32"]:
+            if (quant_min, quant_max) not in [(0, 255), (-128, 127), (-8, 7), (0, 15), (-32768, 32767),
+                                              (-2147483648, 2147483647), (0, 65535)]:
                 raise errors.SymbolicValueError(
                     "For (quant_min, quant_max), ONNX allows only (0, 255), (-128, 127), (-8, 7) and (0, 15). "
                     f"Got ({quant_min}, {quant_max})", )
-            if quant_min == 0:
+            '''
+            As quark torch export to: QuantizeLinear -> DequantizeLinear  format
+                QuantizeLinear has less range quant range compare with DequantizeLinear
+                    op_set 19: only support: int8, uint8, float8e5m2 etc.
+                    op_set 21: support: int16, uint16 int8, uint8, float8e5m2 etc.
+
+            NOTE: quark/torch/quantization/utils.py calculate_qmin_qmax()
+            NOTE: QuantizeLinear's y_zero_point determines the quantization type.
+                int8: -128, 127
+                uint8: 0, 255
+                int4: -8, 7
+                uint4: 0, 15
+                int16: -32768, 32767    (-2**15, 2**15 - 1)
+                uint16: 0, 65535    (0, 2**16 - 1) TODO
+                int32: -2**31, 2**31 - 1
+            As a result:
+                quant_min == 0
+
+            '''
+            # NOTE torch export default op_set 19, need further change to 21>= so that can onnxruntime if int16/uint16
+            if quant_min == -32768 and quant_max == 32767:  # int16
+                zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.INT16)
+            # TODO further support uint16
+            # elif quant_min == 0 and quant_max == 65535:  # uint16
+            #     zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.UINT16)
+            elif quant_min == -2147483648 and quant_max == 2147483647:  # int32
+                zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.INT32)
+            elif quant_min == 0:  #  uint4, uint8
                 zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.UINT8)
-            else:
+            else:  # int8, int4
                 zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.INT8)
             quantized = g.op("QuantizeLinear", inputs, scale, zero_point, axis_i=axis)
             return g.op("DequantizeLinear", quantized, scale, zero_point, axis_i=axis)
@@ -188,13 +263,19 @@ scaled_fake_quantize = ScaledFakeQuantizeFunction.apply
 class NonScaledFakeQuantizeFunction(Function):
 
     @staticmethod
-    def forward(ctx: Any, input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int,
-                block_size: int) -> torch.Tensor:
+    def forward(ctx: Any,
+                input_tensor: torch.Tensor,
+                quant_dtype: str,
+                mx_element_dtype: str,
+                axis: int,
+                block_size: int,
+                scale_calculation_mode: str = "even") -> torch.Tensor:
         return ops.quark.non_scaled_fake_quantize(input_tensor=input_tensor,
                                                   quant_dtype=quant_dtype,
                                                   mx_element_dtype=mx_element_dtype,
                                                   axis=axis,
-                                                  block_size=block_size)
+                                                  block_size=block_size,
+                                                  scale_calculation_mode=scale_calculation_mode)
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
@@ -210,6 +291,40 @@ non_scaled_fake_quantize = NonScaledFakeQuantizeFunction.apply
 
 
 class ScaledRealQuantizeFunction(Function):
+    if register_sharding_exist:
+
+        @register_sharding(ops.quark.scaled_real_quantize.default)
+        def custom_scale_real_quantize_sharding(
+            ctx: Any,
+            quant_dtype: str,
+            inputs: torch.Tensor,
+            scale: torch.Tensor,
+            zero_point: Optional[torch.Tensor],
+            axis: Optional[int],
+            group_size: Optional[int],
+            quant_min: Union[int, float],
+            quant_max: Union[int, float],
+            round_mode: Optional[int],
+            qscheme: Optional[str],
+        ):
+            dim = 1
+
+            acceptable_shardings = []
+
+            acceptable_shardings.append((
+                [Shard(dim)],
+                [Shard(dim), Replicate(), Replicate()],
+            ))
+
+            for sharding_dim in range(inputs.ndim):
+                if sharding_dim != dim:
+                    all_sharded = (
+                        [Shard(sharding_dim)],
+                        [Shard(sharding_dim), Replicate(), Replicate()],
+                    )
+                    acceptable_shardings.append(all_sharded)
+
+            return acceptable_shardings
 
     @staticmethod
     def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero_point: Union[torch.Tensor,
@@ -252,6 +367,28 @@ non_scaled_real_quantize = NonScaledRealQuantizeFunction.apply
 
 
 class DeQuantizeFunction(Function):
+    if register_sharding_exist:
+
+        @register_sharding(ops.quark.dequantize.default)
+        def custom_dequantize_sharding(quant_dtype: str, inputs: DTensorSpec, scale: DTensorSpec,
+                                       zero_point: DTensorSpec, axis: int, group_size: int, qscheme: str):
+            dim = 0
+
+            acceptable_shardings = []
+            acceptable_shardings.append((
+                [Shard(dim)],
+                [Shard(dim), Replicate(), Replicate()],
+            ))
+
+            for sharding_dim in range(inputs.ndim):
+                if sharding_dim != dim:
+                    all_sharded = (
+                        [Shard(sharding_dim)],
+                        [Shard(sharding_dim), Replicate(), Replicate()],
+                    )
+                    acceptable_shardings.append(all_sharded)
+
+            return acceptable_shardings
 
     @staticmethod
     def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero_point: Union[torch.Tensor,

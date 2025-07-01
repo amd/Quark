@@ -35,7 +35,7 @@ from onnxruntime.quantization.quant_utils import (
 )
 from onnxruntime.quantization.registry import CreateOpQuantizer
 
-from .quant_utils import (__producer__, __version__, VitisQuantType, ONNX_WBIT_QTYPES_LIST, ONNX_FP_QTYPES_LIST,
+from .quant_utils import (__producer__, __version__, ExtendedQuantType, ONNX_WBIT_QTYPES_LIST, ONNX_FP_QTYPES_LIST,
                           ONNX_BFP_QTYPES_LIST, get_tensor_type_from_qType, get_qmin_qmax_for_qType, compute_scale_zp,
                           compute_scale_zp_fp, quantize_data_pof2s, ONNX_TYPE_TO_NP_TYPE, check_relu_like_node)
 
@@ -46,22 +46,21 @@ class ONNXQuantizer(OrtONNXQuantizer):  # type: ignore
     """
     A class to perform quantization on an ONNX model.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): The range of tensors for quantization.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        extra_options (Optional[Dict[str, Any]]): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: The range of tensors for quantization.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Optional[Dict[str, Any]] extra_options: Additional options for quantization.
 
     Inherits from:
-        OrtONNXQuantizer: Base class for ONNX quantization.
+        ``onnxruntime.quantization.onnx_quantizer.ONNXQuantizer``: Base class for ONNX quantization.
     """
 
     def __init__(
@@ -99,24 +98,23 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
     """
     A class to perform quantization on an ONNX model specifically optimized for Vitis AI.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        calibrate_method (Any): The calibration method to be used.
-        quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying the types for quantized tensors.
-        extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static (bool): Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any calibrate_method: The calibration method to be used.
+    :param Dict[Any, Any] quantized_tensor_type: Dictionary specifying the types for quantized tensors. Defaults to ``{}``.
+    :param Optional[Dict[str, Any]] extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
-        OrtONNXQuantizer: Base class for ONNX quantization.
+        ``onnxruntime.quantization.onnx_quantizer.ONNXQuantizer``: Base class for ONNX quantization.
     """
 
     def __init__(
@@ -184,22 +182,24 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         if "UsePowerOf2Scale" in self.extra_options:
             self.use_power_of_2_scale = self.extra_options["UsePowerOf2Scale"]
 
-        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, VitisQuantType.QInt16, VitisQuantType.QInt32,
-                                                     VitisQuantType.QFloat16, VitisQuantType.QBFloat16,
-                                                     VitisQuantType.QBFP, VitisQuantType.QMX) if "WeightSymmetric"
+        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, ExtendedQuantType.QInt16,
+                                                     ExtendedQuantType.QInt32, ExtendedQuantType.QFloat16,
+                                                     ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                                                     ExtendedQuantType.QMX) if "WeightSymmetric"
                                     not in self.extra_options else self.extra_options["WeightSymmetric"])
-        self.is_activation_symmetric = (activation_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16,
-                                                             VitisQuantType.QBFP,
-                                                             VitisQuantType.QMX) if "ActivationSymmetric"
+        self.is_activation_symmetric = (activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16,
+                                                             ExtendedQuantType.QBFP,
+                                                             ExtendedQuantType.QMX) if "ActivationSymmetric"
                                         not in self.extra_options else self.extra_options["ActivationSymmetric"])
 
         self.is_weight_scaled = True
-        if weight_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16, VitisQuantType.QBFP, VitisQuantType.QMX):
+        if weight_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                            ExtendedQuantType.QMX):
             self.is_weight_scaled = False if "WeightScaled" not in self.extra_options else self.extra_options[
                 "WeightScaled"]
         self.is_activation_scaled = True
-        if activation_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16, VitisQuantType.QBFP,
-                                VitisQuantType.QMX):
+        if activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                                ExtendedQuantType.QMX):
             self.is_activation_scaled = False if "ActivationScaled" not in self.extra_options else self.extra_options[
                 "ActivationScaled"]
 
@@ -267,7 +267,7 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
             return: result, scale_name, zero_point_name, scale_shape, zero_point_shape.
         """
         from onnxruntime.quantization.onnx_quantizer import QuantizationParams
-        if zero_point_type in [VitisQuantType.QFloat16, VitisQuantType.QBFloat16]:
+        if zero_point_type in [ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16]:
             zero_point_values = np.array([0], dtype=np.float32)
             scale_values = np.array([1], dtype=np.float32)
             zero_point_type = get_tensor_type_from_qType(zero_point_type)

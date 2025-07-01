@@ -885,7 +885,7 @@ class QuantInfoManager(object):
         output2node = {}
 
         for node in self.model.model.graph.node:
-            if node.op_type in ['DequantizeLinear', 'VitisDequantizeLinear']:
+            if node.op_type in DEQUANT_OP_TYPES:
                 scale_input_name = node.input[1]
                 scale_initializer = next(
                     (init for init in self.model.model.graph.initializer if init.name == scale_input_name), None)
@@ -903,7 +903,7 @@ class QuantInfoManager(object):
                     bias_scale = scale_values[node.input[2]]
                     bias_node = output2node[node.input[2]]
 
-                    if act_scale * weights_scale != bias_scale:
+                    if (act_scale * weights_scale != bias_scale).all():
                         new_bias_scale = act_scale * weights_scale
                         for initializer in self.model.model.graph.initializer:
                             if initializer.name == bias_node.input[2]:

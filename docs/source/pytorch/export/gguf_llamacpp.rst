@@ -90,7 +90,7 @@ There's another easy-to-use API named ``ModelExporter`` to export quantized mode
    # If you want to export the quantized model, please freeze the quantized model first
    freezed_quantized_model = quantizer.freeze(quant_model)
    export_path = "./output_dir"
-   model_dir = "<HuggingFace model directory>"
+   model_dir = "<Hugging Face model directory>"
    from quark.torch import ModelExporter
    from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
    config = ExporterConfig(json_export_config=JsonExporterConfig())
@@ -174,7 +174,7 @@ Experiments
 
 The dataset used for evaluation is ``wikitext2``. Download and extract the `wikitext-2-raw-v1.zip file <https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip>`__. All the experiments are based on ``llama.cpp``'s commit ``bdcb8f42221bc40c411150a009a3d3a30fa74722``.
 
-First, use the script `convert_hf_to_gguf.py <https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py>`__ to convert HuggingFace model ``Llama-2-7b`` to GGUF model named ``llama-2-7b-float.gguf``. Then, use the quantization feature of ``llama.cpp`` to get a quantized model named ``llama-2-7b-Q4_1.gguf`` with the command
+First, use the script `convert_hf_to_gguf.py <https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py>`__ to convert Hugging Face model ``Llama-2-7b`` to GGUF model named ``llama-2-7b-float.gguf``. Then, use the quantization feature of ``llama.cpp`` to get a quantized model named ``llama-2-7b-Q4_1.gguf`` with the command
 
 .. code:: bash
 

@@ -36,17 +36,20 @@ class ModelOptimizer:
 
     @classmethod
     @log_errors
-    def _optimize_kernel(self, quant_module: torch.nn.Module, all_inp_data_quant: torch.Tensor,
-                         all_inp_data_float: torch.Tensor, all_out_data_float: torch.Tensor,
+    def _optimize_kernel(self, module_instance: torch.nn.Module, all_inp_data_quant: List[torch.Tensor],
+                         all_inp_data_float: List[torch.Tensor], all_out_data_float: List[torch.Tensor],
                          params: TrainParameters) -> Any:
         """
         Optimizes the weight (for adaquant) or its rounding mode (for adaround)
-        :param quant_module: Quantized wrapper module
+        The data is all numpy array format, which is convenient for randomly sampling to form mini-batch
+        :param module_instance: Quantized wrapper module, may be re-wrapped with DataParallel
         :param all_inp_data_quant: Quantized wrapper module's input tensors from all dataset
         :param all_inp_data_float: Original float module's input tensors from all dataset
         :param all_out_data_float: Original float module's output tensors from all dataset
         :param params: Optimization parameters
         """
+        quant_module = module_instance.module if isinstance(module_instance, torch.nn.DataParallel) else module_instance
+
         # Set up Adam optimizer with parameters
         if params.algorithm == "adaround":
             # Before optimization, set the optimized layer's rounding mode to "Soft rounding",
@@ -71,33 +74,29 @@ class ModelOptimizer:
         best_loss = -1.0
 
         for iteration in range(params.num_iterations):
-            # Generate random indices of batch size
-            indices = torch.randperm(all_inp_data_quant.size(0))[:params.batch_size]
+            # Generate random indices for the batch
+            indices = torch.randperm(len(all_inp_data_quant))[:params.batch_size].tolist()
 
-            # Get input and output activation data of batch size
-            inp_data_quant = all_inp_data_quant[indices]
-            inp_data_float = all_inp_data_float[indices]
-            out_data_float = all_out_data_float[indices]
+            # Get a batch of input and output data
+            inp_data_quant = torch.cat([all_inp_data_quant[i] for i in indices], dim=0)
+            inp_data_float = torch.cat([all_inp_data_float[i] for i in indices], dim=0)
+            out_data_float = torch.cat([all_out_data_float[i] for i in indices], dim=0)
 
             # Droped quantized input data with a ratio
-            inp_data = torch.where(torch.rand_like(inp_data_quant) < params.drop_ratio, inp_data_quant, inp_data_float)
+            # If drop_ratio = 1, the input data is all from quantized model
+            # If drop_ratio = 0, the input data is all from float model
+            # Otherwise, the input data comes from a mixture of the two
+            inp_data_mixed = torch.where(
+                torch.rand_like(inp_data_quant) < params.drop_ratio, inp_data_quant, inp_data_float)
 
             # Clear gradients before optimization step
             optimizer.zero_grad()
-            if params.device.startswith("cuda"):
-                dp_decive_ids = [int(i) for i in params.device[5:].split(',')]
-                quant_module.to(torch.device('cuda:' + str(dp_decive_ids[0])))
-                quant_module = torch.nn.DataParallel(quant_module, device_ids=dp_decive_ids)
-                # Get the module's output using trained parameters
-                out_data_quant = self._module_forward(quant_module, inp_data_quant)
-                quant_module = quant_module.module
-            elif params.device != "cpu":
-                quant_module.to(params.device)
-                out_data_quant = self._module_forward(quant_module, inp_data_quant)
-            else:
-                out_data_quant = self._module_forward(quant_module, inp_data_quant)
+
+            out_data_quant = self._module_forward(module_instance, inp_data_mixed)
+
             # Calculate total loss
             recons_loss = TrainLoss.calc_recon_loss(out_data_quant, out_data_float)
+
             if params.algorithm == "adaround":
                 round_loss = TrainLoss.calc_round_loss(quantizer.alpha, params, iteration)
                 total_loss = recons_loss + round_loss
@@ -150,22 +149,10 @@ class ModelOptimizer:
             # After optimization, set the optimized layer's rounding mode to "Hard rounding",
             # which maps to exact zero and one
             quantizer.use_soft_rounding = False
-        if 'cuda' in params.device and torch.device("cuda:0").type:
+
+        if self._cuda_is_available(params):
             # Clear cuda cache
             torch.cuda.empty_cache()
-
-    @classmethod
-    def _concat_tensors(self, io_data: Union[numpy.ndarray[Any, Any], List[numpy.ndarray[Any, Any]]]) -> torch.Tensor:
-        """
-        Pack the numpy ndarray or list to be a single torch tensor by concating them in batch dim
-        """
-        if isinstance(io_data, List):
-            all_data = []
-            for data in io_data:
-                all_data.append(torch.tensor(data).cpu())
-            return torch.cat(all_data, dim=0)
-        else:
-            return torch.tensor(io_data).cpu()
 
     @classmethod
     def _set_soft_rounding(self, quant_module: torch.nn.Module, soft_enabled: bool) -> None:
@@ -184,25 +171,9 @@ class ModelOptimizer:
         import torch.nn.functional as F
 
         with torch.no_grad():
-            if params.device.startswith("cuda"):
-                dp_decive_ids = [int(i) for i in params.device[5:].split(',')]
-                quant_module.to(torch.device('cuda:' + str(dp_decive_ids[0])))
-                quant_module = torch.nn.DataParallel(quant_module, device_ids=dp_decive_ids)
-                # Get the module's output using trained parameters
-                out_data_temp = self._module_forward(quant_module, inp_data)
-                quant_module = quant_module.module
-            elif params.device != "cpu":
-                quant_module.to(params.device)
-                out_data_temp = self._module_forward(quant_module, inp_data)
-            else:
-                out_data_temp = self._module_forward(quant_module, inp_data)
+            out_data_temp = self._module_forward(quant_module, inp_data)
 
-        if isinstance(out_data_temp, List):
-            recons_err = F.mse_loss(out_data_temp[0], out_data)
-        else:
-            recons_err = F.mse_loss(out_data_temp, out_data)
-
-        del out_data_temp
+        recons_err = F.mse_loss(out_data_temp, out_data)
 
         return float(recons_err)
 
@@ -233,6 +204,51 @@ class ModelOptimizer:
             logger.debug("The recons error metrics is %f", recons_err)
 
             return recons_err
+
+    @classmethod
+    def _cuda_is_available(self, params: TrainParameters) -> bool:
+        """
+        Check if cuda is available, it's applicable to ROCm and CUDA GPU both
+        """
+        return params.device.startswith("cuda") and torch.cuda.is_available()
+
+    @classmethod
+    def _assign_data_device(self, io_data: numpy.ndarray[Any, Any], params: TrainParameters) -> List[torch.Tensor]:
+        """
+        Pack a batched numpy ndarray to a list of numpy ndarrays and then convert it to a list of torch tensors
+        """
+        arrays = [numpy.expand_dims(io_data[i], axis=0) for i in range(io_data.shape[0])]
+
+        if self._cuda_is_available(params):
+            return [torch.from_numpy(array).to("cuda") for array in arrays]
+
+        return [torch.from_numpy(array) for array in arrays]
+
+    @classmethod
+    def _assign_module_device(self, quant_module: torch.nn.Module, params: TrainParameters) -> Any:
+        """
+        Assign the module to target device
+        :param quant_module: Quantized wrapper module
+        :param params: Parameters for the training
+        :return module_instance: DataParallel instance or original module
+        """
+        module_instance: Union[torch.nn.Module, torch.nn.DataParallel]  # type: ignore
+
+        if self._cuda_is_available(params):
+            # A simple data parallelism using torch.nn.DataParallel
+            if len(params.device) > 5:  # Should be like "cuda:0" with device ids
+                decive_ids = [int(i) for i in params.device[5:].split(',')]
+                torch.cuda.set_device('cuda:{}'.format(decive_ids[0]))  # Setting the default GPU device
+                module_instance = torch.nn.DataParallel(
+                    quant_module.cuda(),  # Copy weights to device
+                    device_ids=decive_ids,  # Each device will have a model copy
+                    output_device=decive_ids[0])  # Device for the all-reduce
+            else:
+                module_instance = quant_module.to(torch.device("cuda"))
+        else:
+            module_instance = quant_module
+
+        return module_instance
 
     @classmethod
     def _replace_quantizer(self, quant_module: torch.nn.Module) -> None:
@@ -270,35 +286,30 @@ class ModelOptimizer:
         :param params: Optimization parameters
         """
 
-        # Convert input and output data to torch tensor format
-        all_inp_data_quant: torch.Tensor = self._concat_tensors(inp_data_quant)
-        all_inp_data_float: torch.Tensor = self._concat_tensors(inp_data_float)
-        all_out_data_float: torch.Tensor = self._concat_tensors(out_data_float)
-
         # Replace quantizer if used adaround algorithm
         if params.algorithm == "adaround":
             self._replace_quantizer(quant_module)
 
-        # Set device for modules and tensors
-        module_instance = quant_module
-        if params.device.startswith("cuda"):
-            dp_decive_ids = [int(i) for i in params.device[5:].split(',')]
-            all_inp_data_quant = all_inp_data_quant.to(torch.device('cuda:' + str(dp_decive_ids[0])))
-            all_inp_data_float = all_inp_data_float.to(torch.device('cuda:' + str(dp_decive_ids[0])))
-            all_out_data_float = all_out_data_float.to(torch.device('cuda:' + str(dp_decive_ids[0])))
-        elif params.device != "cpu":
-            all_inp_data_quant = all_inp_data_quant.to(torch.device(params.device))
-            all_inp_data_float = all_inp_data_float.to(torch.device(params.device))
-            all_out_data_float = all_out_data_float.to(torch.device(params.device))
+        logger.info("Module (%s)->(%s) will be optimized by %s on %s", quant_module._input_name,
+                    quant_module._output_name, params.algorithm, params.device)
 
-        logger.info("Module (%s)->(%s) will be optimized by %s on %s", module_instance._input_name,
-                    module_instance._output_name, params.algorithm, params.device)
+        # Arrange arrays of different batch sizes into a single numpy array
+        all_inp_data_quant = numpy.concatenate(inp_data_quant, dim=0) if isinstance(  # type: ignore
+            inp_data_quant, List) else inp_data_quant
+        all_inp_data_float = numpy.concatenate(inp_data_float, dim=0) if isinstance(  # type: ignore
+            inp_data_float, List) else inp_data_float
+        all_out_data_float = numpy.concatenate(out_data_float, dim=0) if isinstance(  # type: ignore
+            out_data_float, List) else out_data_float
 
         # Check the metrics and adjust learning rate
-        recons_err = self._recons_metrics(module_instance, all_inp_data_quant, all_out_data_float, params.algorithm,
-                                          params)
+        recons_err = self._recons_metrics(quant_module, torch.from_numpy(all_inp_data_quant),
+                                          torch.from_numpy(all_out_data_float), params.algorithm, params)
 
-        # Adjust learning rate for the layer that have a large recons error
+        # Adjust batch size and learning rate for this layer
+        if params.batch_size < 1 or params.batch_size > all_inp_data_quant.shape[0]:
+            logger.warning(f"The batch size {params.batch_size} is invalid, set it to 1")
+            params.batch_size = 1
+
         if isinstance(params.lr_adjust,
                       (tuple, list)) and len(params.lr_adjust) == 2 and recons_err > params.lr_adjust[0]:
             logger.info("Adjust lr from %f to %f because recons error %f is greater than %f", params.lr,
@@ -306,23 +317,27 @@ class ModelOptimizer:
             params.lr = params.lr_adjust[1]  # large error should apply large lr
 
         # Optimize the module
-        self._optimize_kernel(module_instance, all_inp_data_quant, all_inp_data_float, all_out_data_float, params)
+        tensors_inp_data_quant = self._assign_data_device(all_inp_data_quant, params)
+        tensors_inp_data_float = self._assign_data_device(all_inp_data_float, params)
+        tensors_out_data_float = self._assign_data_device(all_out_data_float, params)
+
+        module_instance = self._assign_module_device(quant_module, params)
+
+        self._optimize_kernel(module_instance, tensors_inp_data_quant, tensors_inp_data_float, tensors_out_data_float,
+                              params)
+
+        quant_module = module_instance.module.to('cpu') if isinstance(
+            module_instance, torch.nn.DataParallel) else module_instance.to('cpu')
 
         # Show the metric after optimization for comparision
-        recons_err_optimized = self._recons_metrics(module_instance, all_inp_data_quant, all_out_data_float,
-                                                    params.algorithm, params)
+        recons_err_optimized = self._recons_metrics(quant_module, torch.from_numpy(all_inp_data_quant),
+                                                    torch.from_numpy(all_out_data_float), params.algorithm, params)
 
         # Set the flag for the module's wrapper to drop the optimized weight and bias
         recons_err_diff = recons_err_optimized - recons_err
         if params.selective_update and recons_err_diff > 0:
             logger.info("Will drop the optimized weight (and bias) because there is no gain")
-            module_instance._module.opt_gained = False
+            quant_module._module.opt_gained = False
 
-        logger.info("Module (%s)->(%s) recons metrics was optimized from %f to %f (diff=%f)",
-                    module_instance._input_name, module_instance._output_name, recons_err, recons_err_optimized,
-                    recons_err_diff)
-
-        # Release memory
-        del all_inp_data_quant
-        del all_inp_data_float
-        del all_out_data_float
+        logger.info("Module (%s)->(%s) recons metrics was optimized from %f to %f (diff=%f)", quant_module._input_name,
+                    quant_module._output_name, recons_err, recons_err_optimized, recons_err_diff)

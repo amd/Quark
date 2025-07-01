@@ -171,8 +171,6 @@ def copy_shared_nodes(model: ModelProto) -> ModelProto:
         logger.info('Add node name: ', node.name)
         type_idx[node.op_type] += 1
 
-    onnx.save(model, 'node_name_added.onnx')
-
     modified_flag = True
     while modified_flag:
         modified_flag = False

@@ -43,7 +43,7 @@ We will install Quark from PyPI, which will pull in required dependencies.
 .. code-block:: bash
 
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-   pip install cmake amd-quark
+   pip install "cmake<4.0" amd-quark
 
 That's it! You should now be able to move on to the *Getting started* guides in the side bar to try different workflows in Quark.
 You can return to this guide later when you'd like to try a more advanced set up, for example, a new conda environment with a PyTorch
@@ -151,19 +151,13 @@ Windows
 
 When installing on Windows, `Visual Studio <https://visualstudio.microsoft.com/vs/community/>`_ is required,
 with Visual Studio 2022 being the minimum required version.
-During the compilation process, you can either use the *Developer Command Prompt*, or manually add paths to environment variables.
+During the compilation process, you can either use the *Developer Command Prompt*, or add paths to environment variables.
 
-When installing Visual Studio, ensure that you include the *Developer Command Prompt* in the installation.
-You can access it through Visual Studio by selecting *Tools > Command Line > Developer Command Line*,
-or as a profile tab in the *Windows Terminal* application, installed through the *Microsoft Store*.
+When installing Visual Studio, ensure that you choose the *Desktop development with C++* workload.
 
-Alternatively, if you do not wish to use the *Developer Command Prompt*, you can also manually add tool paths to ``PATH`` environment variable.
-The tools ``cl.exe``, ``MSBuild.exe``, and ``link.exe`` from Visual Studio are used.
-These programs can be found in the Visual Studio installation directory.
-In the *Edit Environment Variables* window, click *New*,
-and then paste the path to the folder containing the ``cl.exe``, ``link.exe``, and ``MSBuild.exe`` files.
-Click *OK* on all of the windows to apply the changes.
-
+Alternatively, if you prefer not to use the *Developer Command Prompt*, you may set paths to the build tools by running the
+`developer command file <https://learn.microsoft.com/en-us/cpp/build/building-on-the-command-line?view=msvc-170#developer_command_file_locations>`_
+from your existing command prompt or within a batch file.
 
 Linux
 """""
@@ -179,9 +173,13 @@ Install CMake
 You will need `CMake <https://cmake.org/>`__ installed on your ``PATH``.
 One option here is to install it into your Python environment with:
 
+.. note::
+
+   The AMD Quark package takes dependency on `ONNX Simplifier <https://github.com/daquexian/onnx-simplifier>`__ which is currently not supported on Python 3.12. Thus, a build from source is required with CMake 3.x.
+
 .. code-block:: bash
 
-   pip install cmake
+   pip install "cmake<4.0"
 
 
 Install Quark
@@ -296,7 +294,6 @@ Previous Versions of AMD Quark
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
--  `quark_0.8.2.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.8.2.zip>`__
 -  `quark_0.8.1.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.8.1.zip>`__
 -  `quark_0.8.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.8.zip>`__
 -  `quark_0.7.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.7.zip>`__

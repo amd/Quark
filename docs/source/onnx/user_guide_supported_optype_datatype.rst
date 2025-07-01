@@ -7,23 +7,37 @@ Supported Data Types
 Summary Table
 ~~~~~~~~~~~~~
 
-+---------------------+
-| Supported Data Types|
-+=====================+
-| Int4 / Uint4        |
-+---------------------+
-| Int8 / Uint8        |
-+---------------------+
-| Int16 / Uint16      |
-+---------------------+
-| Int32 / Uint32      |
-+---------------------+
-| Float16             |
-+---------------------+
-| BFloat16            |
-+---------------------+
-| BFP16               |
-+---------------------+
++------------------------------------------------------------------------------+
+| Supported Data Types                                                         |
++==============================================================================+
+| Int4 / UInt4                                                                 |
++------------------------------------------------------------------------------+
+| Int8 / UInt8                                                                 |
++------------------------------------------------------------------------------+
+| Int16 / UInt16                                                               |
++------------------------------------------------------------------------------+
+| Int32 / UInt32                                                               |
++------------------------------------------------------------------------------+
+| Float16                                                                      |
++------------------------------------------------------------------------------+
+| BFloat16                                                                     |
++------------------------------------------------------------------------------+
+| BFP16                                                                        |
++------------------------------------------------------------------------------+
+| MX4 / MX6 / MX9                                                              |
++------------------------------------------------------------------------------+
+| MXFP8(E5M2) / MXFP8(E4M3) / MXFP6(E3M2) / MXFP6(E2M3) / MXFP4(E2M1) / MXINT8 |
++------------------------------------------------------------------------------+
+
+You can see in the table there are many non integer data types that onnxruntime official operators do not support. In order to support these new features, we have developed several custom operators using onnxruntime's custom operation C APIs. Here are these ops and their specifications:
+
+**ExtendedQuantizeLinear** - :doc:`specification <custom_operators/ExtendedQuantizeLinear>`
+
+**ExtendedDequantizeLinear** - :doc:`specification <custom_operators/ExtendedDequantizeLinear>`
+
+**BFPQuantizeDequantize** - :doc:`specification <custom_operators/BFPQuantizeDequantize>`
+
+**MXQuantizeDequantize** - :doc:`specification <custom_operators/MXQuantizeDequantize>`
 
 .. note::
 
@@ -38,12 +52,12 @@ Summary Table
 1. Quantizing to Other Precisions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In addition to the INT8/UINT8, the quark.onnx supports quantizing models to other data formats, including INT16/UINT16, INT32/UINT32, Float16 and BFloat16, which can provide better accuracy or be used for experimental purposes. These new data formats are achieved by a customized version of QuantizeLinear and DequantizeLinear named "VitisQuantizeLinear" and "VitisDequantizeLinear", which expand onnxruntime's UInt8 and Int8 quantization to support UInt16, Int16, UInt32, Int32, Float16, and
+In addition to the INT8/UINT8, the quark.onnx supports quantizing models to other data formats, including INT16/UINT16, INT32/UINT32, Float16 and BFloat16, which can provide better accuracy or be used for experimental purposes. These new data formats are achieved by a customized version of QuantizeLinear and DequantizeLinear named "ExtendedQuantizeLinear" and "ExtendedDequantizeLinear", which expand onnxruntime's UInt8 and Int8 quantization to support UInt16, Int16, UInt32, Int32, Float16, and
 BFloat16. This customized Q/DQ was implemented by a custom operations library in quark.onnx using onnxruntime's custom operation C API.
 
 The custom operations library was developed based on Linux and Windows.
 
-To use this feature, the ``quant_format`` should be set to VitisQuantFormat.QDQ. You might have noticed that in both the recommended NPU_CNN and NPU_Transformer configurations, the ``quant_format`` is set to QuantFormat.QDQ. NPU targets that support acceleration for models quantized to INT8/UINT8, do not support other precisions.
+To use this feature, the ``quant_format`` should be set to ExtendedQuantFormat.QDQ. You might have noticed that in both the recommended NPU_CNN and NPU_Transformer configurations, the ``quant_format`` is set to QuantFormat.QDQ. NPU targets that support acceleration for models quantized to INT8/UINT8, do not support other precisions.
 
 .. note::
 
@@ -52,7 +66,7 @@ To use this feature, the ``quant_format`` should be set to VitisQuantFormat.QDQ.
 1.1 Quantizing Float32 Models to Int16 or Int32
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The quantizer supports quantizing float32 models to Int16 or Int32 data formats. To enable this, you need to set the ``activation_type`` and ``weight_type`` in the quantize_static API to the new data types. Options are VitisQuantType.QInt16/VitisQuantType.QUInt16 or VitisQuantType.QInt32/VitisQuantType.QUInt32.
+The quantizer supports quantizing float32 models to Int16 or Int32 data formats. To enable this, you need to set the ``activation_type`` and ``weight_type`` in the quantize_static API to the new data types. Options are ExtendedQuantType.QInt16/ExtendedQuantType.QUInt16 or ExtendedQuantType.QInt32/ExtendedQuantType.QUInt32.
 
 .. code:: python
 
@@ -61,15 +75,15 @@ The quantizer supports quantizing float32 models to Int16 or Int32 data formats.
        model_output,
        calibration_data_reader,
        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.VitisQuantFormat.QDQ,
-       activation_type=quark.onnx.VitisQuantType.QInt16,
-       weight_type=quark.onnx.VitisQuantType.QInt16,
+       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+       activation_type=quark.onnx.ExtendedQuantType.QInt16,
+       weight_type=quark.onnx.ExtendedQuantType.QInt16,
    )
 
 1.2 Quantizing Float32 Models to Float16 or BFloat16
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Besides integer data formats, the quantizer also supports quantizing Float32 models to Float16 or BFloat16 data formats. Set the ``activation_type`` and ``weight_type`` to ``VitisQuantType.QFloat16`` or ``VitisQuantType.QBFloat16``.
+Besides integer data formats, the quantizer also supports quantizing Float32 models to Float16 or BFloat16 data formats. Set the ``activation_type`` and ``weight_type`` to ``ExtendedQuantType.QFloat16`` or ``ExtendedQuantType.QBFloat16``.
 
 .. code:: python
 
@@ -78,15 +92,15 @@ Besides integer data formats, the quantizer also supports quantizing Float32 mod
        model_output,
        calibration_data_reader,
        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.VitisQuantFormat.QDQ,
-       activation_type=quark.onnx.VitisQuantType.QFloat16,
-       weight_type=quark.onnx.VitisQuantType.QFloat16,
+       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+       activation_type=quark.onnx.ExtendedQuantType.QFloat16,
+       weight_type=quark.onnx.ExtendedQuantType.QFloat16,
    )
 
 1.3 Quantizing Float32 Models to BFP16
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The quantizer also supports quantizing Float32 models to BFP16 data formats. The block size can be modified by changing the ``block_size`` parameter in the ``extra_options``. Currently, BFP16 only supports symmetric activation. The following is the configuration for BFP16 with a block size of 8.
+The quantizer also supports quantizing Float32 models to BFP16 data formats. The block size can be modified by changing the ``block_size`` parameter in the ``extra_options``. The following is the configuration for BFP16 with a block size of 8.
 
 .. code:: python
 
@@ -95,13 +109,37 @@ The quantizer also supports quantizing Float32 models to BFP16 data formats. The
        model_output,
        calibration_data_reader,
        calibrate_method=quark.onnx.PowerOfTwoMethod.NonOverflow,
-       quant_format=quark.onnx.VitisQuantFormat.BFPFixNeuron,
+       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+       activation_type=quark.onnx.ExtendedQuantType.QBFP,
+       weight_type=quark.onnx.ExtendedQuantType.QBFP,
        extra_options={
-           "ActivationSymmetric": True,
            "BFPAttributes": {
                "bfp_method": "to_bfp",
                "bit_width": 16,
                "block_size": 8,
+           }
+       },
+   )
+
+1.4 Quantizing Float32 Models to MXINT8
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The quantizer also supports quantizing Float32 models to MXINT8 data formats. The block size can be modified by changing the ``block_size`` parameter in the ``extra_options``. The following is the configuration for MXINT8 with a block size of 32.
+
+.. code:: python
+
+   quark.onnx.quantize_static(
+       model_input,
+       model_output,
+       calibration_data_reader,
+       calibrate_method=quark.onnx.PowerOfTwoMethod.NonOverflow,
+       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+       activation_type=quark.onnx.ExtendedQuantType.QMX,
+       weight_type=quark.onnx.ExtendedQuantType.QMX,
+       extra_options={
+           "MXAttributes": {
+               "element_dtype": "int8",
+               "block_size": 32,
            }
        },
    )
@@ -113,20 +151,22 @@ The quantizer also supports quantizing Float32 models to BFP16 data formats. The
 .. code:: python
 
     import onnxruntime
-    from quark.onnx import get_library_path as vai_lib_path
+    from quark.onnx import get_library_path
 
-    # Also We can use the GPU configuration:
-    # device='cuda:0'
-    # providers = ['CUDAExecutionProvider']
-
-    device = 'cpu'
+    device = 'CPU'
     providers = ['CPUExecutionProvider']
 
+    # Also We can use the GPU configuration:
+    # device='ROCM'
+    # providers = ['ROCMExecutionProvider']
+    # device='CUDA'
+    # providers = ['CUDAExecutionProvider']
+
     sess_options = onnxruntime.SessionOptions()
-    sess_options.register_custom_ops_library(vai_lib_path(device))
+    sess_options.register_custom_ops_library(get_library_path(device))
     session = onnxruntime.InferenceSession(onnx_model_path, sess_options, providers=providers)
 
-1.4 Quantizing Float32 Models to Mixed Data Formats
+1.5 Quantizing Float32 Models to Mixed Data Formats
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The quantizer even supports setting the activation and weight to different precisions. For example, activation is Int16 while weight is Int8. This can be used when pure Int8 quantization can not meet accuracy requirements.
@@ -138,8 +178,8 @@ The quantizer even supports setting the activation and weight to different preci
        model_output,
        calibration_data_reader,
        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.VitisQuantFormat.QDQ,
-       activation_type=quark.onnx.VitisQuantType.QInt16,
+       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+       activation_type=quark.onnx.ExtendedQuantType.QInt16,
        weight_type=QuantType.QInt8,
    )
 
@@ -262,3 +302,21 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Where                 |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+
+   ExtendedQuantizeLinear <custom_operators/ExtendedQuantizeLinear.rst>
+   ExtendedDequantizeLinear <custom_operators/ExtendedDequantizeLinear.rst>
+   ExtendedInstanceNormalization <custom_operators/ExtendedInstanceNormalization.rst>
+   ExtendedLSTM <custom_operators/ExtendedLSTM.rst>
+   BFPQuantizeDequantize <custom_operators/BFPQuantizeDequantize.rst>
+   MXQuantizeDequantize <custom_operators/MXQuantizeDequantize.rst>
+
+.. raw:: html
+
+   <!--
+   ## License
+   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+   -->

@@ -14,7 +14,6 @@
 #include <cuda_runtime.h>
 #include "mx/funcs.cuh"  // Re-use the MX kernel of Quark-Torch
 
-
 // Get a unsinged value of the biased exponent.
 __device__ uint32_t GetExponent_(float v) {
   uint32_t uint_v = __float_as_uint(v);
@@ -23,7 +22,7 @@ __device__ uint32_t GetExponent_(float v) {
 }
 
 __device__ float dpu_round_(float x) {
-  return ((x < 0) && (x - floor(x) == 0.5))
+  return ((x < 0) && (x - std::floor(x) == 0.5))
               ? std::ceil(x)
               : std::round(x);
 }
@@ -134,7 +133,7 @@ void LaunchMXCUDAKernel(
 
   int threads_per_block = 256;
   int blocks = static_cast<int>(
-      ceil(static_cast<float>(threads) / threads_per_block));
+      std::ceil(static_cast<float>(threads) / threads_per_block));
   cudaDeviceSynchronize();
   MXCUDAKernel<<<blocks, threads_per_block>>>(
       input, output, threads,

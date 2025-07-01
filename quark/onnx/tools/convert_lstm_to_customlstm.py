@@ -12,7 +12,8 @@ import onnx
 import os
 import argparse
 
-from quark.onnx.quant_utils import ONNXQuantizedModel
+from quark.onnx.quant_utils import (ONNXQuantizedModel, COP_DOMAIN, COP_QUANT_OP_NAME, COP_DEQUANT_OP_NAME,
+                                    COP_IN_OP_NAME, COP_LSTM_OP_NAME)
 from typing import Any
 
 
@@ -22,8 +23,8 @@ def convert_lstm_to_customlstm(model: onnx.ModelProto) -> Any:
     :return: converted model
     """
 
-    OpMapping = {"LSTM": "VitisLSTM"}
-    OpDomain = "com.vai.quantize"
+    OpMapping = {"LSTM": COP_LSTM_OP_NAME}
+    OpDomain = COP_DOMAIN
 
     parser = ONNXQuantizedModel(model)
 
@@ -127,10 +128,10 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
     :return: converted model
     """
     CustomOps = (
-        "VitisQuantizeLinear",
-        "VitisDequantizeLinear",
-        "VitisInstanceNormalization",
-        "VitisLSTM",
+        COP_QUANT_OP_NAME,
+        COP_DEQUANT_OP_NAME,
+        COP_IN_OP_NAME,
+        COP_LSTM_OP_NAME,
     )
 
     has_customop = False
@@ -149,8 +150,6 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
 
 
 def run_main() -> None:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_model", type=str, default="", help="input onnx model file path.")
     parser.add_argument("--output_model", type=str, default="", help="output onnx model file path.")

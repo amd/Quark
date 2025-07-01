@@ -40,7 +40,7 @@ class TrainParameters:
         reg_param: float = 0.01,
         beta_range: Tuple[int, int] = (20, 2),
         warm_start: float = 0.2,
-        drop_ratio: float = 0.5,
+        drop_ratio: float = 1.0,
         block_recon: bool = False,
         dummy_path: str = '',
     ) -> None:

@@ -3,20 +3,18 @@
 // SPDX-License-Identifier: MIT
 //
 
-#include <algorithm>
-#include <cassert>
-#include <cstdint>
-#include <cmath>
-#include <iostream>
 #include "bfp/cpu/bfp_kernel.h"
 #include "mx/cpu/mx_kernel.h"
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <iostream>
 
 #include "mx/funcs.cuh"  // Re-use the MX kernel of Quark-Torch
 
 #ifdef USE_ORT_FP8_KERNELS
 #include "core/framework/float8.h"  // Use the fp8 data type of ORT
 #endif
-
 
 void MXCPUKernel(const float* input,
                  float* output,

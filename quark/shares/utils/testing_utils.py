@@ -9,6 +9,7 @@ from typing import Any, Union, Optional
 import tempfile
 import shutil
 import functools
+import platform
 
 from .import_utils import is_torch_available, is_accelerate_available
 
@@ -40,15 +41,32 @@ else:  # pragma: no cover
     torch_device = None
 
 
-def require_torch_gpu(test_case: Any) -> Any:  # pragma: no cover
-    """Decorator marking a test that requires CUDA and PyTorch."""
+def require_torch_cuda(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires CUDA with at least two GPUs and PyTorch."""
     return unittest.skipUnless(
         isinstance(torch_device, torch.device) and torch_device.type == "cuda", "test requires CUDA")(test_case)
+
+
+def require_torch_multi_gpu(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires CUDA and PyTorch."""
+    return unittest.skipUnless(
+        isinstance(torch_device, torch.device) and torch_device.type == "cuda" and torch.cuda.device_count() >= 2,
+        "test requires CUDA multi-gpu")(test_case)
+
+
+def require_torch_hip(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires HIP."""
+    return unittest.skipUnless(torch.version.hip is not None, "test requires HIP")(test_case)
 
 
 def require_accelerate(test_case: Any) -> Any:  # pragma: no cover
     """Decorator marking a test that requires Accelerate library."""
     return unittest.skipUnless(is_accelerate_available(), "test requires accelerate")(test_case)
+
+
+def require_linux(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires Linux."""
+    return unittest.skipUnless(platform.system() == "Linux", "test requires Linux")(test_case)
 
 
 def use_temporary_directory(func):  # type: ignore

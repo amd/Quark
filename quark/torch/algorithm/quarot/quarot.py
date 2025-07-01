@@ -26,7 +26,9 @@ class QuaRotProcessor(RotationProcessor):
 
     def __init__(self, model: nn.Module, pre_quant_opt_config: QuaRotConfig, _data_loader: Any) -> None:
         self.quarot_opt_config = pre_quant_opt_config
-        self.scaling_layers = self.quarot_opt_config.scaling_layers
+        self.scaling_modules = self.quarot_opt_config.scaling_layers
+        self.modules = get_model_layers(model, self.quarot_opt_config.model_decoder_layers)
+        self.scaling_layers = self.get_scaling_layers()
         assert self.scaling_layers is not None
         self.model = model
         self.optimized_rotation_path = self.quarot_opt_config.optimized_rotation_path

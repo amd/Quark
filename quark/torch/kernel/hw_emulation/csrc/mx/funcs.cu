@@ -31,7 +31,10 @@ void fake_quantize_to_low_precision_fp_cuda(
     RoundMode round_mode
 ) {
     int blocks = num_elements % THREADS_PER_BLOCK == 0 ? num_elements / THREADS_PER_BLOCK : num_elements / THREADS_PER_BLOCK + 1;
-    fake_quantize_kernel<<<blocks, THREADS_PER_BLOCK>>>(
+
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    fake_quantize_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream>>>(
         input, output, num_elements, ebits, mbits, max_norm, round_mode
     );
 }

@@ -14,19 +14,21 @@ import onnx
 import numpy as np
 from onnx import numpy_helper
 from quark.shares.utils.log import ScreenLogger
+from pathlib import Path
+from typing import Union, Any, Optional
 
 logger = ScreenLogger(__name__)
 
 
-def replace_inf_in_onnx_weights(input_model_path: str,
-                                output_model_path: str,
-                                replace_inf_value: float = 10000.0) -> None:
+def replace_inf_in_onnx_weights(input_model: Union[str, Path, onnx.ModelProto],
+                                output_model: Optional[Union[str, Path]] = None,
+                                replace_inf_value: float = 10000.0) -> Any:
     """
     Replaces `inf` and `-inf` values in the weights of an ONNX model with specified default values.
 
     Parameters:
-        input_model_path (str): Path to the input ONNX model file.
-        output_model_path (str): Path to save the modified ONNX model file.
+        input_model: Path to the input ONNX model file or a ModelProto.
+        output_model: Path to save the modified ONNX model file, if None the function will return a ModelProto.
         replace_inf_value (float): The base value used to replace `inf` and `-inf`.
                               - Positive `inf` values are replaced with `replace_inf_value`.
                               - Negative `inf` values are replaced with `-replace_inf_value`.
@@ -35,7 +37,7 @@ def replace_inf_in_onnx_weights(input_model_path: str,
         None: The function directly modifies the model and saves it to the output path.
     """
 
-    model = onnx.load(input_model_path)
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
 
     for weight in model.graph.initializer:
         weight_array = numpy_helper.to_array(weight)
@@ -59,7 +61,11 @@ def replace_inf_in_onnx_weights(input_model_path: str,
             model.graph.initializer.remove(weight)
             model.graph.initializer.append(updated_weight)
 
-    onnx.save(model, output_model_path)
+    if output_model is None:
+        return model
+
+    use_external_data_format = model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
+    onnx.save(model, output_model, save_as_external_data=use_external_data_format)
 
 
 if __name__ == "__main__":

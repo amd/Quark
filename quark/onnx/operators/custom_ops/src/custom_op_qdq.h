@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: MIT
 //
 
+#pragma once
+
 #include "onnxruntime_c_api.h"
 #define ORT_API_MANUAL_INIT
 #include "onnxruntime_cxx_api.h"
 #undef ORT_API_MANUAL_INIT
 
-
-namespace vai_q {
+namespace quark_onnx {
 
 // Since onnxruntime has no conversion for MLFloat16,
 // we just used Cast op to do this.
@@ -66,4 +67,4 @@ struct KernelCustomDequantizeLinear {
 #endif
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

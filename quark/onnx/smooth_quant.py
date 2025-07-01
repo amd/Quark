@@ -12,38 +12,37 @@ from tqdm.auto import tqdm
 from collections import OrderedDict
 from typing import List, Dict, Tuple, Any
 import os
+import copy
+import tempfile
 
 
 class SmoothQuant():
     """
     A class for model smooth
     Args:
-        onnx_model_path (str): The ONNX model path to be smoothed.
         input_model (onnx.ModelProto): The ONNX model to be smoothed.
         dataloader (torch.utils.data.DataLoader): The dataloader used for calibrate.
         alpha (float): The extent to which the difficulty of quantification is shifted from activation to weighting.
-        is_large (bool): True if the model size is larger than 2GB.
+        use_external_data_format (bool): True if the model size is larger than 2GB.
     """
 
     def __init__(
             self,
-            onnx_model_path: str,
             input_model: onnx.ModelProto,
             dataloader: torch.utils.data.DataLoader,  # type:ignore
             alpha: float,
-            is_large: bool = True,
+            use_external_data_format: bool = False,
             providers: List[str] = ["CPUExecutionProvider"]):
-        self.onnx_model_path = onnx_model_path
         self.dataloader = dataloader
-        self.is_large = is_large
         self.alpha = alpha
+        self.use_external_data_format = use_external_data_format
         self.providers = providers
-        self.base_dir = os.path.dirname(self.onnx_model_path)
+
+        self.base_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.sq.").name
         self.smoothed_model_path = os.path.join(self.base_dir, "decoder_model_smoothed.onnx")
         self.tmp_model_path = os.path.join(self.base_dir, "decoder_model_tmp.onnx")
 
-        self.model = input_model
-
+        self.model = copy.deepcopy(input_model) if use_external_data_format else input_model
         self.onnx_model = OnnxModel(self.model)
 
         self.output_num = len(self.onnx_model.get_graphs_output_names())
@@ -75,7 +74,7 @@ class SmoothQuant():
     def get_act_scale(self) -> None:
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self.is_large:
+        if self.use_external_data_format:
             self.onnx_model.save_model_to_file(self.tmp_model_path,
                                                use_external_data_format=True,
                                                all_tensors_to_one_file=True)
@@ -154,14 +153,13 @@ class SmoothQuant():
         self.smooth_ln_linear()
         self.remove_extend_output_node()
 
-        self.onnx_model.save_model_to_file(self.smoothed_model_path,
-                                           use_external_data_format=self.is_large,
-                                           all_tensors_to_one_file=True)
-
     def get_smooth_node(self) -> List[str]:
         return self.smooth_nodes
 
     def get_smooth_path(self) -> str:
+        self.onnx_model.save_model_to_file(self.smoothed_model_path,
+                                           use_external_data_format=self.use_external_data_format,
+                                           all_tensors_to_one_file=True)
         return self.smoothed_model_path
 
     def get_smooth_model(self) -> onnx.ModelProto:
@@ -169,10 +167,10 @@ class SmoothQuant():
 
 
 def smooth_transforms(
-        onnx_model_path: str,
         input_model: onnx.ModelProto,
         dataloader: torch.utils.data.DataLoader,  # type:ignore
-        alpha: float = 0.5) -> onnx.ModelProto:
-    smooth_ = SmoothQuant(onnx_model_path, input_model, dataloader, alpha=alpha)
+        alpha: float = 0.5,
+        use_external_data_format: bool = False) -> onnx.ModelProto:
+    smooth_ = SmoothQuant(input_model, dataloader, alpha=alpha, use_external_data_format=use_external_data_format)
     smooth_.transform()
     return smooth_.get_smooth_model()

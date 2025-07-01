@@ -2,26 +2,44 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-import itertools
-import operator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple, Any
 import torch
-import torch.nn.functional as F
 from torch import ops  # type: ignore[attr-defined]
 import torch.fx
 from torch.fx import Node
-from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
-from torch.fx.passes.utils.source_matcher_utils import (SourcePartition, get_source_partitions)
 from quark.torch.quantization.graph.torch_utils import is_relu_act_node, is_hardtanh_act_node, is_sigmoid_node, \
-    is_reshape_node, is_permute_node, is_squeeze_node, is_unsqueeze_node, is_conv_like_node, is_call_module_node, is_cat_node
+    is_reshape_node, is_permute_node, is_squeeze_node, is_unsqueeze_node, is_conv_like_node, is_call_module_node, \
+    is_cat_node, is_slice_node, is_layernorm_node, is_gelu_node, is_avg_pool2d_node, is_adaptive_avg_pool2d_node, \
+    is_max_pool2d_node, is_math_arithmetic_node, is_mean_node, is_sum_node, is_clip_node, is_relu6_act_node, \
+    is_softmax_node, is_hardsigmoid_node, is_hardswish_node, is_leaky_relu_node, is_pixel_shuffle_node, \
+    QUANT_LEAKY_RELU, QUANT_CONV_LIKE_MODULE, QUANT_ADAPTIVEAVGPOOL2D, QUANT_AVGPOOL2D
 from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
+# from torch.fx.passes.utils.source_matcher_utils import (SourcePartition, get_source_partitions)
+# from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
+
+STATIC_OPS = [
+    "quantized_convbn_act",  # include [QuantLinear, QuantizedConvBatchNorm2d, QuantConv2d, QuantConvTranspose2d, QuantConvTransposeBatchNorm2d]
+    "convlike_act",
+    "add_act",  # including [+, -, *, /]
+    'quantized_convbn_wo_act',  # include [QuantLinear, QuantizedConvBatchNorm2d, QuantConv2d, QuantConvTranspose2d, QuantConvTransposeBatchNorm2d]
+    "convlike",
+    'layernorm',  # nn.LayerNorm->torch.ops.aten.layer_norm.default
+    # 'instance_norm',  # nn.InstanceNorm2d -> torch.ops.aten.instance_norm.default
+    "pool2d",  # avg/max/adaptive, torch.nn.{Adaptive}AvgPool2d, F.{adaptive_}avg_pool2d
+    "element_arithmetic",  # elementary arithmetic: addition(+), subtraction(-), multiplication(*), division(/).
+    'mean',
+    'sum',  # the sum of all elements in input tensor.
+    # Activations that may modify the value but do not influence shape.
+    'activation_op',  # clip, relu, relu6, hardtanh, sigmoid, softmax, gelu, hardswish
+    # Operations changing shape.
+    'cat',  # concat, slice
+    'slice',  # e.g: a[:, 0:10,:,:]
+    'shape_change',  # ops.aten.(reshpe, permute,unsqueeze,squeeze)
+]
 
 
 @dataclass
@@ -57,8 +75,9 @@ def _is_share_obs_or_fq_op(n: Node) -> bool:
     return n.target in [
         ops.aten.permute.default, ops.aten.permute_copy.default, ops.aten.squeeze.dim, ops.aten.squeeze_copy.dim,
         ops.aten.view_copy.default, ops.aten.view.default, ops.aten.slice_copy.Tensor, ops.aten.flatten.using_ints,
-        ops.aten.transpose.int, ops.aten.cat.default, ops.aten.concat.default
+        ops.aten.transpose.int, ops.aten.contiguous.default, ops.aten.dropout.default
     ]
+    # ops.aten.cat.default, ops.aten.concat.default, # TODO may remove
 
 
 def _is_annotated(nodes: List[Node]) -> bool:
@@ -74,7 +93,7 @@ def _is_annotated(nodes: List[Node]) -> bool:
     return annotated
 
 
-# TODO haoliang this is a temponary func, hope to use QuantStub and DeQuantStub
+# NOTE based on QuantStub and DeQuantStub to modify skip_quant meta info
 def _is_skip_quant_node(node: Node) -> bool:
     if 'skip_quant' in node.meta:
         return node.meta['skip_quant'] is True
@@ -103,7 +122,7 @@ def propagate_annotation(model: torch.fx.GraphModule) -> None:
             continue
 
         # make sure current node is not annotated
-        if _is_annotated([n]):
+        if _is_annotated([n]) or _is_skip_quant_node(n):
             continue
 
         if ("quantization_annotation" in n.meta and n.meta["quantization_annotation"]._annotated):
@@ -119,9 +138,9 @@ def propagate_annotation(model: torch.fx.GraphModule) -> None:
 def add_node_input(node: Node, input_qspec_map: Dict[Node, QuantizationSpec],
                    input_act_qspec: Optional[QuantizationSpec]) -> Dict[Node, QuantizationSpec]:
     for input_args in node.args:
-        if isinstance(input_args, Node) and input_act_qspec:
-            if 'val' in input_args.meta.keys() and input_args.meta['val'].dtype not in [torch.float32, torch.float16]:
-                continue
+        if isinstance(input_args, Node) and input_act_qspec is not None:
+            # if 'val' in input_args.meta.keys() and input_args.meta['val'].dtype not in [torch.float32, torch.float16]:
+            #     continue
             input_qspec_map[input_args] = input_act_qspec
     return input_qspec_map
 
@@ -131,6 +150,8 @@ def get_weight_qspec(quantization_config: Optional[QuantizationConfig]) -> Optio
         return None
     if quantization_config.weight is None:
         return None
+    assert isinstance(quantization_config.weight, QuantizationSpec), \
+        "weight quantization spec should be a QuantizationSpec instance"
     quantization_spec: QuantizationSpec = quantization_config.weight
     return quantization_spec
 
@@ -140,6 +161,8 @@ def get_bias_qspec(quantization_config: Optional[QuantizationConfig]) -> Optiona
         return None
     if quantization_config.bias is None:
         return None
+    assert isinstance(quantization_config.bias, QuantizationSpec), \
+        "bias quantization spec should be a QuantizationSpec instance"
     quantization_spec: QuantizationSpec = quantization_config.bias
     return quantization_spec
 
@@ -149,6 +172,8 @@ def get_input_act_qspec(quantization_config: Optional[QuantizationConfig]) -> Op
         return None
     if quantization_config.input_tensors is None:
         return None
+    assert isinstance(quantization_config.input_tensors, QuantizationSpec), \
+        "input quantization spec should be a QuantizationSpec instance"
     quantization_spec: QuantizationSpec = quantization_config.input_tensors
     return quantization_spec
 
@@ -158,6 +183,8 @@ def get_output_act_qspec(quantization_config: Optional[QuantizationConfig]) -> O
         return None
     if quantization_config.output_tensors is None:
         return None
+    assert isinstance(quantization_config.output_tensors, QuantizationSpec), \
+        "output quantization spec should be a QuantizationSpec instance"
     quantization_spec: QuantizationSpec = quantization_config.output_tensors
     return quantization_spec
 
@@ -170,66 +197,8 @@ def _mark_nodes_as_annotated(nodes: List[Node]) -> None:
             node.meta["quantization_annotation"]._annotated = True
 
 
-def _convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModule:
-    '''
-    Convert constant number to tensor
-    e.g.
-
-    before:
-        torch.ops.aten.mul.Tensor(unsqueeze, 1.0)
-    after:
-        _tensor_constant0 = self._tensor_constant0 # self._tensor_constant0 is a tensor
-        torch.ops.aten.mul.Tensor(unsqueeze, _tensor_constant0)
-    NOTE:
-        In some case, like model samvit_base_patch16_224(TIMM)(VisionTransformerSAM)
-        e.g The model in GPU, but some operations/Tensors in CPU
-        In this case, we will skip convert if one operation's Tensor device diff with model.
-    '''
-    model_device = [module for module in model.parameters()][0].device  # cpu/gpu
-    for n in model.graph.nodes:
-        if n.op != "call_function" or n.target not in {
-                ops.aten.add.Tensor, ops.aten.sub.Tensor, ops.aten.mul.Tensor, ops.aten.div.Tensor
-        }:
-            continue
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_skip_quant_node(n):
-            logger.info("Skip convert scalar to attr in Node: {} as this node marked skip quant".format(n.name))
-            continue
-
-        args = list(n.args)
-
-        # NOTE in some case
-        # model in GPU, but some operations/Tensor in CPU
-        nodes = list(filter(lambda n: isinstance(n, torch.fx.Node) and ('val' in n.meta), args))
-        tensor_device = [n.meta['val'].device for n in nodes]
-        if len(set(tensor_device)) >= 2 or (len(tensor_device) >= 1 and tensor_device[0] != model_device):
-            logger.warning(
-                "In Node: {}'s args, contaion multi/diff (with model) devices:{}, skip convert to attrs".format(
-                    n.name, tensor_device))
-            continue
-
-        new_args = []
-        for i in range(len(args)):
-            if isinstance(args[i], torch.fx.Node):
-                new_args.append(args[i])
-                continue
-            prefix = "_tensor_constant_"
-            get_new_attr_name = get_new_attr_name_with_prefix(prefix)
-            tensor_constant_name = get_new_attr_name(model)
-            attr_tensor = torch.tensor(args[i]).to(model_device)
-            model.register_buffer(tensor_constant_name, attr_tensor)
-            fake_mode = n.meta["val"].fake_mode
-            with model.graph.inserting_before(n):
-                get_attr_node = model.graph.create_node("get_attr", tensor_constant_name, (), {})
-                get_attr_node.meta["val"] = fake_mode.from_tensor(attr_tensor, static_shapes=True)
-                new_args.append(get_attr_node)
-            logger.info("Node: {}'s {}_th args, convert scalar: {} to Tensor (type: {}) and save in attr Node".format(
-                n.name, i, args[i], attr_tensor.dtype))
-        n.args = tuple(new_args)
-    model.recompile()
-    return model
-
-
+'''
+# will be deprecated later
 def _annotate_single_input_single_output(
     source_partitions: Dict[Any, List[SourcePartition]],
     quantization_config: Optional[QuantizationConfig],
@@ -240,7 +209,6 @@ def _annotate_single_input_single_output(
     for partition in partitions:
         annotated_partitions.append(partition.nodes)
         node = partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
         if _is_annotated([node]) or _is_skip_quant_node(node):
             continue
 
@@ -261,6 +229,79 @@ def _annotate_single_input_single_output(
                                                                       output_qspec=output_act_qspec,
                                                                       _annotated=True)
     return annotated_partitions
+'''
+
+
+def _annotate_single_input_output_node(
+    node: Node,
+    quantization_config: Optional[QuantizationConfig],
+    filter_fn: Optional[Callable[[Node], bool]] = None,
+) -> Optional[Node]:
+
+    if _is_annotated([node]) or _is_skip_quant_node(node) or (filter_fn and not filter_fn(node)):
+        return None
+
+    input_act_qspec = get_input_act_qspec(quantization_config)
+    output_act_qspec = get_output_act_qspec(quantization_config)
+
+    input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
+    input_act = node.args[0]
+    if input_act_qspec is None and isinstance(input_act, Node):
+        if hasattr(input_act, 'meta') and 'quantization_annotation' in input_act.meta:
+            input_act_qspec = input_act.meta.get("quantization_annotation").output_qspec
+    assert isinstance(input_act, Node)
+    if input_act_qspec:
+        input_qspec_map[input_act] = input_act_qspec
+
+    node.meta["quantization_annotation"] = QuantizationAnnotation(input_qspec_map=input_qspec_map,
+                                                                  output_qspec=output_act_qspec,
+                                                                  _annotated=True)
+    return node
+
+
+def _is_certain_type_call_module_node(gm: torch.fx.GraphModule, node: Node, target_module: Tuple[Any]) -> bool:
+    if not is_call_module_node(node):
+        return False
+    assert isinstance(node.target, str) and hasattr(gm, node.target)
+    if isinstance(getattr(gm, node.target), target_module):
+        return True
+    return False
+
+
+# ------- check whether activation function/module
+def _is_call_module_act_node(gm: torch.fx.GraphModule, node: Node) -> bool:
+    target_module = QUANT_LEAKY_RELU
+    return _is_certain_type_call_module_node(gm, node=node, target_module=target_module)
+
+
+def _is_call_function_act_node(node: Node) -> bool:
+    return is_relu6_act_node(node) or is_relu_act_node(node) \
+        or is_hardtanh_act_node(node) or is_leaky_relu_node(node) \
+        or is_clip_node(node) or is_sigmoid_node(node) \
+        or is_hardsigmoid_node(node) or is_softmax_node(node) \
+        or is_gelu_node(node) or is_hardswish_node(node)
+
+
+#  ------- check whether shape change function/module
+def _is_call_function_shape_change_node(node: Node) -> bool:
+    return is_permute_node(node) or is_reshape_node(node) or is_squeeze_node(node) or \
+        is_unsqueeze_node(node) or is_pixel_shuffle_node(node)
+
+
+#  ------- check whether pool2d function/module
+def _is_call_function_pool2d_node(node: Node) -> bool:
+    return is_adaptive_avg_pool2d_node(node) or is_avg_pool2d_node(node) or is_max_pool2d_node(node)
+
+
+def _is_call_module_pool2d_node(gm: torch.fx.GraphModule, node: Node) -> bool:
+    target_module = QUANT_ADAPTIVEAVGPOOL2D + QUANT_AVGPOOL2D
+    return _is_certain_type_call_module_node(gm, node=node, target_module=target_module)  # type:ignore[arg-type]
+
+
+#  ------- check whether quantized conv/convbn/linear module
+def _is_call_module_qt_conv_node(gm: torch.fx.GraphModule, node: Node) -> bool:
+    target_module = QUANT_CONV_LIKE_MODULE
+    return _is_certain_type_call_module_node(gm, node=node, target_module=target_module)  # type:ignore[arg-type]
 
 
 '''
@@ -276,16 +317,14 @@ def _annotate_quantized_convbn_2d_act(
 ) -> Optional[List[List[Node]]]:
     # annotate the conv(2d,3d, linear, transpose) -> activation
     annotated_partitions = []
-    quant_conv_module = (QuantLinear, QuantizedConvBatchNorm2d, QuantConv2d, QuantConvTranspose2d)
     for n in gm.graph.nodes:
-        if not (is_relu_act_node(n) or is_hardtanh_act_node(n)):
+        if not (_is_call_function_act_node(n) or _is_call_module_act_node(gm, n)):
             continue
         act_node = n
         maybe_quant_conv_node = n.args[0]
-        if not isinstance(maybe_quant_conv_node, Node):
+        if (not isinstance(maybe_quant_conv_node, Node)) or (len(maybe_quant_conv_node.users) > 1):
             continue
-        if not is_call_module_node(maybe_quant_conv_node) or not isinstance(getattr(gm, maybe_quant_conv_node.target),
-                                                                            quant_conv_module):
+        if not _is_call_module_qt_conv_node(gm, maybe_quant_conv_node):
             continue
         quant_convbn_node = maybe_quant_conv_node
         input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
@@ -321,15 +360,13 @@ def _annotate_quantized_convbn_2d(
 ) -> Optional[List[List[Node]]]:
     # annotate the conv(2d,3d, linear, transpose) without activateion
     annotated_partitions = []
-    conv_nn_module = (QuantLinear, QuantizedConvBatchNorm2d, QuantConv2d, QuantConvTranspose2d)
     for n in gm.graph.nodes:
         if not isinstance(n, Node):
             continue
-        if not is_call_module_node(n) or not isinstance(getattr(gm, n.target), conv_nn_module):
+        if not _is_call_module_qt_conv_node(gm, n):
             continue
         quant_convbn_node = n
         partition = [quant_convbn_node]
-        # TODO hope to use QuantStub and DeQuantStub in the future
         if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
             continue
         if filter_fn and any(not filter_fn(n) for n in partition):
@@ -381,7 +418,6 @@ def _annotate_conv(
             if qspec := get_bias_qspec(quantization_config):
                 input_qspec_map[bias] = qspec
             partition.append(bias)
-        # TODO hope to use QuantStub and DeQuantStub in the future
         if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
             continue
 
@@ -396,6 +432,51 @@ def _annotate_conv(
     return annotated_partitions
 
 
+@register_annotator("layernorm")
+def _annotate_layernorm(
+    gm: torch.fx.GraphModule,
+    quantization_config: Optional[QuantizationConfig],
+    filter_fn: Optional[Callable[[Node], bool]] = None,
+) -> Optional[List[List[Node]]]:
+    annotated_partitions = []
+    '''
+    func: layer_norm(input, normalized_shape, weight, bias, eps=1e-05, cudnn_enable) -> Tensor
+    '''
+    for node in gm.graph.nodes:
+        if not is_layernorm_node(node):
+            continue
+        layer_norm_node = node
+        input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
+        input_act = layer_norm_node.args[0]
+        partition = [layer_norm_node]
+        assert isinstance(input_act, Node)
+        if qspec := get_input_act_qspec(quantization_config):
+            input_qspec_map[input_act] = qspec
+
+        weight_node = layer_norm_node.args[2]
+        if isinstance(weight_node, Node) and get_weight_qspec(quantization_config):
+            input_qspec_map[weight_node] = get_weight_qspec(quantization_config)
+            partition.append(weight_node)
+
+        bias_node = layer_norm_node.args[3]
+        if isinstance(bias_node, Node) and get_bias_qspec(quantization_config):
+            input_qspec_map[bias_node] = get_bias_qspec(quantization_config)
+            partition.append(bias_node)
+
+        if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
+            continue
+
+        if filter_fn and any(not filter_fn(n) for n in partition):
+            continue
+
+        layer_norm_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            input_qspec_map=input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True)
+
+        _mark_nodes_as_annotated(partition)
+        annotated_partitions.append(partition)
+    return annotated_partitions
+
+
 @register_annotator("convlike_act")
 def _annotate_conv_act(
     gm: torch.fx.GraphModule,
@@ -403,13 +484,13 @@ def _annotate_conv_act(
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
     annotated_partitions = []
-
     for n in gm.graph.nodes:
-        if not (is_relu_act_node(n) or is_hardtanh_act_node(n)):
+        if not (_is_call_function_act_node(n) or _is_call_module_act_node(gm, n)):
             continue
         act_node = n
         maybe_conv_node = n.args[0]
-        if (not isinstance(maybe_conv_node, Node) or (not is_conv_like_node(maybe_conv_node))):
+        if (not isinstance(maybe_conv_node, Node) or (len(maybe_conv_node.users) > 1)
+                or (not is_conv_like_node(maybe_conv_node))):
             continue
         conv_node = maybe_conv_node
 
@@ -431,7 +512,6 @@ def _annotate_conv_act(
             if qspec := get_bias_qspec(quantization_config):
                 input_qspec_map[bias] = qspec
             partition.append(bias)
-        # TODO hope to use QuantStub and DeQuantStub in the future
         if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
             continue
 
@@ -448,25 +528,26 @@ def _annotate_conv_act(
     return annotated_partitions
 
 
-@register_annotator("avg_pool2d")
-def _annotate_avg_pool2d(
+#     module_partitions = get_source_partitions(
+#         gm.graph, [torch.nn.AdaptiveAvgPool2d, torch.nn.AvgPool2d, F.adaptive_avg_pool2d, F.avg_pool2d], filter_fn)
+#     return _annotate_single_input_single_output(module_partitions, quantization_config, filter_fn)
+@register_annotator("pool2d")
+def _annotate_pool2d(
     gm: torch.fx.GraphModule,
     quantization_config: Optional[QuantizationConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
-    module_partitions = get_source_partitions(
-        gm.graph, [torch.nn.AdaptiveAvgPool2d, torch.nn.AvgPool2d, F.adaptive_avg_pool2d, F.avg_pool2d], filter_fn)
-    return _annotate_single_input_single_output(module_partitions, quantization_config, filter_fn)
-
-
-@register_annotator("max_pool2d")
-def _annotate_max_pool2d(
-    gm: torch.fx.GraphModule,
-    quantization_config: Optional[QuantizationConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    module_partitions = get_source_partitions(gm.graph, [torch.nn.MaxPool2d, F.max_pool2d], filter_fn)
-    return _annotate_single_input_single_output(module_partitions, quantization_config, filter_fn)
+    annotated_partitions = []
+    target_module = QUANT_ADAPTIVEAVGPOOL2D + QUANT_AVGPOOL2D
+    for n in gm.graph.nodes:
+        condition = _is_call_module_pool2d_node(gm, n) or _is_call_function_pool2d_node(n)
+        if not condition:
+            continue
+        any_pool2d_node = n
+        if _annotate_single_input_output_node(any_pool2d_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([any_pool2d_node])
+            annotated_partitions.append(any_pool2d_node)
+    return annotated_partitions
 
 
 # Elementary arithmetic (+, -, *, /)
@@ -476,31 +557,30 @@ def _annotate_element_arithmetic(
     quantization_config: Optional[QuantizationConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
-    add_op = [operator.add, torch.add, operator.iadd]
-    sub_op = [operator.sub, torch.sub, operator.isub]
-    mul_op = ["mul", "mul_", operator.mul, torch.mul, operator.imul]
-    div_op = [torch.div, operator.itruediv, operator.truediv]
-    arithmetic_partitions = get_source_partitions(gm.graph, add_op + sub_op + mul_op + div_op, filter_fn)
-    arithmetic_partitions = list(itertools.chain(*arithmetic_partitions.values()))
+    # add: [operator.add, torch.add, operator.iadd] sub: [operator.sub, torch.sub, operator.isub]
+    # mul: ["mul", "mul_", operator.mul, torch.mul, operator.imul] div [torch.div, operator.itruediv, operator.truediv]
+    # arithmpartitions = get_source_partitions(gm.graph, add_op + sub_op + mul_op + div_op, filter_fn)
+    # arithmpartitions = list(itertools.chain(*arithmetic_partitions.values()))
     annotated_partitions = []
-    for arithmetic_partition in arithmetic_partitions:
-        annotated_partitions.append(arithmetic_partition.nodes)
-        arithmetic_node = arithmetic_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([arithmetic_node]) or any(_is_skip_quant_node(node) for node in [arithmetic_node]):
+    for n in gm.graph.nodes:
+        if not is_math_arithmetic_node(n):
+            continue
+        arithmetic_node = n
+        partition = [arithmetic_node]
+        if _is_annotated([arithmetic_node]) or _is_skip_quant_node(arithmetic_node):
+            continue
+        if filter_fn and any(not filter_fn(n) for n in partition):
             continue
         input_act_qspec = get_input_act_qspec(quantization_config)
         output_act_qspec = get_output_act_qspec(quantization_config)
-
         input_qspec_map: Dict[Node, QuantizationSpec] = {}
-
         input_qspec_map = add_node_input(arithmetic_node, input_qspec_map, input_act_qspec)
 
         arithmetic_node.meta["quantization_annotation"] = QuantizationAnnotation(
             input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
             output_qspec=output_act_qspec,
             _annotated=True)
-
+        annotated_partitions.append(partition)
     return annotated_partitions
 
 
@@ -512,40 +592,26 @@ def _annotate_add_relu(
 ) -> Optional[List[List[Node]]]:
     annotated_partitions = []
     for n in gm.graph.nodes:
-        if not (is_relu_act_node(n) or is_hardtanh_act_node(n)):
+        if not (_is_call_function_act_node(n) or _is_call_module_act_node(gm, n)):
             continue
         act_node = n
-        maybe_add_node = n.args[0]
-        if (not isinstance(maybe_add_node, Node) or maybe_add_node.op != "call_function"
-                or maybe_add_node.target not in [
-                    ops.aten.add_.Tensor,
-                    ops.aten.add.Tensor,
-                ]):
+        may_math_arithmetic_node = n.args[0]
+        if (not isinstance(may_math_arithmetic_node, Node)) or (not is_math_arithmetic_node(may_math_arithmetic_node)):
             continue
-        add_node = maybe_add_node
-        if len(add_node.users) > 1:
+        math_arithmetic_node = may_math_arithmetic_node
+        if len(math_arithmetic_node.users) > 1:
             continue
-        input_qspec = get_input_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
-        # args of torch.ops.aten.add maybe Node or a const value
-        input_act0 = add_node.args[0]
-        if isinstance(input_act0, Node) and input_qspec:
-            input_qspec_map[input_act0] = input_qspec
-
-        input_act1 = add_node.args[1]
-        if isinstance(input_act1, Node) and input_qspec:
-            input_qspec_map[input_act1] = input_qspec
-
-        partition = [act_node, add_node]
-        # TODO hope to use QuantStub and DeQuantStub in the future
+        partition = [act_node, math_arithmetic_node]
         if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
             continue
-
         if filter_fn and any(not filter_fn(n) for n in partition):
             continue
-
-        add_node.meta["quantization_annotation"] = QuantizationAnnotation(input_qspec_map=input_qspec_map,
-                                                                          _annotated=True)
+        input_qspec = get_input_act_qspec(quantization_config)
+        input_qspec_map: Dict[Node, QuantizationSpec] = {}
+        input_qspec_map = add_node_input(math_arithmetic_node, input_qspec_map, input_qspec)
+        math_arithmetic_node.meta["quantization_annotation"] = QuantizationAnnotation(
+            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
+            _annotated=True)
 
         act_node.meta["quantization_annotation"] = QuantizationAnnotation(
             output_qspec=get_output_act_qspec(quantization_config), _annotated=True)
@@ -560,29 +626,16 @@ def _annotate_mean(
     quantization_config: Optional[QuantizationConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
-    mean_partitions = get_source_partitions(gm.graph, [torch.mean], filter_fn)
-    mean_partitions = list(itertools.chain(*mean_partitions.values()))
+    # mean_partitions = get_source_partitions(gm.graph, [torch.mean], filter_fn)
+    # mean_partitions = list(itertools.chain(*mean_partitions.values()))
     annotated_partitions = []
-    for mean_partition in mean_partitions:
-        annotated_partitions.append(mean_partition.nodes)
-        mean_node = mean_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([mean_node]) or any(_is_skip_quant_node(node) for node in [mean_node]):
+    for n in gm.graph.nodes:
+        if not is_mean_node(n):
             continue
-
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_act0 = mean_node.args[0]
-        if isinstance(input_act0, Node) and input_act_qspec:
-            input_qspec_map[input_act0] = input_act_qspec
-
-        mean_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
-
+        mean_node = n
+        if _annotate_single_input_output_node(mean_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([mean_node])
+            annotated_partitions.append([mean_node])
     return annotated_partitions
 
 
@@ -592,174 +645,33 @@ def _annotate_sum(
     quantization_config: Optional[QuantizationConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
-    sum_partitions = get_source_partitions(
-        gm.graph,
-        [torch.SUM, torch.sum],  # type: ignore [attr-defined]
-        filter_fn)
-    sum_partitions = list(itertools.chain(*sum_partitions.values()))
+    # sum_partitions = get_source_partitions( gm.graph, [torch.SUM, torch.sum], filter_fn)
+    # sum_partitions = list(itertools.chain(*sum_partitions.values()))
     annotated_partitions = []
-    for sum_partition in sum_partitions:
-        annotated_partitions.append(sum_partition.nodes)
-        sum_node = sum_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([sum_node]) or any(_is_skip_quant_node(node) for node in [sum_node]):
+    for n in gm.graph.nodes:
+        if not is_sum_node(n):
             continue
-
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_act0 = sum_node.args[0]
-        if isinstance(input_act0, Node) and input_act_qspec:
-            input_qspec_map[input_act0] = input_act_qspec
-
-        sum_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
+        sum_node = n
+        if _annotate_single_input_output_node(sum_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([sum_node])
+            annotated_partitions.append([sum_node])
     return annotated_partitions
 
 
-@register_annotator("clip")
-def _annotate_clip(
-    gm: torch.fx.GraphModule,
-    quantization_config: Optional[QuantizationConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    clip_partitions = get_source_partitions(gm.graph,
-                                            [torch.clip, torch.clip_, 'clip', torch.clamp, torch.clamp_, 'clamp'],
-                                            filter_fn)
-    clip_partitions = list(itertools.chain(*clip_partitions.values()))
-    annotated_partitions = []
-    for clip_partition in clip_partitions:
-        annotated_partitions.append(clip_partition.nodes)
-        clip_node = clip_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([clip_node]) or any(_is_skip_quant_node(node) for node in [clip_node]):
-            continue
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_act = clip_node.args[0]
-        if isinstance(input_act, Node) and input_act_qspec:
-            input_qspec_map[input_act] = input_act_qspec
-
-        clip_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
-    return annotated_partitions
-
-
-@register_annotator("hardtanh")
-def _annotate_hardtanh(
-    gm: torch.fx.GraphModule,
-    quantization_config: Optional[QuantizationConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    hardtanh_partitions = get_source_partitions(
-        gm.graph, [torch.nn.Hardtanh, torch.nn.functional.hardtanh, torch.nn.functional.hardtanh_], filter_fn)
-    hardtanh_partitions = list(itertools.chain(*hardtanh_partitions.values()))
-    annotated_partitions = []
-    for hardtanh_partition in hardtanh_partitions:
-        annotated_partitions.append(hardtanh_partition.nodes)
-        hardtanh_node = hardtanh_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([hardtanh_node]) or any(_is_skip_quant_node(node) for node in [hardtanh_node]):
-            continue
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_qspec_map = add_node_input(hardtanh_node, input_qspec_map, input_act_qspec)
-        hardtanh_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
-    return annotated_partitions
-
-
-@register_annotator("relu_act")
-def _annotate_relu6(
-    gm: torch.fx.GraphModule,
-    quantization_config: Optional[QuantizationConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    relu_act_partitions = get_source_partitions(
-        gm.graph, [torch.nn.ReLU6, torch.nn.ReLU, torch.nn.functional.relu, torch.nn.functional.relu6], filter_fn)
-    relu_act_partitions = list(itertools.chain(*relu_act_partitions.values()))
-    annotated_partitions = []
-    for relu_act_partition in relu_act_partitions:
-        annotated_partitions.append(relu_act_partition.nodes)
-        relu_act_node = relu_act_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([relu_act_node]) or any(_is_skip_quant_node(node) for node in [relu_act_node]):
-            continue
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_qspec_map = add_node_input(relu_act_node, input_qspec_map, input_act_qspec)
-        relu_act_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
-    return annotated_partitions
-
-
-@register_annotator("sigmoid")
-def _annotate_sigmoid(
+@register_annotator("activation_op")
+def _annotate_activation(
     gm: torch.fx.GraphModule,
     quantization_config: Optional[QuantizationConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
     annotated_partitions = []
     for n in gm.graph.nodes:
-        if not (is_sigmoid_node(n)):
+        if not (_is_call_function_act_node(n) or _is_call_module_act_node(gm, n)):
             continue
-        sigmoid_node = n
-        partition = [sigmoid_node]
-        input_qspec = get_input_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
-        # args of torch.ops.aten.add maybe Node or a const value
-        input_act = sigmoid_node.args[0]
-        if isinstance(input_act, Node) and input_qspec:
-            input_qspec_map[input_act] = input_qspec
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
-            continue
-
-        if filter_fn and any(not filter_fn(n) for n in partition):
-            continue
-
-        sigmoid_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True)
-        _mark_nodes_as_annotated(partition)
-        annotated_partitions.append(partition)
-    return annotated_partitions
-
-
-@register_annotator("softmax")
-def _annotate_softmax(
-    gm: torch.fx.GraphModule,
-    quantization_config: Optional[QuantizationConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    softmax_partitions = get_source_partitions(gm.graph, [torch.nn.Softmax, torch.nn.functional.softmax], filter_fn)
-    softmax_partitions = list(itertools.chain(*softmax_partitions.values()))
-    annotated_partitions = []
-    for softmax_partition in softmax_partitions:
-        annotated_partitions.append(softmax_partition.nodes)
-        softmax_node = softmax_partition.output_nodes[0]
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated([softmax_node]) or any(_is_skip_quant_node(node) for node in [softmax_node]):
-            continue
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, QuantizationSpec] = {}
-        input_qspec_map = add_node_input(softmax_node, input_qspec_map, input_act_qspec)
-        softmax_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
-            output_qspec=output_act_qspec,
-            _annotated=True)
+        clip_node = n
+        if _annotate_single_input_output_node(clip_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([clip_node])
+            annotated_partitions.append([clip_node])
     return annotated_partitions
 
 
@@ -782,7 +694,6 @@ def _annotate_cat(
                 each_input_act = each_maybe_node
                 if qspec := get_input_act_qspec(quantization_config):
                     input_qspec_map[each_input_act] = qspec
-        # TODO hope to use QuantStub and DeQuantStub in the future
         if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
             continue
 
@@ -797,6 +708,23 @@ def _annotate_cat(
     return annotated_partitions
 
 
+@register_annotator("slice")
+def _annotate_slice(
+    gm: torch.fx.GraphModule,
+    quantization_config: Optional[QuantizationConfig],
+    filter_fn: Optional[Callable[[Node], bool]] = None,
+) -> Optional[List[List[Node]]]:
+    annotated_partitions = []
+    for n in gm.graph.nodes:
+        if not (is_slice_node(n)):
+            continue
+        slice_node = n
+        if _annotate_single_input_output_node(slice_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([slice_node])
+            annotated_partitions.append([slice_node])
+    return annotated_partitions
+
+
 @register_annotator("shape_change")
 def _annotate_shape_change(
     gm: torch.fx.GraphModule,
@@ -805,25 +733,10 @@ def _annotate_shape_change(
 ) -> Optional[List[List[Node]]]:
     annotated_partitions = []
     for n in gm.graph.nodes:
-        if not (is_permute_node(n) or is_reshape_node(n) or is_squeeze_node(n) or is_unsqueeze_node(n)):
+        if not _is_call_function_shape_change_node(n):
             continue
         shape_change_node = n
-        partition = [shape_change_node]
-        input_qspec = get_input_act_qspec(quantization_config)
-        input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
-        # args of torch.ops.aten.add maybe Node or a const value
-        input_act = shape_change_node.args[0]
-        if isinstance(input_act, Node) and input_qspec:
-            input_qspec_map[input_act] = input_qspec
-        # TODO hope to use QuantStub and DeQuantStub in the future
-        if _is_annotated(partition) or any(_is_skip_quant_node(node) for node in partition):
-            continue
-
-        if filter_fn and any(not filter_fn(n) for n in partition):
-            continue
-
-        shape_change_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True)
-        _mark_nodes_as_annotated(partition)
-        annotated_partitions.append(partition)
+        if _annotate_single_input_output_node(shape_change_node, quantization_config, filter_fn):
+            _mark_nodes_as_annotated([shape_change_node])
+            annotated_partitions.append([shape_change_node])
     return annotated_partitions

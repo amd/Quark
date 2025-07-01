@@ -109,6 +109,10 @@ def main(args: argparse.Namespace) -> None:
 
     # Get quantization configuration
     quant_config = get_default_config(args.config)
+    if "ADAQUANT" in args.config:
+        quant_config.extra_options['FastFinetune']['LearningRate'] = 1e-7
+        quant_config.extra_options['FastFinetune']['EarlyStop'] = False
+
     config = Config(global_quant_config=quant_config)
 
     # Create an ONNX quantizer

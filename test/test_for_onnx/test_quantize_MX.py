@@ -21,8 +21,8 @@ from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.utils import reshape_to_blocks, get_dtype_params
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 
-from quark.onnx import get_library_path
-from quark.onnx import ModelQuantizer, CalibrationMethod, VitisQuantFormat, VitisQuantType
+from quark.onnx import ModelQuantizer, CalibrationMethod, ExtendedQuantFormat, ExtendedQuantType, get_library_path
+from quark.onnx.quant_utils import COP_DOMAIN, COP_MX_OP_NAME
 from quark.onnx.quantization.config.config import Config, QuantizationConfig
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -31,10 +31,10 @@ def create_custom_op(element_dtype: str, output_dir: str) -> None:
     graph_def = helper.make_graph(
         nodes=[
             helper.make_node(
-                "MXFixNeuron",
+                COP_MX_OP_NAME,
                 ["input"],
                 ["out"],
-                domain="com.vai.quantize",
+                domain=COP_DOMAIN,
                 # scale_dtype='e8m0',
                 element_dtype=element_dtype,
                 axis=1,
@@ -201,7 +201,8 @@ def compare_fixed_data(output_dir: str, elem_dtype: str, device_type: str = 'CPU
                                            scale=scale,
                                            mx_element_dtype=mx_element_dtype,
                                            axis=axis,
-                                           block_size=block_size)
+                                           block_size=block_size,
+                                           scale_calculation_mode="floor")
 
     torchao_result = result[elem_dtype]["torchao_result"]
     MX_result = result[elem_dtype]["MX_result"]
@@ -228,7 +229,7 @@ def compare_fixed_data(output_dir: str, elem_dtype: str, device_type: str = 'CPU
     assert max_diff == 0, f"The {elem_dtype} quantization result has a difference {max_diff} between quark torch and onnx"
 
     print(f"Verified {elem_dtype} on {device_type} for MX fixneuron with fixed data, "
-          f"the differnece is {max_diff} and it costs {end_time-start_time:.2f}ms")
+          f"the differnece is {max_diff} and it costs {end_time - start_time:.2f}ms")
 
 
 def compare_random_data(output_dir: str, elem_dtype: str, device_type: str = 'CPU') -> None:
@@ -246,7 +247,8 @@ def compare_random_data(output_dir: str, elem_dtype: str, device_type: str = 'CP
                                            scale=scale,
                                            mx_element_dtype=mx_element_dtype,
                                            axis=axis,
-                                           block_size=block_size)
+                                           block_size=block_size,
+                                           scale_calculation_mode="floor")
 
     # Inference ONNX model and verify the results
     so = onnxruntime.SessionOptions()
@@ -264,7 +266,7 @@ def compare_random_data(output_dir: str, elem_dtype: str, device_type: str = 'CP
     assert max_diff == 0, f"The {elem_dtype} quantization result has a difference {max_diff} between quark torch and onnx"
 
     print(f"Verified {elem_dtype} on {device_type} for MX fixneuron with random data, "
-          f"the differnece is {max_diff} and it costs {end_time-start_time:.2f}ms")
+          f"the differnece is {max_diff} and it costs {end_time - start_time:.2f}ms")
 
 
 def verify_mx_fixneuron(output_dir: str) -> None:
@@ -278,11 +280,15 @@ def verify_mx_fixneuron(output_dir: str) -> None:
             continue
 
         compare_fixed_data(output_dir, key)
-        if 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+            compare_fixed_data(output_dir, key, 'ROCM')
+        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
             compare_fixed_data(output_dir, key, 'CUDA')
 
         compare_random_data(output_dir, key)
-        if 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+            compare_random_data(output_dir, key, 'ROCM')
+        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
             compare_random_data(output_dir, key, 'CUDA')
 
 # ==========================================================================
@@ -358,9 +364,9 @@ def prepare_model(output_dir):
 def prepare_config(element_dtype='int8'):
 
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.MXFixNeuron,
-                                      activation_type=VitisQuantType.QMX,
-                                      weight_type=VitisQuantType.QMX,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'ActivationSymmetric': False,  # No impact, just to improve testing coverage
                                           'MXAttributes': {
@@ -390,17 +396,25 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     return output_model_path
 
 
-def infer_quantized_model(quantized_model_path, device='cpu'):
+def infer_quantized_model(quantized_model_path, device='CPU'):
+    if device != 'CPU':
+        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'ROCM'
+            providers = ['ROCMExecutionProvider']
+        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+            device = 'CUDA'
+            providers = ['CUDAExecutionProvider']
+        else:
+            device = 'CPU'
+            providers = ['CPUExecutionProvider']
+    else:
+        device = 'CPU'
+        providers = ['CPUExecutionProvider']
 
     so = onnxruntime.SessionOptions()
-    if device == 'cuda' and 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-        provider = ['CUDAExecutionProvider']
-    else:
-        device = 'cpu'
-        provider = ['CPUExecutionProvider']
     so.register_custom_ops_library(get_library_path(device))
 
-    sess = onnxruntime.InferenceSession(quantized_model_path, so, providers=provider)
+    sess = onnxruntime.InferenceSession(quantized_model_path, so, providers=providers)
 
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name

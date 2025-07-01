@@ -7,19 +7,21 @@ import numpy as np
 import onnx
 import time
 import pandas as pd
+from pathlib import Path
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import find_by_name
-from quark.onnx.quant_utils import (ONNX_TYPE_TO_NP_TYPE, BFPFIX_OP_DEFAULT_ATTRS, get_tensor_type_from_qType,
-                                    VitisQuantType, scale2pos, pos2scale, ONNXQuantizedModel)
+from quark.onnx.quant_utils import (ONNX_TYPE_TO_NP_TYPE, COP_BFP_OP_NAME, COP_MX_OP_NAME, BFP_OP_DEFAULT_ATTRS,
+                                    MX_OP_DEFAULT_ATTRS, get_tensor_type_from_qType, ExtendedQuantType, scale2pos,
+                                    pos2scale, ONNXQuantizedModel)
 from quark.onnx.finetuning.onnx_subgraph import Subgraph
 from quark.onnx.finetuning.create_torch.create_model_utils import (ComputeOperations, QuantizeLinearOps,
                                                                    DequantizeLinearOps)
 from quark.onnx.finetuning.onnx_evaluate import inference_model, average_L2
-from quark.onnx.mprecision.mixed_bfp import mixed_bfp
+from quark.onnx.mprecision.mixing_fn import mixing_fn
 from onnx import onnx_pb as onnx_proto
 from tqdm import tqdm
 import copy
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 logger = ScreenLogger(__name__)
 
@@ -34,7 +36,8 @@ ONNX_INT_TYPE_RANGE = {
 
 
 @log_errors
-def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, activation_type: Any, weight_type: Any,
+def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union[str, Path, onnx.ModelProto],
+                      use_external_data_format: bool, dr: Any, activation_type: Any, weight_type: Any,
                       extra_options: Any) -> Any:
     """ Automatic apply low precision quantization on Q/DQ."""
 
@@ -412,26 +415,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
             if (process_type == "replace" or process_type == "restore"):
                 _update_bias_scale(quant_model, node_struct['node'].name)
 
-        return None  # It will cause accuracy drop if we change output qdq too
-
-        # The sub-module has no output qdqs, so we get them from refer model
-        in_name_to_nodes = refer_model.input_name_to_nodes()
-        child_nodes = in_name_to_nodes.get(node_struct['node'].output[0], None)
-        if child_nodes is not None and child_nodes[0].op_type in QuantizeLinearOps:
-            q = child_nodes[0]
-            child_nodes = in_name_to_nodes.get(q.output[0], None)
-            if child_nodes is not None and child_nodes[0].op_type in DequantizeLinearOps:
-                dq = child_nodes[0]
-                if process_type == "replace":
-                    __replace(quant_model, refer_model, dq, q, quant_type)
-                elif process_type == "restore":
-                    __restore(quant_model, refer_model, dq, q, quant_type)
-                elif process_type == "insert":
-                    __insert(quant_model, refer_model, dq, q, quant_type, True)
-                elif process_type == "delete":
-                    __delete(quant_model, refer_model, dq, q, quant_type, True)
-                else:
-                    raise ValueError("Unsupported process for auto mixprecision")
+        return None
 
     # Get the configurations of AutoMixprecision
     data_size = extra_options.get('AutoMixprecision', {}).get('DataSize', None)
@@ -451,6 +435,17 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
     no_shared = extra_options.get('AutoMixprecision', {}).get('NoInputQDQShared', True)
     auto_mix_use_fast_ft = extra_options.get('AutoMixprecision', {}).get('AutoMixUseFastFT', False)
     int32_bias = extra_options.get("Int32Bias", True)
+    int16_bias = extra_options.get("Int16Bias", False)
+    if int16_bias:
+        int32_bias = True
+    dual_quant_nodes = extra_options.get('AutoMixprecision', {}).get('DualQuantNodes', False)
+
+    if dual_quant_nodes:
+        forward_process = "insert"
+        back_process = "delete"
+    else:
+        forward_process = "replace"
+        back_process = "restore"
 
     if target_quant_type is None and act_target_quant_type is None and weight_target_quant_type is None:
         raise ValueError(
@@ -473,11 +468,16 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
 
     bias_type = weight_type
     if int32_bias:
-        bias_type = VitisQuantType.QInt32
+        bias_type = ExtendedQuantType.QInt32
+
+    if int16_bias:
+        bias_type = ExtendedQuantType.QInt16
 
     if bias_target_quant_type is None and int32_bias:
-        bias_target_quant_type = VitisQuantType.QInt32
-    elif bias_target_quant_type is None and not int32_bias:
+        bias_target_quant_type = ExtendedQuantType.QInt32
+    elif bias_target_quant_type is None and int16_bias:
+        bias_target_quant_type = ExtendedQuantType.QInt16
+    elif bias_target_quant_type is None and not (int32_bias or int16_bias):
         bias_target_quant_type = weight_target_quant_type
 
     if target_quant_type is None:
@@ -488,23 +488,23 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
     )
 
     # If configured BFP as the target quant type, to mix BFP directly
-    quantized_model = onnx.load(quant_model_path)
-    if target_quant_type == VitisQuantType.QBFP:
-        logger.info("Configured BFP as target quant type, start inserting BFPFixNeuron...")
-        bfp_attrs = copy.deepcopy(BFPFIX_OP_DEFAULT_ATTRS)
-        # To compatible with older version settings
-        if 'bfp_method' in extra_options:
-            bfp_attrs['bfp_method'] = extra_options['bfp_method']
-        if 'bit_width' in extra_options:
-            bfp_attrs['bit_width'] = extra_options['bit_width']
-        if 'block_size' in extra_options:
-            bfp_attrs['block_size'] = extra_options['block_size']
-        if 'sub_block_shift_bits' in extra_options:
-            bfp_attrs['sub_block_shift_bits'] = extra_options['sub_block_shift_bits']
-        # Get attributes for BFPFixNeuron
+    quantized_model = q_model if isinstance(q_model, onnx.ModelProto) else onnx.load(q_model)
+    if target_quant_type == ExtendedQuantType.QBFP or (act_target_quant_type == ExtendedQuantType.QBFP
+                                                       and weight_target_quant_type == ExtendedQuantType.QBFP
+                                                       and bias_target_quant_type == ExtendedQuantType.QBFP):
+        logger.info(f"Configured BFP as target quant type, start inserting {COP_BFP_OP_NAME} ...")
+        bfp_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
         if "BFPAttributes" in extra_options:
             bfp_attrs.update(extra_options["BFPAttributes"])
-        return mixed_bfp(quantized_model, target_op_type, bfp_attrs)
+        return mixing_fn(quantized_model, target_op_type, forward_process, COP_BFP_OP_NAME, bfp_attrs)
+    elif target_quant_type == ExtendedQuantType.QMX or (act_target_quant_type == ExtendedQuantType.QMX
+                                                        and weight_target_quant_type == ExtendedQuantType.QMX
+                                                        and bias_target_quant_type == ExtendedQuantType.QMX):
+        logger.info(f"Configured MX as target quant type, start inserting {COP_MX_OP_NAME} ...")
+        mx_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
+        if "MXAttributes" in extra_options:
+            mx_attrs.update(extra_options["MXAttributes"])
+        return mixing_fn(quantized_model, target_op_type, forward_process, COP_MX_OP_NAME, mx_attrs)
 
     if (l2_target is not None) and (top1_acc_target is not None):
         raise ValueError("l2_target and top1_acc_target must one of the two!")
@@ -513,9 +513,10 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
         raise ValueError("Evaluate_function must be given when top1_acc_target is given!")
 
     # Extract sub-graph of modules
-    sg = Subgraph(float_model_path, quant_model_path, dr, extra_options)
-    assert (len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(sg.f_weight_list) == len(
-        sg.f_input_data_list) == len(sg.f_output_data_list))
+    sg = Subgraph(f_model, q_model, use_external_data_format, dr, extra_options)
+
+    assert len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(
+        sg.f_weight_list), "The quantized model or float model has an incorrect number of subgraphs"
 
     if len(target_tensors) == 0 and len(
             target_indices) == 0 and l2_target is None and top1_acc_target is None and num_target <= 0:
@@ -571,8 +572,8 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
         num_target = len(sorted_module)
 
     if sorted_module == []:
-        float_results = inference_model(float_model_path, dr, data_size, output_index)
-        quant_results = inference_model(quant_model_path, dr, data_size, output_index)
+        float_results = inference_model(f_model, dr, data_size, output_index)
+        quant_results = inference_model(q_model, dr, data_size, output_index)
         if l2_target is not None:
             distance = average_L2(float_results, quant_results)
             logger.info(
@@ -608,7 +609,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
             continue
 
         _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              "replace")
+                              forward_process)
         if auto_mix_use_fast_ft:
             # for every subgraph to do adaround to replace
             q_input_data = np.array(sg.get_q_input_data(i))
@@ -654,7 +655,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
             logger.debug(f"The top1 accuracy loss is from {distance} to {distance_new}.")
 
         _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              "restore")
+                              back_process)
 
         module_dict[i] = distance_new
 
@@ -713,7 +714,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
             )
 
         _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              "replace")
+                              forward_process)
 
         # Count the number of mixed modules
         mixed_num += 1
@@ -730,7 +731,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
 
             if distance_new > l2_target:
                 _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type,
-                                      bias_quant_type, "restore")
+                                      bias_quant_type, back_process)
                 if len(mixed_node_names) >= 1:
                     mixed_node_names.pop()
                 logger.info(f"The average L2 distance is {distance_new}, "
@@ -750,7 +751,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
 
             if distance_new > top1_acc_target:
                 _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type,
-                                      bias_quant_type, "restore")
+                                      bias_quant_type, back_process)
                 if len(mixed_node_names) >= 1:
                     mixed_node_names.pop()
                 logger.info(f"The Top1 accuracy is {quant_top1_acc}, "
@@ -776,7 +777,7 @@ def auto_mixprecision(float_model_path: str, quant_model_path: str, dr: Any, act
         quant_top1_acc = evaluate_function(quant_results)
         distance_new = round(float_top1_acc - quant_top1_acc, 4)
         logger.info(
-            f"Mixed Precision Summary: Activation: {activation_type}, Weight: {weight_type}, Bias: {bias_type} and Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} mixed top1 accuracy is {quant_top1_acc}, the loss is {distance_new} compared with the float top1 accuracy {float_top1_acc}. {len(mixed_node_names)}/{len(sorted_module)} are Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} {len(sorted_module)-len(mixed_node_names)}/{len(sorted_module)} are Activation: {activation_type}, Weight: {weight_type}, Bias: {bias_type}."
+            f"Mixed Precision Summary: Activation: {activation_type}, Weight: {weight_type}, Bias: {bias_type} and Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} mixed top1 accuracy is {quant_top1_acc}, the loss is {distance_new} compared with the float top1 accuracy {float_top1_acc}. {len(mixed_node_names)}/{len(sorted_module)} are Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} {len(sorted_module) - len(mixed_node_names)}/{len(sorted_module)} are Activation: {activation_type}, Weight: {weight_type}, Bias: {bias_type}."
         )
         logger.info(
             f"Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} node names are {mixed_node_names}."

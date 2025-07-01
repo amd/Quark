@@ -7,32 +7,44 @@
 import torch
 import torch.nn as nn
 import torch.fx
+import json
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing import Dict, Any, Optional, Union, List, Tuple, Iterable, Type
 from dataclasses import fields
+from quark.shares.utils.import_utils import is_transformers_available
 from quark.torch.quantization.config.type import QuantizationMode, Dtype, QSchemeType
+from quark.torch.quantization.config.config_verification import check_and_adjust_quant_config
 from quark.torch.quantization.model_transformation import process_model_transformation
 from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
 from quark.torch.quantization.config.config_verification import init_quantization_config, verify_quantization_spec
-from quark.torch.quantization.graph.processor.processor import prepare_quant_model, check_supported_model_and_config
+from quark.torch.quantization.graph.processor.processor import prepare_quant_model, post_calib_optimize
+from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
 from quark.torch.quantization.graph.processor.processor import post_quant_optimize
 from quark.torch.quantization.utils import set_op_by_name, get_op_by_name
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize, NonScaledFakeQuantize
-from quark.torch.quantization.utils import deep_compare
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize, NonScaledFakeQuantize, SequentialQuantize, enable_or_disable_quantizer
+from quark.torch.quantization.utils import deep_compare, count_calibration_tokens
 from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.shares.utils.import_utils import is_safetensors_available
 from quark.torch.algorithm.api import apply_pre_quantization_optimization, apply_advanced_quant_algo, add_algorithm_config_by_model
+from quark.torch.algorithm.utils.utils import clear_memory
 import logging
 from quark.torch.quantization.nn.modules import QuantConv2d, QuantConvTranspose2d, QuantLinear, QuantEmbedding, QuantEmbeddingBag
 from quark.torch.utils.pack import create_pack_method
 import quark.torch.kernel
-from transformers.feature_extraction_utils import BatchFeature
+
+if is_transformers_available():
+    from transformers.feature_extraction_utils import BatchFeature
 
 import os
 from pathlib import Path
+from collections import Counter
 
-from quark.torch.quantization.debug import insert_stats_hooks, collect_quantization_statistics
+from quark.torch.quantization.debug import (insert_stats_hooks, collect_quantization_statistics, check_scale_stats)
+
+if is_safetensors_available():
+    from safetensors.torch import load_file
 
 __all__ = ["ModelQuantizer", "load_params"]
 
@@ -50,18 +62,21 @@ QUARK_QUANT_OPS: Dict[str, Type[Union[QuantConv2d, QuantConvTranspose2d, QuantLi
 
 class ModelQuantizer:
     """
-    Provides an API for quantizing deep learning models using PyTorch. This class handles the configuration and processing of the model for quantization based on user-defined parameters. It is essential to ensure that the 'config' provided has all necessary quantization parameters defined. This class assumes that the model is compatible with the quantization settings specified in 'config'.
+    Provides an API for quantizing deep learning models using PyTorch.
 
-    Args:
-        config (Config): Configuration object containing settings for quantization.
+    This class handles the configuration and processing of the model for quantization based on user-defined parameters. It is essential to ensure that the 'config' provided has all necessary quantization parameters defined. This class assumes that the model is compatible with the quantization settings specified in 'config'.
 
+    :param Config config: The model quantization configuration.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, multi_device: bool = False) -> None:
         self.config = config
         self.is_all_dynamic: Optional[bool] = None
         self.is_weight_only: Optional[bool] = None
+        self.is_act_dynamic: Optional[bool] = None
+        self.is_act_contain_scale_per_tensor: Optional[bool] = None
         self._is_accelerate: Optional[bool] = None
+        self.multi_device: bool = multi_device
         self.init_config()
 
     def set_logging_level(self) -> None:
@@ -80,53 +95,59 @@ class ModelQuantizer:
         self,
         model: nn.Module,
         dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] = None
+                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]] = None
     ) -> nn.Module:
         """
-        This function aims to quantize the given PyTorch model to optimize its performance and reduce its size. This function accepts a model and a torch dataloader. The dataloader is used to provide data necessary for calibration during the quantization process. Depending on the type of data provided (either tensors directly or structured as lists or dictionaries of tensors), the function will adapt the quantization approach accordingly.It's important that the model and dataloader are compatible in terms of the data they expect and produce. Misalignment in data handling between the model and the dataloader can lead to errors during the quantization process.
+        Quantizes the given PyTorch model to optimize its performance and reduce its size.
 
-        Parameters:
-            model (nn.Module): The PyTorch model to be quantized. This model should be already trained and ready for quantization.
-            dataloader (Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]], DataLoader[Dict[str, torch.Tensor]]]):
-                The DataLoader providing data that the quantization process will use for calibration. This can be a simple DataLoader returning
-                tensors, or a more complex structure returning either a list of dictionaries or a dictionary of tensors.
+        The dataloader is used to provide data necessary for calibration during the quantization process. Depending on the type of data provided (either tensors directly or structured as lists or dictionaries of tensors), the function will adapt the quantization approach accordingly.
 
-        Returns:
-            nn.Module: The quantized version of the input model. This model is now optimized for inference with reduced size and potentially improved
-            performance on targeted devices.
+        It is important that the model and dataloader are compatible in terms of the data they expect and produce. Misalignment in data handling between the model and the dataloader can lead to errors during the quantization process.
 
-        **Examples**:
+        :param torch.nn.Module model: The PyTorch model to be quantized. This model should be already trained and ready for quantization.
 
-            .. code-block:: python
+        :param Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]], DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] dataloader: The ``torch.utils.data.DataLoader`` providing data that the quantization process will use for calibration. This can be a simple ``DataLoader`` returning tensors, or a more complex structure returning either a list of dictionaries or a dictionary of tensors.
 
-                # Model & Data preparation
-                from transformers import AutoModelForCausalLM, AutoTokenizer
-                model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
-                model.eval()
-                tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
-                from quark.torch.quantization.config.config import Config
-                from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-                from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
-                DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4,
-                                                            observer_cls=PerGroupMinMaxObserver,
-                                                            symmetric=False,
-                                                            scale_type=ScaleType.float,
-                                                            round_method=RoundType.half_even,
-                                                            qscheme=QSchemeType.per_group,
-                                                            ch_axis=1,
-                                                            is_dynamic=False,
-                                                            group_size=128)
-                DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
-                quant_config = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG)
-                from torch.utils.data import DataLoader
-                text = "Hello, how are you?"
-                tokenized_outputs = tokenizer(text, return_tensors="pt")
-                calib_dataloader = DataLoader(tokenized_outputs['input_ids'])
+        :return: The quantized version of the input model. This model is now optimized for inference with reduced size and potentially improved performance on targeted devices.
+        :rtype: torch.nn.Module
 
-                from quark.torch import ModelQuantizer
-                quantizer = ModelQuantizer(quant_config)
-                quant_model = quantizer.quantize(model, calib_dataloader)
+        Example:
 
+        .. code-block:: python
+
+            # Model & Data preparation
+            from torch.utils.data import DataLoader
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            from quark.torch.quantization.config.config import Config
+            from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
+            from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
+
+            from quark.torch import ModelQuantizer
+
+            model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
+            model.eval()
+            tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
+
+            quant_spec = QuantizationSpec(
+                dtype=Dtype.uint4,
+                observer_cls=PerGroupMinMaxObserver,
+                symmetric=False,
+                scale_type=ScaleType.float,
+                round_method=RoundType.half_even,
+                qscheme=QSchemeType.per_group,
+                ch_axis=1,
+                is_dynamic=False,
+                group_size=128
+            )
+            quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+
+            text = "Hello, how are you?"
+            tokenized_outputs = tokenizer(text, return_tensors="pt")
+            calib_dataloader = DataLoader(tokenized_outputs['input_ids'])
+
+            quantizer = ModelQuantizer(quant_config)
+            quant_model = quantizer.quantize(model, calib_dataloader)
         """
         logger.info(f"Quantizing with the quantization configuration:\n{self.config}")
 
@@ -148,6 +169,9 @@ class ModelQuantizer:
         # Step4[optional]: Do calibration
         model = self._do_calibration(model, dataloader)
 
+        # Step5[optional]: Post calib optimization
+        model = self._do_post_calib_optimazation(model)
+
         # Optionally, collect statistics on the quantization errors over the network weights/activations.
         if os.environ.get("QUARK_DEBUG", None) is not None:
             log_dir = Path(os.environ["QUARK_DEBUG"])
@@ -159,17 +183,22 @@ class ModelQuantizer:
             with insert_stats_hooks(model, stats, log_dir):
                 collect_quantization_statistics(model, dataloader, stats, log_dir)
 
+        # Check the scale of the quantized model.
+        if os.getenv("QUARK_CHECK_SCALE") == "1":
+            check_scale_stats(model, self.config)
+
         return model
 
     def _check_model_device(self, model: nn.Module) -> None:
         # using accelerate cause, device can not be cpu or disk, temporarily
         if hasattr(model, 'hf_device_map'):
-            for _, layer_device in model.hf_device_map.items():
-                if layer_device == "cpu" or layer_device == "disk":
-                    raise MemoryError(
-                        f"Out of memory. The available GPU memory is insufficient to load the entire model. Portions of the model have been assigned to '{layer_device}', "
-                        "but Quark does not support loading models simultaneously across GPU, CPU and disk. Please consider freeing up resources or reducing memory usage."
-                    )
+            if not self.multi_device:
+                for _, layer_device in model.hf_device_map.items():
+                    if layer_device == "cpu" or layer_device == "disk":
+                        # TODO: We should handle this for customers.
+                        raise MemoryError(
+                            "Out of memory. The available GPU memory is insufficient to load the entire model. You can try adding '--multi_device' "
+                        )
 
             self._is_accelerate = True
         else:
@@ -177,8 +206,8 @@ class ModelQuantizer:
 
     def _generate_complete_config_by_model(
         self, model: nn.Module, dataloader: Union[DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]],
-                                                  DataLoader[dict[str,
-                                                                  torch.Tensor]], DataLoader[List[BatchFeature]], None]
+                                                  DataLoader[dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]],
+                                                  None]
     ) -> None:
         """
         Generates a complete configuration based on the provided model and dataloader.
@@ -188,14 +217,14 @@ class ModelQuantizer:
     @staticmethod
     def freeze(model: Union[nn.Module, torch.fx.GraphModule]) -> Union[nn.Module, torch.fx.GraphModule]:
         """
-        Freezes the quantized model by replacing FakeQuantize modules with FreezedFakeQuantize modules.
-        If Users want to export quantized model to torch_compile, please freeze model first.
+        Freezes the quantized model by replacing ``FakeQuantize`` modules with ``FreezedFakeQuantize`` modules.`
 
-        Args:
-            model (nn.Module): The neural network model containing quantized layers.
+        In order to be able to compile a quantized model through ``torch.compile``, this method needs to be applied.
 
-        Returns:
-            nn.Module: The modified model with FakeQuantize modules replaced by FreezedFakeQuantize modules.
+        :param torch.nn.Module model: The neural network model containing quantized layers.
+
+        :return: The modified model with ``FakeQuantize`` modules replaced by ``FreezedFakeQuantize`` modules.
+        :rtype: torch.nn.Module
         """
         logger.info("Freeze model start.")
         # ----replace FakeQuantize to FreezedFakeQuantize --------------
@@ -223,7 +252,7 @@ class ModelQuantizer:
         self,
         model: nn.Module,
         dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] = None
+                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]] = None
     ) -> nn.Module:
         return apply_pre_quantization_optimization(model, self.config, dataloader=dataloader)
 
@@ -241,37 +270,94 @@ class ModelQuantizer:
         self,
         model: nn.Module,
         dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] = None
+                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]] = None
     ) -> nn.Module:
         return apply_advanced_quant_algo(model, self.config, self._is_accelerate, dataloader)
 
+    def _check_token_distribution(
+        self, model: nn.Module, dataloader: Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
+                                                  DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]
+    ) -> None:
+        """
+        A helper function that warns when a MoE module
+        received 0 token throughout the calibration process.
+        """
+        threshold = float(os.environ['TOKEN_DISTRIBUTION_THRESHOLD']) if os.getenv(
+            "TOKEN_DISTRIBUTION_THRESHOLD") is not None else 0.0
+        assert 0.0 <= threshold <= 1.0, 'threshold should be in [0.0, 1.0]'
+        total_token_count = count_calibration_tokens(dataloader)
+        if total_token_count == 0:
+            logger.warning("No tokens found in calibration dataset. "
+                           "Skipping token distribution check.")
+            return
+
+        # Get the observer token count for each module
+        token_counts: Counter[str] = Counter()
+        for name, module in model.named_modules():
+            if isinstance(module, ScaledFakeQuantize):
+                if '_input_quantizer' in name:
+                    if module.observer._num_observed_tokens is not None:
+                        token_counts[name.replace("._input_quantizer", "")] = module.observer._num_observed_tokens
+
+        for module_name, token_count in token_counts.items():
+            if (token_count / float(total_token_count)) <= threshold:
+                logger.warning(f"The module: {module_name} "
+                               f"received {token_count} tokens less than {threshold * 100:.1f}% "
+                               f"of all {total_token_count} calibration tokens.")
+
+    # when using multi_device, you must add it here or offload will fail.
+    # The gpu memory used for gradients cannot be cleaned up by torch.cuda.empty_cache()
+    @torch.no_grad()
     def _do_calibration(
         self,
         model: nn.Module,
         dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] = None
+                                   DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]] = None
     ) -> nn.Module:
         # just calib, turn off quantize
-        if self.is_all_dynamic is True:
+        if self.is_all_dynamic:  # TODO: to be deperated
             logger.info("Dynamic quantization, no calibration.")
-        elif self.is_weight_only is True:
-            logger.info("Weight only quantization start.")
+        elif self.is_weight_only or (self.is_act_dynamic and not self.is_act_contain_scale_per_tensor):
+            logger.info("Weight calibration start.")
             for module in model.modules():
                 if isinstance(module, ScaledFakeQuantize):
                     module.enable_observer()
                     module.disable_fake_quant()
 
             # Simply run through the observers to set min_val, max_val, scale and zero_point buffers for the weight and bias.
-            for module in tqdm(model.modules()):
+            named_modules = dict(model.named_modules(remove_duplicate=False))
+            for name, module in tqdm(named_modules.items()):
                 if isinstance(module, QuantMixin):
-                    if module._weight_quantizer is not None and isinstance(module._weight_quantizer, ScaledFakeQuantize) \
-                            and module._weight_quantizer.scale.numel() == 1 and module._weight_quantizer.scale.item() == 1:
-                        _ = module.get_quant_weight(module.weight)
-                    if module._bias_quantizer is not None and isinstance(module._bias_quantizer, ScaledFakeQuantize) \
-                            and module._bias_quantizer.scale.numel() == 1 and module._bias_quantizer.scale.item() == 1:
-                        _ = module.get_quant_bias(module.bias)
-
-            logger.info("Weight only quantization end.")
+                    if module._weight_quantizer is not None and isinstance(module._weight_quantizer,
+                                                                           (ScaledFakeQuantize, SequentialQuantize)):
+                        weight_quantizers: Union[List[ScaledFakeQuantize], SequentialQuantize] = [
+                            module._weight_quantizer
+                        ] if isinstance(module._weight_quantizer, ScaledFakeQuantize) else module._weight_quantizer
+                        if all(quantizer.scale.numel() == 1 and quantizer.scale.item() == 1
+                               for quantizer in weight_quantizers):
+                            # This condition prevents layers that have already been quantized from being quantized again.
+                            if module.weight.device == torch.device("meta"):
+                                weight = module._hf_hook.weights_map["weight"].data
+                                weight = module.get_quant_weight(weight.to(module._hf_hook.execution_device))
+                                del weight
+                            else:
+                                _ = module.get_quant_weight(module.weight)
+                    if module._bias_quantizer is not None and isinstance(module._bias_quantizer,
+                                                                         (ScaledFakeQuantize, SequentialQuantize)):
+                        bias_quantizers: Union[List[ScaledFakeQuantize], SequentialQuantize] = [
+                            module._bias_quantizer
+                        ] if isinstance(module._bias_quantizer, ScaledFakeQuantize) else module._bias_quantizer
+                        if all(quantizer.scale.numel() == 1 and quantizer.scale.item() == 1
+                               for quantizer in bias_quantizers):
+                            if module.bias.device == torch.device("meta"):
+                                bias = module._hf_hook.weights_map["bias"].data
+                                _ = module.get_quant_bias(bias.to(module._hf_hook.execution_device))
+                                del bias
+                            else:
+                                _ = module.get_quant_bias(module.bias)
+                    torch.cuda.empty_cache()
+            clear_memory()
+            logger.info("Weight calibration end.")
         else:
             logger.info("Calibration start.")
             for module in model.modules():
@@ -280,29 +366,45 @@ class ModelQuantizer:
                     module.disable_fake_quant()
 
             assert dataloader is not None
-            for data in tqdm(dataloader):
-                if isinstance(data, (dict, BatchFeature)):
-                    with torch.no_grad():
+
+            with torch.no_grad():
+                for data in tqdm(dataloader):
+                    if isinstance(data, dict):  # pragma: no cover
                         model(**data)
-                else:
-                    with torch.no_grad():
+                    elif is_transformers_available() and isinstance(data, BatchFeature):  # pragma: no cover
+                        _ = model(**data)
+                    else:
                         model(data)
-                torch.cuda.empty_cache()
+
+            self._check_token_distribution(model, dataloader)
+
+            clear_memory()
             logger.info("Calibration end.")
         logger.info("Model quantization has been completed.")
 
         # step5[optional]: do evaluation, turn on quantize
         if (self.config.algo_config) and self.config.algo_config.name in ['gptq'] and hasattr(
-                self.config.algo_config, "static_groups"
-        ) and self.config.algo_config.static_groups is False:  # Dynamic group in GPTQ does not support FakeQuantize and exporting, turn off the FakeQuantize
-            for module in model.modules():
-                if isinstance(module, ScaledFakeQuantize):
-                    module.disable_observer()
-                    module.disable_fake_quant()
+                self.config.algo_config, "static_groups") and self.config.algo_config.static_groups is False:
+            logger.warning(
+                "Dynamic groups in GPTQ (static_groups=false) does not support FakeQuantize for export, turn off FakeQuantize for weight while keeping open FakeQuantize for activation in order to run evaluations."
+            )
+            named_modules = dict(model.named_modules(remove_duplicate=False))
+            for _, module in tqdm(named_modules.items()):
+                if isinstance(module, QuantMixin):
+                    if module._weight_quantizer is not None:
+                        enable_or_disable_quantizer(module._weight_quantizer, enable=False)
+
+                    if module._input_quantizer is not None:
+                        enable_or_disable_quantizer(module._input_quantizer, enable=True)
+
+                    if module._output_quantizer is not None:
+                        enable_or_disable_quantizer(module._output_quantizer, enable=True)
         else:
-            for module in model.modules():
+            for name, module in model.named_modules():
                 if isinstance(module, ScaledFakeQuantize):
-                    if module.is_dynamic:  # For dynamic quantization, observer should be enable and update qparam every time.
+                    if module.is_dynamic and not (
+                            module.is_scale_quant and module.qscheme == QSchemeType.per_tensor
+                    ):  # For dynamic quantization, observer should be enable and update qparam every time.
                         module.enable_observer()
                         module.enable_fake_quant()
                     else:
@@ -312,6 +414,27 @@ class ModelQuantizer:
                     module.enable_fake_quant()
         return model
 
+    def _do_post_calib_optimazation(self, model: nn.Module) -> nn.Module:
+        '''
+        In some case:
+            1. After calibration: get weight, activation and bias scale
+            2. Some hw constrain need let: bias_scale = weight_scale * act_scale
+        After calibration, we need to do some optimization, and then perform QAT/export.
+        '''
+        if self.config.quant_mode is QuantizationMode.eager_mode:
+            # remain this API TODO
+            assert isinstance(model, nn.Module)
+            return model
+        elif self.config.quant_mode is QuantizationMode.fx_graph_mode:
+            '''
+            In calibration: observer will record tensor's distribution. Scale and ZP will be calculated.
+            In some hardware constrain case.
+                e.g. b_scale = w_scale * a_scale  (we need to modify bias_scale after calibration)
+            '''
+            assert isinstance(model, torch.fx.GraphModule)
+            model = post_calib_optimize(model)
+        return model  # type: ignore[no-any-return]
+
     def init_config(self) -> None:
         self.set_logging_level()  # set log level: default info
         logger.info("Configuration checking start.")
@@ -319,35 +442,27 @@ class ModelQuantizer:
         verify_quantization_spec(config)
         # TODO: Verify quant algo
 
-        self.is_all_dynamic = True
-        self.is_weight_only = True
         for field in fields(Config):
             if field.name in ["global_quant_config"]:
                 quantization_config = getattr(config, field.name)
-                is_dynamic, is_weight_only = init_quantization_config(quantization_config)
-                if is_weight_only is False:
-                    self.is_weight_only = is_weight_only
-                if is_dynamic is False:
-                    self.is_all_dynamic = False
+                _config = check_and_adjust_quant_config(quantization_config)
+                setattr(self.config, field.name, _config)
+                self.is_all_dynamic, self.is_weight_only, self.is_act_dynamic, self.is_act_contain_scale_per_tensor = \
+                    init_quantization_config(quantization_config)
             elif field.name in ["layer_type_quant_config", "layer_quant_config"]:
                 quantization_config_list = getattr(config, field.name)
                 for quantization_config in quantization_config_list.values():
-                    is_dynamic, is_weight_only = init_quantization_config(quantization_config)
-                    if is_weight_only is False:
-                        self.is_weight_only = is_weight_only
-                    if is_dynamic is False:
-                        self.is_all_dynamic = False
+                    self.is_all_dynamic, self.is_weight_only, self.is_act_dynamic, self.is_act_contain_scale_per_tensor = \
+                        init_quantization_config(quantization_config)
 
-        config_parsing_result = ''
         if self.is_weight_only:
-            config_parsing_result = 'weight only'
-        elif self.is_all_dynamic:
-            config_parsing_result = 'dynamic'
+            config_parsing_result = 'weight only quantization'
         else:
-            config_parsing_result = 'static'
-        logger.info(
-            f"Configuration checking end. The configuration is effective. This is {config_parsing_result} quantization."
-        )
+            if self.is_act_dynamic:
+                config_parsing_result = 'weight quantization and activation dynamic quantization'
+            else:
+                config_parsing_result = 'weight quantization and activation static quantization'
+        logger.info(f"Configuration checking end. The configuration is effective. This is {config_parsing_result}.")
 
 
 def get_name_and_info(model_info: Dict[str, Any], parent_key: str = "") -> Iterable[Tuple[str, Dict[str, Any]]]:
@@ -362,6 +477,7 @@ def get_name_and_info(model_info: Dict[str, Any], parent_key: str = "") -> Itera
             continue
 
 
+# TODO: This function is only used in load_params, add support for SequentialQuantize later
 def from_float_and_dict(float_module: nn.Module,
                         quant_info: Dict[str, Any],
                         param_dict: Dict[str, torch.Tensor],
@@ -427,6 +543,8 @@ def from_float_and_dict(float_module: nn.Module,
     return quant_module
 
 
+# TODO: add support for SequentialQuantize later
+# TODO: better `reorder` doc
 @log_errors
 def load_params(model: Optional[nn.Module] = None,
                 json_path: str = "",
@@ -436,43 +554,47 @@ def load_params(model: Optional[nn.Module] = None,
                 compressed: bool = False,
                 reorder: bool = True) -> nn.Module:
     """
-    Instantiate a quantized model from saved model files, which is generated from "save_params" function.
+    Instantiates a quantized model from saved model files, which is generated from the :py:func:`quark.torch.export.api.save_params` function.
 
-    Parameters:
-        model (torch.nn.Module): The original Pytorch model.
-        json_path (str): The path of the saved json file. Only available for eager mode quantization.
-        safetensors_path (str): The path of the saved safetensors file. Only available for eager mode quantization.
-        pth_path (str): The path of the saved pth file. Only available for fx_graph mode quantization.
-        quant_mode (QuantizationMode): The quantization mode. The choice includes "QuantizationMode.eager_mode" and "QuantizationMode.fx_graph_mode". Default is "QuantizationMode.eager_mode".
+    :param torch.nn.Module model: The original Pytorch model.
+    :param str json_path: The path of the saved json file. Only available for eager mode quantization.
+    :param str safetensors_path: The path of the saved safetensors file. Only available for eager mode quantization.
+    :param str pth_path: The path of the saved ``.pth`` file. Only available for ``fx_graph`` mode quantization.
+    :param QuantizationMode quant_mode: The quantization mode. The choice includes ``"QuantizationMode.eager_mode"`` and ``"QuantizationMode.fx_graph_mode"``. Default is ``"QuantizationMode.eager_mode"``.
+    :param bool compressed: Whether the quantized model to load is stored using its compressed data type, or in a "fake quantized" format (QDQ).
+    :param bool reorder: Reorder.
 
-    Returns:
-        nn.Module: The reloaded quantized version of the input model.
+    :return: The reloaded quantized version of the input model.
+    :rtype: torch.nn.Module
 
-    **Examples**:
+    Examples:
 
-        .. code-block:: python
+    .. code-block:: python
 
-            # eager mode:
-            from quark.torch import load_params
-            model = load_params(model, json_path=json_path, safetensors_path=safetensors_path)
+        # eager mode:
+        from quark.torch import load_params
+        model = load_params(model, json_path=json_path, safetensors_path=safetensors_path)
 
-        .. code-block:: python
+    .. code-block:: python
 
-            # fx_graph mode:
-            from quark.torch.quantization.api import load_params
-            model = load_params(pth_path=model_file_path, quant_mode=QuantizationMode.fx_graph_mode)
+        # fx_graph mode:
+        from quark.torch.quantization.api import load_params
+        model = load_params(pth_path=model_file_path, quant_mode=QuantizationMode.fx_graph_mode)
 
     Note:
         This function does not support dynamic quantization for now.
     """
 
     if quant_mode is QuantizationMode.eager_mode:
+        if not is_safetensors_available():
+            raise ImportError(
+                "The function `load_params` with `quant_mode=QuantizationMode.eager_mode` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
+            )
+
         if model is None:
             raise ValueError("Model should not be none if loading eager_mode quantized model")
         if json_path == "" or safetensors_path == "":
             raise ValueError("Json_path and safetensors_path should not be empty if loading eager_mode quantized model")
-        import json
-        from safetensors.torch import load_file
         # load model structure and parameters
         with open(json_path, "r") as file:
             model_dict = json.load(file)

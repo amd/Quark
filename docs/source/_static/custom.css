@@ -11,3 +11,10 @@
 .toggle div:not(:first-child) {
     display: none;
 }
+
+.field-list > .field-odd em {
+    font-family: SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,Courier,monospace;
+    font-style: normal;
+    color: #777777;
+    font-size: 85%;
+}

@@ -3,12 +3,17 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Optional, Dict, Any, Union, Tuple
+from typing import Optional, Dict, Any, Union, Tuple, List
 import gc
 import torch
 import torch.nn as nn
+from quark.shares.utils.import_utils import is_transformers_available
+from torch.utils.data import DataLoader
 from quark.torch.quantization.config.type import Dtype
 from quark.shares.utils.log import ScreenLogger, log_errors
+
+if is_transformers_available():
+    from transformers.feature_extraction_utils import BatchFeature
 
 logger = ScreenLogger(__name__)
 
@@ -31,10 +36,16 @@ def calculate_qmin_qmax(dtype: Dtype) -> tuple[Union[int, float], Union[int, flo
         return -128, 127
     elif dtype == Dtype.uint8:
         return 0, 255
+    elif dtype == Dtype.int16:
+        return -2**15, 2**15 - 1
+    elif dtype == Dtype.int32:
+        return -2**31, 2**31 - 1
     elif dtype == Dtype.int4:
         return -8, 7
     elif dtype == Dtype.uint4:
         return 0, 15
+    elif dtype == Dtype.int2:
+        return -2, 1
     elif dtype == Dtype.fp8_e4m3:
         return -448, 448
     elif dtype == Dtype.fp8_e5m2:
@@ -58,6 +69,10 @@ def get_num_bits(dtype: Dtype) -> Optional[Union[int, Tuple[int, int]]]:
         return 4
     elif dtype in [Dtype.int8, Dtype.uint8]:
         return 8
+    elif dtype in [Dtype.int16, Dtype.uint16]:
+        return 16
+    elif dtype in [Dtype.int32]:
+        return 32
     elif dtype == Dtype.fp8_e4m3:
         return (4, 3)
     else:
@@ -175,7 +190,9 @@ def reshape_to_blocks(x: torch.Tensor, block_size: int, axis: int) -> torch.Tens
 
     x = x.transpose(axis, -1)
     x = x.reshape(-1, x.size(-1))
+
     x, _ = pad_to_blocks(x, block_size)
+
     return x.reshape(x.size(0), x.size(1) // block_size, block_size)
 
 
@@ -216,3 +233,58 @@ def t_exponent(t: torch.Tensor) -> torch.Tensor:
         t_exp = exponent_frexp_no_exception(t)
 
         return t_exp
+
+
+def even_round(max_abs: torch.Tensor, dtype: Union[Dtype, str]) -> torch.Tensor:
+    f32_min_normal = 2**(-127 + 1)
+    eps = f32_min_normal * (max_abs == 0).type(max_abs.dtype)
+
+    nan_mask = torch.isnan(max_abs)
+    max_abs = max_abs.to(torch.float32).view(torch.int32)
+    ebits, mbits, emax = get_dtype_params(dtype)
+
+    # Rounding strategy between [2**n, 2**(n+1)]:
+    # x in [2**n, 2**n *(1 + 0.5 + 0.25)[ => round to 2**n
+    # x in [2**n * 1.75, 2**(n + 1)] => round to 2**(n+1)
+    #
+    # `val_to_add` overflows on the exponent bits in case we round up.
+    val_to_add = 1 << (23 - mbits - 1)
+
+    # Mask for the 9 leftmost bits (1 sign, 8 exponent) of the float32 representation.
+    fp32_sign_exponent_mask = ((1 << (8 + 1)) - 1) << 23
+
+    max_abs = (max_abs + val_to_add) & fp32_sign_exponent_mask
+    max_abs = max_abs.view(torch.float32)
+
+    max_abs.masked_fill_(nan_mask, float("nan"))
+
+    # See section 6.3 of https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+    # for the computation below.
+    scale_e8m0_unbiased = torch.floor(torch.log2(max_abs + eps)) - emax
+    scale_e8m0_unbiased = torch.clamp(scale_e8m0_unbiased, min=-127, max=127)
+    scale_float = torch.pow(2, scale_e8m0_unbiased)
+    return scale_float
+
+
+def count_calibration_tokens(
+    dataloader: Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
+                      DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]
+) -> int:
+    total_tokens = 0
+    for data in dataloader:
+        if isinstance(data, dict) or (is_transformers_available() and isinstance(data, BatchFeature)):
+            if "input_ids" in data.keys():
+                if isinstance(data['input_ids'], torch.Tensor):
+                    total_tokens += data['input_ids'].numel()
+                else:
+                    logger.warning("Counting calibration tokens, "
+                                   f"unsupported calibration data type {type(data['input_ids'])}, returning 0.")
+                    return 0
+        elif isinstance(data, torch.Tensor):
+            total_tokens += data.numel()
+        else:
+            logger.warning("Counting calibration tokens, "
+                           f"unsupported calibration data type {type(data)}, returning 0.")
+            return 0
+
+    return total_tokens

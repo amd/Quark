@@ -7,21 +7,39 @@ import sys
 import os
 from pathlib import Path
 import torch
+import warnings
 import argparse
 
+from quark.torch import ModelQuantizer, ModelImporter, ModelExporter, load_params, save_params
+
+from customized_configuration import SUPPORTED_QUANT_SCHEME
+from configuration_preparation import get_config, get_export_config
+from quark.torch.export.api import _move_quantizer_to_dict
+from quark.torch.utils.device import TPDeviceManager
+from transformers import AutoProcessor
+
+# TODO: Using sys.path.append is bad practice.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from llm_utils.data_preparation import get_calib_dataloader
-from llm_utils.export_import_hf_model import export_hf_model, import_hf_model
 from llm_eval.evaluation import eval_model
 from llm_utils.model_preparation import get_model, get_model_type, get_tokenizer, prepare_for_moe_quant
-from configuration_preparation import get_config, get_export_config
-from quark.torch import ModelQuantizer, ModelImporter, ModelExporter, load_params, save_params
-from transformers import AutoProcessor
+
 
 def main(args: argparse.Namespace) -> None:
     # 1. Define original model
     print("\n[INFO]: Loading model ...")
-    model, model_dtype = get_model(args.model_dir, args.data_type, args.device, args.multi_gpu, args.model_attn_implementation)
+
+    # We currently use CPU memory to load large models because GPU memory is typically smaller.
+    # The model will be dispatched to different GPUs based on the total number of GPUs specified by torchrun --nproc-per-node.
+    # TODO:
+    # The current method results in high CPU memory consumption due to multiple copies of the same model.
+    # We plan to address this in the future by implementing a more efficient way to dispatch the model to devices.
+    if args.use_tp:
+        device = "cpu"
+    else:
+        device = args.device
+
+    model, model_dtype = get_model(args.model_dir, args.data_type, device, args.multi_gpu, args.multi_device, args.model_attn_implementation)
     prepare_for_moe_quant(model)
 
     model_type = get_model_type(model)
@@ -34,27 +52,41 @@ def main(args: argparse.Namespace) -> None:
             export_dir.mkdir(parents=True, exist_ok=True)
             processor.save_pretrained(args.output_dir)
 
+    if args.use_tp:
+        TPDeviceManager.tp_mesh_init()
+
     # 2. (Optional) Reload quantized model
     if args.params_load:
         print("\nRestore quantized model from json and safetensors file ...")
         model = load_params(model, json_path=args.json_path, safetensors_path=args.safetensors_path)
         args.skip_quantization = True
     elif args.model_reload:
-        if args.import_file_format == "quark_format":
-            print("\nRestore quantized model from quark_format file ...")
-            importer = ModelImporter(model_info_dir=args.import_model_dir)
-            model = importer.import_model_info(model)
-            args.skip_quantization = True
+        print(f"\nRestore quantized model from {args.import_file_format} file ...")
 
-        elif args.import_file_format == "hf_format":
-            print("\nRestore quantized model from hf_format file ...")
-            model = import_hf_model(model, model_info_dir=args.import_model_dir)
-            args.skip_quantization = True
+        importer = ModelImporter(model_info_dir=args.import_model_dir, saved_format=args.import_file_format, multi_device=args.multi_device)
+        model = importer.import_model_info(model)
+
+        args.skip_quantization = True
+
+    if args.use_tp:
+        if TPDeviceManager._tp_mesh is not None:
+            _move_quantizer_to_dict(model.model)
+
+            device = TPDeviceManager._device
+            tp_mesh = TPDeviceManager._tp_mesh
+
+            model.tensor_parallel(tp_mesh)
+            model.to(device)
+        else:
+            warnings.warn(
+                "Quark tensor parallelism is not initialized properly. Please check the torchrun settings.",
+                UserWarning)
+            return
 
     # 3. Define calibration dataloader(still need this step for weight only and dynamic quantization in Quark for current version.)
     print("\n[INFO]: Loading dataset ...")
     # When the model is small, accelerate will place it on the last device
-    main_device = model.device if args.multi_gpu else args.device
+    main_device = model.device if args.multi_gpu or args.multi_device else args.device
     calib_dataloader = get_calib_dataloader(dataset_name=args.dataset,
                                             processor=processor if multimodal else None,
                                             tokenizer=tokenizer,
@@ -66,24 +98,11 @@ def main(args: argparse.Namespace) -> None:
     # 4. Quantization
     if not args.skip_quantization:
         # 4-1. Set quantization configuration
-        quant_config = get_config(
-            args.quant_scheme,
-            args.group_size,
-            args.model_dir,
-            args.kv_cache_dtype,
-            args.fp8_attention_quant,
-            args.exclude_layers,
-            args.pre_quantization_optimization,
-            args.pre_optimization_config_file_path,
-            args.quant_algo,
-            args.quant_algo_config_file_path,
-            model_type,
-            args.group_size_per_layer,
-        )
-
+        quant_config = get_config(args, model_type)
         # 4-2. In-place replacement of model modules with quantized versions.
-        quantizer = ModelQuantizer(quant_config)
+        quantizer = ModelQuantizer(quant_config, args.multi_device)
         model = quantizer.quantize_model(model, calib_dataloader)
+        args.exclude_layers = quantizer.config.exclude
 
     # 5. (Optional) Model freeze
     if not args.skip_quantization and (args.model_export is not None or args.params_save or args.torch_compile):
@@ -97,49 +116,27 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError("Exporting with 'fake_quantized' only supports custom_mode=quark")
         export_config.json_export_config.weight_format = args.export_weight_format
         exporter = ModelExporter(config=export_config, export_dir=args.output_dir)
+
         # Export option 1: quark format: native json-pth format
         if "quark_format" in args.model_export:
             if args.custom_mode != "quark":
                 raise ValueError("To export the quark_format format, you must use 'args.custom_mode=quark'")
             print("\n[INFO]: Exporting quark native json and pth...")
             with torch.no_grad():
-                quant_config = get_config(
-                    args.quant_scheme,
-                    args.group_size,
-                    args.model_dir,
-                    args.kv_cache_dtype,
-                    args.fp8_attention_quant,
-                    args.exclude_layers,
-                    args.pre_quantization_optimization,
-                    args.pre_optimization_config_file_path,
-                    args.quant_algo,
-                    args.quant_algo_config_file_path,
-                    model_type,
-                    args.group_size_per_layer,
-                )
+                quant_config = get_config(args, model_type)
                 exporter.export_quark_model(model, quant_config=quant_config, custom_mode=args.custom_mode)
 
         # Export option 2: hugging-face safetensors format
         if "hf_format" in args.model_export:
-            if args.export_weight_format == "fake_quantized":
-                raise ValueError("Only 'args.model_export=quark_format' is supported when exporting with 'fake_quantized'")
             print("\n[INFO]: Exporting hugging face format safetensors...")
             with torch.no_grad():
-                quant_config = get_config(
-                    args.quant_scheme,
-                    args.group_size,
-                    args.model_dir,
-                    args.kv_cache_dtype,
-                    args.fp8_attention_quant,
-                    quantizer.config.exclude,
-                    args.pre_quantization_optimization,
-                    args.pre_optimization_config_file_path,
-                    args.quant_algo,
-                    args.quant_algo_config_file_path,
-                    model_type,
-                    args.group_size_per_layer,
+                quant_config = get_config(args, model_type)
+                exporter.export_safetensors_model(
+                    model,
+                    quant_config=quant_config,
+                    custom_mode=args.custom_mode,
+                    tokenizer=tokenizer
                 )
-                export_hf_model(model, export_config, args.model_dir, args.output_dir, quant_config, custom_mode=args.custom_mode)
 
         # Export option 3: onnx
         if "onnx" in args.model_export:
@@ -174,6 +171,8 @@ def main(args: argparse.Namespace) -> None:
         print("\n[INFO]: Evaluating ...")
         eval_model(args, model, main_device, save_metrics_to_csv=args.save_metrics_to_csv, output_dir=args.metrics_output_dir, multimodal=multimodal)
 
+    if args.use_tp:
+        TPDeviceManager.tp_cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -182,6 +181,10 @@ if __name__ == "__main__":
     parser.add_argument("--device", help="Device for running the quantizer", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--multi_gpu", action='store_true')
     parser.add_argument("--model_attn_implementation", help="The attention implementation to use in the model", default="eager", choices=["eager", "sdpa", "flash_attention_2"])
+    parser.add_argument("--multi_device",
+                        action="store_true",
+                        help="we allow you to use this mode to run a model quantization that exceeds the size of your gpu memory if you use args.multi_gpu and still run into OOM "
+                             "now it only supports thr common quantization without algorithms, please note that this can lead to very slow quantization.")
 
     # Argument for calibration dataset
     parser.add_argument("--dataset", help="Dataset for calibration", default="pileval", choices=["pileval", "wikitext", "pileval_for_awq_benchmark", "wikitext_for_gptq_benchmark", "HuggingFaceH4/ultrachat_200k", "ScienceQA"])
@@ -202,21 +205,24 @@ if __name__ == "__main__":
         "Usage: `--group_size_per_layer lm_head 32`.",
     )
     parser.add_argument("--quant_scheme",
-                        help="Supported quant_scheme in the script. \
-                            If there is no suitable quantization strategy among the options, \
-                            users can customize the quantization configuration according to their own needs. \
-                            choices for users: [w_fp8_a_fp8, w_int4_per_channel_sym, w_uint4_per_group_asym, w_int4_per_group_sym]", default=None,
+                        help="Supported quant_scheme in the script. If there is no suitable quantization strategy among the options, users can customize the quantization configuration according to their own needs.", default=None, choices=SUPPORTED_QUANT_SCHEME
                         )
-    parser.add_argument("--kv_cache_dtype", "--kv_cache_quant_scheme", help="KV Cache dtype.", default=None, choices=["fp8", "int8_per_tensor_static", "int8_per_tensor_dynamic", "int8_per_token", "mx_fp8", "fp8_dynamic", "mx_fp6e2m3", "mx_fp6e3m2", None])
+    parser.add_argument("--kv_cache_dtype", "--kv_cache_quant_scheme", help="KV Cache dtype.", default=None, choices=["fp8", "fp8_dynamic", "int8_per_tensor_static", "int8_per_tensor_dynamic", "int8_per_token", "mxfp8", "fp6e2m3_per_group", "mxfp6_e2m3", "fp6e3m2_per_group", "mxfp6_e3m2", "fp4_per_group", "mxfp4", None])
     parser.add_argument("--min_kv_scale", help="Minimum value of KV Cache scale.", type=float, default=0.0)
     parser.add_argument("--pre_quantization_optimization", help="Pre Quantization Optimization.", choices=["rotation", "smoothquant", "quarot"], action='append', default=[])
     parser.add_argument("--pre_optimization_config_file_path", help="The JSON file path of pre-optimization config.", type=str, default=None)
-    parser.add_argument("--quant_algo", help="Quantization Algorithms.", default=None, choices=["awq", "gptq", "autosmoothquant", None])
+    parser.add_argument("--quant_algo", help="Quantization Algorithms.", default=None, choices=["awq", "gptq", "autosmoothquant", "quarot", None])
     parser.add_argument("--quant_algo_config_file_path", help="The JSON file path of quantization algorithm config.", type=str, default=None)
     parser.add_argument('--exclude_layers', type=str,
                         nargs='*',  # Allows to pass a list of strings
                         default=None,  # Default is None to allow model-specific layer exclusion
                         help='List of layers to exclude from quantization. Default depends on model type. Usage: `--exclude_layers "*down_proj*" "*31.fc*" "*k_proj"`. To avoid excluding layers at all, simply use `--exclude_layers` without any argument.')
+    parser.add_argument("--scale_format", help="Scale format", default="e4m3", choices=["e4m3", "float32"])
+    parser.add_argument("--scale_calculation_mode", help="Scale calculation mode", default="even", choices=["even", "floor", "ceil"])
+
+    # Argument for custom quantization
+    parser.add_argument("--fp8_attention_quant", action="store_true", help="Enable fp8 attention quantization")
+    parser.add_argument("--moe_experts_second_step_config", help="The second step quantization config for MoE experts weights.", type=str, default=None, choices=["w_int4_per_channel_sym"])
 
     # Argument for reloading
     parser.add_argument("--model_reload", help="safetensors or pth model reload", action="store_true")
@@ -232,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--torch_compile", help="Model torch compile", action="store_true")
     parser.add_argument("--pack_method", type=str, help="Pack method for awq_export", default="reorder", choices=["order", "reorder"])
     parser.add_argument("--output_dir", default="exported_model")
+
     parser.add_argument("--weight_matrix_merge", help="Whether to merge weight matrix when dump llm-specific quantized model", action='store_true')
     parser.add_argument("--export_weight_format", type=str, help="Whether to export weights compressed or uncompressed", default="real_quantized", choices=["fake_quantized", "real_quantized"])
 
@@ -253,7 +260,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_eval_data", help="Number of samples for evaluation. The default value is -1, which means the entire dataset is used for evaluation.", type=int, default=-1)
     parser.add_argument("--num_fewshot", type=int, default=None, metavar="N", help="Number of examples in few-shot context")
     parser.add_argument("--apply_chat_template", action="store_true", help="Providing `--apply_chat_template` without an argument will apply the default chat template to the prompt.")
-    parser.add_argument("--fp8_attention_quant", action="store_true", help="Enable fp8 attention quantization")
+    parser.add_argument("--use_mlperf_rouge", action="store_true")
+    parser.add_argument("--eval_data_dir", help="Dataset for evaluation", type=str, default=None)
+    parser.add_argument("--use_tp", action="store_true", help="Enable tensor parallelism exclusively for model evaluation.")
 
     args = parser.parse_args()
 

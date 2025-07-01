@@ -3,7 +3,6 @@ build-backend = "setuptools.build_meta"
 requires = ["setuptools >= 61.0"]
 
 [project]
-# version="0.8rc4"
 authors = [{ name = 'AMD' }]
 classifiers = [
     'Development Status :: 5 - Production/Stable',
@@ -25,7 +24,7 @@ maintainers = [
 ]
 name = "amd-quark"
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.9"
 
 [project.urls]
 documentation = "https://quark.docs.amd.com"

@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 import torch
-from torch.utils.data import DataLoader, TensorDataset, Subset
+from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 from typing import List, Optional, Dict, Any, Union
 from datasets import load_dataset
-from transformers import PreTrainedTokenizer, AutoTokenizer, AutoProcessor
+from transformers import PreTrainedTokenizer, AutoTokenizer, AutoProcessor, default_data_collator
 from PIL import Image
 from tqdm import tqdm
+
 
 def get_pileval(tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, device: Optional[str], seed: int = 0) -> DataLoader[torch.Tensor]:
     dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation").shuffle(seed=seed)
@@ -37,7 +38,6 @@ def get_pileval(tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, devi
     batch_inps = torch.cat(train_dataset, dim=0)
 
     return batch_inps
-
 
 
 def get_wikitext2(tokenizer: PreTrainedTokenizer,
@@ -172,6 +172,7 @@ def get_calib_dataloader_to_dict(dataset_name: str = "cnn_dailymail",
 
     return calib_dataloader
 
+
 def get_ultrachat(dataset_name: str = "HuggingFaceH4/ultrachat_200k",
                   tokenizer: AutoTokenizer = None,
                   batch_size: int = 1,
@@ -207,6 +208,7 @@ def get_ultrachat(dataset_name: str = "HuggingFaceH4/ultrachat_200k",
                                                                              shuffle=False)  # type: ignore
     return calib_dataloader
 
+
 def get_calib_dataloader(
         dataset_name: str, processor: AutoProcessor = None, **kwargs: Any
 ) -> Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]], DataLoader[Dict[str, torch.Tensor]]]:
@@ -221,11 +223,78 @@ def get_calib_dataloader(
     else:
         raise NotImplementedError
 
-def get_dataset(path, name, subset, tokenizer, seqlen):
-    text = load_dataset(path=path, name=name, split=subset)
+
+class ConcatDataset(Dataset):
+    def __init__(self, dataset, max_length=4096):
+        self.dataset = dataset
+        self.samples = []
+        buffer = {"input_ids": [], "attention_mask": [], "labels": []}
+        for sample in self.dataset:
+            buffer = {k: v + sample[k] for k, v in buffer.items()}
+            while len(next(iter(buffer.values()))) > max_length:
+                self.samples.append({k: v[:max_length] for k, v in buffer.items()})
+                buffer = {k: v[max_length:] for k, v in buffer.items()}
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+    def __len__(self):
+        return len(self.samples)
+
+
+def get_trainer_dataset(path, subset, tokenizer, max_train_samples, max_eval_samples, seqlen=1024):
+    def tokenize_add_label(sample):
+        if path in ['wikitext']:
+            input_text = sample['text']
+
+        elif path in ['shibing624/AdvertiseGen']:
+            input_text = sample['content'] + sample['summary']
+
+        input_ids = tokenizer.encode(tokenizer.bos_token + input_text + tokenizer.eos_token, add_special_tokens=False)
+
+        sample = {
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "labels": input_ids,
+        }
+        return sample
+
     if path in ['wikitext']:
+        train_dataset = load_dataset(path=path, name='wikitext-2-raw-v1', split=subset, trust_remote_code=True)
+    elif path in ['shibing624/AdvertiseGen']:
+        train_dataset = load_dataset(path=path, split=subset, trust_remote_code=True)
+
+    # Using wikitext as default eval_dataset
+    eval_dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test', trust_remote_code=True)
+
+    if max_train_samples:
+        max_train_samples = min(len(train_dataset), max_train_samples)
+        train_dataset = train_dataset.select(range(max_train_samples))
+        print(f'select {max_train_samples} from training data to build train dataset ...')
+
+    if max_eval_samples:
+        max_eval_samples = min(len(eval_dataset), max_eval_samples)
+        eval_dataset = eval_dataset.select(range(max_eval_samples))
+        print(f'select {max_eval_samples} from test data to build eval dataset ...')
+
+
+    train_dataset = train_dataset.map(tokenize_add_label, remove_columns=list(train_dataset.features))
+    train_dataset = ConcatDataset(train_dataset, seqlen)
+
+
+    eval_dataset = eval_dataset.map(tokenize_add_label, remove_columns=list(eval_dataset.features))
+    eval_dataset = ConcatDataset(eval_dataset, seqlen)
+    return dict(
+        train_dataset=train_dataset, data_collator=default_data_collator, eval_dataset=eval_dataset
+    )
+
+
+def get_dataset(path, subset, tokenizer, seqlen):
+    if path in ['wikitext']:
+        text = load_dataset(path=path, name='wikitext-2-raw-v1', split=subset)
         strtext = "\n\n".join(text['text'])
     elif path in ['shibing624/AdvertiseGen']:
+        text = load_dataset(path=path, split=subset)
         strtext = "\n\n".join(str(i[0]) + str(i[1]) for i in list(zip(list(text['content']), list(text['summary']))))
     tokenized_text = tokenizer(strtext, return_tensors='pt')
     tokenized_text_len = tokenized_text.input_ids.shape[1]
@@ -238,8 +307,9 @@ def get_dataset(path, name, subset, tokenizer, seqlen):
     dataset = TensorDataset(sample)
     return dataset
 
-def get_loader(path, name, subset, tokenizer, seqlen=1024, num_batch=-1, batch_size=1, shuffle=False):
-    dataset = get_dataset(path, name, subset, tokenizer, seqlen)
+
+def get_loader(path, subset, tokenizer, seqlen=1024, num_batch=-1, batch_size=1, shuffle=False):
+    dataset = get_dataset(path, subset, tokenizer, seqlen)
     data_size = len(dataset)
 
     if num_batch != -1:  # num_batch == -1 using the whole dataset
@@ -250,10 +320,12 @@ def get_loader(path, name, subset, tokenizer, seqlen=1024, num_batch=-1, batch_s
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return data_loader
 
+
 # for VLM
 def image_parser(image_file, sep=','):
     out = image_file.split(sep)
     return out
+
 
 def load_image(image_file):
     if image_file.startswith("http") or image_file.startswith("https"):
@@ -263,12 +335,14 @@ def load_image(image_file):
         image = Image.open(image_file).convert("RGB")
     return image
 
+
 def load_images(image_files):
     out = []
     for image_file in image_files:
         image = load_image(image_file)
         out.append(image)
     return out
+
 
 def get_scienceqa(dataset_name: str = "ScienceQA_VAL",
                   processor: AutoProcessor = None,
@@ -307,6 +381,7 @@ def get_scienceqa(dataset_name: str = "ScienceQA_VAL",
 
     calib_dataloader: DataLoader[List[BatchFeature]] = DataLoader(traindataset, batch_size=None, shuffle=False)
     return calib_dataloader
+
 
 def message_to_promptimg(message, dataset=None):
     num_images = len([x for x in message if x['type'] == 'image'])

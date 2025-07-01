@@ -5,13 +5,11 @@
 
 #include "bfp/cuda/bfp_kernel.h"
 #include <stdio.h>
-#include <cstdint>
 #include <string>
+#include <algorithm>
 #include <cuda.h>
 #include <curand_kernel.h>
 #include <cuda_runtime.h>
-
-
 
 // Get a unsinged value of the biased exponent.
 __device__ uint32_t GetExponent(float v) {
@@ -24,7 +22,7 @@ __device__ uint32_t GetExponent(float v) {
 __device__ uint32_t GetMaxExponent(const float* input, int n) {
   uint32_t max_exp = 0;
   for (int i = 0; i < n; i++) {
-    max_exp = max(max_exp, GetExponent(input[i]));
+    max_exp = std::max(max_exp, GetExponent(input[i]));
   }
   return max_exp;
 }
@@ -51,7 +49,7 @@ __device__ float StochsticRound(float v, int seed) {
 }
 
 __device__ float dpu_round(float x) {
-  return ((x < 0) && (x - floor(x) == 0.5))
+  return ((x < 0) && (x - std::floor(x) == 0.5))
               ? std::ceil(x)
               : std::round(x);
 }
@@ -64,28 +62,28 @@ __device__ float py3_round(float x) {
   else return x_floor;
 }
 
-namespace vai_q_cuda {
+namespace quark_onnx {
 
-  typedef union value_convert {
-    std::uint32_t u;
-    std::int32_t i;
+  typedef union value_convert_gpu {
+    uint32_t u;
+    int32_t i;
     float f;
-  } value_convert_t;
+  } value_convert_gpu_t;
 
-   inline __device__ std::uint32_t f_to_u(float data) {
-    value_convert_t vc{};
+   inline __device__ uint32_t f_to_u_gpu(float data) {
+    value_convert_gpu_t vc{};
     vc.f = data;
     return vc.u;
   }
 
-   inline __device__ float u_to_f(std::uint32_t data) {
-    value_convert_t vc{};
+   inline __device__ float u_to_f_gpu(uint32_t data) {
+    value_convert_gpu_t vc{};
     vc.u = data;
     return vc.f;
   }
   
-  float __device__ float2bfloat_cuda(const float x) {
-    std::uint32_t itmp = f_to_u(x);           // float32 bitwise to int32
+  float __device__ float2bfloat_gpu(const float x) {
+    uint32_t itmp = f_to_u_gpu(x);           // float32 bitwise to int32
     if ((itmp & 0x00008000) == 0x00008000) {  // half even
       if ((itmp & 0xFFFF) > 0x00008000 ||
           (((itmp & 0xFFFF) == 0x00008000) && (itmp & 0x10000) == 0x10000)) {
@@ -93,7 +91,7 @@ namespace vai_q_cuda {
       }
     }
     itmp &= 0xFFFF0000;
-    return u_to_f(itmp);  // int32 bitwise to float32
+    return u_to_f_gpu(itmp);  // int32 bitwise to float32
   }
 }
 
@@ -103,8 +101,7 @@ __global__ void BFloatCUDAKernel(float* input, int num_threads)
   if (index >= num_threads) {
     return;
   }
-  input[index] = vai_q_cuda::float2bfloat_cuda(input[index]);
-
+  input[index] = quark_onnx::float2bfloat_gpu(input[index]);
 }
 
 __global__ void BFPCUDAKernel(const float* input,
@@ -140,8 +137,8 @@ __global__ void BFPCUDAKernel(const float* input,
   int shared_exp_value = static_cast<int>(shared_exp) - 127;
   // 1 sign bit, 8 exp bits.
   int m_bits = bit_width - 9;
-  auto scale = pow(2.0, shared_exp_value - (m_bits - 1));
-  auto max_v = pow(2.0, shared_exp_value + 1) - scale;
+  auto scale = std::pow(2.0, shared_exp_value - (m_bits - 1));
+  auto max_v = std::pow(2.0, shared_exp_value + 1) - scale;
   for (int i = 0; i < block_size; i++) {
     // Output +-0/NaN/Inf as is.
     auto index = offset + i;
@@ -165,7 +162,7 @@ __global__ void BFPCUDAKernel(const float* input,
       default:
         break;
       }
-      output[index] = max(-max_v, min(rounded_scaled_x * scale, max_v));
+      output[index] = std::max(-max_v, std::min(rounded_scaled_x * scale, max_v));
     }
   }
 }
@@ -203,7 +200,7 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
   int shared_exp_value = static_cast<int>(shared_exp) - 127;
   // 1 sign bit, 8 exp bits.
   int m_bits = bit_width - 9;
-  auto scale = pow(2.0, shared_exp_value - (m_bits - 1));
+  auto scale = std::pow(2.0, shared_exp_value - (m_bits - 1));
   
   for (int i = 0; i < block_size; i++) {
     // Output +-0/NaN/Inf as is.
@@ -262,13 +259,13 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
         break;
       }
       // Clamp(x, min_v, max_v)
-      output[index] = max(min_v, min(x, max_v));
+      output[index] = std::max(min_v, min(x, max_v));
     }
   }
 }
 void LaunchBFloatCUDAKernel(float* input, int n){
   int threads_per_block = 256;
-  int blocks = static_cast<int>(ceil(static_cast<float>(n) / threads_per_block));
+  int blocks = static_cast<int>(std::ceil(static_cast<float>(n) / threads_per_block));
   cudaDeviceSynchronize();
   BFloatCUDAKernel<<<blocks, threads_per_block>>>(input, n);
   cudaDeviceSynchronize();
@@ -287,7 +284,7 @@ void LaunchBFPCUDAKernel(
   
   int threads_per_block = 256;
   int blocks = static_cast<int>(
-      ceil(static_cast<float>(threads) / threads_per_block));
+      std::ceil(static_cast<float>(threads) / threads_per_block));
   cudaDeviceSynchronize();
   if (use_compiler_version_cpu_kernel == 0) {
     BFPCUDAKernel<<<blocks, threads_per_block>>>(
@@ -419,7 +416,7 @@ void LaunchBFPPrimeCUDAKernel(
 
   int threads_per_block = 256;
   int blocks = static_cast<int>(
-      ceil(static_cast<float>(threads) / threads_per_block));
+      std::ceil(static_cast<float>(threads) / threads_per_block));
 
   cudaDeviceSynchronize();
   BFPPrimeCUDAKernel<<<blocks, threads_per_block>>>(

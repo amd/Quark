@@ -11,7 +11,7 @@ import json
 from transformers import AutoConfig
 from typing import Optional, Union
 
-from lm_eval import utils
+from lm_eval import evaluator
 from lm_eval.models.huggingface import HFLM
 from lm_eval.api.model import LM
 from lm_eval.models.utils import (
@@ -21,7 +21,10 @@ from lm_eval.models.utils import (
 from optimum.onnxruntime import ORTModelForCausalLM
 from onnxruntime import InferenceSession
 
-eval_logger = utils.eval_logger
+from quark.torch import ModelImporter
+
+
+eval_logger = evaluator.eval_logger
 
 
 """
@@ -82,19 +85,12 @@ class LMEvalModelWrapper(HFLM):
             self._model = self._model.to(get_dtype(dtype))
 
         if self.model_reload:
-            from quark.torch import ModelImporter
-            from llm_utils.export_import_hf_model import import_hf_model
-            if self.import_file_format == "quark_format":
-                importer = ModelImporter(model_info_dir=self.import_model_dir)
-                self._model = importer.import_model_info(self._model)
-                if(dtype != "auto"):
-                    self._model = self._model.to(get_dtype(dtype))
-                eval_logger.info(f"LOADING MODEL IN DTYPE:{self._model.dtype}")
-            elif self.import_file_format == "hf_format":
-                self._model = import_hf_model(self._model, model_info_dir=self.import_model_dir)
-                if(dtype != "auto"):
-                    self._model = self._model.to(get_dtype(dtype))
-                eval_logger.info(f"LOADING MODEL IN DTYPE:{self._model.dtype}")
+            importer = ModelImporter(model_info_dir=self.import_model_dir, saved_format=self.import_file_format)
+            self._model = importer.import_model_info(self._model)
+
+            if dtype != "auto":
+                self._model = self._model.to(get_dtype(dtype))
+            eval_logger.info(f"LOADING MODEL IN DTYPE:{self._model.dtype}")
 
         if self.import_file_format == "onnx_format":
             self.session = InferenceSession(self.import_model_dir + "/model.onnx", providers= ["CPUExecutionProvider"])

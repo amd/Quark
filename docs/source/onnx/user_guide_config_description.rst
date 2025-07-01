@@ -7,14 +7,14 @@ Configuration of quantization in ``AMD Quark for ONNX`` is set by Python ``datac
 
 The ``Config`` should be like:
 
-.. code:: python
+.. code-block:: python
 
    from quark.onnx.quantization.config import Config, get_default_config
    config = Config(global_quant_config=...)
 
 We define some default global configurations, including ``XINT8`` and ``U8S8_AAWS``, which can be used like this:
 
-.. code:: python
+.. code-block:: python
 
    quant_config = get_default_config("U8S8_AAWS")
    config = Config(global_quant_config=quant_config)
@@ -38,41 +38,20 @@ AMD Quark for ONNX also provides more advanced default configurations to help yo
 -  ``UINT8_DYNAMIC_QUANT``: Perform dynamic activation, uint8 weight quantization.
 -  ``XINT8``: Perform uint8 activation, int8 weight, optimized for NPU quantization.
 -  ``XINT8_ADAROUND``: Perform uint8 activation, int8 weight, optimized for NPU quantization. The adaround fast finetune applies to preserve quantized accuracy.
--  ``XINT8_ADAQUANT``: Perform uint8 activation, int8    weight, optimized for NPU quantization. The adaquant fast finetune
-   applies to preserve quantized accuracy.
--  ``S8S8_AAWS``: Perform int8 asymmetric activation,
-   int8 symmetric weight quantization.
--  ``S8S8_AAWS_ADAROUND``: Perform int8 asymmetric
-   activation, int8 symmetric weight quantization. The adaround fast
-   finetune applies to preserve quantized accuracy.
--  ``S8S8_AAWS_ADAQUANT``: Perform int8 asymmetric
-   activation, int8 symmetric weight quantization. The adaquant fast
-   finetune applies to preserve quantized accuracy.
--  ``U8S8_AAWS``: Perform uint8 asymmetric activation,
-   int8 symmetric weight quantization.
--  ``U8S8_AAWS_ADAROUND``: Perform uint8 asymmetric activation, int8 symmetric weight
-   quantization. The adaround fast finetune applies to preserve
-   quantized accuracy.
--  ``U8S8_AAWS_ADAQUANT``: Perform uint8 asymmetric activation, int8 symmetric weight
-   quantization. The adaquant fast finetune applies to preserve
-   quantized accuracy.
--  ``S16S8_ASWS``: Perform int16 symmetric activation, int8 symmetric weight
-   quantization.
--  ``S16S8_ASWS_ADAROUND``: Perform int16 symmetric activation, int8 symmetric weight
-   quantization. The adaround fast finetune applies to preserve
-   quantized accuracy.
--  ``S16S8_ASWS_ADAQUANT``: Perform int16 symmetric activation, int8 symmetric weight
-   quantization. The adaquant fast finetune applies to preserve
-   quantized accuracy.
--  ``A8W8``: Perform int8 symmetric activation,
-   int8 symmetric weight quantization and optimize for deployment.
--  ``A16W8``: Perform int16 symmetric activation,
-   int8 symmetric weight quantization and optimize for deployment.
--  ``U16S8_AAWS``: Perform uint16 asymmetric activation, int8 symmetric weight
-   quantization.
--  ``U16S8_AAWS_ADAROUND``: Perform uint16 asymmetric activation, int8 symmetric weight
-   quantization. The adaround fast finetune applies to preserve
-   quantized accuracy.
+-  ``XINT8_ADAQUANT``: Perform uint8 activation, int8 weight, optimized for NPU quantization. The adaquant fast finetune applies to preserve quantized accuracy.
+-  ``S8S8_AAWS``: Perform int8 asymmetric activation, int8 symmetric weight quantization.
+-  ``S8S8_AAWS_ADAROUND``: Perform int8 asymmetric activation, int8 symmetric weight quantization. The adaround fast finetune applies to preserve quantized accuracy.
+-  ``S8S8_AAWS_ADAQUANT``: Perform int8 asymmetric activation, int8 symmetric weight quantization. The adaquant fast finetune applies to preserve quantized accuracy.
+-  ``U8S8_AAWS``: Perform uint8 asymmetric activation int8 symmetric weight quantization.
+-  ``U8S8_AAWS_ADAROUND``: Perform uint8 asymmetric activation, int8 symmetric weight quantization. The adaround fast finetune applies to preserve quantized accuracy.
+-  ``U8S8_AAWS_ADAQUANT``: Perform uint8 asymmetric activation, int8 symmetric weight quantization. The adaquant fast finetune applies to preserve quantized accuracy.
+-  ``S16S8_ASWS``: Perform int16 symmetric activation, int8 symmetric weight quantization.
+-  ``S16S8_ASWS_ADAROUND``: Perform int16 symmetric activation, int8 symmetric weight quantization. The adaround fast finetune applies to preserve quantized accuracy.
+-  ``S16S8_ASWS_ADAQUANT``: Perform int16 symmetric activation, int8 symmetric weight quantization. The adaquant fast finetune applies to preserve quantized accuracy.
+-  ``A8W8``: Perform int8 symmetric activation, int8 symmetric weight quantization and optimize for deployment.
+-  ``A16W8``: Perform int16 symmetric activation, int8 symmetric weight quantization and optimize for deployment.
+-  ``U16S8_AAWS``: Perform uint16 asymmetric activation, int8 symmetric weight quantization.
+-  ``U16S8_AAWS_ADAROUND``: Perform uint16 asymmetric activation, int8 symmetric weight quantization. The adaround fast finetune applies to preserve quantized accuracy.
 -  ``U16S8_AAWS_ADAQUANT``: Perform uint16 asymmetric activation, int8 symmetric weight quantization. The adaquant fast finetune applies to preserve quantized accuracy.
 -  ``BF16``: Perform BFloat16 activation, BFloat16 weight quantization.
 -  ``BFP16``: Perform BFP16 activation, BFP16 weight quantization.
@@ -81,7 +60,7 @@ AMD Quark for ONNX also provides more advanced default configurations to help yo
 Customized Configurations
 -------------------------
 
-Besides the default configurations in AMD Quark for ONNX, you can also customize the quantization configuration like the following example: 
+Besides the default configurations in AMD Quark for ONNX, you can also customize the quantization configuration like the following example:
 
 .. toctree::
    :hidden:
@@ -90,7 +69,7 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
 
    Full List of Quantization Config Features <appendix_full_quant_config_features>
 
-.. code:: python
+.. code-block:: python
 
    from quark.onnx import ModelQuantizer, PowerOfTwoMethod, QuantType
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
@@ -116,7 +95,7 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
        enable_npu_transformer=False,
        convert_fp16_to_fp32=False,
        convert_nchw_to_nhwc=False,
-       include_cle=False,
+       include_cle=True,
        include_sq=False,
        extra_options={},)
    config = Config(global_quant_config=quant_config)

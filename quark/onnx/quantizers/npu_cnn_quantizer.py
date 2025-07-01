@@ -94,6 +94,10 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         self.is_activation_symmetric = True
         self.int32_bias = False if extra_options is None or "Int32Bias" not in extra_options else extra_options[
             "Int32Bias"]
+        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
+            "Int16Bias"]
+        if self.int16_bias:
+            self.int32_bias = True
 
     def quantize_model(self) -> Any:
         annotate_tensors = get_annotate_tensors(self.model.model)
@@ -267,6 +271,9 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         convert_instance_norm_to_dpu_version = False
         if "ConvertInstanceNormToDPUVersion" in self.extra_options:
             convert_instance_norm_to_dpu_version = self.extra_options["ConvertInstanceNormToDPUVersion"]
+        convert_clip_to_dpu_version = False
+        if "ConvertClipToDPUVersion" in self.extra_options:
+            convert_clip_to_dpu_version = self.extra_options["ConvertClipToDPUVersion"]
 
         self.model.model, self.nodes_to_exclude = simulate_transforms(
             self.model.model,
@@ -280,4 +287,5 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
             convert_reduce_mean_to_dpu_version=convert_reduce_mean_to_dpu_version,
             convert_softmax_to_dpu_version=convert_softmax_to_dpu_version,
             convert_instance_norm_to_dpu_version=convert_instance_norm_to_dpu_version,
+            convert_clip_to_dpu_version=convert_clip_to_dpu_version,
         )

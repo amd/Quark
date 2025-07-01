@@ -33,6 +33,7 @@ ONNX Examples in AMD Quark for This Release
    Fast Finetune AdaRound <example_quark_onnx_adaround>
    Fast Finetune AdaQuant <example_quark_onnx_adaquant>
    Cross-Layer Equalization (CLE) <example_quark_onnx_cle>
+   Layer-wise Percentile <example_quark_onnx_layerwise_percentile>
    GPTQ <example_quark_onnx_gptq>
    Mixed Precision <example_quark_onnx_mixed_precision>
    Smooth Quant <example_quark_onnx_smoothquant>
@@ -68,6 +69,12 @@ ONNX Examples in AMD Quark for This Release
    Quantizing an Llama-2-7b Model Using the ONNX MatMulNBits <example_quark_onnx_weights_only_quant_int4_matmul_nbits_llama2>
    Quantizating Llama-2-7b model using MatMulNBits <example_quark_onnx_weights_only_quant_int8_qdq_llama2>
 
+.. toctree::
+   :caption: Crypto Mode
+   :maxdepth: 1
+
+   Quantizing a ResNet50 model in crypto mode <example_quark_onnx_crypto_mode>
+
 .. _ryzenai_onnx_examples:
 .. toctree::
    :caption: Ryzen AI Quantization
@@ -75,3 +82,15 @@ ONNX Examples in AMD Quark for This Release
 
    Best Practice for Quantizing an Image Classification Model <image_classification_example_quark_onnx_ryzen_ai_best_practice>
    Best Practice for Quantizing an Object Detection Model  <object_detection_example_quark_onnx_ryzen_ai_best_practice>
+
+.. toctree::
+   :caption: Hugging Face TIMM Models
+   :maxdepth: 1
+
+   Hugging Face TIMM Quantization <hugging_face_timm_quantization>
+
+.. toctree::
+   :caption: Yolo_nas and Yolox Models
+   :maxdepth: 1
+
+   Yolo_nas and Yolox Quantization <example_quark_onnx_yolo_quantization>

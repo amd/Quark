@@ -53,9 +53,11 @@ def main(args: argparse.Namespace) -> None:
         quant_config.extra_options['FastFinetune']['LearningRate'] = 1e-6
         # Use GPU to accelerate the fast finetuning process.
         if args.device != 'cpu':
-            if 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-                quant_config.extra_options['FastFinetune']['InferDevice'] = 'cuda:0'
             quant_config.extra_options['FastFinetune']['OptimDevice'] = 'cuda:0'
+            if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+                quant_config.extra_options['FastFinetune']['InferDevice'] = 'cuda:0'
+            elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+                quant_config.extra_options['FastFinetune']['InferDevice'] = 'cuda:0'
     config = Config(global_quant_config=quant_config)
     print(f"The configuration for quantization is {config}")
 

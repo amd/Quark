@@ -11,29 +11,23 @@ AMD Quark for Pytorch
 Environment Issues
 ~~~~~~~~~~~~~~~~~~
 
-**Issue 1**:
+**Known Issue**: Windows CPU mode does not support fp16.
 
-Windows CPU mode does not support fp16.
-
-**Solution**:
-
-Because of torch `issue <https://github.com/pytorch/pytorch/issues/52291>`__\ , Windows CPU mode cannot perfectly support fp16.
+Because of an existing PyTorch `issue <https://github.com/pytorch/pytorch/issues/52291>`__\ , Windows CPU mode cannot perfectly support fp16.
 
 C++ Compilation Issues
 ~~~~~~~~~~~~~~~~~~~~~~
 
-**Issue 1**:
-
-Stuck in the compilation phase for a long time (over ten minutes), the terminal shows like:
+**Known Issue**: Stuck in the compilation phase for a long time (over ten minutes), and terminal shows:
 
 .. code-block:: bash
 
    [QUARK-INFO]: Configuration checking start.
-   [QUARK-INFO]: C++ kernel build directory [cache folder path]/torch_extensions/py310...
+   [QUARK-INFO]: C++ kernel build directory [cache folder path]/torch_extensions/py39...
 
 **Solution**:
 
-delete the cache folder ``[cache folder path]/torch_extensions`` and run AMD Quark again.
+Delete the cache folder ``[cache folder path]/torch_extensions`` and run AMD Quark again.
 
 .. raw:: html
 

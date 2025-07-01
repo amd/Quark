@@ -11,7 +11,7 @@
 
 #include "core/framework/float16.h"
 
-namespace vai_q {
+namespace quark_onnx {
 
 static void PrepareForBF16(const Ort::ConstValue& data,
                            std::vector<float>& buf) {
@@ -98,4 +98,4 @@ void KernelCustomInstanceNormalization::Compute(OrtKernelContext* context) {
   instance_normalization(pinput, batch, channel, size, means_, variances_, gamma_, beta_, epsilon_, poutput);
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

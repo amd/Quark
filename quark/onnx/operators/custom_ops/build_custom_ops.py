@@ -4,50 +4,33 @@
 #
 
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Union
 import torch
 from torch.utils.cpp_extension import load
 import os
 import time
 import platform
 from quark.shares.utils.log import ScreenLogger, log_errors
-import onnxruntime as ort
-import shutil
 import logging
-from packaging import version
 
 logger = ScreenLogger(__name__)
 
 path = Path(__file__).parent
+
 folder_name = "lib"
-file_name = "libcustom_ops"
-
-
-def remove_compile_files(dir_path: str) -> None:
-    if not os.path.exists(dir_path):
-        return
-    for root, dirs, files in os.walk(dir_path):
-        for file in files:
-            try:
-                os.remove(os.path.join(root, file))
-            except OSError as e:
-                logger.info(f"removing file: {e}")
-
-
-def is_library_file(file_path: str) -> bool:
-    if not os.path.exists(file_path):
-        return False
-
-    # Here determine whether it's a library file,
-    # simply by looking at its size
-    base_size = 1024
-    file_size = os.path.getsize(file_path)
-    return file_size > base_size
+library_name = "custom_ops"
 
 
 @log_errors
-def compile_custom_op_cpu(kernel_name: str, compile_dir: str, extra_cuda_cflags: List[str],
-                          extra_cflags: List[str]) -> Any:
+def compile_custom_op_cpu(name: str, build_directory: Union[str, None], extra_cuda_cflags: List[str],
+                          extra_cflags: List[str]) -> None:
+    """Compile CPU version custom ops library using torch's cpp_extension.
+    :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
+    :param build_directory: Optional path to use as build workspace
+    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
+    :param extra_cflags: Optional list of compiler flags to forward to the build
+    """
+    extra_cflags.append("-DNO_GPU")  # It has a higher priority than USE_ROCM
     try:
         sources_list = [
             str(path / "src/custom_op_library.cc"),
@@ -64,9 +47,9 @@ def compile_custom_op_cpu(kernel_name: str, compile_dir: str, extra_cuda_cflags:
         if '-DTORCH_OP' in extra_cflags:
             sources_list.append(str(path / "src/torch_ops.cc"))
         logger.info("Start compiling CPU version of custom ops library.")
-        load(name=kernel_name,
+        load(name=name,
              sources=sources_list,
-             build_directory=compile_dir,
+             build_directory=build_directory,
              extra_cuda_cflags=extra_cuda_cflags,
              extra_cflags=extra_cflags,
              extra_include_paths=[str(path / "include"), str(path / "src")],
@@ -77,13 +60,22 @@ def compile_custom_op_cpu(kernel_name: str, compile_dir: str, extra_cuda_cflags:
             logger.info("CPU version of custom ops library compiled successfully.")
         else:
             raise RuntimeError("CPU version of custom ops library compilation failed:" + str(e))
-    return None
+    extra_cflags.remove("-DNO_GPU")  # Restore original cflags
 
 
-def compile_custom_op_gpu(kernel_name: str, compile_dir: str, extra_cuda_cflags: List[str],
-                          extra_cflags: List[str]) -> Any:
-    extra_cflags.append("-DUSE_CUDA")
-    extra_cuda_cflags.append("-DUSE_CUDA")
+def compile_custom_op_gpu(name: str, build_directory: Union[str, None], extra_cuda_cflags: List[str],
+                          extra_cflags: List[str]) -> None:
+    """Compile GPU version custom ops library using torch's cpp_extension.
+    :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
+    :param build_directory: Optional path to use as build workspace
+    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
+    :param extra_cflags: Optional list of compiler flags to forward to the build
+    """
+    if torch.version.hip:
+        pass  # The macro USE_ROCM will be added by cpp_extension automaically
+    else:
+        extra_cflags.append("-DUSE_CUDA")
+        extra_cuda_cflags.append("-DUSE_CUDA")
     try:
         sources_list = [
             str(path / "src/custom_op_library.cc"),
@@ -101,9 +93,9 @@ def compile_custom_op_gpu(kernel_name: str, compile_dir: str, extra_cuda_cflags:
         if '-DTORCH_OP' in extra_cflags:
             sources_list.append(str(path / "src/torch_ops.cc"))
         logger.info("Start compiling GPU version of custom ops library.")
-        load(name=kernel_name,
+        load(name=name,
              sources=sources_list,
-             build_directory=compile_dir,
+             build_directory=build_directory,
              extra_cuda_cflags=extra_cuda_cflags,
              extra_cflags=extra_cflags,
              extra_include_paths=[str(path / "include"), str(path / "src")],
@@ -113,50 +105,100 @@ def compile_custom_op_gpu(kernel_name: str, compile_dir: str, extra_cuda_cflags:
         logger.warning("GPU version of custom ops library compilation failed:" + str(e) +
                        ", the custom ops can only run on the CPU.")
         logger.warning("Please check if the GPU environment variables are set correctly.")
-    return None
 
 
-def is_onnxruntime_version_greater_equal_than(target_version: str) -> bool:
-    current_version = ort.__version__
-    return version.parse(current_version) >= version.parse(target_version)
-
-
-def get_platform_lib_name(device: str = "cpu") -> str:
+def get_platform_lib_name(device: str = "CPU") -> Any:
+    """Get library names for different platforms.
+    :param device: The target device for the build
+    :return the file name and extension of the library
+    """
     assert device in ["cpu", "CPU", "gpu", "GPU", "rocm", "ROCM", "cuda",
                       "CUDA"], "Valid devices are cpu/CPU, gpu/GPU, rocm/ROCM, and cuda/CUDA, default is cpu."
 
-    if device == "cpu" or device == "CPU":
-        if platform.system().lower() == 'windows':
-            lib_name = file_name + ".pyd"
-        else:
-            lib_name = file_name + ".so"
+    if device.lower() == "cpu":
+        lib_name = library_name
     else:
-        if platform.system().lower() == 'windows':
-            lib_name = file_name + "_gpu.pyd"
-        else:
-            lib_name = file_name + "_gpu.so"
-    return lib_name
+        lib_name = library_name + "_gpu"
+
+    if platform.system().lower() == 'windows':
+        file_name = lib_name
+        ext_name = ".dll"
+    else:
+        file_name = "lib" + lib_name
+        ext_name = ".so"
+
+    return file_name, ext_name
 
 
-def get_library_path(device: str = "cpu") -> str:
+def get_library_path(device: str = "CPU") -> str:
+    """Get the complete path based on the specified device.
+    :param device: The target device
+    :return the complete path of the library
+    """
     dir_path = os.path.dirname(__file__)
-    lib_path = os.path.join(dir_path, folder_name)  # A folder to store the library
+    lib_path = os.path.join(dir_path, folder_name)
 
-    os.makedirs(lib_path, exist_ok=True)
-    lib_name = get_platform_lib_name(device)
-    if lib_name.endswith(".pyd"):
-        lib_name = lib_name.replace(".pyd", ".dll")  # The format on Windows should be DLL
-        if lib_name.startswith("lib"):
-            lib_name = lib_name.lstrip("lib")  # Remove the prefix for the DLL
+    file_name, ext_name = get_platform_lib_name(device)
 
-    abs_lib_path = os.path.join(lib_path, lib_name)
+    abs_lib_path = os.path.join(lib_path, file_name + ext_name)
     if not os.path.exists(abs_lib_path):
         logger.warning(f"The custom ops library {abs_lib_path} does NOT exist.")
 
     return abs_lib_path
 
 
+def handle_generated_files(build_dir: str, abs_lib_path: str, file_name: str, ext_name: str) -> None:
+    """Handling the generated files. The extension of the generated library file (on Windows)
+    is "pyd", we need to change it to "dll" so that it can be registered to onnxruntime.
+    Other intermediate files must be removed to ensure that there are no file residues during
+    uninstallation, but note that the generated "so" file (on Linux) should be retained.
+    :param build_dir: The build directory which has all the generated files
+    :param abs_lib_path: The complete path of library file got by get_library_path
+    :param file_name: The name of the library file got by get_platform_lib_name
+    :param ext_name: The extension of the library file got by get_platform_lib_name
+    """
+    for root, dirs, files in os.walk(build_dir):
+        for f in files:
+            original_file_path = os.path.join(root, f)
+            try:
+                if str(original_file_path) == str(abs_lib_path):
+                    pass
+                elif f.startswith(file_name) and f.endswith(".pyd"):
+                    os.rename(original_file_path, abs_lib_path)
+                elif not f.endswith(ext_name):
+                    os.remove(original_file_path)
+            except OSError as e:
+                logger.warning(f"Handling file error: {e}")
+
+
+def compile_library_core(device: str, extra_cuda_cflags: List[str], extra_cflags: List[str]) -> None:
+    """Core function for compiling custom ops library. Do nothing except printing a message if it exists.
+    :param device: Target device, "CPU" or "GPU"
+    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
+    :param extra_cflags: Optional list of compiler flags to forward to the build
+    """
+    abs_lib_path = get_library_path(device)
+
+    if os.path.exists(abs_lib_path):
+        logger.info(f"The {device} version of custom ops library already exists.")
+        logger.debug(f"Please reinstall Quark if the source code of {device} version custom ops library has updated.")
+        return None
+
+    build_directory, lib_name = os.path.split(abs_lib_path)
+    if not os.path.exists(build_directory):
+        os.makedirs(build_directory)
+
+    file_name, ext_name = os.path.splitext(lib_name)
+    if device.lower() == "cpu":
+        compile_custom_op_cpu(file_name, build_directory, extra_cuda_cflags, extra_cflags)
+    else:
+        compile_custom_op_gpu(file_name, build_directory, extra_cuda_cflags, extra_cflags)
+
+    handle_generated_files(build_directory, abs_lib_path, file_name, ext_name)
+
+
 def compile_library() -> None:
+    """Main function for compiling custom ops library."""
     start_time = time.time()
 
     logging.basicConfig(level=logging.INFO, force=True)
@@ -170,10 +212,8 @@ def compile_library() -> None:
     extra_cflags.append(include_path_prefix + ort_include)
     extra_cflags.append(include_path_prefix + ort_include + "/core/session")
     extra_cflags.append(include_path_prefix + "/include/gsl-4.0.0")
-    if platform.system().lower() == 'linux':
-        extra_cflags.append("-DTORCH_OP")
-    elif platform.system().lower() == 'windows':
-        extra_cflags.append("-DTORCH_OP")
+    extra_cflags.append("-DTORCH_OP")
+    if platform.system().lower() == 'windows':
         extra_cflags.append("-DORT_DLL_IMPORT")
 
     extra_cuda_cflags: List[str] = []
@@ -182,54 +222,14 @@ def compile_library() -> None:
     extra_cuda_cflags.append(include_path_prefix + "/include/gsl-4.0.0")
 
     try:
-        abs_lib_path = get_library_path("cpu")
-        if not is_library_file(abs_lib_path):
-            compile_cpu_dir = os.path.join(str(path), "build_cpu")
+        compile_library_core("CPU", extra_cuda_cflags, extra_cflags)
 
-            # Create the build directory
-            if not os.path.exists(compile_cpu_dir):
-                os.makedirs(compile_cpu_dir)
-
-            # Compile the library
-            compile_custom_op_cpu(file_name, str(compile_cpu_dir), extra_cuda_cflags, extra_cflags)
-
-            # Copy to the target folder
-            platform_lib_name = get_platform_lib_name("cpu")
-            shutil.copyfile(os.path.join(compile_cpu_dir, platform_lib_name), abs_lib_path)
-            # Copy a pyd file for importing by Python
-            if platform.system().lower() == 'windows':
-                shutil.copyfile(abs_lib_path, abs_lib_path.replace(".dll", ".pyd"))
-
-            remove_compile_files(compile_cpu_dir)
-        else:
-            logger.info("The CPU version of custom ops library already exists.")
-            logger.debug("Please reinstall Quark if the source code of CPU version custom ops library has updated.")
-
-        # Only not on Windows and device is available to compile gpu custom op
-        if torch.cuda.is_available() and platform.system().lower() != 'windows':
+        if torch.cuda.is_available():
             capability = torch.cuda.get_device_capability(0)
             arch_list = f"{capability[0]}.{capability[1]}"
             os.environ['TORCH_CUDA_ARCH_LIST'] = arch_list
 
-            abs_lib_path = get_library_path("gpu")
-            if not is_library_file(abs_lib_path):
-                compile_gpu_dir = os.path.join(str(path), "build_gpu")
-
-                # Create the build directory
-                if not os.path.exists(compile_gpu_dir):
-                    os.makedirs(compile_gpu_dir)
-
-                # Compile the library
-                compile_custom_op_gpu(file_name + "_gpu", str(compile_gpu_dir), extra_cuda_cflags, extra_cflags)
-
-                # Copy to the target folder
-                platform_lib_name = get_platform_lib_name("gpu")
-                shutil.copyfile(os.path.join(compile_gpu_dir, platform_lib_name), abs_lib_path)
-
-                remove_compile_files(compile_gpu_dir)
-            else:
-                logger.info("The GPU version of custom ops library already exists.")
-                logger.debug("Please reinstall Quark if the source code of GPU version custom ops library has updated.")
+            compile_library_core("GPU", extra_cuda_cflags, extra_cflags)
 
     except Exception as e:
         logger.warning(f"Custom ops library compilation failed: {e}.")

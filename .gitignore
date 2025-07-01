@@ -138,8 +138,9 @@ quark/version.py
 # test
 test/smoke_test_output/
 
-# onnx files
+# model files
 *.onnx
+*.pth
 
 # document generation
 _docs_build

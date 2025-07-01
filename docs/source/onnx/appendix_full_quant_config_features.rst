@@ -1,53 +1,72 @@
 Full List of Quantization Configuration Features
 ================================================
 
-Quantization Configuration
+Overview
+--------
+
+It's very simple to quantize a model using the ONNX quantizer of Quark, only a few straightforward Python statements:
 
 .. code:: python
 
-   from quark.onnx import QuantType
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
-   quant_config = QuantizationConfig(
-       quant_format=quark.onnx.QuantFormat.QDQ,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       input_nodes=[],
-       output_nodes=[],
-       op_types_to_quantize=[],
-       extra_op_types_to_quantize=[],
-       per_channel=False,
-       reduce_range=False,
-       activation_type=quark.onnx.QuantType.QInt8,
-       weight_type=quark.onnx.QuantType.QInt8,
-       nodes_to_quantize=[],
-       nodes_to_exclude=[],
-       subgraphs_to_exclude=[],
-       optimize_model=True,
-       use_dynamic_quant=False,
-       use_external_data_format=False,
-       execution_providers=['CPUExecutionProvider'],
-       enable_npu_cnn=False,
-       enable_npu_transformer=False,
-       convert_fp16_to_fp32=False,
-       convert_nchw_to_nhwc=False,
-       include_cle=False,
-       include_sq=False,
-       include_rotation=False,
-       extra_options={},)
-   config = Config(global_quant_config=quant_config)
+    from quark.onnx import ModelQuantizer
+    from quark.onnx.quantization.config import Config, QuantizationConfig
 
-**Arguments**
+    quant_config = QuantizationConfig()
 
-*  **model_input**: (String) This parameter specifies the file path of the model that is to be quantized.
-*  **model_output**: (String) This parameter specifies the file path where the quantized model will be saved.
-*  **calibration_data_reader**: (Object or None) This parameter is a calibration data reader that enumerates the calibration data and generates inputs for the original model. If you wish to use random data for a quick test, you can set calibration_data_reader to None.
-*  **quant_format**: (String) This parameter is used to specify the quantization format of the model. It has the following options:
+    config = Config(global_quant_config=quant_config)
+    quantizer = ModelQuantizer(config)
+    quantizer.quantize_model(model_input, model_output, calibration_data_reader)
 
-   -  quark.onnx.QuantFormat.QOperator: This option quantizes the model directly using quantized operators.
-   -  quark.onnx.QuantFormat.QDQ: This option quantizes the model by inserting QuantizeLinear/DeQuantizeLinear into the tensor. It supports 8-bit quantization only.
-   -  quark.onnx.VitisQuantFormat.QDQ: This option quantizes the model by inserting VitisQuantizeLinear/VitisDequantizeLinear into the tensor. It supports a wider range of bit-widths and precisions.
-   -  quark.onnx.VitisQuantFormat.FixNeuron (Experimental): This option quantizes the model by inserting FixNeuron (a combination of QuantizeLinear and DeQuantizeLinear) into the tensor. This quant format is currently experimental and cannot use for actual deployment.
 
-*  **calibrate_method**: (String) The method used in calibration, default to quark.onnx.PowerOfTwoMethod.MinMSE.
+As shown in the code, just create a quantization configuration and use it to initialize a quantizer, and then call the quantizer's *quantize_model()* API, which has 3 main parameters:
+*  **model_input**: (String or ModelProto) This parameter specifies the file path of the model that is to be quantized. When a file path cannot be specified, the loaded ModelProto can also be passed in directly.
+*  **model_output**: (Optional String) This parameter specifies the file path where the quantized model will be saved. You can leave it unspecified (it will default to None), and the ModelProto format quantized model will be returned by the API.
+*  **calibration_data_reader**: (Optional Object) This parameter is a calibration data reader that enumerates the calibration data and generates inputs for the original model. You can leave it unspecified (it will default to None), and simply enable *UseRandomData* in extra options of quantization configuration to use random data for calibration.
+
+The next section will provide a detailed list of all parameters in the quantization configuration.
+
+Quantization Configuration
+--------------------------
+
+.. code:: python
+
+    quant_config = QuantizationConfig(
+       calibrate_method = quark.onnx.CalibrationMethod.MinMax,
+       quant_format = quark.onnx.QuantFormat.QDQ,
+       activation_type = quark.onnx.QuantType.QInt8,
+       weight_type = quark.onnx.QuantType.QInt8,
+       input_nodes: List[str] = [],
+       output_nodes: List[str] = [],
+       op_types_to_quantize: List[str] = [],
+       nodes_to_quantize: List[str] = [],
+       extra_op_types_to_quantize: List[str] = [],
+       nodes_to_exclude: List[str] = [],
+       subgraphs_to_exclude: List[Tuple[List[str]]] = [],
+       specific_tensor_precision: bool = False,
+       execution_providers: List[str] = ['CPUExecutionProvider'],
+       per_channel: bool = False,
+       reduce_range: bool = False,
+       optimize_model: bool = True,
+       use_dynamic_quant: bool = False,
+       use_external_data_format: bool = False,
+       convert_fp16_to_fp32: bool = False,
+       convert_nchw_to_nhwc: bool = False,
+       include_sq: bool = False,
+       include_rotation: bool = False,
+       include_cle: bool = True,
+       include_auto_mp: bool = False,
+       include_fast_ft: bool = False,
+       enable_npu_cnn: bool = False,
+       enable_npu_transformer: bool = False,
+       debug_mode: bool = False,
+       crypto_mode: bool = False,
+       print_summary: bool = True,
+       ignore_warnings: bool = True,
+       log_severity_level: int = 1,
+       extra_options: Dict[str, Any] = {},
+    )
+
+*  **calibrate_method**: (String) The method used in calibration, default to quark.onnx.CalibrationMethod.MinMax.
 
    For NPU_CNN platforms, power-of-two methods should be used, options are:
 
@@ -56,17 +75,19 @@ Quantization Configuration
 
    For NPU_Transformer or CPU platforms, float scale methods should be used, options are:
 
-   -  quark.onnx.CalibrationMethod.MinMax: This method obtains the
-      quantization parameters based on the minimum and maximum values of
-      each tensor.
-   -  quark.onnx.CalibrationMethod.Entropy: This method determines the
-      quantization parameters by considering the entropy algorithm of each
-      tensor's distribution.
-   -  quark.onnx.CalibrationMethod.Percentile: This method calculates
-      quantization parameters using percentiles of the tensor values.
-   -  quark.onnx.LayerWiseMethod.LayerWisePercentile: This method calculates
-      quantization parameters using different percentiles for different layers 
-      according to minimize mean average error or mean square error loss value.
+   -  quark.onnx.CalibrationMethod.MinMax: This method obtains the quantization parameters based on the minimum and maximum values of each tensor.
+   -  quark.onnx.CalibrationMethod.Entropy: This method determines the quantization parameters by considering the entropy algorithm of each tensor's distribution.
+   -  quark.onnx.CalibrationMethod.Percentile: This method calculates quantization parameters using percentiles of the tensor values.
+   -  quark.onnx.LayerWiseMethod.LayerWisePercentile: This method calculates quantization parameters using different percentiles for different layers according to minimize mean average error or mean square error loss value.
+
+*  **quant_format**: (String) This parameter is used to specify the quantization format of the model. It has the following options:
+
+   -  quark.onnx.QuantFormat.QOperator: This option quantizes the model directly using quantized operators.
+   -  quark.onnx.QuantFormat.QDQ: This option quantizes the model by inserting QuantizeLinear/DeQuantizeLinear into the tensor. It supports 16-bit/8-bit/4-bit quantization.
+   -  quark.onnx.ExtendedQuantFormat.QDQ: This option quantizes the model by inserting our customized QuantizeLinear/DequantizeLinear or BFPQuantizeDequantize/MXQuantizeDequantize into the tensor, which support a wider range of bit-widths and precisions.
+
+*  **activation_type**: (QuantType) Specifies the quantization data type for activations, options can be found in the table below. The default is quark.onnx.QuantType.QInt8.
+*  **weight_type**: (QuantType) Specifies the quantization data type for weights, options can be found in the table below. The default is quark.onnx.QuantType.QInt8. For NPU devices, this must be set to QuantType.QInt8.
 
 *  **input_nodes**: (List of Strings) This parameter is a list of the
    names of the starting nodes to be quantized. Nodes in the model
@@ -82,12 +103,39 @@ Quantization Configuration
    only operators of the given types will be quantized (e.g., ['Conv']
    to only quantize Convolutional layers). By default, all supported
    operators will be quantized.
+*  **nodes_to_quantize**:(List of Strings or None) If specified, only
+   the nodes in this list are quantized. The list should contain the
+   names of the nodes, for example, ['Conv\__224', 'Conv\__252']. The
+   default value is an empty list ([]).
 *  **extra_op_types_to_quantize**: (List of Strings or None) If specified,
    the given operator types will be included as additional targets for
    quantization, expanding the set of operators to be quantized without
    replacing the existing configuration (e.g., ['Gemm'] to include Gemm
    layers in addition to the currently specified types). By default, no
    extra operator types will be added for quantization.
+*  **nodes_to_exclude**:(List of Strings or None) If specified, the
+   nodes in this list will be excluded from quantization. The default
+   value is an empty list ([]).
+*  **subgraphs_to_exclude**:(List or None) If specified, the
+   nodes in these subgraphs will be excluded from quantization. For example,
+   you can use [(["Conv1"], ["Conv2"]), (["Relu9", "MatMul10"])] if you do
+   not want to quantize nodes between "Conv1" and "Conv2" and nodes between
+   "Relu9" and "MatMul10", as well as these start and end nodes themselves.
+   If the subgraph is complex with multiple start nodes and multiple end nodes,
+   you can use [([start_node1, start_node2], [end_node1, end_node2, end_node3])].
+   The default value is an empty list ([]).
+*  **specific_tensor_precision**: (Boolean) This parameter is a flag
+   that determines whether to use tensor-level mixed precision, this is
+   an experimental feature. The default is False.
+*  **execution_providers**: (List of Strings) This parameter defines the
+   execution providers that will be used by ONNX Runtime to do
+   calibration for the specified model. The default value
+   'CPUExecutionProvider' implies that the model will be computed using
+   the CPU as the execution provider. You can also set this to other
+   execution providers supported by ONNX Runtime such as
+   'ROCMExecutionProvider' and 'CUDAExecutionProvider' for GPU-based computation,
+   if they are available in your environment. The default is
+   ['CPUExecutionProvider'].
 *  **per_channel**: (Boolean) Determines whether weights should be
    quantized per channel. The default value is False. For DPU/NPU
    devices, this must be set to False as they currently do not support
@@ -95,23 +143,6 @@ Quantization Configuration
 *  **reduce_range**: (Boolean) If True, quantizes weights with 7-bits.
    The default value is False. For DPU/NPU devices, this must be set to
    False as they currently do not support reduced range quantization.
-*  **activation_type**: (QuantType) Specifies the quantization data type
-   for activations, options can be found in the table below. The default
-   is quark.onnx.QuantType.QInt8.
-*  **weight_type**: (QuantType) Specifies the quantization data type for
-   weights, options can be found in the table below. The default is
-   quark.onnx.QuantType.QInt8. For NPU devices, this must be set to
-   QuantType.QInt8.
-*  **nodes_to_quantize**:(List of Strings or None) If specified, only
-   the nodes in this list are quantized. The list should contain the
-   names of the nodes, for example, ['Conv\__224', 'Conv\__252']. The
-   default value is an empty list ([]).
-*  **nodes_to_exclude**:(List of Strings or None) If specified, the
-   nodes in this list will be excluded from quantization. The default
-   value is an empty list ([]).
-*  **subgraphs_to_exclude**:(List or None) If specified, the
-   nodes in these subgraphs will be excluded from quantization. For example, you can use [(["Conv1"], ["Conv2"]), (["Relu9", "MatMul10"])] if you do not want to quantize nodes between "Conv1" and "Conv2" and nodes between "Relu9" and "MatMul10", as well as these start and end nodes themselves. If the subgraph is complex with multiple start nodes and multiple end nodes, you can use [([start_node1, start_node2], [end_node1, end_node2, end_node3])]. The default
-   value is an empty list ([]).
 *  **optimize_model**:(Boolean) If True, optimizes the model before
    quantization. Model optimization performs certain operator fusion
    that makes quantization tool's job easier. For instance, a
@@ -124,15 +155,31 @@ Quantization Configuration
 *  **use_external_data_format**: (Boolean) This option is used for large
    size (>2GB) model. The model proto and data will be stored in
    separate files. The default is False.
-*  **execution_providers**: (List of Strings) This parameter defines the
-   execution providers that will be used by ONNX Runtime to do
-   calibration for the specified model. The default value
-   'CPUExecutionProvider' implies that the model will be computed using
-   the CPU as the execution provider. You can also set this to other
-   execution providers supported by ONNX Runtime such as
-   'CUDAExecutionProvider' for GPU-based computation, if they are
-   available in your environment. The default is
-   ['CPUExecutionProvider'].
+*  **convert_fp16_to_fp32**: (Boolean) This parameter controls whether
+   to convert the input model from float16 to float32 before
+   quantization. For float16 models, it is recommended to set this
+   parameter to True. The default value is False. When using
+   convert_fp16_to_fp32 in AMD Quark for ONNX, it requires onnxsim to
+   simplify the ONNX model. Please make sure that onnxsim is installed
+   by using 'python -m pip install onnxsim'.
+*  **convert_nchw_to_nhwc**: (Boolean) This parameter controls whether
+   to convert the input NCHW model to input NHWC model before
+   quantization. For input NCHW models, it is recommended to set this
+   parameter to True. The default value is False.
+*  **include_sq**: (Boolean) This parameter is a flag that determines
+   whether to optimize the models using SmoothQuant; it can improve the
+   accuracy of transformer-based models like Llama. The default is False.
+*  **include_rotation**: (Boolean) This parameter is a flag that determines whether
+   to optimize the models using QuaRot. It can improve the accuracy of LLMs like
+   Llama. RConfigPath must be given if include_rotation is True. The default is False.
+*  **include_cle**: (Boolean) This parameter is a flag that determines
+   whether to optimize the models using CrossLayerEqualization; it can
+   improve the accuracy of some models. The default is True.
+*  **include_auto_mp**: (Boolean) If True, the auto mixed precision will be turned on.
+   The default is False.
+*  **include_fast_ft**: (Boolean) This parameter is a flag that
+   determines whether to use adaround or adaquant algorithm for
+   finetuning, this is an experimental feature. The default is False.
 *  **enable_npu_cnn**: (Boolean) This parameter is a flag that
    determines whether to generate a quantized model that is suitable for
    the DPU/NPU. If set to True, the quantization process will consider
@@ -150,34 +197,15 @@ Quantization Configuration
    model that is optimized for NPU computations. This parameter
    primarily addresses the optimization of transformer models for
    deployment on NPU. The default is False.
-*  **convert_fp16_to_fp32**: (Boolean) This parameter controls whether
-   to convert the input model from float16 to float32 before
-   quantization. For float16 models, it is recommended to set this
-   parameter to True. The default value is False. When using
-   convert_fp16_to_fp32 in AMD Quark for ONNX, it requires onnxsim to
-   simplify the ONNX model. Please make sure that onnxsim is installed
-   by using 'python -m pip install onnxsim'.
-*  **convert_nchw_to_nhwc**: (Boolean) This parameter controls whether
-   to convert the input NCHW model to input NHWC model before
-   quantization. For input NCHW models, it is recommended to set this
-   parameter to True. The default value is False.
-*  **include_cle**: (Boolean) This parameter is a flag that determines
-   whether to optimize the models using CrossLayerEqualization; it can
-   improve the accuracy of some models. The default is False.
-*  **include_fast_ft**: (Boolean) This parameter is a flag that
-   determines whether to use adaround or adaquant algorithm for
-   finetuning, this is an experimental feature. The default is False.
-*  **include_sq**: (Boolean) This parameter is a flag that determines
-   whether to optimize the models using SmoothQuant; it can improve the
-   accuracy of transformer-based models like Llama. The default is False.
-*  **include_rotation**: (Boolean) This parameter is a flag that determines whether
-   to optimize the models using QuaRot. It can improve the accuracy of LLMs like
-   Llama. RConfigPath must be given if include_rotation is True. The default is False.
-*  **include_auto_mp**: (Boolean) If True, the auto mixed precision will be turned on. 
-   The default is False.
-*  **specific_tensor_precision**: (Boolean) This parameter is a flag
-   that determines whether to use tensor-level mixed precision, this is
-   an experimental feature. The default is False.
+*  **debug_mode**: (Boolean) Flag to enable debug mode. In this mode,
+   all debugging message will be printed. Default is False.
+*  **crypto_mode**: (Boolean) Flag to enable crypto mode. In this mode,
+   all message will be blocked, and all intermediate data related to the
+   model will not be saved to disk. In addition, the input model to the
+   *quantize_model* API should be a ModelProto object. Please that it
+   only supports <2GB ModelProto object. Default is False.
+*  **print_summary**: (Boolean) Flag to print summary of quantization. Default is True.
+*  **ignore_warnings**: (Boolean) Flag to suppress the warnings globally. Default is True.
 *  **log_severity_level**: (Int) This parameter is used to select the
    severity level of screen printing logs. Its value ranges from 0 to 4: 0 for DEBUG,
    1 for INFO, 2 for WARNING, 3 for ERROR and 4 for CRITICAL or FATAL. Default value is 1,
@@ -207,6 +235,12 @@ Quantization Configuration
       data type; if false, it will have the same data type as weight. The
       default is False when enable_npu_cnn is True. Otherwise the
       default is True.
+   -  **Int16Bias**: (Boolean) If True, bias will be quantized in int16
+      data type; The default is False. **Note**: 1. ONNXRuntime only supports
+      Int16 Bias inference when the opset version is 21 or higher, so please 
+      ensure that the input model's opset version is 21 or higher. 2. It is 
+      recommended to use this together with ADAROUND or ADAQUANT; otherwise, 
+      the quantized model with Int16 bias may suffer from poor accuracy.
    -  **RemoveInputInit**: (Boolean) If True, initializer in graph
       inputs will be removed because it will not be treated as constant
       value/weight. This may prevent some of the graph optimizations,
@@ -245,10 +279,6 @@ Quantization Configuration
       specified, the default channel axis will be used. For DPU/NPU
       devices, this must be set to {} as per-channel quantization is
       currently unsupported. The default is an empty dict ({}).
-   -  **UseQDQVitisCustomOps**: (Boolean) If True, The UInt8 and Int8
-      quantization will be executed by the custom operations library,
-      otherwise by the library of onnxruntime extensions. The default is
-      True, only valid in quark.onnx.VitisQuantFormat.QDQ.
    -  **CalibTensorRangeSymmetric**: (Boolean) If True, the final range
       of the tensor during calibration will be symmetrically set around
       the central point "0". The default is False. In PowerOfTwoMethod
@@ -341,6 +371,9 @@ Quantization Configuration
    -  **ConvertAvgPoolToDPUVersion**: (Boolean) If True, the global or
       kernel-based Average Pooling operation will be converted to DPU
       version when SimulateDPU is True. The default is True.
+   -  **ConvertClipToDPUVersion**: (Boolean) If True, the Clip operation
+      will be converted to DPU version when SimulateDPU is True. The
+      default is False.
    -  **ConvertReduceMeanToDPUVersion**: (Boolean) If True, the
       ReduceMean operation will be converted to DPU version when
       SimulateDPU is True. The default is True.
@@ -385,7 +418,7 @@ Quantization Configuration
    -  **AdjustBiasScale**: (Boolean) If True, adjust the bias scale equal to activation scale
       multiply by weights scale. The default is True.
    -  **BFPAttributes**: (Dictionary) A parameter used to specify the
-      attributes for BFPFixNeuron.
+      attributes for BFP quantization nodes.
 
       -  **bfp_method**: (String) BFP method. The options are "to_bfp“ and "to_bfp_prime",
          corresponding to classic BFP and BFP with micro exponents, respectively.
@@ -408,7 +441,7 @@ Quantization Configuration
          The default is 0.
 
    *  **MXAttributes**: (Dictionary) A parameter used to specify the
-      attributes for MXFixNeuron.
+      attributes for MX quantization nodes.
 
       -  **element_dtype**: (String) Element data type. The options are "fp8_e5m2", "fp8_e4m3",
          "fp6_e3m2", "fp6_e2m3", "fp4_e2m1" and "int8". The default is "int8".
@@ -435,7 +468,14 @@ Quantization Configuration
       different nodes, e.g. ['Conv', 'Gemm', 'Mul'] input, only shared initializer 
       in these nodes will be duplicated. None means that skip this conversion 
       while empty list means that run this for all op_types included in the 
-      given model, default is empty list.
+      given model, default is None.
+   *  **CopyBiasInit**: (List or None) Specifies the node operation types to run 
+      duplicating bias initializer in the model for separate quantization use across 
+      different nodes, e.g. ['Conv', 'Gemm', 'Mul'] input, only shared bias initializer 
+      in these nodes will be duplicated. None means that skip this conversion 
+      while empty list means that run this for all operation types included in the 
+      given model. The default is an empty list when using quantization with float scale 
+      like A8W8 and A16W8. The default is None otherwise.
    *  **FastFinetune**: (Dictionary) A parameter used to specify the
       settings for fast finetune.
 
@@ -497,7 +537,12 @@ Quantization Configuration
       -  **DropRatio**: (Float) Specifies the ratio to drop the input
          data from the float module. It ranges from 0 to 1, 0 represents
          the input data is from the float module fully, 1 represents all
-         from quantized module. The default value is 0.5.
+         from the quantized module. The default value is 1.
+      -  **MemOptLevel**: (Int) Specifies the level of memory optimization.
+         Options are 0 and 1. If 0, it means no memory optimization is applied,
+         which will be faster but requires more memory for caching. If 1, it
+         caches the ground-truth for finetuning layer by layer instead of all,
+         which consumes less memory but may take longer time. The default is 1.
       -  **LogPeriod**: (Int) Indicate how many iterations to print the
          log once. The default value is NumIterations/10.
 
@@ -540,20 +585,20 @@ Quantization Configuration
       operation are Conv, ConvTranspose or Gemm operatons.The default is
       True.
    *  **BF16WithClip**: (Boolean) If True, during BFloat16
-      quantization, insert "Clip" node before "VitisQuantizeLinear" node to
+      quantization, insert "Clip" node before customized "QuantizeLinear" node to
       add boundary protection for activation. The default is False.
    *  **BF16QDQToCast**: (Boolean) If True, during BFloat16
       quantization, replace QuantizeLinear/DeQuantizeLinear ops with Cast
       ops to accelerate BFloat16 quantized inference. The default is False.
-   *  **FixShapes**: (String) Set the input_shapes of the quantized
+   *  **FixShapes**: (String) Set the input and output shapes of the quantized
       model to a fixed shape by default if not explicitly specified. The
-      example: 'FixShapes':'input_1:[1,224,224,3];input_2:[1,96,96,3]'
+      example: 'FixShapes':'input_1:[1,224,224,3];input_2:[1,96,96,3];output_1:[1,100];output_2:[1,1000]'
    *  **MixedPrecisionTensor**: (Dictionary) A parameter used to specify
       the settings for mixed precision tensors. It is a dictionary where
-      the keys are of the VitisQuantType/QuantType enumeration type, and
+      the keys are of the ExtendedQuantType/QuantType enumeration type, and
       the values are lists containing tensors that need to be processed
       using mixed precision.
-      Example:"MixedPrecisionTensor":{quark.onnx.VitisQuantType.QBFloat16:['/stem/stem.2/Relu_output_0',
+      Example:"MixedPrecisionTensor":{quark.onnx.ExtendedQuantType.QBFloat16:['/stem/stem.2/Relu_output_0',
       'onnx::Conv_664', 'onnx::Conv_665']} **Note**:If there is a tensor
       with bias, 'Int32Bias' needs set to False.
 
@@ -572,6 +617,8 @@ Quantization Configuration
       -  **BiasTargetQuantType**: (QuantType) Bias data type to be mixed in the model.
          If BiasTargetQuantType is not specified and Int32Bias is True, the BiasTargetQuantType will be int32.
          If BiasTargetQuantType is not specified and Int32Bias is False, the BiasTargetQuantType will be same as WeightTargetQuantType.
+      -  **DualQuantNodes**: (Bool) Some backend compilers require that two types of quantization nodes exist simultaneously on the tensors which connect two different precision nodes,
+         for example, they require the tensor that connects BFP16 Conv and BF16 Reshape has a BFP node and a QDQ pair both. The default value is False.
       -  **OutputIndex**: (Int) The index of model output to be calculated for loss.
       -  **L2Target**: (Float) The L2 loss will be no larger than the L2Target.
          If L2Target is not specified, the model will be quantized to the target quant type.
@@ -587,7 +634,7 @@ Quantization Configuration
       -  **AutoMixUseFastFT**: (Bool) If True, will perform fast finetune to improve accuracy after mixed a layer. The default value is False.
 
    *  **FoldRelu**: (Boolean) If True, the Relu will be fold to Conv
-      when use VitisQuantFormat. The default is False.
+      when use ExtendedQuantFormat. The default is False.
    *  **CalibDataSize**: (Int) This parameter controls how many data are
       used for calibration. The default to using all the data in the
       calibration dataloader.
@@ -598,7 +645,7 @@ Quantization Configuration
       In the BF16 config, the default is True, while for others, the default is False.
    *  **WeightsOnly**: (Boolean) If True, only quantize weights of the
       model. The default is False.
-   *  **AlignEltwiseQuantType**: (Boolean) If True, quantize weights of the node with the activation quant type if node type in [Mul, Add, Sub, Div, Min, Max] when quant_format is VitisQuantFormat.QDQ and enable_npu_cnn is False and enable_npu_transformer is False. The default is False.
+   *  **AlignEltwiseQuantType**: (Boolean) If True, quantize weights of the node with the activation quant type if node type in [Mul, Add, Sub, Div, Min, Max] when quant_format is ExtendedQuantFormat.QDQ and enable_npu_cnn is False and enable_npu_transformer is False. The default is False.
    *  **EnableVaimlBF16**: (Boolean) If True, the bfloat16 quantized model with vitis qdq will be converted to a bfloat16 quantized model with bfloat16 weights stored as float32. Vaiml is the name of a compiler, the bfloat16 quantized model can be directly deployed on the compiler if the parameter is True. The default is False.
    *  **UseGPTQ**: (Boolean) If True, GPTQ algorithm will be applied to the
       model. The default is False.
@@ -628,36 +675,30 @@ Quantization Configuration
 
 Table 7. Quantize Types can be selected for different Quantize Formats
 
-+-----------------------+-----------------------+-----------------------+
-| quant_format          | quant_type            | comments              |
-+=======================+=======================+=======================+
-| QuantFormat.QDQ       | QuantType.QUInt8      | Implemented by native |
-|                       | QuantType.QInt8       | QuantizeLi            |
-|                       | QuantType.QUInt4      | near/DequantizeLinear |
-|                       | QuantType.QInt4       |                       |
-+-----------------------+-----------------------+-----------------------+
-| quark.onnx            | QuantType.QUInt8      | Implemented by        |
-| .VitisQuantFormat.QDQ | QuantType.QInt8       | customized            |
-|                       | quark.onnx.V          | VitisQuantizeLinear/  |
-|                       | itisQuantType.QUInt16 | VitisDequantizeLinear |
-|                       | quark.onnx.           |                       |
-|                       | VitisQuantType.QInt16 |                       |
-|                       | quark.onnx.V          |                       |
-|                       | itisQuantType.QUInt32 |                       |
-|                       | quark.onnx.           |                       |
-|                       | VitisQuantType.QInt32 |                       |
-|                       | quark.onnx.Vi         |                       |
-|                       | tisQuantType.QFloat16 |                       |
-|                       | quark.onnx.Vit        |                       |
-|                       | isQuantType.QBFloat16 |                       |
-+-----------------------+-----------------------+-----------------------+
++---------------------------+----------------------------------+---------------------------+
+| quant_format              | quant_type                       | comments                  |
++===========================+==================================+===========================+
+| QuantFormat.QDQ           | QuantType.QUInt16                |                           |
+|                           | QuantType.QInt16                 |                           |
+|                           | QuantType.QUInt8                 |                           |
+|                           | QuantType.QInt8                  |                           |
+|                           | QuantType.QUInt4                 |                           |
+|                           | QuantType.QInt4                  |                           |
++---------------------------+----------------------------------+---------------------------+
+| ExtendedQuantFormat.QDQ   | QuantType.QUInt8                 |                           |
+|                           | QuantType.QInt8                  |                           |
+|                           | ExtendedQuantType.QUInt16        |                           |
+|                           | ExtendedQuantType.QInt16         |                           |
+|                           | ExtendedQuantType.QFloat16       |                           |
+|                           | ExtendedQuantType.QBFloat16      |                           |
+|                           | ExtendedQuantType.QBFP           |                           |
+|                           | ExtendedQuantType.QMX            |                           |
+|                           | ExtendedQuantType.QUInt32        |                           |
+|                           | ExtendedQuantType.QInt32         |                           |
++---------------------------+----------------------------------+---------------------------+
 
-**Note**: For pure [UInt4, Int4, UInt8, Int8] quantization, we recommend that users
-set quant_format to QuantFormat.QDQ as it uses native
-QuantizeLinear/DequantizeLinear operations which may have offer better
-compatibility and performance.
-
-   Additionally, for UINT4 and INT4 quantization types, ONNX Runtime version 1.19.0 or later is required. Users must ensure that the ``calibration_method`` is a native ORT quantization method (MinMax, Percentile, etc.).
+**Note**: For UINT4 and INT4 quantization types, ONNX Runtime version 1.19.0 or later is required.
+Users must ensure that the ``calibration_method`` is a native ORT quantization method (MinMax, Percentile, etc.).
 
 .. raw:: html
 

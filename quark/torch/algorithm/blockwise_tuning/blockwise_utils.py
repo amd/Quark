@@ -13,7 +13,7 @@ from torch.amp.grad_scaler import GradScaler
 from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from quark.torch.algorithm.utils.module import move_to_device, get_dtype
+from quark.torch.algorithm.utils.module import move_to_device, get_dtype, get_device
 from quark.torch.algorithm.utils.utils import TensorData, clear_memory
 
 from quark.shares.utils.log import ScreenLogger
@@ -41,7 +41,8 @@ def block_forward(layer: nn.Module, module_kwargs: Dict[str, Any], num_batches: 
                   layer_inputs: List[torch.Tensor], fp_layer_outputs: List[torch.Tensor],
                   cache_examples_on_gpu: bool) -> List[torch.Tensor]:
 
-    layer = move_to_device(layer, device)
+    if get_device(layer) != torch.device("meta"):
+        layer = move_to_device(layer, device)
     for j in range(num_batches):
         layer_input = move_to_device(layer_inputs[j], device)
         layer_output = block_batch_forward(layer, module_kwargs, layer_input, device)
@@ -111,7 +112,7 @@ def blockwise_training(layer: nn.Module, module_kwargs: Dict[str, Any], trainabl
         lr = weight_scheduler.get_lr()[0]  # type: ignore
 
         logger.info(
-            f"Blocks: {layer_index}, Epoch: {epoch}, Before Tuning Loss:{before_tuning_loss:.8f}, After Tuning Loss:{after_tuning_loss:.8f}, Weight LR:{lr:.6f}, Max Allocated Memory: {torch.cuda.max_memory_allocated(device) / 1024**3:.2f} GB, Traing Time: {(time.time()-start_time):.4f} seconds."
+            f"Blocks: {layer_index}, Epoch: {epoch}, Before Tuning Loss:{before_tuning_loss:.8f}, After Tuning Loss:{after_tuning_loss:.8f}, Weight LR:{lr:.6f}, Max Allocated Memory: {torch.cuda.max_memory_allocated(device) / 1024**3:.2f} GB, Traing Time: {(time.time() - start_time):.4f} seconds."
         )
 
     if layer_dtype == torch.float16:
@@ -150,7 +151,7 @@ def set_trainable_parameters(model: nn.Module, trainable_modules: List[str], lay
             names.append(n)
 
     logger.info(
-        f"Trainable parameter number: {sum(p.nelement() for p in params)/1e6}M. Trainable modules: {', '.join(map(str, names))}"
+        f"Trainable parameter number: {sum(p.nelement() for p in params) / 1e6}M. Trainable modules: {', '.join(map(str, names))}"
     )
     return params
 

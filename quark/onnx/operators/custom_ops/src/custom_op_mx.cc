@@ -3,12 +3,9 @@
 // SPDX-License-Identifier: MIT
 //
 
-#define ORT_API_MANUAL_INIT
-#include "core/session/onnxruntime_cxx_api.h"
-#undef ORT_API_MANUAL_INIT
 #include "custom_op_bfp.h"
 #include "custom_op_mx.h"
-
+#include "mx/mx.h"
 #include <vector>
 #include <cmath>
 #include <mutex>
@@ -16,16 +13,9 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
-#include "mx/mx.h"
-
-#ifdef _WIN32
-#include <stdint.h>
-#endif
-
 #ifdef USE_CUDA
 #include "cuda_runtime_api.h"
 #endif
-
 
 void ParseElementDataTypeString(std::string& dtype,
                          std::vector<int>& bits,

@@ -83,7 +83,7 @@ def convert_torch_to_onnx(torch_model: torch.nn.Module, input_data: Union[NDArra
 
     torch_model = torch_model.to(torch.device("cpu"))
 
-    with tempfile.TemporaryDirectory(prefix="ort.quant.") as quant_tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="quark_onnx.ft.") as quant_tmp_dir:
         model_path = Path(quant_tmp_dir).joinpath("exported.onnx").as_posix()
         torch.onnx.export(torch_model,
                           dummy_input,

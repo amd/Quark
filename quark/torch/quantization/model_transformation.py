@@ -14,8 +14,8 @@ from typing import Any, Dict, Optional, Union, Callable
 from types import MethodType
 from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
 from quark.torch.quantization.utils import set_op_by_name
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
-from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
+from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase, SequentialRealQuantizer
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
 from quark.torch.quantization.nn.modules.quantize_embed import QuantEmbedding, QuantEmbeddingBag
@@ -119,8 +119,10 @@ def setup_kv_cache_config(config: Config, named_modules: Dict[str, nn.Module],
 
 
 def prepare_for_attention_quant(
-        model: nn.Module, config: Config, get_quantize: Callable[[QuantizationSpec], Union[FakeQuantizeBase,
-                                                                                           RealQuantizerBase]]) -> None:
+    model: nn.Module, config: Config, get_quantize: Callable[[Union[QuantizationSpec, list[QuantizationSpec]]],
+                                                             Union[FakeQuantizeBase, RealQuantizerBase,
+                                                                   SequentialQuantize, SequentialRealQuantizer]]
+) -> None:
 
     if config.softmax_quant_spec is not None:
         if model.config._attn_implementation != "eager":
@@ -132,6 +134,8 @@ def prepare_for_attention_quant(
             for name, module in model.named_modules():
                 if name.endswith('attn') or name.endswith('attention'):
                     module.prob_quantizer = get_quantize(config.softmax_quant_spec)
+                    assert isinstance(module.prob_quantizer, (FakeQuantizeBase, RealQuantizerBase)), \
+                        "module.prob_quantizer only supports FakeQuantizeBase or RealQuantizerBase instance currently"
 
                     original_softmax = nn.functional.softmax
 
@@ -208,12 +212,31 @@ def in_place_replace_layer(model: nn.Module, config: Config, named_modules: Dict
     """
     Replaces `nn.Linear`, `nn.Conv2d`, etc. marked for quantization in `module_configs` by their quantized module equivalent.
     """
+    replace_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP.keys()}
+    module_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP.keys()}
+
     for name, module in tqdm(named_modules.items()):
-        if name in module_configs and type(module) in LAYER_TO_QUANT_LAYER_MAP:
-            quant_module_class = LAYER_TO_QUANT_LAYER_MAP[type(module)]
-            if hasattr(quant_module_class, "from_float"):
-                quant_module = quant_module_class.from_float(module, module_configs[name])
-                set_op_by_name(model, name, quant_module)
-                in_place_replace_ops.debug(name)
-            else:
-                raise ValueError(f"The class {str(quant_module_class)} does not have a method `from_float`.")
+        module_name = module.__class__.__name__
+        if type(module) in LAYER_TO_QUANT_LAYER_MAP:
+            module_count[module_name] += 1
+
+            # Some modules may be excluded.
+            if name in module_configs:
+                quant_module_class = LAYER_TO_QUANT_LAYER_MAP[type(module)]
+                replace_count[module_name] += 1
+
+                if hasattr(quant_module_class, "from_float"):
+                    quant_module = quant_module_class.from_float(module, module_configs[name])
+                    set_op_by_name(model, name, quant_module)
+                    in_place_replace_ops.debug(name)
+                else:
+                    raise ValueError(f"The class {str(quant_module_class)} does not have a method `from_float`.")
+        else:
+            module_count[module_name] = module_count.get(module_name, 0) + 1
+
+    row_format = "|{:^40}|{:^20}|{:^20}|"
+    table = row_format.format("Original module", "Number original", "Number replaced") + "\n"
+    for module_name, num_original in module_count.items():
+        table += row_format.format(module_name, num_original, replace_count.get(module_name, 0)) + "\n"
+
+    logger.info(f"Module replacement for quantization summary:\n{table}")

@@ -7,24 +7,22 @@ import copy
 import numpy as np
 import onnx
 import onnxruntime as ort
-import tempfile
 from pathlib import Path
 from quark.onnx.quant_utils import (register_custom_ops_library, extract_sub_model, infer_custom_op_shape,
-                                    make_batch_size_dynamic, make_batch_size_fixed, get_batch_size)
+                                    make_batch_size_dynamic, make_batch_size_fixed, get_batch_size,
+                                    create_infer_session_for_onnx_model)
 from onnx import numpy_helper, TensorProto, NodeProto
 from onnxruntime.quantization.onnx_model import ONNXModel
-from typing import Dict, List, Tuple, Union, Any
+from onnxruntime.quantization.quant_utils import save_and_reload_model_with_shape_infer
+from typing import Dict, List, Tuple, Union, Any, Optional
 from numpy.typing import NDArray
 
 logger = ScreenLogger(__name__)
 
-TARGET_OPS = [
-    'Conv', 'ConvTranspose', 'InstanceNormalization', 'VitisInstanceNormalization', 'LayerNormalization', 'Gemm',
-    'MatMul'
-]
-Q = ["QuantizeLinear", "VitisQuantizeLinear"]
-DQ = ["DequantizeLinear", "VitisDequantizeLinear"]
-FN = ["BFPFixNeuron", "MXFixNeuron"]
+TARGET_OPS = ['Conv', 'ConvTranspose', 'InstanceNormalization', 'LayerNormalization', 'Gemm', 'MatMul']
+Q = ["QuantizeLinear", "ExtendedQuantizeLinear"]
+DQ = ["DequantizeLinear", "ExtendedDequantizeLinear"]
+FN = ["BFPQuantizeDequantize", "MXQuantizeDequantize"]
 ACT_OPS = ['Relu', 'PRelu', 'LeakyRelu', 'Gelu', 'Tanh', 'Clip', 'Sigmoid', 'Softmax']
 
 
@@ -33,45 +31,40 @@ class Subgraph(object):
     A class for split subgraph for adaquant or adaround.
     """
 
-    def __init__(self, fmodel_path: str, qmodel_path: str, data_reader: Any, extra_options: Dict[str, Any]) -> None:
-        # If data_size is None, set to float('inf').
+    def __init__(self, float_model: Union[str, Path, onnx.ModelProto], quant_model: Union[str, Path, onnx.ModelProto],
+                 use_external_data_format: bool, data_reader: Any, extra_options: Dict[str, Any]) -> None:
+        # Get the float and quantized model
+        self.float_model = float_model if isinstance(float_model, onnx.ModelProto) else onnx.load(float_model)
+        self.quant_model = quant_model if isinstance(quant_model, onnx.ModelProto) else onnx.load(quant_model)
+        self.use_external_data_format = use_external_data_format
+        self.data_reader = data_reader
+
+        # Get parameters from extra options
         self.data_size = extra_options.get('FastFinetune', {}).get('DataSize', float('inf'))
         self.output_qdq = extra_options.get('FastFinetune', {}).get('OutputQDQ', False)
         self.target_ops = extra_options.get('FastFinetune', {}).get('TargetOpType', TARGET_OPS)
         self.quantize_bias = extra_options.get('QuantizeBias', True)
         self.dynamic_batch = extra_options.get('FastFinetune', {}).get('DynamicBatch', False)
         self.parallel = extra_options.get('FastFinetune', {}).get('Parallel', False)
-        inferred_qmodel = tempfile.TemporaryDirectory(prefix="vai.qmodel.")
-        inferred_qmodel_path = Path(inferred_qmodel.name).joinpath("inferred_qmodel.onnx").as_posix()
-        inferred_fmodel = tempfile.TemporaryDirectory(prefix="vai.fmodel.")
-        inferred_fmodel_path = Path(inferred_fmodel.name).joinpath("inferred_fmodel.onnx").as_posix()
-        self.data_reader = data_reader
-        self.qmodel_bs = get_batch_size(onnx.load(qmodel_path))
+        self.mem_opt_level = extra_options.get('FastFinetune', {}).get('MemOptLevel', 1)
 
+        self.ort_infer_device = extra_options.get('FastFinetune', {}).get('InferDevice', 'cpu').lower()
+        self.providers, self.provider_options = self.onnx_execution_providers()
+        self.device = self.providers[0][:-len("ExecutionProvider")]
+
+        self.qbatch_size = get_batch_size(self.quant_model)
         if self.dynamic_batch:
             self.all_input, self.dynamic_batch_size = self.get_all_input()
-            onnx.save(
-                infer_custom_op_shape(make_batch_size_dynamic(onnx.load(qmodel_path), self.dynamic_batch_size)),
-                inferred_qmodel_path,
-            )
-            onnx.save(
-                infer_custom_op_shape(make_batch_size_dynamic(onnx.load(fmodel_path), self.dynamic_batch_size)),
-                inferred_fmodel_path,
-            )
+            self.fmodel = infer_custom_op_shape(make_batch_size_dynamic(self.float_model, self.dynamic_batch_size))
+            self.qmodel = infer_custom_op_shape(make_batch_size_dynamic(self.quant_model, self.dynamic_batch_size))
         else:
-            onnx.save(
-                infer_custom_op_shape(onnx.load(qmodel_path)),
-                inferred_qmodel_path,
-            )
-            onnx.save(
-                infer_custom_op_shape(onnx.load(fmodel_path)),
-                inferred_fmodel_path,
-            )
+            self.fmodel = infer_custom_op_shape(self.float_model)
+            self.qmodel = infer_custom_op_shape(self.quant_model)
 
-        self.fmodel_path = inferred_fmodel_path
-        self.qmodel_path = inferred_qmodel_path
-        self.fmodel = onnx.load(self.fmodel_path)
-        self.qmodel = onnx.load(self.qmodel_path)
+        if self.use_external_data_format:
+            self.fmodel = save_and_reload_model_with_shape_infer(self.fmodel)
+            self.qmodel = save_and_reload_model_with_shape_infer(self.qmodel)
+
         self.f_tensor_to_producer = self.get_f_tensor_to_producer()
         self.q_tensor_to_producer = self.get_q_tensor_to_producer()
         self.f_tensor_to_consumer = self.get_f_tensor_to_consumer()
@@ -85,15 +78,55 @@ class Subgraph(object):
         self.qsubgraph_input_tensor_list = list(self.qsubgraph_input_tensor.values())
         self.fsubgraph_input_tensor_list = [value[0] for value in self.fsubgraph_input_output_tensors.values()]
         self.fsubgraph_output_tensor_list = [value[1] for value in self.fsubgraph_input_output_tensors.values()]
-        self.f_input_data, self.f_output_data = self.get_f_input_output_data()
         self.f_weight_list, self.q_weight_name_list, self.f_bias_list, self.q_bias_name_list = self.extract_submodel_weight(
         )
-        self.f_input_data_list = list(self.f_input_data.values())
-        self.f_output_data_list = list(self.f_output_data.values())
+
+        if self.mem_opt_level == 0:
+            # In this model, input and output data for each layer can be obtained
+            # with just single-pass inference, which is faster but consumes more memory
+            # because it has to cache all of the data
+            logger.warning(
+                "No memory optimization is applied, this will be faster but requires more memory for caching")
+            self.f_input_data, self.f_output_data = self.get_f_input_output_data_single_pass()
+            self.f_input_data_list = list(self.f_input_data.values())
+            self.f_output_data_list = list(self.f_output_data.values())
+
         if self.parallel:
-            self.q_input_data = self.get_q_paralle_input_data()
+            # In this mode, input data of each laye can be obtained in parallel,
+            # which is faster but hurts the accuracy because it ignores the
+            # parameters that have been optimized
+            logger.warning("Parallel fast finetuning, this will be faster but will have slightly impact on accuracy")
+            self.q_input_data = self.get_q_input_data_in_parallel()
             self.q_input_data_list = list(self.q_input_data.values())
-        self.ort_infer_device = extra_options.get('FastFinetune', {}).get('InferDevice', 'cpu').lower()
+
+    def onnx_execution_providers(self) -> Tuple[List[str], Optional[List[Dict[str, str]]]]:
+        providers: List[str] = ['CPUExecutionProvider']
+        provider_options: Optional[List[Dict[str, str]]] = None
+
+        # In order to be consistent with torch optimization device,
+        # here it only supports 'cuda' prefix
+        if self.ort_infer_device.startswith('cuda'):
+            available_providers = ort.get_available_providers()
+            if 'ROCMExecutionProvider' in available_providers:
+                providers = ['ROCMExecutionProvider']
+            elif 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider']
+            else:
+                logger.warning("No GPUEPs available in current ORT version, falling back to CPU")
+
+            # If users only filled in 'cuda', then there is no need to specify the device id
+            if len(self.ort_infer_device) > 5:
+                decive_ids = [i for i in self.ort_infer_device[5:].split(',')]
+                for ids in decive_ids:
+                    if isinstance(provider_options, list):
+                        provider_options.append({'device_id': ids})
+                    else:
+                        provider_options = [{'device_id': ids}]
+
+            if provider_options is not None and len(provider_options) > 1:
+                providers = providers * len(provider_options)
+
+        return providers, provider_options
 
     def get_f_tensor_to_producer(self) -> Dict[str, NodeProto]:
         onnx_fmodel = ONNXModel(self.fmodel)
@@ -250,7 +283,7 @@ class Subgraph(object):
                 start_tensor = self.find_start(node)
                 end_tensor, is_act = self.find_end(node)
                 if len(start_tensor) > 0 and len(end_tensor) > 0:
-                    subgraph_qmodel[node.name] = extract_sub_model(self.qmodel_path, [start_tensor], [end_tensor])
+                    subgraph_qmodel[node.name] = extract_sub_model(self.qmodel, [start_tensor], [end_tensor])
                     subgraph_start[node.name] = start_tensor
                     subgraph_act[node.name] = is_act
         return subgraph_qmodel, subgraph_start, subgraph_act
@@ -280,11 +313,11 @@ class Subgraph(object):
                         end_tensor = act_node.output[0]
                     else:
                         end_tensor = n.output[0]
-                    subgraph_fmodel[k] = extract_sub_model(self.fmodel_path, [start_tensor], [end_tensor])
+                    subgraph_fmodel[k] = extract_sub_model(self.fmodel, [start_tensor], [end_tensor])
                     subgraph_start_end[k] = (start_tensor, end_tensor)
         return subgraph_fmodel, subgraph_start_end
 
-    def get_f_input_output_data(
+    def get_f_input_output_data_single_pass(
         self
     ) -> Tuple[Dict[int, Union[List[NDArray[Any]], NDArray[Any]]], Dict[int, Union[List[NDArray[Any]], NDArray[Any]]]]:
         model_original_outputs = set(output.name for output in self.fmodel.graph.output)
@@ -296,18 +329,14 @@ class Subgraph(object):
             if f_out not in model_original_outputs:
                 model_original_outputs.add(f_out)
                 self.fmodel.graph.output.extend([onnx.ValueInfoProto(name=f_out)])
-        augmented_fmodel = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-        augmented_fmodel_path = Path(augmented_fmodel.name).joinpath("fmodel.onnx").as_posix()
-        onnx.save(
-            self.fmodel,
-            augmented_fmodel_path,
-        )
 
         f_input_data: Dict[int, Union[NDArray[Any], List[NDArray[Any]]]] = {}
         f_output_data: Dict[int, Union[NDArray[Any], List[NDArray[Any]]]] = {}
 
-        f_session = ort.InferenceSession(augmented_fmodel_path,
-                                         providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        f_session = create_infer_session_for_onnx_model(self.fmodel,
+                                                        providers=self.providers,
+                                                        provider_options=self.provider_options,
+                                                        use_external_data_format=self.use_external_data_format)
 
         for i, _ in enumerate(self.fsubgraph_input_tensor_list):
             f_input_data[i] = []
@@ -337,7 +366,58 @@ class Subgraph(object):
                 n = n + 1
         return f_input_data, f_output_data
 
-    def get_q_paralle_input_data(self) -> Dict[int, Union[NDArray[Any], List[NDArray[Any]]]]:
+    def get_f_input_output_data(
+            self,
+            index: int) -> Tuple[Union[NDArray[Any], List[NDArray[Any]]], Union[NDArray[Any], List[NDArray[Any]]]]:
+        aug_model = copy.deepcopy(self.fmodel)
+        model_original_inputs = [n.name for n in aug_model.graph.input]
+        model_original_outputs = set(output.name for output in aug_model.graph.output)
+
+        f_out = self.fsubgraph_output_tensor_list[index]
+        assert isinstance(f_out, str), f"Invalid tensor name {f_out} for float subgraph"
+        if f_out not in model_original_outputs:
+            try:
+                # To accelerate the inference, we only run a sub-model
+                sub_aug_model = extract_sub_model(aug_model, model_original_inputs, [f_out])
+                aug_model = sub_aug_model  # This line ensure the aug_model will not be updated if above line failed
+            except Exception as e:
+                logger.warning(f"Fail to extract sub-model from fmodel because of {e}, full model will be used.")
+                aug_model.graph.output.extend([onnx.ValueInfoProto(name=f_out)])
+
+        f_in = self.fsubgraph_input_tensor_list[index]
+        assert isinstance(f_in, str), f"Invalid tensor name {f_in} for float subgraph"
+        if f_in not in [output.name for output in aug_model.graph.output]:
+            aug_model.graph.output.extend([onnx.ValueInfoProto(name=f_in)])
+
+        f_session = create_infer_session_for_onnx_model(aug_model,
+                                                        providers=self.providers,
+                                                        provider_options=self.provider_options,
+                                                        use_external_data_format=self.use_external_data_format)
+
+        # Get input data
+        f_input_data: Union[NDArray[Any], List[NDArray[Any]]] = []
+        f_output_data: Union[NDArray[Any], List[NDArray[Any]]] = []
+
+        if self.dynamic_batch:
+            # Expand one dimension before batch dim for the external requirement
+            outputs = f_session.run([f_in, f_out], self.all_input)
+            f_input_data = np.expand_dims(np.array(outputs[0]), axis=0)
+            f_output_data = np.expand_dims(np.array(outputs[1]), axis=0)
+        else:
+            n = 1
+            self.data_reader.reset_iter()
+            while True:
+                inputs = self.data_reader.get_next()
+                if not inputs or n > self.data_size:
+                    break
+                # The two variables used to output will be of type List
+                outputs = f_session.run([f_in, f_out], inputs)
+                f_input_data.append(np.array(outputs[0]))  # type: ignore
+                f_output_data.append(np.array(outputs[1]))  # type: ignore
+                n = n + 1
+        return f_input_data, f_output_data
+
+    def get_q_input_data_in_parallel(self) -> Dict[int, Union[NDArray[Any], List[NDArray[Any]]]]:
         aug_model = copy.deepcopy(self.qmodel)
         model_original_outputs = set(output.name for output in aug_model.graph.output)
         for q_in in self.qsubgraph_input_tensor_list:
@@ -345,21 +425,16 @@ class Subgraph(object):
                 model_original_outputs.add(q_in)
                 aug_model.graph.output.extend([onnx.ValueInfoProto(name=q_in)])
 
-        augmented_qmodel = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-        augmented_qmodel_path = Path(augmented_qmodel.name).joinpath("qmodel.onnx").as_posix()
-        onnx.save(
-            aug_model,
-            augmented_qmodel_path,
-        )
-
         q_input_data: Dict[int, Union[NDArray[Any], List[NDArray[Any]]]] = {}
+
         q_sess_options = ort.SessionOptions()
         q_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        register_custom_ops_library(q_sess_options)
-
-        q_session = ort.InferenceSession(augmented_qmodel_path,
-                                         q_sess_options,
-                                         providers=['CPUExecutionProvider', 'CPUExecutionProvider'])
+        register_custom_ops_library(q_sess_options, self.device)
+        q_session = create_infer_session_for_onnx_model(aug_model,
+                                                        q_sess_options,
+                                                        providers=self.providers,
+                                                        provider_options=self.provider_options,
+                                                        use_external_data_format=self.use_external_data_format)
 
         for i, _ in enumerate(self.qsubgraph_input_tensor_list):
             q_input_data[i] = []
@@ -385,63 +460,31 @@ class Subgraph(object):
     def get_q_input_data(self, index: int) -> Any:
         aug_model = copy.deepcopy(self.qmodel)
         q_in = self.qsubgraph_input_tensor_list[index]
-        augmented_qmodel = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-        qmodel_path = Path(augmented_qmodel.name).joinpath("qmodel.onnx").as_posix()
-        augmented_qmodel_path = Path(augmented_qmodel.name).joinpath("aug_qmodel.onnx").as_posix()
         input_names = {n.name for n in aug_model.graph.input}
         output_names = {n.name for n in aug_model.graph.output}
         if q_in in input_names:
             aug_model.graph.output.extend([onnx.ValueInfoProto(name=q_in)])
-            onnx.save(aug_model, augmented_qmodel_path)
         elif q_in in output_names:
-            onnx.save(aug_model, augmented_qmodel_path)
+            pass
         else:
-            onnx.save(aug_model, qmodel_path)
             try:
-                onnx.utils.extract_model(qmodel_path,
-                                         augmented_qmodel_path, [n.name for n in aug_model.graph.input], [q_in],
-                                         check_model=False)
+                # To accelerate the inference, we only run a sub-model
+                sub_aug_model = extract_sub_model(aug_model, [n.name for n in aug_model.graph.input], [q_in])
+                aug_model = sub_aug_model  # This line ensure the aug_model will not be updated if above line failed
             except Exception as e:
-                logger.warning(f"Fail to extract model because {e}, skip to extract model")
+                logger.warning(f"Fail to extract sub-model from qmodel because of {e}, full model will be used.")
                 aug_model.graph.output.extend([onnx.ValueInfoProto(name=q_in)])
-                onnx.save(aug_model, augmented_qmodel_path)
+
         q_sess_options = ort.SessionOptions()
         q_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        from typing import Callable, Optional
-        vai_library_path: Optional[Callable[[str], str]] = None
-        try:
-            # The custom op library may not have been compiled
-            from quark.onnx.operators.custom_ops import get_library_path as vai_library_path
-        except Exception as e:
-            # Try to import from original path but may raise an error when call get_library_path
-            vai_library_path = None
+        register_custom_ops_library(q_sess_options, self.device)
+        q_session = create_infer_session_for_onnx_model(aug_model,
+                                                        q_sess_options,
+                                                        providers=self.providers,
+                                                        provider_options=self.provider_options,
+                                                        use_external_data_format=self.use_external_data_format)
 
-        onnx_infer_device = 'cpu'
-        onnx_provider: Union[str, Tuple[str, Dict[str, int]]] = 'CPUExecutionProvider'
-        if self.ort_infer_device.startswith('cuda'):
-            onnx_infer_device = 'cuda'
-            dp_decive_ids = [int(i) for i in self.ort_infer_device[5:].split(',')]
-            onnx_provider = ('CUDAExecutionProvider', {'device_id': dp_decive_ids[0]})
-        elif self.ort_infer_device.startswith('cpu'):
-            onnx_infer_device = 'cpu'
-            onnx_provider = 'CPUExecutionProvider'
-        else:
-            onnx_infer_device = 'cpu'
-            onnx_provider = 'CPUExecutionProvider'
-
-        providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' not in providers:
-            onnx_infer_device = 'cpu'
-            onnx_provider = 'CPUExecutionProvider'
-        try:
-            if vai_library_path is not None:
-                q_sess_options.register_custom_ops_library(vai_library_path(onnx_infer_device))
-        except Exception as e:
-            logger.warning("Due to mismatch of dependent libraries, the custom op library "
-                           "from the pre-built wheel package failed to register with ORT. "
-                           "Please try to re-build the vai_q_onnx in current environment.")
-        q_session = ort.InferenceSession(augmented_qmodel_path, q_sess_options, providers=[onnx_provider])
-
+        # Get input data
         q_input_data: Union[NDArray[Any], List[NDArray[Any]]] = []
 
         if self.dynamic_batch:
@@ -554,5 +597,4 @@ class Subgraph(object):
         return f_weight, q_weight_name, f_bias, q_bias_name
 
     def convert_qmodel_batch_size(self) -> Any:
-        batch_size = self.qmodel_bs
-        return make_batch_size_fixed(self.qmodel, batch_size)
+        return make_batch_size_fixed(self.qmodel, self.qbatch_size)

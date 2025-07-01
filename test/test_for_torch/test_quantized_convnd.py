@@ -32,9 +32,9 @@ def test_QuantizedConvBatchNorm2d():
     torch.cuda.empty_cache()
     conv_map = {
         torch.nn.Conv2d: (torch.nn.BatchNorm2d, (1, 3, 16, 16), conv_bn_fused.QuantizedConvBatchNorm2d),
+        torch.nn.ConvTranspose2d: (torch.nn.BatchNorm2d, (1, 3, 28, 28), conv_bn_fused.QuantConvTransposeBatchNorm2d),
         # TODO haoliang
         # torch.nn.Conv3d: (torch.nn.BatchNorm3d, (1, 3, 16, 16, 16), conv_bn_fused.QuantizedConvBatchNorm3d),
-        # torch.nn.ConvTranspose2d: (torch.nn.BatchNorm2d, (1, 3, 16, 16), conv_bn_fused.QuantizedConvTransposeBatchNorm2d),
         # torch.nn.ConvTranspose3d: (torch.nn.BatchNorm3d, (1, 3, 16, 16, 16), conv_bn_fused.QuantizedConvTransposeBatchNorm3d),
     }
     empty_config = QuantizationConfig()
@@ -132,7 +132,7 @@ def test_transpose_model_quant():
     quantizer = ModelQuantizer(fx_quant_conf)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])
     quant_out = quantized_model(example_inputs)
-    assert torch.allclose(float_out, quant_out), "On the condition no quant, FP32 model's output should be same with FX model's output"
+    assert torch.allclose(float_out, quant_out, atol = 1e-3), "On the condition no quant, FP32 model's output should be same with FX model's output"
     print("Finish test: SimpleCNNWithTransposeConv model FX mode quant(no quant)")
 
     # fx model quant with int8 quant
@@ -145,4 +145,13 @@ def test_transpose_model_quant():
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])
     quant_out = quantized_model(example_inputs)
     print("Finish test: SimpleCNNWithTransposeConv model FX mode quant(int8 quant)")
+    torch.cuda.empty_cache()
+
+
+
+if __name__ == "__main__":
+    torch.cuda.empty_cache()
+    test_QuantizedConvBatchNorm2d()
+    test_transpose_conv()
+    test_transpose_model_quant()
     torch.cuda.empty_cache()

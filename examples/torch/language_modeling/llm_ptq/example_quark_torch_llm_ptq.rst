@@ -287,7 +287,7 @@ Quark now supports the datatype microscaling, abbreviated as MX. Use the followi
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
                              --output_dir output_dir \
-                             --quant_scheme w_mx_fp8 \
+                             --quant_scheme w_mxfp8 \
                              --num_calib_data 32 \
                              --group_size 32
 
@@ -297,7 +297,7 @@ The command above is weight-only quantization. If you want activations to be qua
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
                              --output_dir output_dir \
-                             --quant_scheme w_mx_fp8_a_mx_fp8 \
+                             --quant_scheme w_mxfp8_a_mxfp8 \
                              --num_calib_data 32 \
                              --group_size 32
 
@@ -343,8 +343,43 @@ The command above is weight-only quantization. If you want activations to be qua
                              --quant_scheme w_mx6_a_mx6 \
                              --num_calib_data 16
 
-Recipe 9: Import Quantized Model & Evaluation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Recipe 9: Two-Stage Quantization: 1st Stage FP4 Per-Group & 2nd Stage FP8 Per-Tensor for Scale of 1st Stage
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Quark now supports the two-stage quantization scheme. The first stage is FP4 Per-Group and the second stage is FP8 Per-Tensor quantization for scale of 1st Stage.
+
+  .. code-block:: bash
+
+    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
+                              --output_dir output_dir \
+                              --quant_scheme w_fp4_scale_fp8 \
+                              --num_calib_data 16
+
+The command above is weight-only quantization. If you want activations to be quantized as well, use the command below:
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [llama checkpoint folder] \
+                             --output_dir output_dir \
+                             --quant_scheme w_fp4_a_fp4_scale_fp8 \
+                             --num_calib_data 16
+
+Recipe 10: MOE Model Experts Weights Second Step Quantization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For MOE structure model, Quark supports second step quantization for weights in the expert layers. Use the following command to quantize the model:
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [moe structure model checkpoint folder] \
+                             --output_dir output_dir \
+                             --quant_scheme w_fp8_a_fp8 \
+                             --kv_cache_dtype fp8 \
+                             --moe_experts_second_step_config w_int4_per_channel_sym \
+                             --num_calib_data 16
+
+Recipe 11: Import Quantized Model & Evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The quantized model can be imported and evaluated:
 

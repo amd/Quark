@@ -7,9 +7,11 @@ import numpy as np
 from onnx import numpy_helper, helper, onnx_pb
 from onnxruntime.quantization.onnx_model import ONNXModel
 from typing import Dict, Tuple, Any
+import tempfile
 import os
 from quark.shares.utils.log import ScreenLogger
 import json
+import copy
 from typing import Optional
 
 logger = ScreenLogger(__name__)
@@ -19,34 +21,30 @@ class QuaRot():
     """
     A class for quarot
     Args:
-        onnx_model_path (str): The ONNX model path to be rotated.
         input_model (onnx.ModelProto): The ONNX model to be rotated.
         r_matrixs (Dict[str, np.ndarray]): The dict of rotation matrix
         rotation_config_info (Dict): The dict to define which sub-structure need rotation.
-        is_large (bool): True if the model size is larger than 2GB.
+        use_external_data_format (bool): True if the model size is larger than 2GB.
     """
 
     def __init__(self,
-                 onnx_model_path: str,
                  input_model: onnx.ModelProto,
                  r_matrixs: Dict[str, np.ndarray[Any, Any]],
                  rotation_config_info: Dict[Any, Any],
-                 is_large: bool = True) -> None:
-        self.onnx_model_path = onnx_model_path
-
+                 use_external_data_format: bool = False) -> None:
         # parse rotation matrixs by each stage (R1/R2/R3/R4)
         self.r1_matrix = r_matrixs.get("R1", None)
         self.r2_matrix = r_matrixs.get("R2", None)
         self.r3_matrix = r_matrixs.get("R3", None)
         self.r4_matrix = r_matrixs.get("R4", None)
 
-        self.base_dir = os.path.dirname(self.onnx_model_path)
-        self.is_large = is_large
+        self.base_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.quarot.").name
+        self.use_external_data_format = use_external_data_format
         self.rotation_config_info = rotation_config_info
         self.rotated_model_path = os.path.join(self.base_dir, "decoder_model_rotated.onnx")
         self.verbose = True
 
-        self.model = input_model
+        self.model = copy.deepcopy(input_model) if use_external_data_format else input_model
 
         self.onnx_model = ONNXModel(self.model)
 
@@ -272,18 +270,20 @@ class QuaRot():
         # TODO Implement R2/R3/R4 rotation
 
         # self.onnx_model.save_model_to_file(self.rotated_model_path,
-        #                                    use_external_data_format=self.is_large)  # Not neccessary
+        #                                    use_external_data_format=self.use_external_data_format)  # Not neccessary
 
     def get_rotated_model(self) -> onnx.ModelProto:
         return self.onnx_model.model  # type:ignore
 
 
-def rotation_transforms(onnx_model_path: str, input_model: onnx.ModelProto, r_matrixs: Dict[str, np.ndarray[Any, Any]],
-                        rotation_config_file: str) -> onnx.ModelProto:
+def rotation_transforms(input_model: onnx.ModelProto,
+                        r_matrixs: Dict[str, np.ndarray[Any, Any]],
+                        rotation_config_file: str,
+                        use_external_data_format: bool = False) -> onnx.ModelProto:
 
     # Load rot_config
     with open(rotation_config_file, 'r') as file:
         rotation_config_info = json.load(file)
-    processpr_ = QuaRot(onnx_model_path, input_model, r_matrixs, rotation_config_info)
+    processpr_ = QuaRot(input_model, r_matrixs, rotation_config_info, use_external_data_format)
     processpr_.transform()
     return processpr_.get_rotated_model()

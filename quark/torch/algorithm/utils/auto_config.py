@@ -349,7 +349,7 @@ class EasyGraph():
             self.find_merge_pair(node.args[0], prefix_model)
 
         else:
-            logger.info(f"except: { node.name} {node_type}")
+            logger.info(f"except: {node.name} {node_type}")
 
     def find_common_descendant_by_layers(self, node_list: List[torch.fx.node.Node]) -> torch.fx.node.Node:
         if len(node_list) == 1:

@@ -23,9 +23,6 @@ logger = ScreenLogger(__name__)
 
 __all__ = ["OsscarProcessor"]
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-
 CPU = torch.device("cpu")
 CUDA = torch.device("cuda")
 
@@ -215,6 +212,9 @@ class OsscarProcessor(BaseAlgoProcessor):
 
     def __init__(self, model: nn.Module, pruning_algo_config: OSSCARConfig,
                  data_loader: DataLoader[torch.Tensor]) -> None:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
+
         self.model = model
         self.damp_percent = pruning_algo_config.damp_percent
         self.true_sequential = pruning_algo_config.true_sequential

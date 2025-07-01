@@ -20,6 +20,9 @@ python convert_opset_version.py --input $INPUT_ONNX_MODEL_PATH --target_opset &T
 import onnx
 from onnx import version_converter
 from argparse import ArgumentParser, Namespace
+from quark.shares.utils.log import ScreenLogger
+
+logger = ScreenLogger(__name__)
 
 
 def parse_args() -> Namespace:
@@ -33,8 +36,13 @@ def parse_args() -> Namespace:
 
 def convert_opset_version(model: onnx.ModelProto, target_opset: int) -> onnx.ModelProto:
     opset_version = model.opset_import[0].version
-    print(f"The current model's opset version is: {opset_version}")
+    logger.info(f"The current opset version of model is {opset_version}.")
     converted_model = version_converter.convert_version(model, target_opset)
+    opset_version = converted_model.opset_import[0].version
+    if opset_version == target_opset:
+        logger.info(f"Convert opset version of the model to {target_opset} successfully.")
+    else:
+        logger.warning(f"Failed to convert opset version of the model to {target_opset}.")
     return converted_model
 
 
@@ -43,4 +51,4 @@ if __name__ == '__main__':
     model = onnx.load(args.input)
     converted_model = convert_opset_version(model, args.target_opset)
     onnx.save(converted_model, args.output)
-    print(f"Convert the model {args.input} to the model {args.output} with opset version {args.target_opset}")
+    logger.info(f"Convert the model {args.input} to the model {args.output} with opset version {args.target_opset}")

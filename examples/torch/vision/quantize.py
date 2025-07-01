@@ -12,15 +12,14 @@ import torch.optim
 from torchvision import datasets
 from torch.utils.data import DataLoader, Subset
 import torch.fx
-from torch._export import capture_pre_autograd_graph
 import torchvision.transforms as transforms
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config, TQTSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode, TQTThresholdInitMeth
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerTensorPowOf2MinMSEObserver, PerTensorPowOf2MinMaxObserver
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
-
+# from torch._export import capture_pre_autograd_graph
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -32,19 +31,24 @@ parser.add_argument('--pretrained', default=None, help='Pre trained model weight
 parser.add_argument('--qat', action="store_true", help='Perform QAT to further improve accuracy.')
 parser.add_argument('--tqt', action="store_true", help='Perform TQT to further improve accuracy.')
 parser.add_argument('--lsq', action="store_true", help='Perform LSQ to further improve accuracy.')
-parser.add_argument('--early_stop', action="store_false", help='During training whether to early stop.')
+parser.add_argument('--non_overflow', action="store_true", help='Perform non overflow quantizer to perform PTQ/QAT.')
+parser.add_argument('--mse_powof2', action="store_true", help='Perform mse_powof2 quantizer to perform PTQ/QAT.')
+parser.add_argument('--early_stop', action="store_true", help='During training whether to early stop.')
 parser.add_argument('--early_stop_step', default=2, type=int, help='Condition to early stop.')
 parser.add_argument('--workers', default=4, type=int, help='Number of data loading workers to be used.')
-parser.add_argument('--epochs', default=1, type=int, help='Training epochs.')
-parser.add_argument('--weight_lr', default=1e-6, type=float, help='Initial learning rate of network weights.')
+parser.add_argument('--epochs', default=3, type=int, help='Training epochs.')
+parser.add_argument('--quantizer_lr', default=1e-5, type=float, help='Initial lr rate: quantizer param (For TQT).')
+parser.add_argument('--quantizer_lr_decay', default=0.5, type=float, help='Learning rate decay ratio of quantizer.')
+parser.add_argument('--weight_lr', default=1e-5, type=float, help='Initial learning rate of network weights.')
 parser.add_argument('--weight_lr_decay', default=0.94, type=int, help='Learning rate decay ratio of network weights.')
-parser.add_argument('--weight_decay', default=2e-5, type=float, help='Weight decay.')
-parser.add_argument('--train_batch_size', default=128, type=int, help='Batch size for training.')
+parser.add_argument('--weight_decay', default=1e-4, type=float, help='Weight decay.')
+parser.add_argument('--train_batch_size', default=24, type=int, help='Batch size for training.')
 parser.add_argument('--val_batch_size', default=128, type=int, help='Batch size for validation.')
 parser.add_argument('--display_freq', default=100, type=int, help='Display training metrics every n steps.')
-parser.add_argument('--val_freq', default=250, type=int, help='Validate model every n steps.')
+parser.add_argument('--val_freq', default=500, type=int, help='Validate model every n steps.')
 parser.add_argument('--save_dir', default='./quant_result', help='Directory to save trained models.')
-parser.add_argument('--weight_lr_decay_steps', type=int, default=10000, help='adjust learning rate for params')
+parser.add_argument('--weight_lr_decay_steps', type=int, default=2000, help='adjust learning rate: newwork params')
+parser.add_argument('--quantizer_lr_decay_steps', type=int, default=1000, help='adjust learning rate: quantizer params')
 parser.add_argument('--gpus', type=str, default='0', help='gpu ids to be used for training, seperated by commas')
 parser.add_argument('--quant_ckpt', default=None, help='Dir to save model state_dict.')
 parser.add_argument("--model_export",
@@ -134,14 +138,7 @@ def prepare_data_loaders(data_path):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     traindir = os.path.join(data_path, 'train')
     valdir = os.path.join(data_path, 'validation')
-    dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
+
     dataset_test = datasets.ImageFolder(
         valdir,
         transforms.Compose([
@@ -150,24 +147,29 @@ def prepare_data_loaders(data_path):
             transforms.ToTensor(),
             normalize,
         ]))
-
-    train_sampler = torch.utils.data.RandomSampler(dataset)
-    test_sampler = torch.utils.data.SequentialSampler(dataset_test)
-
-    data_loader = torch.utils.data.DataLoader(dataset,
-                                              batch_size=args.train_batch_size,
-                                              sampler=train_sampler,
-                                              num_workers=8)
-
     data_loader_test = torch.utils.data.DataLoader(dataset_test,
                                                    batch_size=args.val_batch_size,
-                                                   sampler=test_sampler,
-                                                   num_workers=8)
+                                                   shuffle=False,
+                                                   num_workers=args.workers,
+                                                   pin_memory=True)
+    dataset = datasets.ImageFolder(
+        traindir,
+        transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ]))
+    data_loader = torch.utils.data.DataLoader(dataset,
+                                              batch_size=args.train_batch_size,
+                                              shuffle=True,
+                                              num_workers=args.workers,
+                                              pin_memory=True)
 
     return data_loader, data_loader_test
 
 
-def train_one_step(model, inputs, criterion, optimizer, step, device):
+def train_one_step(model, inputs, criterion, optimizer, device):
     images, target = inputs
     images = images.to(device, non_blocking=True)
     target = target.to(device, non_blocking=True)
@@ -179,7 +181,7 @@ def train_one_step(model, inputs, criterion, optimizer, step, device):
     # measure accuracy and record loss
     acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
-    # compute gradient and do SGD step
+    # compute gradient and do paramupdate step
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -187,39 +189,32 @@ def train_one_step(model, inputs, criterion, optimizer, step, device):
 
 
 def validate(val_loader, model, criterion, device, full_test=0):
-    model.eval()
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
     progress = ProgressMeter(len(val_loader), [batch_time, losses, top1, top5], prefix='Test: ')
+    # switch to evaluate mode
+    model.eval()
     if not isinstance(model, nn.DataParallel):
         model = model.to(device)
 
     with torch.no_grad():
         end = time.time()
         for i, (images, target) in enumerate(val_loader):
-            # Input for Prepared model must be fixed, to avoid the last batch
-            if full_test is not True and target.shape[0] != args.val_batch_size:
-                print("Break val, batch size: ", images.shape[0], " expected size: ", args.val_batch_size, "batch: ", i)
-                break
             images = images.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
-
             # compute output
             output = model(images)
             loss = criterion(output, target)
-
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             losses.update(loss.item(), images.size(0))
             top1.update(acc1[0], images.size(0))
             top5.update(acc5[0], images.size(0))
-
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-
             if i % args.display_freq == 0:
                 progress.display(i)
 
@@ -250,13 +245,20 @@ def save_checkpoint(state, is_best, directory):
 
 def adjust_learning_rate(optimizer, epoch, step):
     """Sets the learning rate to the initial LR decayed by decay ratios"""
-    weight_lr_decay_steps = args.weight_lr_decay_steps
     for param_group in optimizer.param_groups:
-        if step != 0 and step % weight_lr_decay_steps == 0:
+        group_name = param_group['name']
+        if group_name == 'weight' and step != 0 and step % args.weight_lr_decay_steps == 0:
             old_lr = param_group['lr']
-            lr = args.weight_lr * (args.weight_lr_decay**(step / weight_lr_decay_steps))
+            lr = args.weight_lr * (args.weight_lr_decay**(step / args.weight_lr_decay_steps))
             param_group['lr'] = lr
-            print("adjust lr from: ", old_lr, " to: ", lr)
+            print('Adjust weight lr, epoch {}, step {}: group_name={}, old lr={}, new lr={}'.format(
+                epoch, step, group_name, old_lr, lr))
+        if group_name == 'quantizer' and step != 0 and step % args.quantizer_lr_decay_steps == 0:
+            old_lr = param_group['lr']
+            lr = args.quantizer_lr * (args.quantizer_lr_decay**(step / args.quantizer_lr_decay_steps))
+            param_group['lr'] = lr
+            print('Adjust quantizer lr epoch {}, step {}: group_name={}, old lr={}, new lr={}'.format(
+                epoch, step, group_name, old_lr, lr))
 
 
 def accuracy(output, target, topk=(1, )):
@@ -275,8 +277,24 @@ def accuracy(output, target, topk=(1, )):
         return res
 
 
+def quantizer_parameters(model):
+    params = []
+    for module in model.modules():
+        if isinstance(module, TQTObserver):
+            params += [module._log_threshold]
+    return params
+
+
+def non_quantizer_parameters(model):
+    params = []
+    quantizer_parameters_ids = set([id(x) for x in quantizer_parameters(model)])
+    for param in model.parameters():
+        if id(param) not in quantizer_parameters_ids:
+            params.append(param)
+    return params
+
+
 def train(model, train_loader, val_loader, criterion, device_ids):
-    model.train()
     best_acc1 = 0
     best_filepath = None
     if args.early_stop is True:
@@ -296,8 +314,25 @@ def train(model, train_loader, val_loader, criterion, device_ids):
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
 
-    optimizer = torch.optim.Adam(model.parameters(), args.weight_lr, weight_decay=args.weight_decay)
+    param_groups = [{
+        'params':
+        quantizer_parameters(model) if not isinstance(model, nn.DataParallel) else quantizer_parameters(model.module),
+        'lr':
+        args.quantizer_lr,
+        'name':
+        'quantizer'
+    }, {
+        'params':
+        non_quantizer_parameters(model)
+        if not isinstance(model, nn.DataParallel) else non_quantizer_parameters(model.module),
+        'lr':
+        args.weight_lr,
+        'name':
+        'weight'
+    }]
 
+    optimizer = torch.optim.Adam(param_groups, args.weight_lr, weight_decay=args.weight_decay)
+    model.train()
     for epoch in range(args.epochs):
         progress = ProgressMeter(len(train_loader) * args.epochs, [batch_time, data_time, losses, top1, top5],
                                  prefix="Epoch[{}], Step: ".format(epoch))
@@ -309,7 +344,7 @@ def train(model, train_loader, val_loader, criterion, device_ids):
             step = len(train_loader) * epoch + i
 
             adjust_learning_rate(optimizer, epoch, step)
-            loss, acc1, acc5 = train_one_step(model, (images, target), criterion, optimizer, step, device)
+            loss, acc1, acc5 = train_one_step(model, (images, target), criterion, optimizer, device)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -342,14 +377,12 @@ def train(model, train_loader, val_loader, criterion, device_ids):
                     best_filepath = filepath
                 # early stop session
                 if args.early_stop is True:
-                    if not is_best:
-                        not_improve_term += 1
-                    else:
-                        not_improve_term = 0
+                    not_improve_term = (not_improve_term + 1) if not is_best else 0
                     print("is bset: ", is_best, "not_improve_term:", not_improve_term)
                     if not_improve_term >= args.early_stop_step:
-                        break
-                model.train()
+                        print("As not improved, finish training")
+                        model.load_state_dict(torch.load(best_filepath)['state_dict'])
+                        return best_filepath
     model.load_state_dict(torch.load(best_filepath)['state_dict'])
     return best_filepath
 
@@ -370,7 +403,7 @@ def get_graph_module(float_model, example_inputs):
     '''
     logger.info("Start to capture program...")
     try:
-        model = capture_pre_autograd_graph(float_model, example_inputs)
+        model = torch.export.export_for_training(float_model.eval(), example_inputs).module()
         logger.info("Get graph module successfully.")
         return model
     except Exception as e:
@@ -386,11 +419,10 @@ def main():
 
     # Init dummy input, dataset, float model
     example_inputs = (torch.rand(args.train_batch_size, 3, 224, 224).to(device), )
-    calib_loader = prepare_calib_dataset(args.data_dir, device, calib_length=args.train_batch_size * 10)
+    calib_loader = prepare_calib_dataset(args.data_dir, device, calib_length=args.val_batch_size * 2)
     train_loader, val_loader = prepare_data_loaders(args.data_dir)
     float_model = load_model(args.model_name).to(device)
     criterion = nn.CrossEntropyLoss().to(device)
-
     if args.tqt or args.lsq:
         assert args.qat, "Must set qat is True!"
 
@@ -403,27 +435,30 @@ def main():
                                             round_method=RoundType.half_even,
                                             is_dynamic=False)
     if args.tqt:
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT = QuantizationSpec(dtype=Dtype.int8,
-                                                                       qscheme=QSchemeType.per_tensor,
-                                                                       observer_cls=TQTObserver,
-                                                                       symmetric=True,
-                                                                       scale_type=ScaleType.float,
-                                                                       round_method=RoundType.half_even,
-                                                                       is_dynamic=False,
-                                                                       qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._3SD))
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT = QuantizationSpec(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=TQTObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+            qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._3SD))
 
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT = QuantizationSpec(dtype=Dtype.int8,
-                                                                      qscheme=QSchemeType.per_tensor,
-                                                                      observer_cls=TQTObserver,
-                                                                      symmetric=True,
-                                                                      scale_type=ScaleType.float,
-                                                                      round_method=RoundType.half_even,
-                                                                      is_dynamic=False,
-                                                                      qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._KL_J))
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT = QuantizationSpec(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=TQTObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+            qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._KL_J))
         quant_config = QuantizationConfig(weight=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT,
                                           input_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT,
-                                          output_tensors=INT8_PER_TENSOR_SPEC,
-                                          bias=INT8_PER_TENSOR_SPEC)
+                                          output_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT,
+                                          bias=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT)
+        calib_loader = []  # if using tqt, we will directly train, skip PTQ
     elif args.lsq:
         DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT = QuantizationSpec(dtype=Dtype.int8,
                                                                        qscheme=QSchemeType.per_tensor,
@@ -442,8 +477,43 @@ def main():
                                                                       is_dynamic=False)
         quant_config = QuantizationConfig(weight=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT,
                                           input_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT,
+                                          output_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT,
+                                          bias=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT)
+    elif args.non_overflow:
+        INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
+                                                qscheme=QSchemeType.per_tensor,
+                                                observer_cls=PerTensorPowOf2MinMaxObserver,
+                                                symmetric=True,
+                                                scale_type=ScaleType.float,
+                                                round_method=RoundType.half_even,
+                                                is_dynamic=False)
+        quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
                                           output_tensors=INT8_PER_TENSOR_SPEC,
+                                          weight=INT8_PER_TENSOR_SPEC,
                                           bias=INT8_PER_TENSOR_SPEC)
+    elif args.mse_powof2:
+        INT8_PER_WEIGHT_TENSOR_SPEC = QuantizationSpec(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorPowOf2MinMSEObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False)
+
+        INT8_PER_ACTIVTION_TENSOR_SPEC = QuantizationSpec(
+            dtype=Dtype.uint8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorPowOf2MinMSEObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False)
+
+        quant_config = QuantizationConfig(input_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
+                                          output_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
+                                          weight=INT8_PER_WEIGHT_TENSOR_SPEC,
+                                          bias=INT8_PER_WEIGHT_TENSOR_SPEC)
     else:
         quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
                                           output_tensors=INT8_PER_TENSOR_SPEC,
@@ -453,26 +523,28 @@ def main():
     quantizer = ModelQuantizer(quant_config)
     # prepare the torch.fx.GraphModule
     graph_model = get_graph_module(float_model, example_inputs)
-
     # optimize GraphModule and insert quantizer
     quantized_model = quantizer.quantize_model(graph_model, calib_loader)
     # Test the validation accuracy after PTQ
     print("Evaluate the validation accuracy after PTQ:")
-    acc1 = validate(val_loader, quantized_model, criterion, device)
-
+    if not args.tqt:
+        acc1 = validate(val_loader, quantized_model, criterion, device)
     # User can train the model (QAT) to further improve accuracy.
     if args.qat is True:
         train(quantized_model, train_loader, val_loader, criterion, device_ids)
 
-    # Currently, model export is not supported for TQT and LSQ.
+    # Currently, model export may not support LSQ.
     if args.model_export is not None:
+        # checkpoint = './qat_models/{MODEL_NAME}}/model_best_{***}.pth'
+        # quantized_model.load_state_dict(torch.load(checkpoint)['state_dict'])
         freezeded_model = quantizer.freeze(quantized_model.eval())
         if "onnx" in args.model_export:
             from quark.torch import ModelExporter
             from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
             config = ExporterConfig(json_export_config=JsonExporterConfig())
             exporter = ModelExporter(config=config, export_dir=args.export_dir)
-            example_inputs = (torch.rand(args.train_batch_size, 3, 224, 224).to(device), )
+            # NOTE for NPU compile, it is better using batch-size = 1 for better compliance
+            example_inputs = (torch.rand(1, 3, 224, 224).to(device), )
             exporter.export_onnx_model(freezeded_model, example_inputs[0])
         if "torch_save" in args.model_export:
             # save session

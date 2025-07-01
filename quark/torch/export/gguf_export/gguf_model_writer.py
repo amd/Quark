@@ -19,10 +19,13 @@ from typing import Any, Callable, ContextManager, Iterator, Sequence, TypeVar, c
 import torch
 from .tensor_convert import convert_to_gguf
 from quark.shares.utils.log import ScreenLogger, log_errors
-from quark.shares.utils.import_utils import is_transformers_available
+from quark.shares.utils.import_utils import is_transformers_available, is_safetensors_available
 
 if is_transformers_available():
     from transformers import AutoTokenizer
+
+if is_safetensors_available():
+    from safetensors import safe_open
 
 logger = ScreenLogger(__name__)
 
@@ -33,9 +36,6 @@ except ImportError as e:
     raise ImportError("please install gguf==0.6.0")
 
 from .utils import permute
-from quark.shares.utils.log import ScreenLogger
-
-logger = ScreenLogger(__name__)
 
 
 class QuantSpec(object):
@@ -76,6 +76,11 @@ class ModelWriter(ABC):
                  fname_out: Path,
                  is_big_endian: bool = False,
                  use_temp_file: bool = False):
+        if not is_safetensors_available():
+            raise ImportError(
+                "The class `ModelWriter` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
+            )
+
         self.model_name = model_name
         with open(json_path, 'r') as f:
             self._model_json: Dict[str, int | str | Any] = json.load(f)
@@ -135,7 +140,6 @@ class ModelWriter(ABC):
 
     def get_tensors(self) -> Iterator[tuple[str, torch.Tensor]]:
         ctx: ContextManager[Any]
-        from safetensors import safe_open
         ctx = cast(ContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))
 
         with ctx as model_part:

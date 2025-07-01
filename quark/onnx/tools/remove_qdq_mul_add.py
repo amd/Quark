@@ -16,6 +16,7 @@ import onnx
 from onnx import ModelProto, NodeProto
 from onnxruntime.quantization.onnx_model import ONNXModel
 
+from quark.onnx.quant_utils import get_tensor_to_consumer
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -29,29 +30,38 @@ def remove_qdq_mul_add(onnx_model: ModelProto) -> Any:
     :param onnx_model: The input ONNX model.
     :return: Modified ONNX model with q and dq ops in the `mul + q + dq + add` structure removed.
     """
-    nodes = onnx_model.graph.node
-    nodes_to_remove = []
-    edges_to_reconnect = []
-
-    for add_node in nodes:
-        if add_node.op_type == "Add":
-            add_inputs = add_node.input
-
-            for input_name in add_inputs:
-                dq_node = find_node_by_output(nodes, input_name)
-                if dq_node and dq_node.op_type == "DequantizeLinear":
-                    dq_input = dq_node.input[0]
-
-                    q_node = find_node_by_output(nodes, dq_input)
-                    if q_node and q_node.op_type == "QuantizeLinear":
-                        q_input = q_node.input[0]
-
-                        mul_node = find_node_by_output(nodes, q_input)
-                        if mul_node and mul_node.op_type == "Mul":
-                            nodes_to_remove.extend([q_node, dq_node])
-                            edges_to_reconnect.append((mul_node.output[0], add_node, input_name))
 
     try:
+        tensor_to_consumer = get_tensor_to_consumer(onnx_model)
+        nodes = onnx_model.graph.node
+        nodes_to_remove = []
+        edges_to_reconnect = []
+
+        for add_node in nodes:
+            if add_node.op_type == "Add":
+                add_inputs = add_node.input
+
+                for input_name in add_inputs:
+                    dq_node = find_node_by_output(nodes, input_name)
+                    if dq_node and dq_node.op_type == "DequantizeLinear":
+                        consumers = tensor_to_consumer[dq_node.output[0]]
+                        if len(consumers) > 1:
+                            consumer_str = ", ".join(f"{n.op_type}('{n.name}')" for n in consumers)
+                            logger.debug(
+                                f"Skip pattern match: output of DequantizeLinear('{dq_node.name}') is connected to {len(consumers)} nodes: {consumer_str}."
+                            )
+                            continue
+
+                        dq_input = dq_node.input[0]
+                        q_node = find_node_by_output(nodes, dq_input)
+                        if q_node and q_node.op_type == "QuantizeLinear":
+                            q_input = q_node.input[0]
+
+                            mul_node = find_node_by_output(nodes, q_input)
+                            if mul_node and mul_node.op_type == "Mul":
+                                nodes_to_remove.extend([q_node, dq_node])
+                                edges_to_reconnect.append((mul_node.output[0], add_node, input_name))
+
         for node in nodes_to_remove:
             nodes.remove(node)
 
@@ -64,10 +74,11 @@ def remove_qdq_mul_add(onnx_model: ModelProto) -> Any:
         onnx_model.clean_initializers()
         onnx_model.topological_sort()
         logger.info("Removed QuantizeLinear & DequantizeLinear operations: mul-add.")
+
+        return onnx_model.model
+
     except Exception as e:
         logger.warning(f"Unable to remove QuantizeLinear & DequantizeLinear operations: mul-add. Exception: {e}")
-
-    return onnx_model.model
 
 
 def find_node_by_output(nodes: List[NodeProto], output_name: str) -> Optional[NodeProto]:

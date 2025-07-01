@@ -122,7 +122,7 @@ class OptPassManager:
         # Run the set of passes on the graph module
         for i, fn in enumerate(self.passes):
             fn_name = fn.__name__ if inspect.isfunction(fn) else type(fn).__name__
-            logger.info("Running pass '%s'", fn_name)
+            logger.info("Running {}_th pass {}".format(i + 1, fn_name))
             model = fn(model)
         model: GraphModule = GraphModule(model, model.graph)
         return model

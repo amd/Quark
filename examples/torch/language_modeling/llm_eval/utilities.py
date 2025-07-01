@@ -8,7 +8,8 @@ import torch
 import onnxruntime_genai as og
 import random
 import numpy as np
-from lm_eval.utils import (
+import json
+from lm_eval.evaluator import (
     eval_logger,
 )
 
@@ -75,7 +76,14 @@ def set_seeds(args):
     np.random.seed(args.numpy_random_seed)
     torch.manual_seed(args.torch_random_seed)
 
-def oga_generation(args, inputs, model_dir, seq_len=512, max_seq_len=1024):
+def oga_generation(args, inputs, model_dir, filename, seq_len=512, max_seq_len=1024):
+    # defined PSU prompt
+    PSU_PROMPT = "Please solve following problem and explain it to me. Then give me final answer at the end with a single number preceded by string '#### '. "
+    # load the eos_token_id
+    with open(str(args.import_model_dir + "genai_config.json"), "r") as f:
+        config = json.load(f)
+    eos_token_id = config["model"]["eos_token_id"]
+
     set_seeds(args)
 
     def model_load(model_dir):
@@ -90,28 +98,43 @@ def oga_generation(args, inputs, model_dir, seq_len=512, max_seq_len=1024):
     model = model_load(model_dir)
     tokenizer, tokenizer_stream = get_tokenizer(model)
     outputs = []
-    for i in tqdm(range(len(inputs))):
-        prompt = inputs[i]
+    with open(filename, "w") as file:
+        for i in tqdm(range(len(inputs))):
+            if args.case == "default":
+                prompt = inputs[i]
+            elif (args.case == "psu_prompt" or args.case == "psu_prompt_eos_stop") and args.tasks == "tinyGSM8k":
+                # preprending PSU Prompt
+                prompt = PSU_PROMPT + inputs[i]
 
-        input_tokens = tokenizer.encode(prompt)[:seq_len]
-        search_options = {}
-        params = og.GeneratorParams(model)
+            input_tokens = tokenizer.encode(prompt)[:seq_len]
 
-        params.input_ids = input_tokens
-        search_options['max_length'] = max_seq_len
-        params.set_search_options(**search_options)
-        generator = og.Generator(model, params)
+            search_options = {}
+            params = og.GeneratorParams(model)
+            params.input_ids = input_tokens
 
-        num_output_tokens = 0
-        tokens = []
-        response = ''
-        while not generator.is_done():
-            generator.compute_logits()
-            generator.generate_next_token()
-            new_token = generator.get_next_tokens()[0]
-            tokens.append(new_token)
-            response += tokenizer_stream.decode(new_token)
-            num_output_tokens += 1
-        del generator
-        outputs.append(response)
+            search_options['max_length'] = max_seq_len
+            params.set_search_options(**search_options)
+            generator = og.Generator(model, params)
+
+            num_output_tokens = 0
+            tokens = []
+            response = ''
+            while not generator.is_done():
+                generator.compute_logits()
+                generator.generate_next_token()
+                new_token = generator.get_next_tokens()[0]
+
+                # early stopping w/eos
+                if args.case == "psu_prompt_eos_stop" and new_token == eos_token_id:
+                    print(f"****eos triggered, {new_token}****")
+                    break
+                tokens.append(new_token)
+                response += tokenizer_stream.decode(new_token)
+                num_output_tokens += 1
+            del generator
+
+            # saving OGA generations
+            file.write(response + f"\n{args.eor}\n")
+            file.flush()
+            outputs.append(response)
     return outputs

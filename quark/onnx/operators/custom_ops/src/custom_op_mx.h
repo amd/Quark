@@ -2,19 +2,17 @@
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
+
 #pragma once
 
-#include "core/session/onnxruntime_cxx_api.h"
-#include "core/session/onnxruntime_c_api.h"
+#include "onnxruntime_c_api.h"
+#define ORT_API_MANUAL_INIT
+#include "onnxruntime_cxx_api.h"
+#undef ORT_API_MANUAL_INIT
+
 #ifdef USE_CUDA
 #include "cuda_runtime.h"
 #include "cuda_runtime_api.h"
-#endif
-
-#include "custom_op_mx.h"
-
-#ifdef __cplusplus
-extern "C" {
 #endif
 
 
@@ -67,7 +65,8 @@ struct MXFixNeuronKernel {
   int64_t rounding_mode_ = 0;
 };
 
-struct MXFixNeuron : Ort::CustomOpBase<MXFixNeuron, MXFixNeuronKernel> {
+template <const char* OpName, int OpVersion>
+struct MXFixNeuron : Ort::CustomOpBase<MXFixNeuron<OpName, OpVersion>, MXFixNeuronKernel> {
   explicit MXFixNeuron() {}
 
   void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const { 
@@ -111,11 +110,16 @@ struct MXFixNeuron : Ort::CustomOpBase<MXFixNeuron, MXFixNeuronKernel> {
   };
 #endif
 
-  const char* GetName() const { return "MXFixNeuron"; };
+  const char* GetName() const { return OpName; };
+  int GetVersion() const { return OpVersion; };
 
-  const char* GetExecutionProviderType() const { 
-  #ifdef USE_CUDA
-    return "CUDAExecutionProvider"; 
+  const char* GetExecutionProviderType() const {
+  #ifdef NO_GPU
+    return "CPUExecutionProvider";
+  #elif defined(USE_ROCM)
+    return "ROCMExecutionProvider";
+  #elif defined(USE_CUDA)
+    return "CUDAExecutionProvider";
   #else
     return "CPUExecutionProvider";
   #endif
@@ -142,7 +146,3 @@ struct MXFixNeuron : Ort::CustomOpBase<MXFixNeuron, MXFixNeuronKernel> {
   };
 #endif
 };
-
-#ifdef __cplusplus
-}
-#endif

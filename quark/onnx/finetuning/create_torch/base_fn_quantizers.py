@@ -14,18 +14,62 @@ import platform
 library_path = os.path.split(get_library_path())[0]
 if library_path not in sys.path:
     sys.path.append(library_path)
+
 try:
-    import libcustom_ops_gpu as custom_torch_ops_gpu  # type: ignore
+    if platform.system().lower() == 'windows':
+        import custom_ops_gpu as custom_torch_ops_gpu  # type: ignore
+    else:
+        import libcustom_ops_gpu as custom_torch_ops_gpu  # type: ignore
 except Exception:
     custom_torch_ops_gpu = None
+
 try:
     if platform.system().lower() == 'windows':
         import custom_ops as custom_torch_ops  # type: ignore
     else:
         import libcustom_ops as custom_torch_ops  # type: ignore
-
 except Exception:
     custom_torch_ops = None
+
+
+class FakeCustomTorchOps:
+    """
+    This class provides alternative operations to prevent errors if
+    the custom operations library fails to import, because there is
+    a probability that the library was not compiled successfully or
+    compiled but did not define export functions.
+    """
+
+    @staticmethod
+    def bfp(tensor: torch.Tensor, *args: Any) -> torch.Tensor:
+        """This is a fake function for BFP quant-dequant operation
+        :param tensor: The input tensor in torch tensor format
+        :return the result tensor (it's just the input tensor for simplicity)
+        """
+        return tensor
+
+    @staticmethod
+    def bfp_prime(tensor: torch.Tensor, *args: Any) -> torch.Tensor:
+        """This is a fake function for Microexponents quant-dequant operation
+        :param tensor: The input tensor in torch tensor format
+        :return the result tensor (it's just the input tensor for simplicity)
+        """
+        return tensor
+
+    @staticmethod
+    def mx(tensor: torch.Tensor, *args: Any) -> torch.Tensor:
+        """This is a fake function for Microscaling quant-dequant operation
+        :param tensor: The input tensor in torch tensor format
+        :return the result tensor (it's just the input tensor for simplicity)
+        """
+        return tensor
+
+
+if custom_torch_ops_gpu is None:
+    custom_torch_ops_gpu = FakeCustomTorchOps
+
+if custom_torch_ops is None:
+    custom_torch_ops = FakeCustomTorchOps
 
 
 class BFPQuantDequantFunction(torch.autograd.Function):
@@ -72,7 +116,7 @@ bfp_prime_quant_dequant_func = BFPPrimeQuantDequantFunction.apply
 
 
 class BFPQuantizer(torch.nn.Module):
-    """ A quantizer has a similar behavior as BFPFixNeuron
+    """ A quantizer has a similar behavior as custom BFP ops
     """
 
     def __init__(self, attrs: Dict[str, Any]) -> None:
@@ -171,7 +215,7 @@ mx_quant_dequant_func = MXQuantDequantFunction.apply
 
 
 class MXQuantizer(BFPQuantizer):
-    """ A quantizer has a similar behavior as MXFixNeuron
+    """ A quantizer has a similar behavior as custom MX ops
     """
 
     def __init__(self, attrs: Dict[str, Any]) -> None:

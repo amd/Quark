@@ -12,24 +12,31 @@ import tempfile
 from pathlib import Path
 from typing import Union, Optional, List, Dict, Any, Tuple
 
+import os
 import time
 import onnx
 from onnxruntime.quantization.calibrate import (CalibrationDataReader, CalibrationMethod)
-from onnxruntime.quantization.quant_utils import (ms_domain, QuantizationMode, QuantType, QuantFormat)
+from onnxruntime.quantization.quant_utils import (ms_domain, QuantizationMode, QuantType, QuantFormat,
+                                                  load_model_with_shape_infer, model_has_pre_process_metadata,
+                                                  save_and_reload_model_with_shape_infer)
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxsim import simplify
 from .calibrate import LayerWiseMethod
 from .calibrate import (create_calibrator_power_of_two, create_calibrator_float_scale)
 from .optimize import optimize
 from .equalization import cle_transforms, replace_all_clip6_to_relu
-from .quant_utils import (VAI_DOMAIN, COP_DOMAIN, VitisQuantType, VitisQuantFormat, get_exclude_nodes,
-                          get_matmul_nodes_without_weights, CachedDataReader, RandomDataReader, check_onnx_model,
-                          run_onnx_model, print_quantize_info, print_quantize_dynamic_info, is_ort_version_below,
-                          Int16Method, PathDataReader, remove_initializer_from_input, fp32_nodes, print_fp32_nodes,
-                          check_model_quantizable, save_tensor_hist_fig, PowerOfTwoMethod, customqdq_to_contribqdq,
-                          skip_node_with_inf_tensor, add_or_update_opset_import, check_ir_version, check_opset_version,
-                          check_qdq_model, print_quantized_info, check_extra_quant_op_types, convert_fp16_scale_to_fp32,
-                          get_eltwise_op, get_fake_tensor_range, match_exclude_subgraphs, check_model_is_fp16)
+from .quant_utils import (COP_DOMAIN, ExtendedQuantType, ExtendedQuantFormat, VitisQuantFormat, VitisQuantType,
+                          get_exclude_nodes, get_matmul_nodes_without_weights, CachedDataReader, RandomDataReader,
+                          check_onnx_model, run_onnx_model, print_quantize_info, print_quantize_dynamic_info,
+                          is_ort_version_below, Int16Method, PathDataReader, remove_initializer_from_input, fp32_nodes,
+                          print_fp32_nodes, check_model_quantizable, save_tensor_hist_fig, PowerOfTwoMethod,
+                          customqdq_to_contribqdq, skip_node_with_inf_tensor, add_or_update_opset_import,
+                          check_ir_version, check_opset_version, check_qdq_model, print_quantized_info,
+                          check_extra_quant_op_types, convert_fp16_scale_to_fp32, get_eltwise_op, get_fake_tensor_range,
+                          match_exclude_subgraphs, check_model_is_fp16, remove_qdq_op_type, annotate_op_type,
+                          cache_onnx_model_and_infer_shapes, save_onnx_model_with_external_data)
+from .mprecision.auto_mixprecision import auto_mixprecision
+from .finetuning.fast_finetune import fast_finetune
 
 from .registry import (QLinearOpsRegistry, QDQRegistry, NPUCnnRegistry, NPUTransformerRegistry)
 from .bias_correction import bias_correction
@@ -54,16 +61,20 @@ logger = ScreenLogger(__name__)
 
 
 @log_errors
-def check_static_quant_arguments(quant_format: VitisQuantFormat, activation_type: Union[QuantType, VitisQuantType],
-                                 weight_type: Union[QuantType, VitisQuantType],
+def check_static_quant_arguments(quant_format: ExtendedQuantFormat, activation_type: Union[QuantType,
+                                                                                           ExtendedQuantType],
+                                 weight_type: Union[QuantType, ExtendedQuantType],
                                  calibrate_method: Union[CalibrationMethod, PowerOfTwoMethod, Int16Method]) -> None:
 
-    vitis_qwb_types = [VitisQuantType.QInt32, VitisQuantType.QUInt32, VitisQuantType.QFloat16, VitisQuantType.QBFloat16]
+    vitis_qwb_types = [
+        ExtendedQuantType.QInt32, ExtendedQuantType.QUInt32, ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16
+    ]
     ort_int4_types = []
     if not is_ort_version_below("1.19.0"):
         ort_int4_types = [QuantType.QInt4, QuantType.QUInt4]
-    if (activation_type in vitis_qwb_types or weight_type in vitis_qwb_types) and quant_format != VitisQuantFormat.QDQ:
-        raise ValueError("Only VitisQuantFormat.QDQ supports wide bits quantization types.")
+    if (activation_type in vitis_qwb_types
+            or weight_type in vitis_qwb_types) and quant_format != ExtendedQuantFormat.QDQ:
+        raise ValueError("Only ExtendedQuantFormat.QDQ supports wide bits quantization types.")
 
     elif (activation_type in ort_int4_types
           or weight_type in ort_int4_types) and (not isinstance(calibrate_method, CalibrationMethod)
@@ -74,15 +85,15 @@ def check_static_quant_arguments(quant_format: VitisQuantFormat, activation_type
 
 
 @log_errors
-def check_fast_fintune_arguments(extra_options: Dict[str, Any], activation_type: Union[QuantType, VitisQuantType],
-                                 weight_type: Union[QuantType, VitisQuantType]) -> None:
+def check_fast_fintune_arguments(extra_options: Dict[str, Any], activation_type: Union[QuantType, ExtendedQuantType],
+                                 weight_type: Union[QuantType, ExtendedQuantType]) -> None:
 
     if not is_ort_version_below("1.19.0"):
         int_types = [QuantType.QInt4, QuantType.QUInt4]
         if activation_type in int_types or weight_type in int_types:
             raise ValueError("Fast finetune does not support int4 or uint4.")
 
-    if weight_type in [VitisQuantType.QFloat16, VitisQuantType.QBFloat16]:
+    if weight_type in [ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16]:
         if "AddQDQPairToWeight" in extra_options and not extra_options["AddQDQPairToWeight"]:
             logger.warning("Fast finetune requires not to fold QuantizeLinear for weights.")
         extra_options["AddQDQPairToWeight"] = True
@@ -94,12 +105,12 @@ def check_fast_fintune_arguments(extra_options: Dict[str, Any], activation_type:
 
 @log_errors
 def quantize_static(
-    model_input: str,
-    model_output: str,
-    calibration_data_reader: CalibrationDataReader,
+    model_input: Union[str, Path, onnx.ModelProto],
+    model_output: Optional[Union[str, Path]] = None,
+    calibration_data_reader: Optional[CalibrationDataReader] = None,
     calibration_data_path: Optional[str] = None,
-    quant_format: Union[QuantFormat, VitisQuantFormat] = QuantFormat.QDQ,
-    calibrate_method: Union[CalibrationMethod, PowerOfTwoMethod, Int16Method] = PowerOfTwoMethod.MinMSE,
+    quant_format: Union[QuantFormat, ExtendedQuantFormat] = QuantFormat.QDQ,
+    calibrate_method: Union[CalibrationMethod, PowerOfTwoMethod, Int16Method] = CalibrationMethod.MinMax,
     input_nodes: Optional[List[str]] = [],
     output_nodes: Optional[List[str]] = [],
     op_types_to_quantize: Optional[List[str]] = [],
@@ -121,14 +132,18 @@ def quantize_static(
     convert_fp16_to_fp32: bool = False,
     convert_nchw_to_nhwc: bool = False,
     debug_mode: bool = False,
-    include_cle: bool = False,
+    crypto_mode: bool = False,
+    include_cle: bool = True,
     include_sq: bool = False,
     include_rotation: bool = False,
     include_fast_ft: bool = False,
     include_auto_mp: bool = False,
     print_summary: bool = True,
     extra_options: Optional[Dict[str, Any]] = {},
-) -> None:
+) -> Optional[onnx.ModelProto]:
+    """Qantize a given onnx model using static quantization. This api will return an onnx.ModelProto format quantized model
+       if the argument 'model_output' is None or 'crypto_mode' is True.
+    """
     if nodes_to_quantize is None:
         nodes_to_quantize = []
     if nodes_to_exclude is None:
@@ -137,8 +152,31 @@ def quantize_static(
         subgraphs_to_exclude = []
     if extra_options is None:
         extra_options = {}
+
+    float_model: onnx.ModelProto = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
+    quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
+
+    if not use_external_data_format:
+        if float_model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
+            use_external_data_format = True
+            logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
+
+    if crypto_mode:
+        if not isinstance(model_input, onnx.ModelProto):
+            logger.critical("For the crypto mode, the input model should be in onnx.ModelProto format.")
+            return None
+        if use_external_data_format:
+            logger.critical(
+                "The model size is too large to process since we can't save exposed data to disk in crypto mode.")
+            return None
+
+    secret_key = os.urandom(48) if crypto_mode else None  # It's used to encrypt and decrypt data
+    cache_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.quant.")
+    cache_path = Path(cache_dir.name).joinpath("cache_model.onnx").as_posix()
+    float_model = cache_onnx_model_and_infer_shapes(float_model, cache_path, use_external_data_format, secret_key)
+
     if not convert_fp16_to_fp32 and not extra_options.get("QuantizeFP16", False):
-        model_is_fp16 = check_model_is_fp16(model_input)
+        model_is_fp16 = check_model_is_fp16(float_model)
         if model_is_fp16:
             logger.warning(
                 "Detected that the input model is an FP16 model. It will proceed with quantization based on the FP16 model. "
@@ -150,62 +188,83 @@ def quantize_static(
             "The 'enable_dpu' parameter will be deprecated in future versions. Please use 'enable_npu_cnn' instead.")
         enable_npu_cnn = enable_dpu
 
-    print_quantize_info(model_input, model_output, calibration_data_reader, calibration_data_path, quant_format,
-                        input_nodes, output_nodes, op_types_to_quantize, extra_op_types_to_quantize, per_channel,
-                        reduce_range, activation_type, weight_type, nodes_to_quantize, nodes_to_exclude,
-                        subgraphs_to_exclude, optimize_model, use_external_data_format, calibrate_method,
-                        execution_providers, enable_npu_cnn, enable_npu_transformer, specific_tensor_precision,
-                        debug_mode, convert_fp16_to_fp32, convert_nchw_to_nhwc, include_cle, include_sq,
-                        include_rotation, include_fast_ft, extra_options)
+    if not crypto_mode:
+        print_quantize_info(model_input, model_output, calibration_data_reader, calibration_data_path, quant_format,
+                            input_nodes, output_nodes, op_types_to_quantize, extra_op_types_to_quantize, per_channel,
+                            reduce_range, activation_type, weight_type, nodes_to_quantize, nodes_to_exclude,
+                            subgraphs_to_exclude, optimize_model, use_external_data_format, calibrate_method,
+                            execution_providers, enable_npu_cnn, enable_npu_transformer, specific_tensor_precision,
+                            debug_mode, convert_fp16_to_fp32, convert_nchw_to_nhwc, include_cle, include_sq,
+                            include_rotation, include_fast_ft, extra_options)
 
-    fp32_nodes_dict = fp32_nodes(model_input)
+    if not extra_options.get("UseMatMulNBits", False):
+        if not check_ir_version(float_model):
+            logger.warning(
+                "The ir version of input model is below 4. It is recommended to upgrade ir version to 7 or higher.")
+        if not check_opset_version(float_model):
+            logger.warning(
+                "The opset version of input model is below 10. It is recommended to upgrade opset version to 17 or higher."
+            )
+        if check_qdq_model(float_model):
+            logger.error(
+                "The input model is already a quantized model. Please make sure that input model is a float model.")
+
+    if isinstance(quant_format, VitisQuantFormat):
+        if quant_format == VitisQuantFormat.BFPFixNeuron:
+            weight_type = ExtendedQuantType.QBFP
+            activation_type = ExtendedQuantType.QBFP
+        elif quant_format == VitisQuantFormat.MXFixNeuron:
+            weight_type = ExtendedQuantType.QMX
+            activation_type = ExtendedQuantType.QMX
+        quant_format = ExtendedQuantFormat.QDQ
+        logger.warning("VitisQuantFormat will be deprecated in future versions, use ExtendedQuantFormat instead.")
+
+    if isinstance(weight_type, VitisQuantType):
+        weight_type = ExtendedQuantType(weight_type.value)
+        logger.warning("VitisQuantType will be deprecated in future versions, use ExtendedQuantType instead.")
+    if isinstance(activation_type, VitisQuantType):
+        activation_type = ExtendedQuantType(activation_type.value)
+        logger.warning("VitisQuantType will be deprecated in future versions, use ExtendedQuantType instead.")
+
+    fp32_nodes_dict = fp32_nodes(float_model)
 
     if extra_options.get("QuantizeAllOpTypes", False):
         all_op_types = list(fp32_nodes_dict.keys())
         extra_op_types_to_quantize.extend(all_op_types)
 
     if subgraphs_to_exclude:
-        nodes_to_exclude += match_exclude_subgraphs(model_input, subgraphs_to_exclude)
+        nodes_to_exclude += match_exclude_subgraphs(float_model, subgraphs_to_exclude)
         nodes_to_exclude = list(set(nodes_to_exclude))
 
     if "ConvertOpsetVersion" in extra_options:
         opset_version = extra_options["ConvertOpsetVersion"]
         from .tools.convert_opset_version import convert_opset_version
-        model = onnx.load(model_input)
-        model_update_opset_version = convert_opset_version(model, opset_version)
-        model_update_opset_version_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
-        model_input = Path(model_update_opset_version_path.name).joinpath("update_opset_version.onnx").as_posix()
-        onnx.save_model(model_update_opset_version, model_input, save_as_external_data=use_external_data_format)
+        float_model = convert_opset_version(float_model, opset_version)
 
     skip_calibration = False
-    if extra_options.get("UseMatMulNBits",
-                         False) or (activation_type in [VitisQuantType.QBFloat16, VitisQuantType.QFloat16]
-                                    and not extra_options.get("ActivationScaled", False)) or quant_format in [
-                                        VitisQuantFormat.BFPFixNeuron, VitisQuantFormat.MXFixNeuron
-                                    ]:
+    if extra_options.get("UseMatMulNBits", False) or (activation_type in [
+            ExtendedQuantType.QBFloat16, ExtendedQuantType.QFloat16, ExtendedQuantType.QBFP, ExtendedQuantType.QMX
+    ] and not extra_options.get("ActivationScaled", False)):
         skip_calibration = True
 
     if convert_fp16_to_fp32:
-        logger.info(f"Start converting {model_input} to float32 model.")
+        logger.info("Start converting the input model to float32.")
         from .tools import float16
-        fp16_model = onnx.load(model_input)
+        fp16_model = float_model
         try:
             fp32_model = float16.convert_float16_to_float(fp16_model)
             try:
                 model_simp, check = simplify(fp32_model)
                 assert check, "Simplified ONNX model could not be validated"
-                logger.info(f"Convert {model_input} to float32 model sucessfully")
+                logger.info("Convert the input model to float32 sucessfully.")
             except Exception as e2:
-                logger.warning(f"Fail to Simplify ONNX model because of {e2}.")
+                logger.warning(f"Fail to simplify the ONNX model because {e2}.")
                 model_simp = fp32_model
         except Exception as e:
             logger.warning(f"Fail to convert fp16 to fp32 beacuse {e}, "
                            "skip fp16 to fp32 conversion.")
             model_simp = fp16_model
-
-        fp32_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
-        model_input = Path(fp32_path.name).joinpath("fp32.onnx").as_posix()
-        onnx.save_model(model_simp, model_input, save_as_external_data=use_external_data_format)
+        float_model = cache_onnx_model_and_infer_shapes(model_simp, cache_path, use_external_data_format, secret_key)
 
     mode = QuantizationMode.QLinearOps
 
@@ -230,38 +289,26 @@ def quantize_static(
             )
         elif calibration_data_reader is None and calibration_data_path is not None:
             logger.info(f"calibration_data_reader is None, using {calibration_data_path} to do calibration.")
-            calibration_data_reader = PathDataReader(model_input, calibration_data_path)
-
-        check_onnx_model(model_input)
+            calibration_data_reader = PathDataReader(float_model, calibration_data_path)
+        check_onnx_model(float_model)
 
     if calibration_data_reader is None:
         if not extra_options.get("UseRandomData", False):
             raise ValueError(
-                'A calibration data reader is required for static quantization, but none was provided. Please provide a calibration data reader, or alternatively enable random data generation for calibration by setting `config.global_quant_config.extra_options["UseRandomData"]` to `True`.'
-            )
+                "A calibration data reader is required for static quantization, but none was provided."
+                "Please provide a calibration data reader, or alternatively enable random data generation "
+                "for calibration by setting config.global_quant_config.extra_options['UseRandomData'] to True.")
         else:
-            calibration_data_reader = RandomDataReader(model_input,
+            calibration_data_reader = RandomDataReader(float_model,
                                                        input_shape=extra_options.get("RandomDataReaderInputShape", {}),
                                                        input_data_range=extra_options.get(
                                                            "RandomDataReaderInputDataRange", None))
-
-    if not check_ir_version(model_input):
-        ('The ir version of input model is below 4. It is recommended to upgrade ir version to 7 or higher.')
-    if not check_opset_version(model_input):
-        logger.warning(
-            'The opset version of input model is below 10. It is recommended to upgrade opset version to 17 or higher.')
-    if check_qdq_model(model_input):
-        raise RuntimeError(
-            "The input model is already a quantized model. Please make sure that input model is a float model.")
     cached_data_reader = CachedDataReader(calibration_data_reader, None, convert_nchw_to_nhwc, quantize_fp16)
 
-    is_save_hist = False
-    if "SaveTensorHistFig" in extra_options and extra_options["SaveTensorHistFig"]:
-        is_save_hist = True
-    if is_save_hist:
-        with tempfile.TemporaryDirectory(prefix="vai.quant.") as quant_tmp_dir:
+    if extra_options.get("SaveTensorHistFig", False):
+        with tempfile.TemporaryDirectory(prefix="quark_onnx.quant.") as quant_tmp_dir:
             hist_calibrator = create_calibrator_float_scale(
-                Path(model_input),
+                float_model,
                 op_types_to_quantize,
                 augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
                 calibrate_method=CalibrationMethod.Percentile,
@@ -270,17 +317,16 @@ def quantize_static(
                 extra_options={"symmetric": False},
             )
             save_tensor_hist_fig(hist_calibrator, cached_data_reader, extra_options)
-    if not skip_calibration:
-        cached_data_reader.reset_iter()
+            cached_data_reader.reset_iter()
 
     if input_nodes or output_nodes:
         if nodes_to_exclude:
-            nodes_to_exclude += get_exclude_nodes(model_input, input_nodes, output_nodes)
+            nodes_to_exclude += get_exclude_nodes(float_model, input_nodes, output_nodes)
         else:
-            nodes_to_exclude = get_exclude_nodes(model_input, input_nodes, output_nodes)
+            nodes_to_exclude = get_exclude_nodes(float_model, input_nodes, output_nodes)
 
     if extra_options.get("MatMulConstBOnly", enable_npu_transformer):
-        nodes_to_exclude += get_matmul_nodes_without_weights(model_input)
+        nodes_to_exclude += get_matmul_nodes_without_weights(float_model)
 
     if not op_types_to_quantize or len(op_types_to_quantize) == 0:
         if enable_npu_transformer:
@@ -288,118 +334,145 @@ def quantize_static(
         else:
             q_linear_ops = list(QLinearOpsRegistry.keys())
             qdq_ops = list(QDQRegistry.keys())
-            if enable_npu_cnn or quant_format is VitisQuantFormat.QDQ:
+            if enable_npu_cnn or quant_format is ExtendedQuantFormat.QDQ:
                 dpu_ops = list(NPUCnnRegistry.keys())
                 qdq_ops = list(set(dpu_ops + qdq_ops))
             op_types_to_quantize = list(set(q_linear_ops + qdq_ops))
 
-    check_extra_quant_op_types(model_input, extra_op_types_to_quantize)
+    check_extra_quant_op_types(float_model, extra_op_types_to_quantize)
 
     op_types_to_quantize += extra_op_types_to_quantize
     op_types_to_quantize = list(set(op_types_to_quantize))
 
-    remove_input_init = True
-    if "RemoveInputInit" in extra_options:
-        remove_input_init = extra_options["RemoveInputInit"]
-    if remove_input_init:
+    if extra_options.get("RemoveInputInit", True):
         try:
-            model = onnx.load(model_input)
-            model_rm_input_init = remove_initializer_from_input(model)
-            model_rm_input_init_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
-            model_input = Path(model_rm_input_init_path.name).joinpath("rm_input_init.onnx").as_posix()
-            onnx.save_model(model_rm_input_init, model_input, save_as_external_data=use_external_data_format)
+            model_opt = remove_initializer_from_input(float_model)
+            float_model = cache_onnx_model_and_infer_shapes(model_opt, cache_path, use_external_data_format, secret_key)
             logger.info("Removed initializers from input")
         except Exception as e:
             logger.debug(f"Fail to remove init from input because {e}")
 
     if extra_options.get("SimplifyModel", True) and not extra_options.get("UseMatMulNBits", False):
         try:
-            model = onnx.load(model_input)
-            model_simp, check = simplify(model)
-            assert check, "Simplified ONNX model could not be validated"
-            model_simp_path = tempfile.TemporaryDirectory(prefix="vai.simp.")
-            model_input = Path(model_simp_path.name).joinpath("model_simp.onnx").as_posix()
-            onnx.save_model(model_simp, model_input, save_as_external_data=use_external_data_format)
+            model_simp, check = simplify(float_model)
+            float_model = cache_onnx_model_and_infer_shapes(model_simp, cache_path, use_external_data_format,
+                                                            secret_key)
             logger.info("Simplified model sucessfully")
         except Exception as e:
-            logger.warning(f"Fail to Simplify ONNX model because of {e}.")
+            logger.warning(f"Fail to Simplify ONNX model because {e}")
 
-    shared_init_optypes = extra_options.get("CopySharedInit", [])
+    shared_init_optypes = extra_options.get("CopySharedInit", None)
     if shared_init_optypes is not None:
         from quark.onnx.tools import convert_shared_initializer_to_unique
         try:
-            model = onnx.load(model_input)
-            model_simp_path = tempfile.TemporaryDirectory(prefix="vai.cpinit.")
-            model_input = Path(model_simp_path.name).joinpath("model_cpinit.onnx").as_posix()
-            model_copyinit = convert_shared_initializer_to_unique.convert(model, shared_init_optypes)
-            onnx.save_model(model_copyinit, model_input, save_as_external_data=use_external_data_format)
+            model_copied = convert_shared_initializer_to_unique.convert(float_model, shared_init_optypes)
+            float_model = cache_onnx_model_and_infer_shapes(model_copied, cache_path, use_external_data_format,
+                                                            secret_key)
             logger.info(
                 "Duplicate the shared initializers in the model for separate quantization use across different nodes!")
         except Exception as e:
             logger.warning(f"Fail to duplicate the shared initializers in the ONNX model because of {e}.")
 
+    shared_bias_init_optypes = extra_options.get("CopyBiasInit", ["Conv", "ConvTranspose", "Gemm"])
+    if (shared_bias_init_optypes is not None):
+        supported_quant_types = [
+            QuantType.QUInt8, QuantType.QInt8, QuantType.QUInt16, QuantType.QInt16, ExtendedQuantType.QInt8,
+            ExtendedQuantType.QUInt8, ExtendedQuantType.QInt16, ExtendedQuantType.QUInt16
+        ]
+        if (weight_type in supported_quant_types) and (activation_type
+                                                       in supported_quant_types) and (calibrate_method
+                                                                                      in CalibrationMethod):
+            from quark.onnx.tools import convert_shared_initializer_to_unique
+            try:
+                model_copied = convert_shared_initializer_to_unique.convert(float_model,
+                                                                            shared_bias_init_optypes,
+                                                                            prefix="duplicated",
+                                                                            only_bias=True)
+                float_model = cache_onnx_model_and_infer_shapes(model_copied, cache_path, use_external_data_format,
+                                                                secret_key)
+                logger.info(
+                    "Duplicate the shared bias initializers in the model for separate quantization use across different nodes!"
+                )
+            except Exception as e:
+                logger.warning(f"Fail to duplicate the shared bias initializers in the ONNX model because of {e}.")
+
     logger.info("Loading model...")
     fold_batch_norm = optimize_model
-    from onnxruntime.quantization.quant_utils import load_model_with_shape_infer
-    if optimize_model and not use_external_data_format:
+    if optimize_model and not use_external_data_format and not crypto_mode:
         from onnxruntime.quantization.quant_utils import optimize_model as om
         try:
-            quant_opt_tmp_dir = tempfile.TemporaryDirectory(prefix="vai.quant.opt.")
-            opt_model_path = Path(quant_opt_tmp_dir.name).joinpath("model.onnx").as_posix()
-
-            om(Path(model_input), Path(opt_model_path))
-            model = load_model_with_shape_infer(Path(opt_model_path))
+            optimized_path = Path(cache_dir.name).joinpath("optimized_model.onnx")
+            om(Path(cache_path), optimized_path)
+            float_model = load_model_with_shape_infer(optimized_path)
+            optimized_path.unlink()
         except Exception as e:
             logger.warning(f"Failed to run quantization preprocessing with error of {e}. "
                            "Using original model. Please check.")
             try:
-                model = load_model_with_shape_infer(Path(model_input))
+                float_model = load_model_with_shape_infer(Path(cache_path))
             except Exception as e:
                 raise RuntimeError(f"Model loading failed as {e}"
                                    "Shape inference needs write access to the model input directory."
                                    "Please verify permissions of the model input directory.")
-                return
+                return None
     else:
         try:
-            model = load_model_with_shape_infer(Path(model_input))
+            float_model = cache_onnx_model_and_infer_shapes(float_model, cache_path, use_external_data_format,
+                                                            secret_key)
         except Exception as e:
             raise RuntimeError(f"Model loading failed as {e}"
                                "Shape inference needs write access to the model input directory."
                                "Please verify permissions of the model input directory.")
-            return
+            return None
+
     if convert_nchw_to_nhwc:
         from .utils.model_utils import convert_nchw_to_nhwc as convert_func
-        logger.info(f"Start converting {model_input} ncwh to nhwc model.")
+        logger.info("Start converting the input model from ncwh to nhwc model.")
         try:
-            model = convert_func(model)
-            converted_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
-            model_input = Path(converted_path.name).joinpath("converted.onnx").as_posix()
-            onnx.save_model(model, model_input, save_as_external_data=use_external_data_format)
+            model_converted = convert_func(float_model)
+            float_model = cache_onnx_model_and_infer_shapes(model_converted, cache_path, use_external_data_format,
+                                                            secret_key)
         except Exception as e:
             logger.warning(f"Failed to convert nchw to nhwc beacuse {e}, ")
 
     if not skip_calibration:
-        run_onnx_model(model_input, cached_data_reader)
+        run_onnx_model(float_model, cached_data_reader)
         cached_data_reader.reset_iter()
 
-    if not check_model_quantizable(model, op_types_to_quantize, nodes_to_exclude):
-        onnx.save_model(model, model_output, save_as_external_data=use_external_data_format)
+    if not check_model_quantizable(float_model, op_types_to_quantize, nodes_to_exclude):
         logger.warning("No quantizable ops in this model, quantization is skipped.")
-        return
+        if model_output is None or crypto_mode:
+            return float_model
+        else:
+            save_onnx_model_with_external_data(float_model,
+                                               model_output,
+                                               save_as_external_data=use_external_data_format)
+            return None
 
     clip6_to_relu6 = False
     if "ReplaceClip6Relu" in extra_options:
         clip6_to_relu6 = extra_options['ReplaceClip6Relu']
 
     if clip6_to_relu6:
-        model = replace_all_clip6_to_relu(model, op_types_to_quantize, nodes_to_quantize, nodes_to_exclude)
-        clip6relu_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-        clip6relu_model_output = Path(clip6relu_path.name).joinpath("clip6relu_model.onnx").as_posix()
-        onnx.save_model(model, clip6relu_model_output, save_as_external_data=use_external_data_format)
-        model_input = clip6relu_model_output
-        topo_model = ONNXModel(onnx.load(clip6relu_model_output))
+        model_replaced = replace_all_clip6_to_relu(float_model, op_types_to_quantize, nodes_to_quantize,
+                                                   nodes_to_exclude)
+        topo_model = ONNXModel(model_replaced)
         topo_model.topological_sort()
-        model = topo_model.model
+        float_model = cache_onnx_model_and_infer_shapes(topo_model.model, cache_path, use_external_data_format,
+                                                        secret_key)
+
+    if 'FixShapes' in extra_options:
+        from .tools.fix_shapes import fix_input_and_output_shapes, infer_all_tensors_shape, save_all_tensors_shape
+        fix_name_shape = extra_options['FixShapes']
+        try:
+            model_temp = fix_input_and_output_shapes(float_model, fix_name_shape)
+            tensor_name_shape_dict = infer_all_tensors_shape(model_temp, use_external_data_format)
+            model_temp = save_all_tensors_shape(model_temp, tensor_name_shape_dict)
+            float_model = cache_onnx_model_and_infer_shapes(model_temp, cache_path, use_external_data_format,
+                                                            secret_key)
+        except Exception as e:
+            logger.warning(f"Fail to fix shapes of the quantized model beacuse {e}"
+                           "skip fixing shapes for the quantized model.")
 
     if include_cle:
         cle_balance_method = "max"
@@ -423,8 +496,8 @@ def quantize_static(
             cle_total_layer_diff_threshold = extra_options['CLETotalLayerDiffThreshold']
         if nodes_to_exclude is None:
             nodes_to_exclude = []
-        model = cle_transforms(
-            model,
+        model_transformed = cle_transforms(
+            float_model,
             op_types_to_quantize,
             nodes_to_quantize,
             nodes_to_exclude,
@@ -435,11 +508,8 @@ def quantize_static(
             cle_scale_use_threshold,
             cle_total_layer_diff_threshold,
         )
-
-        cle_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-        cle_model_output = Path(cle_path.name).joinpath("cle_model.onnx").as_posix()
-        onnx.save_model(model, cle_model_output, save_as_external_data=use_external_data_format)
-        model_input = cle_model_output
+        float_model = cache_onnx_model_and_infer_shapes(model_transformed, cache_path, use_external_data_format,
+                                                        secret_key)
 
     if include_rotation:
         from quark.torch.algorithm.rotation.rotation_utils import get_rotation_matrix
@@ -458,13 +528,8 @@ def quantize_static(
 
         r_matrixs = {"R1": r1_matrix_np}
 
-        rotation_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-        rotation_model_output = Path(rotation_path.name).joinpath("rotated_model.onnx").as_posix()
-        model = rotation_transforms(rotation_model_output, model, r_matrixs, rotation_config_file)
-        onnx.save_model(model, rotation_model_output, save_as_external_data=use_external_data_format)
-
-        model_input = rotation_model_output
-        model = onnx.load_model(rotation_model_output)
+        model_rotated = rotation_transforms(float_model, r_matrixs, rotation_config_file, use_external_data_format)
+        float_model = cache_onnx_model_and_infer_shapes(model_rotated, cache_path, use_external_data_format, secret_key)
         logger.info("Rotation complete!")
 
     if include_sq:
@@ -472,15 +537,15 @@ def quantize_static(
         if "SmoothAlpha" in extra_options:
             smooth_alpha = extra_options['SmoothAlpha']
         logger.info(f"Start smoothing model, the smooth alpha was set as {smooth_alpha}")
-        smooth_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-        smooth_model_output = Path(smooth_path.name).joinpath("smooth_model.onnx").as_posix()
-        model = smooth_transforms(smooth_model_output, model, cached_data_reader, alpha=smooth_alpha)
-        onnx.save_model(model, smooth_model_output, save_as_external_data=use_external_data_format)
+        model_smoothed = smooth_transforms(float_model,
+                                           cached_data_reader,
+                                           alpha=smooth_alpha,
+                                           use_external_data_format=use_external_data_format)
+        float_model = cache_onnx_model_and_infer_shapes(model_smoothed, cache_path, use_external_data_format,
+                                                        secret_key)
         cached_data_reader.reset_iter()
-        model_input = smooth_model_output
-        model = onnx.load_model(smooth_model_output)
 
-    skip_node_with_inf_tensor_list = skip_node_with_inf_tensor(model)
+    skip_node_with_inf_tensor_list = skip_node_with_inf_tensor(float_model)
     nodes_to_exclude.extend(skip_node_with_inf_tensor_list)
 
     int16_scale = False
@@ -491,11 +556,9 @@ def quantize_static(
             raise ValueError("Int16Scale is an experimental feature"
                              "and cannot be used simultaneously with enable_npu_cnn")
 
-    add_or_update_opset_import(model, ms_domain, 1)
-    if quant_format == VitisQuantFormat.QDQ:
-        add_or_update_opset_import(model, VAI_DOMAIN, 1)
-    if quant_format in [VitisQuantFormat.QDQ, VitisQuantFormat.BFPFixNeuron, VitisQuantFormat.MXFixNeuron]:
-        add_or_update_opset_import(model, COP_DOMAIN, 1)
+    add_or_update_opset_import(float_model, ms_domain, 1)
+    # add_or_update_opset_import(float_model, VAI_DOMAIN, 1)
+    add_or_update_opset_import(float_model, COP_DOMAIN, 1)
 
     fuse_instance_norm = True
     fuse_l2_norm = True
@@ -508,7 +571,7 @@ def quantize_static(
 
     # TODO: Refactor logics of optimization for xcompiler and vaiml in the future.
     if (enable_npu_cnn or enable_npu_transformer
-            or (quant_format is VitisQuantFormat.QDQ and not extra_options.get('BF16QDQToCast', False)
+            or (quant_format is ExtendedQuantFormat.QDQ and not extra_options.get('BF16QDQToCast', False)
                 and not extra_options.get('EnableVaimlBF16', False))):
         logger.info("optimize the model for better hardware compatibility.")
         convert_split_to_slice = True
@@ -538,24 +601,22 @@ def quantize_static(
     if (fuse_instance_norm or fuse_l2_norm or fuse_gelu or fuse_layer_norm or convert_bn_to_conv
             or convert_reduce_mean_to_global_avg_pool or split_large_kernel_pool or convert_split_to_slice
             or fold_batch_norm):
-        model = optimize(model,
-                         op_types_to_quantize,
-                         nodes_to_quantize,
-                         nodes_to_exclude,
-                         convert_bn_to_conv,
-                         convert_reduce_mean_to_global_avg_pool,
-                         split_large_kernel_pool,
-                         convert_split_to_slice,
-                         fuse_instance_norm,
-                         fuse_l2_norm,
-                         fuse_gelu,
-                         fuse_layer_norm,
-                         fold_batch_norm,
-                         convert_clip_to_relu=False,
-                         fold_batch_norm_after_concat=fold_batch_norm)
-
-        from onnxruntime.quantization.quant_utils import save_and_reload_model_with_shape_infer
-        model = save_and_reload_model_with_shape_infer(model)
+        model_optim = optimize(float_model,
+                               op_types_to_quantize,
+                               nodes_to_quantize,
+                               nodes_to_exclude,
+                               convert_bn_to_conv,
+                               convert_reduce_mean_to_global_avg_pool,
+                               split_large_kernel_pool,
+                               convert_split_to_slice,
+                               fuse_instance_norm,
+                               fuse_l2_norm,
+                               fuse_gelu,
+                               fuse_layer_norm,
+                               fold_batch_norm,
+                               convert_clip_to_relu=False,
+                               fold_batch_norm_after_concat=fold_batch_norm)
+        float_model = cache_onnx_model_and_infer_shapes(model_optim, cache_path, use_external_data_format, secret_key)
 
     calib_extra_options_keys = [
         ("CalibTensorRangeSymmetric", "symmetric"),
@@ -582,12 +643,12 @@ def quantize_static(
                     quantized_tensor_type[t] = k
             if quantized_tensor_type:
                 logger.info("In the specific_tensor_precision mode, "
-                            "the quant_format will use VitisQuantFormat.QDQ")
-                quant_format = VitisQuantFormat.QDQ
+                            "the quant_format will use ExtendedQuantFormat.QDQ")
+                quant_format = ExtendedQuantFormat.QDQ
 
     if extra_options.get("AlignEltwiseQuantType"):
-        if enable_npu_cnn is False and enable_npu_transformer is False and enable_dpu is False and quant_format == VitisQuantFormat.QDQ:
-            eltwise_tensors = get_eltwise_op(model_input)
+        if enable_npu_cnn is False and enable_npu_transformer is False and enable_dpu is False and quant_format == ExtendedQuantFormat.QDQ:
+            eltwise_tensors = get_eltwise_op(float_model)
             for tensor_name in eltwise_tensors:
                 quantized_tensor_type[tensor_name] = activation_type
             logger.info(
@@ -595,8 +656,13 @@ def quantize_static(
             )
         else:
             logger.warning(
-                "The parameter AlignEltwiseQuantType only takes effect when quant_format is VitisQuantFormat.QDQ and enable_npu_cnn is False and enable_npu_transformer is False and enable_dpu is False"
+                "The parameter AlignEltwiseQuantType only takes effect when quant_format is ExtendedQuantFormat.QDQ and enable_npu_cnn is False and enable_npu_transformer is False and enable_dpu is False"
             )
+
+    # TODO: Refactor logics for quantize.py in the future.
+    topo_model = ONNXModel(float_model)
+    topo_model.topological_sort()
+    float_model = cache_onnx_model_and_infer_shapes(topo_model.model, cache_path, use_external_data_format, secret_key)
 
     if extra_options.get("UseMatMulNBits", False):
         matmul_nbits_quantize_dict = extra_options.get("MatMulNBitsParams", {})
@@ -638,7 +704,7 @@ def quantize_static(
                                                        bits=matmul_nbits_bits,
                                                        accuracy_level=matmul_nbits_accuracy_level)
 
-        quantizer = MatMulNBitsQuantizer(model,
+        quantizer = MatMulNBitsQuantizer(float_model,
                                          matmul_nbits_group_size,
                                          matmul_nbits_symmetric,
                                          matmul_nbits_bits,
@@ -646,16 +712,9 @@ def quantize_static(
                                          algo_config=algo_config,
                                          extra_options=extra_options)
         quantizer.quantize_model()
-        quantizer.model.save_model_to_file(model_output, use_external_data_format)
+        quant_model = quantizer.model.model
+        float_model = topo_model.model
         cached_data_reader.reset_iter()
-
-    # TODO: Refactor logics for quantize.py in the future.
-    optimized_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-    model_input = Path(optimized_path.name).joinpath("opt_model.onnx").as_posix()
-    topo_model = ONNXModel(model)
-    topo_model.topological_sort()
-    model = topo_model.model
-    onnx.save_model(model, model_input, save_as_external_data=use_external_data_format)
 
     if not skip_calibration:
         logger.info("Start calibration...")
@@ -670,9 +729,9 @@ def quantize_static(
             calib_dr = cached_data_reader
         # Do calibration
         if isinstance(calibrate_method, PowerOfTwoMethod):
-            with tempfile.TemporaryDirectory(prefix="vai.quant.") as quant_tmp_dir:
+            with tempfile.TemporaryDirectory(prefix="quark_onnx.quant.") as quant_tmp_dir:
                 calibrator = create_calibrator_power_of_two(
-                    Path(model_input),
+                    float_model,
                     op_types_to_quantize,
                     augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
                     activation_type=activation_type,
@@ -693,9 +752,9 @@ def quantize_static(
                     tensors_range = calibrator.compute_data()
                 del calibrator
         else:
-            with tempfile.TemporaryDirectory(prefix="ort.quant.") as quant_tmp_dir:
+            with tempfile.TemporaryDirectory(prefix="quark_onnx.quant.") as quant_tmp_dir:
                 calibrator = create_calibrator_float_scale(
-                    Path(model_input),
+                    float_model,
                     op_types_to_quantize,
                     augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
                     calibrate_method=calibrate_method,
@@ -714,14 +773,13 @@ def quantize_static(
         cached_data_reader.reset_iter()
     else:
         from onnxruntime.quantization.calibrate import TensorsData
-        fake_tensor_range = get_fake_tensor_range(model)
+        fake_tensor_range = get_fake_tensor_range(float_model)
         tensors_range = TensorsData(CalibrationMethod.MinMax, fake_tensor_range)
 
     if not extra_options.get("UseMatMulNBits", False):
-        from onnxruntime.quantization.quant_utils import load_model_with_shape_infer
-        model = load_model_with_shape_infer(Path(model_input))
+        float_model = cache_onnx_model_and_infer_shapes(topo_model.model, cache_path, use_external_data_format,
+                                                        secret_key)
 
-    from .quant_utils import remove_qdq_op_type, annotate_op_type
     if extra_options.get("RemoveQDQConvClip", True):
         remove_qdq_op_type.append("Clip")
     if extra_options.get("RemoveQDQConvRelu", True):
@@ -744,13 +802,12 @@ def quantize_static(
 
     if not extra_options.get("UseMatMulNBits", False):
         # BFP and MX quantization don't need calibration, so they are not sensitive to calibration method
-        if quant_format in [VitisQuantFormat.BFPFixNeuron, VitisQuantFormat.MXFixNeuron]:
+        if weight_type == activation_type and weight_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]:
             quantizer = VitisBFPQuantizer(
-                model,
+                float_model,
                 per_channel,
                 reduce_range,
                 mode,
-                quant_format,
                 True,
                 weight_type,
                 activation_type,
@@ -765,7 +822,7 @@ def quantize_static(
         elif (calibrate_method in CalibrationMethod) or (calibrate_method in LayerWiseMethod):
             if quant_format is QuantFormat.QOperator:
                 quantizer = ONNXQuantizer(
-                    model,
+                    float_model,
                     per_channel,
                     reduce_range,
                     mode,
@@ -781,7 +838,7 @@ def quantize_static(
             elif quant_format is QuantFormat.QDQ:
                 if not enable_npu_transformer:
                     quantizer = VitisQDQCPUQuantizer(
-                        model,
+                        float_model,
                         per_channel,
                         reduce_range,
                         mode,
@@ -798,7 +855,7 @@ def quantize_static(
                     )
                 else:
                     quantizer = QDQNPUTransformerQuantizer(
-                        model,
+                        float_model,
                         per_channel,
                         reduce_range,
                         mode,
@@ -811,13 +868,12 @@ def quantize_static(
                         op_types_to_quantize,
                         extra_options,
                     )
-            elif quant_format is VitisQuantFormat.QDQ:
+            elif quant_format is ExtendedQuantFormat.QDQ:
                 quantizer = VitisExtendedQuantizer(
-                    model,
+                    float_model,
                     per_channel,
                     reduce_range,
                     mode,
-                    quant_format,
                     True,
                     weight_type,
                     activation_type,
@@ -834,7 +890,7 @@ def quantize_static(
         elif calibrate_method in PowerOfTwoMethod or calibrate_method in Int16Method:
             if quant_format is QuantFormat.QOperator:
                 quantizer = VitisONNXQuantizer(
-                    model,
+                    float_model,
                     per_channel,
                     reduce_range,
                     mode,
@@ -852,7 +908,7 @@ def quantize_static(
             elif quant_format is QuantFormat.QDQ:
                 if not enable_npu_cnn:
                     quantizer = VitisQDQQuantizer(
-                        model,
+                        float_model,
                         per_channel,
                         reduce_range,
                         mode,
@@ -869,7 +925,7 @@ def quantize_static(
                     )
                 else:
                     quantizer = VitisQDQNPUCNNQuantizer(
-                        model,
+                        float_model,
                         per_channel,
                         reduce_range,
                         mode,
@@ -884,13 +940,12 @@ def quantize_static(
                         quantized_tensor_type,
                         extra_options,
                     )
-            elif quant_format is VitisQuantFormat.QDQ:
+            elif quant_format is ExtendedQuantFormat.QDQ:
                 quantizer = VitisExtendedQuantizer(
-                    model,
+                    float_model,
                     per_channel,
                     reduce_range,
                     mode,
-                    quant_format,
                     True,
                     weight_type,
                     activation_type,
@@ -912,13 +967,11 @@ def quantize_static(
 
         if 'RemoveQDQBetweenOps' in extra_options:
             from .tools.remove_qdq_between_ops import remove_qdq_between_ops
-
             between_ops = extra_options.get('RemoveQDQBetweenOps')
             if not (isinstance(between_ops, list) and all(
                     isinstance(item, tuple) and len(item) == 2 and all(isinstance(elem, str) for elem in item)
                     for item in between_ops)):
                 logger.warning(f"'RemoveQDQBetweenOps' should be a list of (str, str) tuples. Actual: {between_ops}")
-
             remove_qdq_between_ops(quantizer.model.model, between_ops)
 
         if extra_options.get('BF16QDQToCast', extra_options.get('EnableVaimlBF16', False)):
@@ -929,60 +982,51 @@ def quantize_static(
             from .tools.remove_bf16_cast import remove_bf16_cast
             quantizer.model.model = remove_bf16_cast(quantizer.model.model)
 
-        quantizer.model.save_model_to_file(model_output, use_external_data_format)
+        if quant_format is ExtendedQuantFormat.QDQ:
+            customqdq_to_contribqdq(quantizer.model.model, use_external_data_format)
+
+        quant_model = quantizer.model.model
+        float_model = topo_model.model
 
     if quantize_fp16 and use_fp32_scale:
-        convert_fp16_scale_to_fp32(model_output, use_external_data_format)
+        quant_model = convert_fp16_scale_to_fp32(quant_model)
 
-    if quant_format is VitisQuantFormat.QDQ:
-        # Since the ONNXRuntime 1.17.0 starts supportting 16bit quantization,
-        # we convert our custom QDQs to the MSFT contributed QDQs by default
-        customqdq_to_contribqdq(model_output, use_external_data_format)
-
-    bias_corr = False
-    if 'BiasCorrection' in extra_options:
-        bias_corr = extra_options['BiasCorrection']
-    if bias_corr:
-        quant_model = bias_correction(model_input, model_output, use_external_data_format, cached_data_reader,
+    if extra_options.get("BiasCorrection", False):
+        quant_model = bias_correction(float_model, quant_model, use_external_data_format, cached_data_reader,
                                       activation_type, calibrate_method, extra_options)
-        onnx.save(quant_model, model_output)
-
-    if 'FixShapes' in extra_options:
-        from .tools.convert_dynamic_to_fixed import fix_shapes
-        fix_name_shape = extra_options['FixShapes']
-        model = onnx.load(model_output)
-        model = fix_shapes(model, fix_name_shape)
-        onnx.save(model, model_output)
+        cached_data_reader.reset_iter()
 
     if include_auto_mp:
-        from quark.onnx.mprecision.auto_mixprecision import auto_mixprecision
+        quant_model = auto_mixprecision(float_model, quant_model, use_external_data_format, cached_data_reader,
+                                        activation_type, weight_type, extra_options)
         cached_data_reader.reset_iter()
-        model = auto_mixprecision(model_input, model_output, cached_data_reader, activation_type, weight_type,
-                                  extra_options)
-        onnx.save(model, model_output)
+
+    if extra_options.get("Int16Bias", False):
+        from .tools.convert_bias_int32_to_int16 import convert_bias_int32_to_int16
+        try:
+            quant_model, _ = convert_bias_int32_to_int16(quant_model)
+        except Exception as e:
+            logger.warning(f"Failed to convert bias from int32 to int16 beacuse {e}"
+                           "skip converting bias from int32 to int16.")
 
     if include_fast_ft:
-        from quark.onnx.finetuning.fast_finetune import fast_finetune
+        quant_model = fast_finetune(float_model, quant_model, use_external_data_format, cached_data_reader,
+                                    extra_options)
         cached_data_reader.reset_iter()
-        model = fast_finetune(model_input, model_output, cached_data_reader, extra_options)
-        onnx.save(model, model_output)
 
-    use_gptq = False
-    if 'UseGPTQ' in extra_options:
-        use_gptq = extra_options['UseGPTQ']
-    if use_gptq:
+    if extra_options.get("UseGPTQ", False):
         from .gptq.gptq import GptqProcessor
-        gptq_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-        gptq_model_output = Path(gptq_path.name).joinpath("gptq_model.onnx").as_posix()
+        gptq_processor = GptqProcessor(float_model,
+                                       quant_model,
+                                       cached_data_reader,
+                                       extra_options,
+                                       use_external_data_format=use_external_data_format)
+        quant_model = gptq_processor.apply()
         cached_data_reader.reset_iter()
-        gptq_processor = GptqProcessor(gptq_model_output, model_input, model_output, cached_data_reader, extra_options)
-        model = gptq_processor.apply()
-        onnx.save(model, model_output)
 
     if extra_options.get('BF16WithClip', False):
         from .tools.insert_clip_bfloat16_qdq import insert_clip_bfloat16_qdq
-        model = insert_clip_bfloat16_qdq(model)
-        onnx.save(model, model_output)
+        quant_model = insert_clip_bfloat16_qdq(quant_model)
 
     # This optimization should after calibration
     convert_clip_to_relu = False
@@ -993,8 +1037,8 @@ def quantize_static(
     if "DedicateDQNode" in extra_options:
         dedicate_dq_node = extra_options["DedicateDQNode"]
     if convert_clip_to_relu or dedicate_dq_node:
-        model = optimize(
-            model,
+        quant_model = optimize(
+            quant_model,
             op_types_to_quantize,
             nodes_to_quantize,
             nodes_to_exclude,
@@ -1008,32 +1052,23 @@ def quantize_static(
             convert_clip_to_relu=convert_clip_to_relu,
             dedicate_dq_node=dedicate_dq_node,
         )
-        from onnxruntime.quantization.quant_utils import save_and_reload_model_with_shape_infer
-        model = save_and_reload_model_with_shape_infer(model)
 
-        onnx.save(model, model_output)
-
-    if print_summary and fp32_nodes_dict:
+    if print_summary and fp32_nodes_dict and not crypto_mode:
         print_fp32_nodes(fp32_nodes_dict, model_output)
-        print_quantized_info(model_output, debug_mode)
-        if not extra_options.get("UseMatMulNBits", False):
-            if not check_ir_version(model_input):
-                print(
-                    'WARNING: The ir version of input model is below 4. It is recommended to upgrade ir version to 7 or higher.'
-                )
-            if not check_opset_version(model_input):
-                print(
-                    'WARNING: The opset version of input model is below 10. It is recommended to upgrade opset version to 17 or higher.'
-                )
-            if check_qdq_model(model_input):
-                print(
-                    "ERROR: The input model is already a quantized model. Please make sure that input model is a float model."
-                )
+        print_quantized_info(quant_model, debug_mode, shared_init_optypes)
+
+    if model_output is None or crypto_mode:
+        quant_model = onnx.shape_inference.infer_shapes(quant_model)
+        return quant_model
+
+    quant_model = save_and_reload_model_with_shape_infer(quant_model)
+    save_onnx_model_with_external_data(quant_model, model_output, save_as_external_data=use_external_data_format)
+    return None
 
 
 def quantize_dynamic(
     model_input: Union[str, Path, onnx.ModelProto],
-    model_output: Union[str, Path],
+    model_output: Optional[Union[str, Path]] = None,
     op_types_to_quantize: Union[List[str], None] = [],
     per_channel: bool = False,
     reduce_range: bool = False,
@@ -1043,9 +1078,11 @@ def quantize_dynamic(
     subgraphs_to_exclude: List[Tuple[List[str]]] = [],
     use_external_data_format: bool = False,
     debug_mode: bool = False,
+    crypto_mode: bool = False,
     extra_options: Optional[Dict[str, Any]] = {},
-) -> None:
-    """Given an onnx model, create a quantized onnx model and save it into a file
+) -> Optional[onnx.ModelProto]:
+    """Qantize a given onnx model using dynamic quantization. This api will return an onnx.ModelProto format quantized model
+       if the argument 'model_output' is None or 'crypto_mode' is True.
 
     Args:
         model_input: file path of model or ModelProto to quantize
@@ -1091,7 +1128,6 @@ def quantize_dynamic(
                     Default is True for dynamic mode. If enabled, only MatMul with const B will be quantized.
     """
     from onnxruntime.quantization.registry import IntegerOpsRegistry
-    from onnxruntime.quantization.quant_utils import load_model_with_shape_infer, model_has_pre_process_metadata, save_and_reload_model_with_shape_infer
 
     extra_options = extra_options or {}
     nodes_to_exclude = nodes_to_exclude or []
@@ -1101,21 +1137,41 @@ def quantize_dynamic(
 
     mode = QuantizationMode.IntegerOps
 
+    float_model: onnx.ModelProto = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
+    quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
+
+    if not use_external_data_format:
+        if float_model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
+            use_external_data_format = True
+            logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
+
+    if crypto_mode:
+        if not isinstance(model_input, onnx.ModelProto):
+            logger.critical("For the crypto mode, the input model should be in onnx.ModelProto format.")
+            return None
+        if use_external_data_format:
+            logger.critical(
+                "The model size is too large to process since we can't save exposed data to disk in crypto mode.")
+            return None
+
+    secret_key = os.urandom(48) if crypto_mode else None  # It's used to encrypt and decrypt data
+    cache_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.quant.")
+    cache_path = Path(cache_dir.name).joinpath("cache_model.onnx").as_posix()
+    float_model = cache_onnx_model_and_infer_shapes(float_model, cache_path, use_external_data_format, secret_key)
+
     if not op_types_to_quantize or len(op_types_to_quantize) == 0:
         op_types_to_quantize = list(IntegerOpsRegistry.keys())
 
-    print_quantize_dynamic_info(model_input, model_output, op_types_to_quantize, per_channel, reduce_range, weight_type,
-                                nodes_to_quantize, nodes_to_exclude, subgraphs_to_exclude, use_external_data_format,
-                                debug_mode, extra_options)
+    if not crypto_mode:
+        print_quantize_dynamic_info(model_input, model_output, op_types_to_quantize, per_channel, reduce_range,
+                                    weight_type, nodes_to_quantize, nodes_to_exclude, subgraphs_to_exclude,
+                                    use_external_data_format, debug_mode, extra_options)
 
-    if not subgraphs_to_exclude:
-        nodes_to_exclude += match_exclude_subgraphs(model_input, subgraphs_to_exclude)
+    if subgraphs_to_exclude:
+        nodes_to_exclude += match_exclude_subgraphs(float_model, subgraphs_to_exclude)
         nodes_to_exclude = list(set(nodes_to_exclude))
 
-    model = (save_and_reload_model_with_shape_infer(model_input)
-             if isinstance(model_input, onnx.ModelProto) else load_model_with_shape_infer(Path(model_input)))
-
-    pre_processed: bool = model_has_pre_process_metadata(model)
+    pre_processed: bool = model_has_pre_process_metadata(float_model)
     if not pre_processed:
         logger.warning(
             "Please consider to run pre-processing before quantization. Refer to example: "
@@ -1126,7 +1182,7 @@ def quantize_dynamic(
         extra_options["MatMulConstBOnly"] = True
 
     quantizer = ONNXQuantizer(
-        model,
+        float_model,
         per_channel,
         reduce_range,
         mode,
@@ -1141,4 +1197,12 @@ def quantize_dynamic(
     )
 
     quantizer.quantize_model()
-    quantizer.model.save_model_to_file(model_output, use_external_data_format)
+    quant_model = quantizer.model.model
+
+    if model_output is None or crypto_mode:
+        quant_model = onnx.shape_inference.infer_shapes(quant_model)
+        return quant_model
+
+    quant_model = save_and_reload_model_with_shape_infer(quant_model)
+    save_onnx_model_with_external_data(quant_model, model_output, save_as_external_data=use_external_data_format)
+    return None

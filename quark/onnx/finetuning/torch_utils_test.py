@@ -137,15 +137,15 @@ def quantize_onnx_model(float_model_path: str) -> str:
         weight_type=onnxruntime.quantization.quant_utils.QuantType.QInt8,
 
         # 16bit quantization
-        # quant_format=VitisQuantFormat.QDQ,
-        # activation_type=VitisQuantType.QUInt16,
-        # weight_type=VitisQuantType.QUInt16,
-        # activation_type=VitisQuantType.QInt16,
-        # weight_type=VitisQuantType.QInt16,
-        # activation_type=VitisQuantType.QFloat16,
-        # weight_type=VitisQuantType.QFloat16,
-        # activation_type=VitisQuantType.QBFloat16,
-        # weight_type=VitisQuantType.QBFloat16,
+        # quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
+        # activation_type=quark.onnx.ExtendedQuantType.QUInt16,
+        # weight_type=quark.onnx.ExtendedQuantType.QUInt16,
+        # activation_type=quark.onnx.ExtendedQuantType.QInt16,
+        # weight_type=quark.onnx.ExtendedQuantType.QInt16,
+        # activation_type=quark.onnx.ExtendedQuantType.QFloat16,
+        # weight_type=quark.onnx.ExtendedQuantType.QFloat16,
+        # activation_type=quark.onnx.ExtendedQuantType.QBFloat16,
+        # weight_type=quark.onnx.ExtendedQuantType.QBFloat16,
 
         # Quantize compute op only
         op_types_to_quantize=op_types_to_quantize,

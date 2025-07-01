@@ -5,7 +5,7 @@
 
 import numpy as np
 from functools import partial
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
 from quark.shares.utils.log import ScreenLogger
 from pathlib import Path
 import json
@@ -15,12 +15,16 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
+from quark.torch.quantization.config.config import Config
 import torch.nn as nn
 from contextlib import contextmanager
 import os
 import multiprocessing
-from quark.shares.utils.import_utils import is_matplotlib_available
-from transformers.feature_extraction_utils import BatchFeature
+from quark.shares.utils.import_utils import is_matplotlib_available, is_transformers_available
+
+if is_transformers_available():
+    from transformers.feature_extraction_utils import BatchFeature
 
 if is_matplotlib_available():
     import matplotlib.pyplot as plt
@@ -29,6 +33,25 @@ logger = ScreenLogger(__name__)
 
 SAVE_ACTIVATIONS_HISTOGRAM = os.environ.get("QUARK_DEBUG_ACT_HIST", None) == "1"
 DEBUG_INPUT_PICKLE = os.environ.get("QUARK_DEBUG_INPUT_PICKLE", None)
+DEBUG_NAN = os.environ.get("QUARK_DEBUG_NAN", None)
+
+# Selects the Q/DQ/QDQ implementation to use with mxfp4.
+# Available: "hip", "triton". Default is "hip".
+QUARK_MXFP4_IMPL = os.environ.get("QUARK_MXFP4_IMPL", "hip")
+
+
+def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
+    """
+    Asserts that the tensor does not contain any NaN value. If it does, it will raise a `AssertionError` with the given message.
+
+    Only does the assertion if the environment variable `QUARK_DEBUG_NAN` is set to `1`. This is useful to avoid the overhead of checking for NaNs in production code.
+
+    Args:
+        tensor (torch.Tensor): The tensor to check for NaNs.
+        message (str): The message to display in the `AssertionError` if the tensor contains NaNs.
+    """
+    if DEBUG_NAN:
+        torch._assert_async(~torch.isnan(tensor).any(), message)
 
 
 def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: torch.Tensor, module_name: str,
@@ -345,7 +368,7 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                                                                                  DataLoader[List[Dict[str,
                                                                                                       torch.Tensor]]],
                                                                                  DataLoader[Dict[str, torch.Tensor]],
-                                                                                 DataLoader[List[BatchFeature]]]],
+                                                                                 DataLoader[List["BatchFeature"]]]],
                                     stats: Dict[str, Any], log_dir: Path) -> None:
     """
     Collects (through the hooks attached to the model) statistics on the operators inputs/outputs to compute quantization error metrics, as well as on the weights.
@@ -396,7 +419,9 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                     module.disable_fake_quant()
 
             with torch.no_grad():
-                if isinstance(data, (dict, BatchFeature)):
+                if isinstance(data, dict):  # pragma: no cover
+                    _ = model(**data)
+                elif is_transformers_available() and isinstance(data, BatchFeature):
                     _ = model(**data)
                 else:
                     _ = model(data)
@@ -406,7 +431,9 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                     module.enable_fake_quant()
 
             with torch.no_grad():
-                if isinstance(data, (dict, BatchFeature)):
+                if isinstance(data, dict):  # pragma: no cover
+                    _ = model(**data)
+                elif is_transformers_available() and isinstance(data, BatchFeature):
                     _ = model(**data)
                 else:
                     _ = model(data)
@@ -425,3 +452,95 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
     summarize_weight(stats, log_dir)
     if input_iterable is not None:
         summarize_activation(stats, log_dir)
+
+
+class QuantizerStatsHelper:
+
+    def __init__(self, quantizer: ScaledFakeQuantize, quantizer_type: str, module_name: str, summary: Dict[str, Any]):
+        assert isinstance(quantizer, ScaledFakeQuantize)
+        self.quantizer = quantizer
+        summary[quantizer_type] = {}
+        self.summary = summary[quantizer_type]
+        self.quantizer_type = quantizer_type
+        self.moudule_name = module_name
+
+    def get_scale_min_max(self) -> Tuple[Any, Any]:
+        return self.quantizer.scale.min().item(), self.quantizer.scale.max().item()
+
+    def check_scale(self) -> None:
+        self.summary['scale_shape'] = self.quantizer.scale.shape
+        self.summary['scale_dtype'] = str(self.quantizer.scale.dtype)
+
+        min_max = self.get_scale_min_max()
+        self.summary['scale_min_max'] = min_max
+        is_zero = min_max[0] == 0.0
+        if is_zero:
+            logger.warning(
+                f"{self.moudule_name + '.' + self.quantizer_type} has zero scale. This may lead to incorrect quantization."
+            )
+        self.summary['has_zero_scale'] = is_zero
+
+
+class ModuleStatsHelper:
+
+    def __init__(self, module_name: str, module: nn.Module, summary: Dict[str, Any]):
+        self.input_quantizer = None
+        self.weight_quantizer = None
+        self.output_quantizer = None
+        self.bias_quantizer = None
+
+        self.module = module
+
+        summary[module_name] = {}
+        self.summary = summary[module_name]
+
+        if module.input_quantizer is not None and isinstance(module.input_quantizer, ScaledFakeQuantize):
+            self.input_quantizer = QuantizerStatsHelper(module.input_quantizer, "_input_quantizer", module_name,
+                                                        self.summary)
+        if module.weight_quantizer is not None and isinstance(module.weight_quantizer, ScaledFakeQuantize):
+            self.weight_quantizer = QuantizerStatsHelper(module.weight_quantizer, "_weight_quantizer", module_name,
+                                                         self.summary)
+        if module.output_quantizer is not None and isinstance(module.output_quantizer, ScaledFakeQuantize):
+            self.output_quantizer = QuantizerStatsHelper(module.output_quantizer, "_output_quantizer", module_name,
+                                                         self.summary)
+        if module.bias_quantizer is not None and isinstance(module.bias_quantizer, ScaledFakeQuantize):
+            self.bias_quantizer = QuantizerStatsHelper(module.bias_quantizer, "_bias_quantizer", module_name,
+                                                       self.summary)
+
+    def check_scale(self) -> None:
+        self.summary['weight_shape'] = self.module.weight.shape
+        if self.module.bias is not None:
+            self.summary['bias_shape'] = self.module.bias.shape
+        if self.input_quantizer is not None:
+            self.input_quantizer.check_scale()
+        if self.weight_quantizer is not None:
+            self.weight_quantizer.check_scale()
+        if self.output_quantizer is not None:
+            self.output_quantizer.check_scale()
+        if self.bias_quantizer is not None:
+            self.bias_quantizer.check_scale()
+
+
+SCALE_DEBUG_DIR = './debug_scale'
+SCALE_STATS_FILE = 'scale_stats.json'
+CHECK_MODULE = QuantLinear
+
+
+def check_scale_stats(model: nn.Module, config: Config) -> None:
+    """
+    Check the scale of the model's quantizer.
+    """
+    summary = {}
+    summary['quantization_config'] = config.to_dict()
+    summary['scale_stats'] = {}
+    for module_name, module in model.named_modules():
+        if isinstance(module, CHECK_MODULE):
+            module_stats = ModuleStatsHelper(module_name, module, summary['scale_stats'])
+            module_stats.check_scale()
+
+    # save to file
+    os.makedirs(SCALE_DEBUG_DIR, exist_ok=True)
+    save_file = SCALE_DEBUG_DIR + '/' + SCALE_STATS_FILE
+    with open(save_file, 'w') as f:
+        json.dump(summary, f, indent=4)
+    logger.info(f"Saving scale stats to {save_file}")

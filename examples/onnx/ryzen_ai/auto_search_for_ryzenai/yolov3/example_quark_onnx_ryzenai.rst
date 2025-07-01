@@ -1,7 +1,7 @@
 Auto-Search for Ryzen AI ONNX Model Quantization
 ================================================
 
-This guide explains how to use the Auto Search framework to perform optimal quantization of an ONNX model on the RyzenAI platform. The framework automatically searches for the best configuration to balance accuracy, search time by adjusting quantization settings.
+This guide explains how to use the Auto Search framework to perform optimal quantization of an ONNX model on the AMD Ryzen AI platform. The framework automatically searches for the best configuration to balance accuracy, search time by adjusting quantization settings.
 
 Search Config Settings
 ----------------------
@@ -11,7 +11,6 @@ Search Config Settings
 The search space defines the range of potential quantization configurations that the Auto Search framework will explore. The goal is to explore different combinations of quantization parameters to find the best trade-off between accuracy, latency and quantization complexity.
 
 - **one example**: You can specify different bit widths (e.g., 8-bit, 4-bit) for weights and activations, calibration algorithms, FastFinetune hyper-parameters, etc.
-
 
 .. code-block:: python
 

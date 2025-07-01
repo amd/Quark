@@ -119,7 +119,7 @@ Sometimes after deploying the quantized model, it is necessary to compare the si
 
 **Arguments**
 
-- **model**: (String) This parameter specifies the file path of the quantized model whose simulation results are to be dumped.
+- **model**: (String or ModelProto) This parameter specifies the file path of or the ModelProto object of the quantized model whose simulation results are to be dumped.
 - **dump_data_reader**: (CalibrationDataReader or None) This parameter is a data reader that is used for the dumping process. The first batch is taken as input. If you wish to use random data for a quick test, you can set `dump_data_reader` to None. The default value is None.
 - **random_data_reader_input_shape**: (Dict) It is required to use a dict {name: shape} to specify a certain input. For example, `RandomDataReaderInputShape={"image": [1, 3, 224, 224]}` for the input named "image". The default value is an empty dict {}.
 - **dump_float**: (Boolean) This flag determines whether to dump the floating-point value of nodes' results. If set to True, the float values are dumped. Note that this may require a lot of storage space. The default value is False.

@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 from tqdm import tqdm
-from typing import Any, TYPE_CHECKING, List
+from typing import Any, TYPE_CHECKING, List, Dict, Sequence
 import torch
 import torch.nn as nn
 from quark.torch.algorithm.utils.utils import clear_memory
+from quark.torch.algorithm.utils.prepare import get_model_layers
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.rotation.rotation_utils import transform_norm_and_linear, get_rotation_matrix, rotate_in_channels, rotate_out_channels
 from quark.torch.algorithm.utils.module import get_nested_attr_from_module
@@ -24,7 +25,9 @@ class RotationProcessor(BaseAlgoProcessor):
 
     def __init__(self, model: nn.Module, pre_quant_opt_config: RotationConfig, _data_loader: Any) -> None:
         self.pre_quant_opt_config = pre_quant_opt_config
-        self.scaling_layers = self.pre_quant_opt_config.scaling_layers
+        self.scaling_modules = self.pre_quant_opt_config.scaling_layers
+        self.modules = get_model_layers(model, self.pre_quant_opt_config.model_decoder_layers)
+        self.scaling_layers = self.get_scaling_layers()
         assert self.scaling_layers is not None
         self.model = model
 
@@ -77,3 +80,42 @@ class RotationProcessor(BaseAlgoProcessor):
             else:
                 raise ValueError("prev_modules is wrong")
         return prev_out_channels_dims
+
+    def get_scaling_layers(self) -> List[Dict[str, Sequence[str]]]:
+        scaling_layers = []
+        for i in range(len(self.modules)):
+            scaling_layers_cur = []
+            if i == 0:
+                for layers_pattern in self.scaling_modules["first_layer"]:
+                    scaling_layers_cur.append({
+                        "prev_modules":
+                        [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["prev_modules"]],
+                        "norm_module":
+                        layers_pattern["norm_module"].replace("layer_id", str(i)),
+                        "next_modules":
+                        [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                    })
+            else:
+                for layers_pattern in self.scaling_modules["middle_layers"]:
+                    scaling_layers_cur.append({
+                        "prev_modules": [
+                            layer_name.replace("pre_layer_id", str(i - 1)).replace("layer_id", str(i))
+                            for layer_name in layers_pattern["prev_modules"]
+                        ],
+                        "norm_module":
+                        layers_pattern["norm_module"].replace("layer_id", str(i)),
+                        "next_modules":
+                        [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                    })
+                if i == len(self.modules) - 1:
+                    for layers_pattern in self.scaling_modules["last_layer"]:
+                        scaling_layers_cur.append({
+                            "prev_modules":
+                            [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["prev_modules"]],
+                            "norm_module":
+                            layers_pattern["norm_module"].replace("layer_id", str(i)),
+                            "next_modules":
+                            [layer_name.replace("layer_id", str(i)) for layer_name in layers_pattern["next_modules"]]
+                        })
+            scaling_layers.extend(scaling_layers_cur)
+        return scaling_layers

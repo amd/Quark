@@ -7,8 +7,8 @@ import numpy as np
 import onnxruntime
 import copy
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
-from quark.onnx import ModelQuantizer, VitisQuantFormat, VitisQuantType
-from quark.onnx.quantization.config.custom_config import BF16_BFP16_CONFIG, BF16_MIXED_BFP16_ADAQUANT_CONFIG
+from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType, VitisQuantFormat, VitisQuantType
+from quark.onnx.quantization.config.custom_config import BF16_BFP16_CONFIG, BF16_MIXED_BFP16_CONFIG
 from quark.onnx.quantization.config.config import Config, QuantizationConfig
 from testing_utils import prepare_model
 from quark.shares.utils.testing_utils import use_temporary_directory
@@ -31,10 +31,10 @@ elementwise_mp_output_tensor = np.array([[[[0.25195312, 0.16210938, 0.02490234, 
                                            [0.12255859, 0.27148438, 0.421875, 0.11474609],
                                            [0.15039062, 0.13867188, 0.23730469, 0.28710938]]]],).astype(np.float32)
 
-layerwise_mp_output_tensor = np.array([[[[0.24951172, 0.16113281, 0.02539062, -0.04882812],
-                                         [0.14575195, -0.01855469, 0.13671875, 0.0390625],
-                                         [0.12060547, 0.26757812, 0.421875, 0.11376953],
-                                         [0.14916992, 0.13671875, 0.23510742, 0.2861328]]]],).astype(np.float32)
+layerwise_mp_output_tensor = np.array([[[[0.25195312, 0.16113281, 0.02490234, -0.04785156],
+                                         [0.1484375, -0.01867676, 0.13867188, 0.0378418],
+                                         [0.12158203, 0.2734375, 0.421875, 0.11523438],
+                                         [0.15039062, 0.13769531, 0.23730469, 0.28515625]]]],).astype(np.float32)
 
 tensorwise_mp_output_tensor = np.array([[[[0.25195312, 0.16210938, 0.02490234, -0.04833984],
                                           [0.1484375, -0.01647949, 0.13867188, 0.03881836],
@@ -73,18 +73,18 @@ def prepare_elementwise_config():
 
 
 def prepare_layerwise_config():
-    return Config(global_quant_config=BF16_MIXED_BFP16_ADAQUANT_CONFIG)
+    return Config(global_quant_config=BF16_MIXED_BFP16_CONFIG)
 
 
 def prepare_tensorwise_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QBFloat16,
-                                      weight_type=VitisQuantType.QBFloat16,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QBFloat16,
+                                      weight_type=ExtendedQuantType.QBFloat16,
                                       specific_tensor_precision=True,
                                       extra_options={
                                           'MixedPrecisionTensor': {
-                                              VitisQuantType.QBFP: ['conv.weight']  # This is a specific name
+                                              ExtendedQuantType.QBFP: ['conv.weight']  # This is a specific name
                                           },
                                           'BFPAttributes': {
                                               'bfp_method': "to_bfp",
@@ -100,12 +100,38 @@ def prepare_tensorwise_config():
 
 def prepare_BFPandMX_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QBFP,
-                                      weight_type=VitisQuantType.QMX,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QBFP,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'AddQDQPairToWeight': False
                                       })
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_BFPandMX_compatibility_config():
+    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=VitisQuantType.QBFP,  # Test downward compatibility
+                                      weight_type=VitisQuantType.QMX,  # Test downward compatibility
+                                      extra_options={
+                                          'AddQDQPairToWeight': False
+                                      })
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_BFP_compatibility_config():
+    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                      quant_format=VitisQuantFormat.BFPFixNeuron)  # Test downward compatibility
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_MX_compatibility_config():
+    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
+                                      quant_format=VitisQuantFormat.MXFixNeuron)  # Test downward compatibility
 
     return Config(global_quant_config=quant_config)
 
@@ -174,6 +200,27 @@ class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_BFPandMX_mix_precision(self, tmpdir: str):
         quant_config = prepare_BFPandMX_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, BFPandMX_mp_output_tensor, atol=1e-2)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_BFPandMX_compatibility_mix_precision(self, tmpdir: str):
+        quant_config = prepare_BFPandMX_compatibility_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, BFPandMX_mp_output_tensor, atol=1e-2)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_BFP_compatibility_mix_precision(self, tmpdir: str):
+        quant_config = prepare_BFP_compatibility_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, BFPandMX_mp_output_tensor, atol=1e-2)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_MX_compatibility_mix_precision(self, tmpdir: str):
+        quant_config = prepare_MX_compatibility_config()
         output = tensor_quantize(tmpdir, quant_config)
         comp_equal = np.allclose(output, BFPandMX_mp_output_tensor, atol=1e-2)
         self.assertEqual(np.all(comp_equal), True)

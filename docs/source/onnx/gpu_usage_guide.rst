@@ -15,7 +15,7 @@ Environment Setup
 Calibration
 -----------
 
-In the quantization workflow, calibration adjusts the model's weights and activation values based on a small amount of input data to improve quantization accuracy. When using NVIDIA GPUs, you might accelerate the calibration process with `CUDAExecutionProvider`. The following is an example configuration:
+In the quantization workflow, calibration adjusts the model's weights and activation values based on a small amount of input data to improve quantization accuracy. When using AMD GPUs, you might accelerate the calibration process with `ROCMExecutionProvider`, and also you can use `CUDAExecutionProvider` for NVIDIA GPUs. The following is an example configuration:
 
 .. code-block:: python
 
@@ -24,13 +24,13 @@ In the quantization workflow, calibration adjusts the model's weights and activa
     quant_config = QuantizationConfig(
         calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
         quant_format=quark.onnx.QuantFormat.QDQ,
-        execution_providers=['CUDAExecutionProvider']
+        execution_providers=['ROCMExecutionProvider']
     )
 
     config = Config(global_quant_config=quant_config)
 
 .. note::
-   By setting `execution_providers=['CUDAExecutionProvider']`, the calibration process is configured to run on the GPU for faster execution.
+   By setting `execution_providers=['ROCMExecutionProvider']`, the calibration process is configured to run on the GPU for faster execution. Please check if GPUs are available beforehand.
 
 Fast Finetune
 -------------
@@ -55,8 +55,8 @@ Here is an example configuration for the `adaround` optimization algorithm:
             'ActivationSymmetric': True,
             'FastFinetune': {
                 'OptimAlgorithm': 'adaround',
-                'OptimDevice': "cuda:0",  # Use GPU in PyTorch training
-                'InferDevice': 'cuda:0',  # Use GPU for ONNX inference
+                'OptimDevice': "cuda:0",  # Use GPU 0 in PyTorch training
+                'InferDevice': 'cuda:0',  # Use GPU 0 for ONNX inference
                 'BatchSize': 1,
                 'NumIterations': 1000,
                 'LearningRate': 0.1,
@@ -69,26 +69,26 @@ Here is an example configuration for the `adaround` optimization algorithm:
     quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)
 
 .. note::
-   - `OptimDevice: "cuda:0"` indicates that GPU (supports ROCm and CUDA GPUs) acceleration is used during PyTorch training.
-   - `InferDevice: 'cuda:0'` indicates that GPU acceleration is used during ONNX inference via the `CUDAExecutionProvider`.
+   - `OptimDevice: "cuda:0"` indicates that GPU (supports AMD and NVIDIA GPUs) acceleration is used during PyTorch training.
+   - `InferDevice: 'cuda:0'` indicates that GPU acceleration is used during ONNX inference via the `ROCMExecutionProvider` or `CUDAExecutionProvider`.
 
-BFP16 Models Inference
-----------------------
+Inference
+---------
 
-For BFP16 models, GPU acceleration greatly boosts inference speed. Below is an example that demonstrates how to use `CUDAExecutionProvider` for GPU-accelerated ONNX inference:
+For quantized model's inference, you can also use `ROCMExecutionProvider` or `CUDAExecutionProvider` to enable GPU acceleration. Below is an example that demonstrates how to use AMD GPUs to accelerate ONNX inference:
 
 
 .. code-block:: python
 
     import onnxruntime as ort
-    from quark.onnx import get_library_path as vai_lib_path
+    from quark.onnx import get_library_path
 
     so = ort.SessionOptions()
-    so.register_custom_ops_library(vai_lib_path('cuda'))
-    session = ort.InferenceSession("quantized_model.onnx", so, providers=['CUDAExecutionProvider'])
-    print("Execution provider:", session.get_providers())  # Ensure 'CUDAExecutionProvider' is present
+    so.register_custom_ops_library(get_library_path('ROCM'))
+    session = ort.InferenceSession("quantized_model.onnx", so, providers=['ROCMExecutionProvider'])
+    print("Execution provider:", session.get_providers())  # Ensure 'ROCMExecutionProvider' is present
 
     output = session.run(None, {"input": input_data})
 
 .. note::
-   If the `session.get_providers()` output includes `CUDAExecutionProvider`, the inference process is running on the GPU for acceleration.
+   If the `session.get_providers()` output includes `ROCMExecutionProvider`, the inference process is running on the GPU for acceleration.

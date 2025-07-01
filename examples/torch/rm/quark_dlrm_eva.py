@@ -147,12 +147,6 @@ def get_args():
         help="Whether load the compressed model",
     )
     parser.add_argument(
-        "--pack_reorder",
-        default=False,
-        action="store_true",
-        help="When True, 8 int4/uint4 values are packed into torch.int32 with packing order=[0, 2, 4, 6, 1, 3, 5, 7] i.e reorder, otherwise packing order=[0, 1, 2, 3, 4, 5, 6, 7].",
-    )
-    parser.add_argument(
         "--int8-configure-dir", type=str,
         default="./int8_configure.json",
         help="int8 recipe location"
@@ -249,7 +243,7 @@ def main():
     s_t = time.time()
     json_path = os.path.join(args.int8_model_dir, args.int8_model_name + ".json")
     safetensors_path = os.path.join(args.int8_model_dir, args.int8_model_name + ".safetensors")
-    model = load_params(model, json_path=json_path, safetensors_path=safetensors_path, compressed=args.compressed, reorder=args.pack_reorder)
+    model = load_params(model, json_path=json_path, safetensors_path=safetensors_path, compressed=args.compressed)
     print("Loading the export model cost {:.2f} s".format(time.time() - s_t))
 
     dsx, lsi, lso, labels = ds.test_data.load_batch(range(0, args.max_batchsize))

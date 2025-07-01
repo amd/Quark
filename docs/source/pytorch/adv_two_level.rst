@@ -42,7 +42,8 @@ Another strategy to balance quantization error with the number of bits per weigh
 Two-level Quantization: MX6 and MX9 Data Types
 ----------------------------------------------
 
-Refer to MX9, MX6, and MX4 specifications from `[1] <https://arxiv.org/abs/2302.08007>`__. The MX6 and MX9 data types leverage both the granularity of the scale factors and the precision allocated to them to:
+Refer to MX9, MX6, and MX4 specifications in `[1] <https://arxiv.org/abs/2302.08007>`__. 
+The MX6 and MX9 data types leverage both the granularity of the scale factors and the precision allocated to them to:
 
 - Minimize the number of bits per weight
 - Minimize degradation in predictive performance due to quantization
@@ -50,7 +51,7 @@ Refer to MX9, MX6, and MX4 specifications from `[1] <https://arxiv.org/abs/2302.
 
 To achieve these goals, the classic quantization scheme :math:`x_R = s \times x_Q` is decomposed into
 
-.. code-block::
+.. math::
 
    x_R = s_b \times s_{sb} \times x_Q
 
@@ -68,7 +69,7 @@ The mantissa bit-width :math:`m` represents the number of bits used to store the
 
 The total number of bits per value is
 
-.. code-block::
+.. math::
 
     (m + 1) + \frac{d_1}{k_1} + \frac{d_2}{k_2}
 

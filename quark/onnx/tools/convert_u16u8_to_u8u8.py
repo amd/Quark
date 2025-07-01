@@ -7,11 +7,12 @@ Convert u16u8 to u8u8.
 '''
 
 import numpy as np
+from pathlib import Path
 import onnx
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.onnx_model import ONNXModel
 from argparse import ArgumentParser, Namespace
-from typing import Union, List
+from typing import Union, List, Any, Optional
 
 
 def parse_args() -> Namespace:
@@ -60,16 +61,17 @@ ONNX_TYPE_TO_NP_TYPE = {
     onnx_proto.TensorProto.BFLOAT16: np.float16,
 }
 
-OperationsQ = ['QuantizeLinear', 'VitisQuantizeLinear']
-OperationsDQ = ['DequantizeLinear', 'VitisDequantizeLinear']
+OperationsQ = ['QuantizeLinear', 'ExtendedQuantizeLinear']
+OperationsDQ = ['DequantizeLinear', 'ExtendedDequantizeLinear']
 OperationsWithBias = ['Conv', 'ConvTranspose', 'Gemm']
 
 SOURCE_TYPE = onnx.TensorProto.UINT16
 TARGET_TYPE = onnx.TensorProto.UINT8
 
 
-def convert_u16u8_to_u8u8(input_model_path: str, output_model_path: str) -> None:
-    model = onnx.load(input_model_path)
+def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
+                          output_model: Optional[Union[str, Path]] = None) -> Any:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     onnx_model = ONNXModel(model)
 
     output_name_to_node = onnx_model.output_name_to_node()
@@ -282,7 +284,11 @@ def convert_u16u8_to_u8u8(input_model_path: str, output_model_path: str) -> None
     onnx_model.clean_initializers()
     onnx_model.topological_sort()
 
-    onnx.save(onnx_model.model, output_model_path)
+    if output_model is None:
+        return onnx_model.model
+
+    use_external_data_format = onnx_model.model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
+    onnx_model.save_model_to_file(output_model, use_external_data_format=use_external_data_format)
 
 
 def convert(args: Namespace) -> None:

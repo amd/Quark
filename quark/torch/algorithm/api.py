@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Union
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import Config
 from quark.torch.pruning.config import Config as Pruning_Config
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, NonScaledFakeQuantize
 from quark.torch.algorithm.utils.auto_config import is_auto_config_needed, add_auto_config
 from quark.torch.algorithm.utils.utils import get_device_map, set_device_map
 from quark.torch.algorithm.awq.awq import AwqProcessor
@@ -51,13 +51,15 @@ def apply_pre_quantization_optimization(
                                DataLoader[Dict[str, torch.Tensor]]]] = None
 ) -> nn.Module:
     if config.pre_quant_opt_config is not None:
-        logger.info("Pre-quantization optimization start.")
-
         if not isinstance(config.pre_quant_opt_config, List):
             pre_quant_opts = [config.pre_quant_opt_config]
         else:
             pre_quant_opts = config.pre_quant_opt_config
 
+        if not len(pre_quant_opts) > 0:
+            return model
+
+        logger.info("Pre-quantization optimization start.")
         for pre_quant_opt_config in pre_quant_opts:
             pre_quant_optimizer = PROCESSOR_MAP[pre_quant_opt_config.name](model, pre_quant_opt_config, dataloader)
             pre_quant_optimizer.apply()
@@ -80,7 +82,7 @@ def apply_advanced_quant_algo(
         device_map = get_device_map(model, is_accelerate)
 
         for module in model.modules():
-            if isinstance(module, ScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
                 module.disable_fake_quant()
                 module.disable_observer()
 

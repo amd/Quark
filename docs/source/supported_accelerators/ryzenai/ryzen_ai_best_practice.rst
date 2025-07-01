@@ -44,7 +44,7 @@ Quantization
 
 - **XINT8**
 
-XINT8 uses symmetric INT8 activation and weights quantization with power-of-two scales. Typically, the calibration method uses MinMSE.
+XINT8 uses symmetric INT8 activation and weights quantization with power-of-two scales. Typically, the calibration method uses MinMSE. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
 
 .. code-block:: bash
 
@@ -55,7 +55,7 @@ XINT8 uses symmetric INT8 activation and weights quantization with power-of-two 
 
 - **A8W8**
 
-A8W8 uses symmetric INT8 activation and weights quantization with float scales. Typically, the calibration method uses MinMax.
+A8W8 uses symmetric INT8 activation and weights quantization with float scales. Typically, the calibration method uses MinMax. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
 
 .. code-block:: bash
 

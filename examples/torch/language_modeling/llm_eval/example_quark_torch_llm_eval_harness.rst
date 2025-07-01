@@ -1,4 +1,4 @@
-LM-Evaluation Harness Evaluations
+LM-Evaluation-Harness Evaluations
 =================================
 
 Below details how to run evaluations on
@@ -39,9 +39,9 @@ Summary of support:
 Recipes
 -------
 
--  The ``--model hf`` arg is used to run lm-harness on all huggingface
+-  The ``--model hf`` arg is used to run lm-evaluation-harness on all huggingface
    LLMs.
--  The ``--model hf multimodal`` arg is used to run lm-harness on
+-  The ``--model hf multimodal`` arg is used to run lm-evaluation-harness on
    supported VLMs. We currently support
    ``["Llama-3.2-11B-Vision", "Llama-3.2-90B-Vision", "Llama-3.2-11B-Vision-Instruct", "Llama-3.2-90B-Vision-Instruct"]``.
 -  The ``--tasks`` arg is used to specify dataset of choice. See

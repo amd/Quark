@@ -97,6 +97,7 @@ def prepare_model(output_dir):
 
 def prepare_config():
     config_copy = U8S8_AAWS_CONFIG
+    config_copy.include_cle = False
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
@@ -135,24 +136,50 @@ def tensor_quantize(output_dir):
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
 
-    quant_config.global_quant_config.extra_options["CopySharedInit"] = None
+    quant_config.global_quant_config.extra_options["CopySharedInit"] = []
     quantizer = prepare_quantizer(quant_config)
     output_model_path2 = Path(output_dir, "new_output.onnx").as_posix()
     data_reader.rewind()
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path2, data_reader)
     output2 = infer_quantized_model(quantized_model_path)
+
     return output, output2, output_model_path, output_model_path2
 
+def tensor_quantize_copybias(output_dir):
+    input_model_path, output_model_path = prepare_model(output_dir)
+    data_reader = prepare_data()
+    quant_config = prepare_config()
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    output = infer_quantized_model(quantized_model_path)
+
+    quant_config.global_quant_config.extra_options["CopyBiasInit"] = ["Conv", "ConvTranspose", "Gemm"]
+    quantizer = prepare_quantizer(quant_config)
+    output_model_path3 = Path(output_dir, "cp_biasinit.onnx").as_posix()
+    data_reader.rewind()
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path3, data_reader)
+    output3 = infer_quantized_model(quantized_model_path)
+    return output, output3, output_model_path, output_model_path3
 
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
-    def test_quantize_cle(self, tmpdir: str):
-        output, output2, output_model_path, _ = tensor_quantize(tmpdir)
+    def test_quantize_copyinit(self, tmpdir: str):
+        output, output2, _, output_model_path2 = tensor_quantize(tmpdir)
         self.assertEqual(output, output2)
 
-        new_onnx_model = onnx.load(output_model_path)
+        new_onnx_model = onnx.load(output_model_path2)
         golen_init_num = 46
         self.assertEqual(len(new_onnx_model.graph.initializer), golen_init_num)
+
+    @use_temporary_directory
+    def test_quantize_copybiasinit(self, tmpdir: str):
+        output, output3, _, output_model_path3 = tensor_quantize_copybias(tmpdir)
+        self.assertEqual(output, output3)
+
+        new_onnx_model = onnx.load(output_model_path3)
+        golen_init_num = 43
+        self.assertEqual(len(new_onnx_model.graph.initializer), golen_init_num)
+
 
 
 if __name__ == '__main__':

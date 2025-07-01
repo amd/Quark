@@ -1,19 +1,19 @@
-Using MX (Microscaling)
-=======================
+Using OCP MX (Microscaling)
+===========================
 
 Introduction
 ------------
 
-This tutorial explains how to use MX data types with AMD Quark.
+This tutorial explains how to use OCP MX data types with AMD Quark.
 
-MX is a new family of quantization data types defined by this `specification <https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf>`__ and explored thoroughly in `Microscaling Data Formats for Deep Learning <https://arxiv.org/abs/2310.10537>`__.
+OCP MX is a new family of quantization data types defined by this `specification <https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf>`__ and explored thoroughly in `Microscaling Data Formats for Deep Learning <https://arxiv.org/abs/2310.10537>`__.
 
-The key feature of MX is that it subdivides tensors into arbitrary blocks of elements that share a scale, instead of using a single per tensor scale like many other data types.
+The key feature of OCP MX is that it subdivides tensors into arbitrary blocks of elements that share a scale, instead of using a single per tensor scale like many other data types.
 
 This allows for better accuracy with more fine-grained scaling while still reducing storage and computational requirements.
 
-How to use MX in AMD Quark
---------------------------
+How to use OCP MX in AMD Quark
+------------------------------
 
 1. Install AMD Quark
 ~~~~~~~~~~~~~~~~~~~~
@@ -41,29 +41,22 @@ Replace all instances of ``<hf_token>`` with the token.
 
 .. code-block:: python
 
-   from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-   from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig
-   from quark.torch.quantization.observer.observer import PerBlockMXObserver
-   DEFAULT_MX_FP_8_PER_BLOCK = QuantizationSpec(dtype=Dtype.mx,
-                                                mx_element_dtype=Dtype.fp8_e4m3,
-                                                observer_cls=PerBlockMXObserver, # for MX the observer_cls is always PerBlockMXObserver
-                                                qscheme=QSchemeType.per_group, # for MX the qscheme is always QSchemeType.per_group
-                                                is_dynamic=True, # this controls whether static or dynamic quantization is performed
-                                                ch_axis=1,
-                                                group_size=32
-                                                )
+   from quark.torch.quantization.config.config import Config, OCP_MXFP8E4M3Spec, QuantizationConfig
+   
+   mxfp8_spec = OCP_MXFP8E4M3Spec(is_dynamic=False, 
+                                  ch_axis=-1).to_quantization_spec()
 
-   DEFAULT_W_MX_FP8_PER_BLOCK_CONFIG = QuantizationConfig(weight=DEFAULT_MX_FP_8_PER_BLOCK)
-   quant_config = Config(global_quant_config=DEFAULT_W_MX_FP8_PER_BLOCK_CONFIG)
+   mxfp8_config = QuantizationConfig(weight=mxfp8_spec)
+   quant_config = Config(global_quant_config=mxfp8_config)
 
-For MX quantization, it is necessary to set the ``dtype`` (Dtype.mx) and the ``mx_element_dtype`` to determine what quantization is used by each tensor element.
+For OCP MX quantization, which always uses per-group quantization with group size 32, helper classes are available to instantiate the necessary tensor quantization spec:
 
-The supported element types are:
-
-- FP8 (E4M3)
-- FP6 (E3M2 and E2M3)
-- FP4 (E2M1)
-- INT8
+- For FP8 E4M3: ``OCP_MXFP8E4M3Spec``,
+- For FP8 E5M2: ``OCP_MXFP8E5M2Spec``,
+- For FP6 (E3M2): ``OCP_MXFP6E3M2Spec``,
+- For FP6 (E2M3): ``OCP_MXFP6E2M3Spec``,
+- For FP4 (E2M1): ``OCP_MXFP4Spec``,
+- For INT8: ``OCP_MXINT8Spec``.
 
 In terms of what element type to choose, according to `Microscaling Data Formats for Deep Learning <https://arxiv.org/abs/2310.10537>`__, INT8 can be used as a drop-in replacement for FP32 without any further work needed and FP8 is almost as good. However, FP6 and FP4 will generally require fine-tuning and will incur a minor accuracy loss.
 

@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 import math
+import copy
+from collections import OrderedDict
 import os
 import time
 from typing import Any, Callable, List, Optional, Tuple, cast, TYPE_CHECKING
@@ -25,16 +27,15 @@ from quark.torch.algorithm.utils.utils import clear_memory
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.quantization.config.type import QSchemeType
 from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
+import fnmatch
 
 logger = ScreenLogger(__name__)
 
 __all__ = ["GptqProcessor"]
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-
 CPU = torch.device("cpu")
 CUDA = torch.device("cuda")
+META = torch.device("meta")
 
 
 class GPTQ:
@@ -42,6 +43,9 @@ class GPTQ:
     def __init__(self, layer: nn.Module) -> None:
         self.layer = layer
         self.dev = self.layer.weight.device
+        if self.dev == META:
+            # should be execute_device, When cuda0 is very small, it could be any other value.
+            self.dev = self.layer._hf_hook.execution_device
         W = layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
             W = W.flatten(1)
@@ -51,14 +55,15 @@ class GPTQ:
             W = W.t()
         self.rows = W.shape[0]
         self.columns = W.shape[1]
-        self.H: Optional[torch.Tensor] = torch.zeros((self.columns, self.columns), device=self.dev)
+        # self.H: Optional[torch.Tensor] = torch.zeros((self.columns, self.columns), device=self.dev)
+        self.H: Optional[torch.Tensor] = torch.zeros((self.columns, self.columns), device=self.dev, dtype=torch.float)
         self.nsamples = 0
         self.inp1: Optional[torch.Tensor] = None
         self.out1: Optional[torch.Tensor] = None
         self.original_qspec = self.layer._weight_quantizer.observer.qspec
         kwargs: Any = {}
         from quark.torch.quantization.config.config import QuantizationSpec
-        from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+        from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
         # for per group minmaxobserver: group_size > 1 and group_size == -1
         if self.original_qspec.qscheme == QSchemeType.per_group:
             self.adjusted_qspec = QuantizationSpec(
@@ -70,14 +75,20 @@ class GPTQ:
                 round_method=self.original_qspec.round_method,  # useless for perchannel
                 ch_axis=0,
                 is_dynamic=self.original_qspec.is_dynamic,
-                mx_element_dtype=self.original_qspec.mx_element_dtype)
-            self.quantizer = ScaledFakeQuantize(self.adjusted_qspec, **kwargs).to(
-                self.layer._weight_quantizer.fake_quant_enabled.device)  # need copy
+                mx_element_dtype=self.original_qspec.mx_element_dtype,
+                scale_format=self.original_qspec.scale_format,
+                scale_calculation_mode=self.original_qspec.scale_calculation_mode)
+            # Due to the difference between cuda and cpu hardware architecture and calculation precision,
+            # it will lead to the difference in the last few bits of the value obtained from the calculation,
+            # this difference will be amplified by the calculation method of GPTQ, you should keep the consistency of the device.
+            self.quantizer = FakeQuantizeBase.get_fake_quantize(self.adjusted_qspec,
+                                                                self.layer._weight_quantizer.fake_quant_enabled.device,
+                                                                **kwargs)
         # pertensor & perchannel
         else:
             self.quantizer = layer._weight_quantizer
 
-    def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
+    def add_batch(self, inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
         assert self.H is not None
         if os.environ.get("DEBUG"):
             self.inp1 = inp
@@ -110,9 +121,15 @@ class GPTQ:
                     percdamp: float = .01,
                     group_size: int = -1,
                     actorder: bool = False,
-                    static_groups: bool = False) -> torch.Tensor:
+                    static_groups: bool = False,
+                    layer_index: int = 0) -> torch.Tensor:
         assert self.H is not None
-        W = self.layer.weight.data.clone()
+        if get_device(self.layer) == META:  # get from cpu dict
+            W = self.layer._hf_hook.weights_map["weight"].data.to(
+                self.layer._hf_hook.execution_device)  # Need to be cleaned up.
+        else:
+            W = self.layer.weight.data.clone()
+        orig_dtype = W.dtype
         if isinstance(self.layer, nn.Conv2d):
             W = W.flatten(1)
         if "transformers.pytorch_utils.Conv1D" in str(self.layer.__class__):
@@ -162,7 +179,6 @@ class GPTQ:
             W = W[:, perm]
             H = H[perm][:, perm]
             invperm = torch.argsort(perm)
-
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
 
@@ -245,7 +261,11 @@ class GPTQ:
 
         if "transformers.pytorch_utils.Conv1D" in str(self.layer.__class__):
             Q = Q.t()
-        self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
+        if get_device(self.layer) == META:
+            # Directly replace weight in dict with qweight
+            self.layer._hf_hook.weights_map["weight"].data = Q.reshape(self.layer.weight.shape).to(orig_dtype).to("cpu")
+        else:
+            self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
         # scale and zero of perchannel, pertensor have been added to buffer
         # but per_group (any groupsize) need be added
         if group_size is not None:
@@ -265,11 +285,14 @@ class GPTQ:
 class GptqProcessor(BaseAlgoProcessor):
 
     def __init__(self, model: nn.Module, quant_algo_config: GPTQConfig, data_loader: DataLoader[torch.Tensor]) -> None:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
+
         self.model = model
+        self.block_size = quant_algo_config.block_size
         self.damp_percent = quant_algo_config.damp_percent
         self.act_order = quant_algo_config.desc_act
         self.static_groups = quant_algo_config.static_groups
-        self.true_sequential = quant_algo_config.true_sequential
         self.inside_layer_modules = quant_algo_config.inside_layer_modules
         self.model_decoder_layers = quant_algo_config.model_decoder_layers
         self.data_loader = data_loader
@@ -292,16 +315,27 @@ class GptqProcessor(BaseAlgoProcessor):
             if get_device(layer) == CPU:
                 move_to_device(layer, self.device_map[f"{self.model_decoder_layers}.{i}"])
                 force_layer_back_to_cpu = True
-            cur_layer_device = get_device(layer)
+            cur_layer_device = get_device(layer) if not get_device(layer) == META else layer._hf_hook.execution_device
 
             full = get_named_quant_linears(layer)
             assert self.inside_layer_modules is not None
             inside_layer_modules: List[str] = self.inside_layer_modules
-            if not self.true_sequential:
-                inside_layer_modules = [''.join(self.inside_layer_modules)]
+
+            full_copy = OrderedDict()
+            for key, value in full.items():
+                if key.endswith(".module"):
+                    new_key = key[:-len(".module")]
+                else:
+                    new_key = key
+                full_copy[new_key] = value
+            assert sorted(list(full_copy.keys())) == sorted(inside_layer_modules)
+            full = copy.copy(full_copy)
 
             for names in inside_layer_modules:
-                subset = {names: full[names]}
+                # subset = {names: full[names]}
+                matched_names = fnmatch.filter(full.keys(), names)
+                subset = {name: full[name] for name in matched_names}
+
                 gptq = {}
                 for name in subset:
                     gptq[name] = GPTQ(subset[name])
@@ -309,35 +343,40 @@ class GptqProcessor(BaseAlgoProcessor):
                 def add_batch(name: str) -> Callable[[torch.nn.Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
 
                     def tmp(_: nn.Module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
-                        gptq[name].add_batch(inp[0].data, out.data)
+                        gptq[name].add_batch(inp[0].data, out.data, name)
 
                     return tmp
 
                 handles = []
                 for name in subset:
                     handles.append(subset[name].register_forward_hook(add_batch(name)))
-
+                # cal H
                 layer_outputs = block_forward(layer, self.module_kwargs, num_batches, cur_layer_device, layer_inputs,
                                               layer_outputs, cache_examples_on_gpu)
+
                 layer_outputs = []
 
                 for h in handles:
                     h.remove()
 
                 for name in subset:
+
                     logger.info(f'Quantizing {name} in layer {i + 1}/{len(self.modules)}...')
-                    g_idx = gptq[name].fasterquant(percdamp=self.damp_percent,
+                    g_idx = gptq[name].fasterquant(blocksize=self.block_size,
+                                                   percdamp=self.damp_percent,
                                                    group_size=subset[name]._weight_quantizer.group_size,
                                                    actorder=self.act_order,
-                                                   static_groups=self.static_groups)
-
+                                                   static_groups=self.static_groups,
+                                                   layer_index=i)
                     gptq[name].free()
 
+            # get whole decoder layer output
             layer_outputs = block_forward(layer, self.module_kwargs, num_batches, cur_layer_device, layer_inputs,
                                           layer_outputs, cache_examples_on_gpu)
 
-            layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
-
+            if get_device(layer) != META:
+                # if meta, scale and zero point are in execution_device, and weight is in meta, can't change.
+                layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
             del layer
             del gptq
             del layer_inputs

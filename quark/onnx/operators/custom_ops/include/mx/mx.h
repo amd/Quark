@@ -5,8 +5,8 @@
 #pragma once
 
 #define ORT_API_MANUAL_INIT
-#include "core/session/onnxruntime_cxx_api.h"
-#include "core/session/onnxruntime_c_api.h"
+#include "onnxruntime_cxx_api.h"
+#include "onnxruntime_c_api.h"
 #undef ORT_API_MANUAL_INIT
 
 

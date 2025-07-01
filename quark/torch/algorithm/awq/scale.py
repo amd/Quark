@@ -43,8 +43,16 @@ def apply_scale(module: nn.Module,
         layers = [get_op_by_name(module, name) for name in layer_names]
 
         if isinstance(prev_op, nn.Linear):
-            assert len(layers) == 1
-            scale_fc_fc(prev_op, layers[0], scales, num_attention_heads, num_key_value_heads)
+            assert len(layers) == len(layer_names) == 1
+            try:
+                scale_fc_fc(prev_op, layers[0], scales, num_attention_heads, num_key_value_heads)
+            except RuntimeError as e:
+                logger.warning(
+                    f"\nUnknown fc1-scales-fc2 pair to support scaling between them, the scale (smooth) computation will not be implemented in fact. This may impact the quantization accuracy."
+                    f"\n\tfc1 is {prev_op_name}, shape is {prev_op.weight.shape}."
+                    f"\n\tscales shape is {scales.shape}."
+                    f"\n\tfc2 is {layer_names[0]}, shape is {layers[0].weight.shape}."
+                    f"\nPlease check your model and/or algorithm configuration(s) or report your case to us.")
 
         elif isinstance(prev_op, nn.LayerNorm) or any(t.lower() in str(prev_op.__class__).lower()
                                                       for t in allowed_norms):
@@ -122,12 +130,27 @@ def scale_fc_fc(fc1: nn.Module,
         if fc1.bias is not None:
             fc1.bias.div_(prev_scales.to(fc1.bias.device).view(-1))
         fc2.weight.mul_(scales.to(fc2.weight.device).view(1, -1))
-    elif fc1.weight.shape[0] == scales.size(0) == fc2.weight.shape[1]:
-        # Multi-head Attention
-        fc1.weight[-scales.size(0):].div_(scales.to(fc1.weight.device).view(-1, 1))  # For layer which merge qkv
+
+    # Multi-head Attention
+    # TODO: can unify with Group Query Attention using same scale (smooth) computations.
+    elif scales.size(0) == fc2.weight.shape[1]:
+        if fc1.weight.shape[0] > scales.size(0):
+            # For layer which merge qkv, need to seperate out the v_proj from fc1.weight to do scale (smooth) with o_proj
+            # An example model: microsoft/Phi-3-mini-4k-instruct
+            fc1.weight[-scales.size(0):].div_(scales.to(fc1.weight.device).view(-1, 1))
+        elif fc1.weight.shape[0] == scales.size(0):
+            # For layer which has seperate qkv or mlp, can directly do scale (smooth) between fc1 and fc2 (e.g., v_proj and o_proj)
+            # An example model: google/gemma-7b
+            fc1.weight.div_(scales.to(fc1.weight.device).view(-1, 1))
+        else:
+            raise RuntimeError("Unable to perform scale (smooth) since fc2's shape is larger than fc1's shape.")
+
         if fc1.bias is not None:
             fc1.bias.div_(scales.to(fc1.bias.device).view(-1))
         fc2.weight.mul_(scales.to(fc2.weight.device).view(1, -1))
+
+    else:
+        raise RuntimeError("Unable to perform scale (smooth) since the fc1-scale-fc2 pair has a mismatch tensor shape.")
 
     for p in fc1.parameters():
         assert torch.isnan(p).sum() == 0

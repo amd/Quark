@@ -38,15 +38,15 @@ for ONNX.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantType, VitisQuantFormat
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=quark.onnx.VitisQuantFormat.BFPFixNeuron,
-       activation_type=quark.onnx.VitisQuantType.QBFP,
-       weight_type=quark.onnx.VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFP,
    )
    config = Config(global_quant_config=quant_config)
 
@@ -78,15 +78,15 @@ If you want to further improve the effectiveness of BFP16 quantization after app
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=quark.onnx.VitisQuantFormat.BFPFixNeuron,
-       activation_type=quark.onnx.VitisQuantType.QBFP,
-       weight_type=quark.onnx.VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFP,
        include_fast_ft=True,
        extra_options={
            'FastFinetune': {

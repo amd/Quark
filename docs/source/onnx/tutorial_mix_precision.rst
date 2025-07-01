@@ -79,19 +79,19 @@ In fact, you can mix any two other data types equally.
 - **Element-wise**
 
 In this configuration, BFP16 is assigned to activations and BFloat16 to weights. Here the BFP16 quantization is
-executed by BFPFixNeuron, whose default attributes make it work on BFP16 mode.
+executed by custom operator named "BFPQuantizeDequantize", whose default attributes make it work on BFP16 mode.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, CalibrationMethod, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, CalibrationMethod, ExtendedQuantFormat, ExtendedQuantType
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    # Build the configuration
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBFP,
-       weight_type=VitisQuantType.QBFloat16,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFloat16,
    )
    config = Config(global_quant_config=quant_config)
 
@@ -109,9 +109,9 @@ You can also assign BFloat16 to activations while BFP16 to weights as follows:
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBloat16,
-       weight_type=VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBloat16,
+       weight_type=ExtendedQuantType.QBFP,
    )
 
 - **Layer-wise**
@@ -123,35 +123,54 @@ This is one of the common configurations for deploying models on hardware device
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBloat16,
-       weight_type=VitisQuantType.QBloat16,
-       include_auto_mp=true,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBloat16,
+       weight_type=ExtendedQuantType.QBloat16,
+       include_auto_mp=True,
        extra_options={
            "AutoMixprecision": {
                "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
-               "TargetQuantType": VitisQuantType.QBFP,
+               "TargetQuantType": ExtendedQuantType.QBFP,
            },
        },
    )
 
 At this point, there are many tensors on the precision boundary whose consumers have different precision from the producers.
 Some backend compilers require that two types of quantization nodes exist simultaneously on these tensors, such as inserting
-BFPFixNeuron of BFP16 and VitisQDQ pair of BF16 onto the same tensor. In this case, you can enable the ``DualQuantNodes`` option.
+a BFP node for BFP16 and custom QDQ pair for BF16 onto the same tensor. In this case, you can enable the ``DualQuantNodes`` option.
 
 .. code-block:: python
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBloat16,
-       weight_type=VitisQuantType.QBloat16,
-       include_auto_mp=true,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBloat16,
+       weight_type=ExtendedQuantType.QBloat16,
+       include_auto_mp=True,
        extra_options={
            "AutoMixprecision": {
                "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
-               "TargetQuantType": VitisQuantType.QBFP,
+               "TargetQuantType": ExtendedQuantType.QBFP,
                "DualQuantNodes": True,
+           },
+       },
+   )
+
+And we can also mix BF16 with MXINT8 as shown below. Please note that for other Microscaling data formats, you need to set MXAttributes
+to the parameter "extra_options", see the Microscaling tutorial for details.
+
+.. code-block:: python
+
+   quant_config = QuantizationConfig(
+       calibrate_method=CalibrationMethod.MinMax,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBloat16,
+       weight_type=ExtendedQuantType.QBloat16,
+       include_auto_mp=True,
+       extra_options={
+           "AutoMixprecision": {
+               "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
+               "TargetQuantType": ExtendedQuantType.QMX,
            },
        },
    )
@@ -166,15 +185,15 @@ Therefore, after identifying these tensors through sensitivity analysis, you can
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBFP,
-       weight_type=VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFP,
        specific_tensor_precision=True,
        extra_options={
            # MixedPrecisionTensor is a dictionary in which the key is data type and the value
            # is a list of the names of sensitive tensors.
            "MixedPrecisionTensor": {
-               VitisQuantType.QBFloat16: ['weight_tensor_name', 'activation_tensor_name'],
+               ExtendedQuantType.QBFloat16: ['weight_tensor_name', 'activation_tensor_name'],
            },
        },
    )
@@ -185,16 +204,16 @@ You can also assign more data types to more tensors as needed, for example:
 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QBFP,
-       weight_type=VitisQuantType.QBFP,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QBFP,
+       weight_type=ExtendedQuantType.QBFP,
        specific_tensor_precision=True,
        extra_options={
            # MixedPrecisionTensor is a dictionary in which the key is data type and the value
            # is a list of the names of sensitive tensors.
            "MixedPrecisionTensor": {
-               VitisQuantType.QBFloat16: ['weight_tensor_name1', 'activation_tensor_name1'],
-               VitisQuantType.QInt16: ['weight_tensor_name2', 'activation_tensor_name2'],
+               ExtendedQuantType.QBFloat16: ['weight_tensor_name1', 'activation_tensor_name1'],
+               ExtendedQuantType.QInt16: ['weight_tensor_name2', 'activation_tensor_name2'],
            },
        },
    )
@@ -219,22 +238,23 @@ how to use the L2 Norm metric to achieve automatic mixed precision:
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, CalibrationMethod, QuantType, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, CalibrationMethod, QuantType, ExtendedQuantFormat, ExtendedQuantType
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    # Build the configuration
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
-       quant_format=VitisQuantFormat.QDQ,
-       activation_type=VitisQuantType.QInt16,
+       quant_format=ExtendedQuantFormat.QDQ,
+       activation_type=ExtendedQuantType.QInt16,
        weight_type=QuantType.QInt8,
+       include_auto_mp=True,
        extra_options={
            'AutoMixprecision': {
                "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],  # The operation types to perform mixed precision
-               'ActTargetQuantType':QuantType.QInt8,  # The activation input of insensitive layers will be assign to this precision
-               'WeightTargetQuantType':QuantType.QInt8,  # The weight input of insensitive layers will be assign to this precision
-               'OutputIndex': 0,  # The index of outputs for evaluating accuracy indicator
-               'L2Target': 0.1,  # If L2 is less than this value after assigning a new precision to a certain layer, the process continues
+               "ActTargetQuantType": QuantType.QInt8,  # The activation input of insensitive layers will be assign to this precision
+               "WeightTargetQuantType": QuantType.QInt8,  # The weight input of insensitive layers will be assign to this precision
+               "OutputIndex": 0,  # The index of outputs for evaluating accuracy indicator
+               "L2Target": 0.1,  # If L2 is less than this value after assigning a new precision to a certain layer, the process continues
            },
        },
    )

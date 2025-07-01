@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: MIT
 //
 
+#pragma once
+
 #include "onnxruntime_c_api.h"
 #define ORT_API_MANUAL_INIT
 #include "onnxruntime_cxx_api.h"
 #undef ORT_API_MANUAL_INIT
 
 
-namespace vai_q {
+namespace quark_onnx {
 
 struct KernelCustomLSTM {
   KernelCustomLSTM(const OrtApi& api,
@@ -50,4 +52,4 @@ struct KernelCustomLSTM {
     int64_t input_size_ = 0;  // Size of the input vector
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

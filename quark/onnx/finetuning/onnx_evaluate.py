@@ -8,31 +8,41 @@ import numpy as np
 import onnx
 import onnxruntime
 
+from pathlib import Path
 from typing import Union, List, Any
-from quark.onnx.quant_utils import register_custom_ops_library, CachedDataReader
+from quark.onnx.quant_utils import (register_custom_ops_library, CachedDataReader, create_infer_session_for_onnx_model)
 
 logger = ScreenLogger(__name__)
 
 
-def create_session(onnx_model: Union[onnx.ModelProto, str]) -> onnxruntime.InferenceSession:
+def create_session(onnx_model: Union[str, Path, onnx.ModelProto]) -> onnxruntime.InferenceSession:
     """
     Create a inference session for the onnx model and register libraries for it.
     :param onnx_model: the proto or the path of the onnx model
     :return: the created inference session
     """
     so = onnxruntime.SessionOptions()
-    # TODO: To deal with onnxruntime_extension with ort1.17
-    # so.register_custom_ops_library(ext_lib_path())
-    register_custom_ops_library(so)
+
+    providers: List[str] = []
+    if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
+        providers.append('ROCMExecutionProvider')
+        register_custom_ops_library(so, device='ROCM')
+    elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+        providers.append('CUDAExecutionProvider')
+        register_custom_ops_library(so, device='CUDA')
+    else:
+        register_custom_ops_library(so, device='CPU')
+    providers.append('CPUExecutionProvider')
+
     # Note that we disabled all the graph optimizations because we found that ort
     # turns the QDQ into QOP to accelerate the inference, but this process leads
     # to a loss of precision both for Int8 and Int16 QDQs (especially the latter).
     so.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
-    model = onnx_model if isinstance(onnx_model, str) else onnx_model.SerializeToString()
-    return onnxruntime.InferenceSession(model, so, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+
+    return create_infer_session_for_onnx_model(onnx_model, sess_options=so, providers=providers)
 
 
-def inference_model(onnx_model: Union[onnx.ModelProto, str],
+def inference_model(onnx_model: Union[str, Path, onnx.ModelProto],
                     data_reader: CachedDataReader,
                     data_num: Union[int, None] = None,
                     output_index: Union[int, None] = None) -> List[List[np.ndarray[Any, Any]]]:

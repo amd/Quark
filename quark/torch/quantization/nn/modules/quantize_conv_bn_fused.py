@@ -17,7 +17,10 @@ from typing_extensions import Self
 from .mixin import QuantMixin
 from quark.torch.quantization.config.config import QuantizationConfig
 
-__all__ = ["QuantizedConvBatchNorm2d", "update_bn_stats", "freeze_bn_stats", "fuse_conv_bn", "clear_non_native_bias"]
+__all__ = [
+    "QuantizedConvBatchNorm2d", "QuantConvTransposeBatchNorm2d", "update_bn_stats", "freeze_bn_stats", "fuse_conv_bn",
+    "clear_non_native_bias"
+]
 _BN_CLASS_MAP = {
     2: nn.BatchNorm2d,
     3: nn.BatchNorm3d,
@@ -396,6 +399,7 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
+        quant_config = QuantizationConfig() if quant_config is None else quant_config
         _ConvBnNd.__init__(
             self,
             in_channels,
@@ -413,7 +417,7 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
             eps,
             momentum,
             freeze_bn_stats,
-            quant_config)  # type: ignore [arg-type]
+            quant_config)
 
     def _conv_forward(self,
                       input: torch.Tensor,
@@ -427,7 +431,126 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
         return F.conv2d(input, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
 
-_FUSED_CLS = [QuantizedConvBatchNorm2d]
+class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
+
+    def __init__(
+            self,
+            # transposeconv
+            in_channels: int,
+            out_channels: int,
+            kernel_size: Tuple[int, ...],
+            stride: Tuple[int, ...],
+            padding: Tuple[int, ...],
+            output_padding: Tuple[int, ...],
+            groups: int,
+            bias: bool,
+            dilation: Tuple[int, ...],
+            padding_mode: str,
+            # BatchNormNd args
+            dim: int = 2,
+            eps: float = 1e-05,
+            momentum: float = 0.1,
+            freeze_bn_stats: bool = False,
+            # quant config
+            quant_config: QuantizationConfig = QuantizationConfig(),
+    ):
+
+        super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, True, output_padding,
+                         groups, bias, padding_mode, dim, eps, momentum, freeze_bn_stats, quant_config)
+
+        self._transpose_fn = [F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d][dim - 1]
+
+    def _conv_forward(self,
+                      input: torch.Tensor,
+                      weight: torch.Tensor,
+                      bias: Optional[torch.Tensor] = None,
+                      output_size: Optional[List[int]] = None) -> torch.Tensor:
+        if self.padding_mode != 'zeros':
+            raise ValueError(f'Only `zeros` padding mode is supported for {self.__class__.__name__}')
+        num_spatial_dims = self.dim
+        output_padding = self._output_padding(
+            input,
+            output_size,
+            self.stride,  # type: ignore[arg-type]
+            self.padding,  # type: ignore[arg-type]
+            self.kernel_size,  # type: ignore[arg-type]
+            num_spatial_dims,
+            self.dilation)  # type: ignore[arg-type]
+
+        return self._transpose_fn(
+            input,
+            weight,
+            bias,
+            self.stride,
+            self.padding,  # type: ignore[arg-type]
+            output_padding,
+            self.groups,
+            self.dilation)
+
+    @classmethod
+    def from_float(cls, conv: nn.Module, bn: nn.Module, quant_config: Optional[QuantizationConfig],
+                   **kwargs: Any) -> nn.Module:
+        """Create a qat module from a float module."""
+        dim = len(conv.weight.shape) - 2  # in_channel, out_channel, [H, W, D] (1/2/3)
+        quant_config = QuantizationConfig() if quant_config is None else quant_config
+        convbn = cls(conv.in_channels, conv.out_channels, conv.kernel_size, conv.stride, conv.padding,
+                     conv.output_padding, conv.groups, conv.bias is not None, conv.dilation, conv.padding_mode, dim,
+                     bn.eps, bn.momentum, False, quant_config)
+        convbn.weight = conv.weight
+        convbn.bias = conv.bias
+        convbn.bn.weight = bn.weight
+        convbn.bn.bias = bn.bias
+        convbn.bn.running_mean = bn.running_mean
+        convbn.bn.running_var = bn.running_var
+        convbn.bn.num_batches_tracked = bn.num_batches_tracked
+        convbn.bn.eps = bn.eps
+        return convbn
+
+
+class QuantConvTransposeBatchNorm2d(_ConvTransposeBnNd):
+
+    def __init__(
+        self,
+        # conv config
+        in_channels: int,
+        out_channels: int,
+        kernel_size: _size_2_t,
+        stride: _size_2_t = 1,
+        padding: _size_2_t = 0,
+        output_padding: _size_2_t = 0,
+        groups: int = 1,
+        bias: bool = True,
+        dilation: _size_2_t = 1,
+        padding_mode: str = 'zeros',
+        # BatchNorm2d args
+        dim: int = 2,
+        eps: float = 1e-05,
+        momentum: float = 0.1,
+        freeze_bn_stats: bool = False,
+        # quant config
+        quant_config: Optional[QuantizationConfig] = QuantizationConfig()
+    ) -> None:
+
+        kernel_size = _pair(kernel_size)
+        stride = _pair(stride)
+        padding = _pair(padding)
+        dilation = _pair(dilation)
+        output_padding = _pair(output_padding)
+        quant_config = QuantizationConfig() if quant_config is None else quant_config
+        super(QuantConvTransposeBatchNorm2d,
+              self).__init__(in_channels, out_channels, kernel_size, stride, padding, output_padding, groups, bias,
+                             dilation, padding_mode, dim, eps, momentum, freeze_bn_stats, quant_config)
+
+    def broadcast_correction_weight(self, c: torch.Tensor) -> torch.Tensor:
+        """Broadcasts a correction factor to the weight."""
+        if c.dim() != 1:
+            raise ValueError("Correction factor needs to have a single dimension")
+        # weight.shape: [in_channels, out_channels // groups, *kernel_size]
+        expected_view_shape = (1, ) + c.shape + (1, ) * 2
+        return c.view(*expected_view_shape)
+
+
+_FUSED_CLS = [QuantizedConvBatchNorm2d, QuantConvTransposeBatchNorm2d]
 
 
 def update_bn_stats(mod: nn.Module) -> None:

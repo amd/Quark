@@ -9,8 +9,8 @@ import copy
 import torch
 from pathlib import Path
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
-from quark.onnx import ModelQuantizer, VitisQuantFormat, VitisQuantType
-from quark.onnx.quantization.config.custom_config import BF16_MXINT8_CONFIG, BF16_MIXED_BFP16_ADAQUANT_CONFIG
+from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
+from quark.onnx.quantization.config.custom_config import BF16_MXINT8_CONFIG, BF16_MIXED_MXINT8_CONFIG
 from quark.onnx.quantization.config.config import Config, QuantizationConfig
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -32,10 +32,10 @@ elementwise_mp_output_tensor = np.array([[[[-0.00390625, -0.07128906, -0.0517578
                                            [-0.00634766, -0.07177734, -0.05639648, -0.12255859],
                                            [-0.0625, -0.0859375, -0.17675781, -0.10009766]]]],).astype(np.float32)
 
-layerwise_mp_output_tensor = np.array([[[[-0.00244141, -0.0703125, -0.05126953, -0.13183594],
-                                         [-0.03613281, -0.06884766, -0.17871094, -0.1328125],
-                                         [-0.00634766, -0.06982422, -0.05615234, -0.12207031],
-                                         [-0.06347656, -0.08740234, -0.17578125, -0.10107422]]]],).astype(np.float32)
+layerwise_mp_output_tensor = np.array([[[[-0.00488281, -0.07128906, -0.05224609, -0.1328125],
+                                         [-0.03808594, -0.06640625, -0.17871094, -0.1328125],
+                                         [-0.00683594, -0.07177734, -0.05566406, -0.12255859],
+                                         [-0.06347656, -0.08691406, -0.17773438, -0.1015625]]]],).astype(np.float32)
 
 tensorwise_mp_output_tensor = np.array([[[[-0.00390625, -0.0703125, -0.05126953, -0.13183594],
                                           [-0.03613281, -0.06640625, -0.17871094, -0.13378906],
@@ -147,18 +147,20 @@ def prepare_elementwise_config():
 
 
 def prepare_layerwise_config():
-    return Config(global_quant_config=BF16_MIXED_BFP16_ADAQUANT_CONFIG)
+    config_copy = copy.deepcopy(BF16_MIXED_MXINT8_CONFIG)
+    config_copy.extra_options['AutoMixprecision']['DualQuantNodes'] = True
+    return Config(global_quant_config=config_copy)
 
 
 def prepare_tensorwise_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QBFloat16,
-                                      weight_type=VitisQuantType.QBFloat16,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QBFloat16,
+                                      weight_type=ExtendedQuantType.QBFloat16,
                                       specific_tensor_precision=True,
                                       extra_options={
                                           'MixedPrecisionTensor': {
-                                              VitisQuantType.QMX: ['/conv1/Conv_output_0']  # This is a specific name
+                                              ExtendedQuantType.QMX: ['/conv1/Conv_output_0']  # This is a specific name
                                           },
                                           'MXAttributes': {
                                               'element_dtype': 'int8',
@@ -173,9 +175,9 @@ def prepare_tensorwise_config():
 
 def prepare_MXandBFP_standard_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QMX,
-                                      weight_type=VitisQuantType.QBFP,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QBFP,
                                       extra_options={
                                           'AddQDQPairToWeight': False
                                       })
@@ -185,9 +187,9 @@ def prepare_MXandBFP_standard_config():
 
 def prepare_MXandBFP_dedicate_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QBFP,
-                                      weight_type=VitisQuantType.QMX,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QBFP,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'AddQDQPairToWeight': False,
                                           'DedicatedQDQPair': True,
@@ -198,9 +200,9 @@ def prepare_MXandBFP_dedicate_config():
 
 def prepare_MXandInt16_standard_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QMX,
-                                      weight_type=VitisQuantType.QInt16,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QMX,
+                                      weight_type=ExtendedQuantType.QInt16,
                                       per_channel=True,
                                       extra_options={
                                           'AddQDQPairToWeight': False
@@ -211,9 +213,9 @@ def prepare_MXandInt16_standard_config():
 
 def prepare_MXandInt16_dedicate_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QInt16,
-                                      weight_type=VitisQuantType.QMX,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QInt16,
+                                      weight_type=ExtendedQuantType.QMX,
                                       # per_channel=True,
                                       extra_options={
                                           'AddQDQPairToWeight': False,
@@ -225,13 +227,13 @@ def prepare_MXandInt16_dedicate_config():
 
 def prepare_MXandInt8_standard_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QUInt8,
-                                      weight_type=VitisQuantType.QInt8,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QUInt8,
+                                      weight_type=ExtendedQuantType.QInt8,
                                       specific_tensor_precision=True,
                                       extra_options={
                                           'MixedPrecisionTensor': {
-                                              VitisQuantType.QMX: ['conv1.weight']  # This is a specific name
+                                              ExtendedQuantType.QMX: ['conv1.weight']  # This is a specific name
                                           },
                                       })
 
@@ -240,15 +242,15 @@ def prepare_MXandInt8_standard_config():
 
 def prepare_MXandInt8_dedicate_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QUInt8,
-                                      weight_type=VitisQuantType.QInt8,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QUInt8,
+                                      weight_type=ExtendedQuantType.QInt8,
                                       specific_tensor_precision=True,
                                       extra_options={
                                           'AddQDQPairToWeight': True,
                                           'DedicatedQDQPair': True,
                                           'MixedPrecisionTensor': {
-                                              VitisQuantType.QMX: ['conv1.weight']  # This is a specific name
+                                              ExtendedQuantType.QMX: ['conv1.weight']  # This is a specific name
                                           },
                                       })
 
@@ -257,15 +259,15 @@ def prepare_MXandInt8_dedicate_config():
 
 def prepare_MXandInt8_custom_config():
     quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                      quant_format=VitisQuantFormat.QDQ,
-                                      activation_type=VitisQuantType.QUInt8,
-                                      weight_type=VitisQuantType.QInt8,
+                                      quant_format=ExtendedQuantFormat.QDQ,
+                                      activation_type=ExtendedQuantType.QUInt8,
+                                      weight_type=ExtendedQuantType.QInt8,
                                       specific_tensor_precision=True,
                                       extra_options={
                                           'Int32Bias': False,
                                           'UseQDQVitisCustomOps': False,
                                           'MixedPrecisionTensor': {
-                                              VitisQuantType.QMX: ['conv1.bias']  # This is a specific name
+                                              ExtendedQuantType.QMX: ['conv1.bias']  # This is a specific name
                                           },
                                       })
 
@@ -277,8 +279,8 @@ def prepare_MXQOperator_custom_config():
 
     quant_config = QuantizationConfig(calibrate_method=PowerOfTwoMethod.NonOverflow,
                                       quant_format=QuantFormat.QOperator,
-                                      activation_type=VitisQuantType.QInt16,
-                                      weight_type=VitisQuantType.QMX,
+                                      activation_type=ExtendedQuantType.QInt16,
+                                      weight_type=ExtendedQuantType.QMX,
                                       extra_options={
                                           'AddQDQPairToWeight': False,
                                       })

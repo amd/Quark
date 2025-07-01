@@ -27,9 +27,9 @@ class LSQObserver(UniformScalingObserver):
 
         self.scale = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float, device=device))
         self.register_buffer('zero_point', torch.tensor([0], dtype=torch.int, device=device))
-        self.register_buffer('eps', torch.tensor([torch.finfo(torch.float32).eps], device=device))
+        self.register_buffer('eps', torch.tensor([torch.finfo(torch.float32).eps], device=device), persistent=False)
 
-        self.register_buffer('initialized', torch.tensor([0], dtype=torch.uint8, device=device))
+        self.register_buffer('initialized', torch.tensor([0], dtype=torch.uint8, device=device), persistent=False)
 
     def forward(self, x: torch.Tensor) -> None:
         if self.training and self.initialized == 0:

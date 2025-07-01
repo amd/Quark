@@ -13,6 +13,8 @@ import numpy as np
 import onnx
 from onnx import NodeProto, TensorProto
 from argparse import ArgumentParser, Namespace
+from pathlib import Path
+from typing import Dict, Any, Union, Optional
 
 
 def scale2pos(scale: float) -> int:
@@ -36,7 +38,7 @@ def pos2scale(pos: int) -> float:
     return float(np.power(2.0, -pos))
 
 
-def fs_to_pof2s(node: NodeProto, initializer_map: dict[str, TensorProto]) -> None:
+def fs_to_pof2s(node: NodeProto, initializer_map: Dict[str, TensorProto]) -> None:
     scale_name = node.input[1]
     zero_point_name = node.input[2]
 
@@ -67,8 +69,9 @@ def fs_to_pof2s(node: NodeProto, initializer_map: dict[str, TensorProto]) -> Non
                                 vals=new_zero.flatten().tolist()))
 
 
-def convert_resize_fs_to_pof2s(input_model: str, output_model: str) -> None:
-    model = onnx.load(input_model)
+def convert_resize_fs_to_pof2s(input_model: Union[str, Path, onnx.ModelProto],
+                               output_model: Optional[Union[str, Path]] = None) -> Any:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
 
     q_nodes = []
     dq_nodes = []
@@ -109,8 +112,11 @@ def convert_resize_fs_to_pof2s(input_model: str, output_model: str) -> None:
                         if len(q_after.input) > 1:
                             fs_to_pof2s(dq_after, initializer_map)
 
-    onnx.save(model, output_model)
-    print(f"Converted model saved to {output_model}")
+    if output_model is None:
+        return model
+
+    use_external_data_format = model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
+    onnx.save(model, output_model, save_as_external_data=use_external_data_format)
 
 
 def parse_args() -> Namespace:

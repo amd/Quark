@@ -1,31 +1,8 @@
 Release Notes
 ==============
 
-Release 0.8.2
--------------
-
-New Features
-^^^^^^^^^^^^
-
-**ONNX**
-
-* Added support for ONNX Runtime 1.22.0
-
-Release 0.8.1
--------------
-
-Bug Fixes and Enhancements
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**ONNX**
-
-* Fixed BFP Kernel compilation issue for GCC 13
-
-Release 0.8
------------
-
-New Features
-^^^^^^^^^^^^
+New Features (Version 0.8)
+--------------------------
 
 -  **AMD Quark for PyTorch**
 
@@ -157,7 +134,7 @@ Bug Fixes and Enhancements
 * Updated ONNX unit tests to use temporary paths.
 * Removed generated model "sym_shape_infer_temp.onnx" on infer_shape failure.
 * Fixed error in mixed-precision weights calculation.
-* Fixed a bug when simplifying llama2-7b without kv_cache.
+* Fixed a bug when simplifying Llama2-7b without kv_cache.
 * Fixed import path and add parent directory to system path in BFP quantize_model.py example.
 
 New Features (Version 0.6.0)
@@ -167,9 +144,9 @@ New Features (Version 0.6.0)
 
    -  Model Support:
 
-      -  Provided more examples of LLM PTQ, such as LLaMA3.2 and LLaMA3.2-Vision models (only quantizing the language part).
+      -  Provided more examples of LLM PTQ, such as Llama3.2 and Llama3.2-Vision models (only quantizing the language part).
       -  Provided examples of Phi and ChatGLM for LLM QAT.
-      -  Provided examples of LLM pruning for Qwen2.5, LLaMA, OPT, CohereForAI/c4ai-command models.
+      -  Provided examples of LLM pruning for Qwen2.5, Llama, OPT, CohereForAI/c4ai-command models.
       -  Provided an example of YOLO-NAS, a detection model PTQ/QAT, which can partially quantize the model using your configuration under FX mode.
       -  Provided an example of SDXL v1.0 with weight INT8 activation INT8 under Eager Mode.
       -  Supported more models for rotation, such as Qwen models under Eager Mode.
@@ -199,7 +176,7 @@ New Features (Version 0.6.0)
 
    -  Model Support:
 
-      -  Provided more ONNX quantization examples of LLM models such as LLaMA2.
+      -  Provided more ONNX quantization examples of LLM models such as Llama2.
 
    -  Data Types:
 
@@ -269,7 +246,7 @@ New Features (Version 0.5.0)
    -  Advanced Quantization Algorithms:
 
       -  Supported Rotation for Llama models.
-      -  Supported SmoothQuant and AWQ for models with GQA and MQA (for example, LLaMA-3-8B, QWen2-7B).
+      -  Supported SmoothQuant and AWQ for models with GQA and MQA (for example, Llama-3-8B, QWen2-7B).
       -  Provided scripts for generating AWQ configuration automatically.(experimental)
       -  Supported trained quantization thresholds (TQT) and learned step size quantization (LSQ) for better QAT results. (experimental)
 

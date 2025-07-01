@@ -4,16 +4,15 @@
 #
 import torch
 import operator
+from typing import List
 from torch.fx import GraphModule, Node
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 # from torch.nn.utils.fusion import fuse_conv_bn_weights
-from quark.torch.quantization.graph.torch_utils import is_conv2d_node, is_batchnorm2d_node
+from quark.torch.quantization.graph.torch_utils import is_conv2d_node, is_batchnorm_node
 from quark.torch.quantization.graph.torch_utils import BATCHNORM_OPS_WO_TRAIN
-from quark.torch.quantization.graph.optimization.utils import is_all_nodes_save_parameters
-from quark.torch.quantization.graph.optimization.utils import replace_ops_module_name_suffix
+from quark.torch.quantization.graph.optimization.utils import is_all_nodes_save_parameters, replace_ops_module_name_suffix, _copy_node_meta_info
 from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
 from quark.torch.quantization.config.config import QuantizationConfig
-from quark.torch.quantization.graph.processor.processor_utils import _is_skip_quant_node
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -35,9 +34,9 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
     count_replace_num = 0  # used for track
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
-    need_to_delete_node = []
+    need_to_delete_node: List[Node] = []
     for n in m.graph.nodes:
-        if not is_batchnorm2d_node(n):
+        if not is_batchnorm_node(n):
             continue
         bn_node = n
         maybe_conv_node = bn_node.args[0]
@@ -50,8 +49,6 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             logger.warning("Conv Node: {} have multi users, skip replace to QuantizedConvBatchNorm2d.".format(
                 conv_node.name))
             continue
-        # TODO NOTE refine & amend in later
-        skip_quant = True if any(_is_skip_quant_node(node) for node in [conv_node, bn_node]) else False
 
         # get all need param
         conv_weight_node = conv_node.args[1]
@@ -96,6 +93,8 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             for next_node in bn_node.users:
                 to_delete_node.insert(0, next_node)
         if used_param_id in quant_module_id_2_name:
+
+            need_to_delete_node = to_delete_node + need_to_delete_node
             # exist share param
             convbn_name = quant_module_id_2_name[used_param_id]
         else:  # instance a QuantizedConvBatchNorm2d
@@ -161,13 +160,11 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             setattr(m, convbn_name, conv_module)
             quant_module_id_2_name[used_param_id] = convbn_name
             count_replace_num += 1
-
-        need_to_delete_node += to_delete_node
+            need_to_delete_node += to_delete_node
         with m.graph.inserting_after(input_activation_node):
             convbn_node = m.graph.create_node('call_module', convbn_name, (input_activation_node, ), {})
-            # TODO try to use deepcopy inthe future
-            convbn_node.meta = conv_node.meta  # ["val"]  ["skip_quant"]
-            convbn_node.meta["skip_quant"] = skip_quant
+            # NOTE modify the node's meta info
+            _copy_node_meta_info(org_node=conv_node, target_node=convbn_node)
             # NOTE to compatable with different ops.aten.bn version
             # <built-in function getitem> (batchnorm followed by getitem)
             if isinstance(bn_node.next.target, type(operator.getitem)):
@@ -175,9 +172,9 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             # ops.atne.bn without getitem followed
             else:
                 bn_node.replace_all_uses_with(convbn_node)
-
-    logger.info("Totally replace op.conv2d->op.bn to {} count:\t{}, found but skip: {}".format(
-        QuantizedConvBatchNorm2d.__name__, count_replace_num, recognized_but_not_optimized))
+    if count_replace_num != 0 or recognized_but_not_optimized != 0:
+        logger.info("Totally replace op.conv2d->op.bn to {} count:\t{}, found but skip: {}".format(
+            QuantizedConvBatchNorm2d.__name__, count_replace_num, recognized_but_not_optimized))
     [m.graph.erase_node(node) for node in need_to_delete_node]
     m.graph.eliminate_dead_code()
     m.recompile()

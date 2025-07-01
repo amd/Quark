@@ -7,6 +7,7 @@ from quark.shares.utils.log import ScreenLogger
 import onnxruntime
 import itertools
 import onnx
+import copy
 from onnx import TensorProto, ModelProto, numpy_helper
 import tempfile
 from pathlib import Path
@@ -15,20 +16,17 @@ from onnxruntime.quantization.onnx_model import ONNXModel
 from .quant_utils import (inference_sub_model_with_data, get_output_nodes_of_node, dequantize_data, quantize_data_pof2s,
                           get_tensor_type_from_qType, PowerOfTwoMethod)
 from typing import Tuple, Set, Optional, Any, Union, Dict, List
-from onnxruntime.quantization.quant_utils import QuantType
-from .quant_utils import VitisQuantType, CachedDataReader
+from onnxruntime.quantization.quant_utils import QuantType, load_model_with_shape_infer, save_and_reload_model_with_shape_infer
+from .quant_utils import ExtendedQuantType, CachedDataReader
 
 logger = ScreenLogger(__name__)
 
 
 class BiasCorrection():
 
-    def __init__(self, opt_model: ModelProto, quant_model: ModelProto, use_external_data_format: bool,
-                 execution_providers: List[str]) -> None:
-        self.origin_model = opt_model
-        self.augment_model = opt_model
+    def __init__(self, quant_model: ModelProto, use_external_data_format: bool, execution_providers: List[str]) -> None:
         self.quant_model = quant_model
-        self.quant_augmented_model_path = ""
+        self.augmented_quant_model: ModelProto
         self.target_type = ["Conv", "Gemm"]
         self.use_external_data_format = use_external_data_format
         self.execution_providers = execution_providers
@@ -62,20 +60,12 @@ class BiasCorrection():
 
         return tensors_to_calibrate, value_infos
 
-    def get_bias_corr_pattern_augment_graph(
-            self, origin_model: ModelProto,
-            augmented_model_path: str) -> Tuple[Dict[str, Tuple[str, str, Optional[str]]], Set[str]]:
+    def get_bias_corr_pattern_augment_graph(self) -> Tuple[Dict[str, Tuple[str, str, Optional[str]]], Set[str]]:
         """
         make all quantization_candidates op type nodes as part of the graph output.
-        :return: augmented ONNX model
         """
         node_bias_corr_output_map = {}
-        onnx.save(
-            origin_model,
-            augmented_model_path,
-            save_as_external_data=self.use_external_data_format,
-        )
-        model = onnx.load(augmented_model_path)
+        model = self.quant_model
 
         tensors_to_calibrate, value_infos = self.select_tensors_to_calibrate(model)
         model_original_outputs = set(output.name for output in model.graph.output)
@@ -110,29 +100,36 @@ class BiasCorrection():
                 model.graph.output.append(value_infos[inter_output])
         onnx_model = ONNXModel(model)
         onnx_model.topological_sort()
-        onnx.save(
-            onnx_model.model,
-            augmented_model_path,
-            save_as_external_data=self.use_external_data_format,
-        )
+
+        self.augmented_quant_model = onnx_model.model
         return node_bias_corr_output_map, tensors_to_calibrate
 
     def augment_origin_quant_graph(self) -> Tuple[Dict[str, Tuple[str, str, Optional[str]]], Set[str]]:
-        quant_bc_pattern, quant_tensors_to_bc = self.get_bias_corr_pattern_augment_graph(
-            self.quant_model, self.quant_augmented_model_path)
+        quant_bc_pattern, quant_tensors_to_bc = self.get_bias_corr_pattern_augment_graph()
         return quant_bc_pattern, quant_tensors_to_bc
 
-    def create_inference_session(self, augmented_model_path: str) -> onnxruntime.InferenceSession:
+    def create_inference_session(self, model: onnx.ModelProto) -> onnxruntime.InferenceSession:
         """
         create an OnnxRuntime InferenceSession.
         """
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
-        infer_session = onnxruntime.InferenceSession(
-            augmented_model_path,
-            sess_options=sess_options,
-            providers=self.execution_providers,
-        )
+        if self.use_external_data_format:
+            temp_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.bc.")
+            temp_path = Path(temp_dir.name).joinpath("infer_model.onnx").as_posix()
+            model_to_save = copy.deepcopy(model)
+            onnx.save(model_to_save, temp_path, save_as_external_data=True)
+            infer_session = onnxruntime.InferenceSession(
+                temp_path,
+                sess_options=sess_options,
+                providers=self.execution_providers,
+            )
+        else:
+            infer_session = onnxruntime.InferenceSession(
+                model.SerializeToString(),
+                sess_options=sess_options,
+                providers=self.execution_providers,
+            )
         return infer_session
 
     def collect_data(self, data_reader: CachedDataReader, infer_session: onnxruntime.InferenceSession,
@@ -162,28 +159,34 @@ class BiasCorrection():
         return clean_merged_dict, intermediate_outputs
 
 
-def bias_correction(model_input: str,
-                    model_output: str,
+def bias_correction(fmodel_input: Union[str, Path, onnx.ModelProto],
+                    qmodel_input: Union[str, Path, onnx.ModelProto],
                     use_external_data_format: bool,
                     calibration_data_reader: CachedDataReader,
-                    activation_type: Union[QuantType, VitisQuantType],
+                    activation_type: Union[QuantType, ExtendedQuantType],
                     calibrate_method: Union[PowerOfTwoMethod, CalibrationMethod],
                     extra_options: Dict[str, Any],
                     execution_providers: List[str] = ['CPUExecutionProvider']) -> Any:
-    logger.info('Start BiasCorrection...')
-    from onnxruntime.quantization.quant_utils import load_model_with_shape_infer
+    logger.info('Start the Bias Correction processing ...')
 
-    quant_model = load_model_with_shape_infer(Path(model_output))
-    topo_model = ONNXModel(onnx.load(model_input))
+    float_model = fmodel_input if isinstance(fmodel_input, onnx.ModelProto) else onnx.load(fmodel_input)
+    if isinstance(qmodel_input, onnx.ModelProto):
+        if use_external_data_format:
+            quant_model = save_and_reload_model_with_shape_infer(qmodel_input)
+        else:
+            quant_model = onnx.shape_inference.infer_shapes(qmodel_input)
+    else:
+        quant_model = load_model_with_shape_infer(Path(qmodel_input))
+
+    topo_model = ONNXModel(float_model)
     topo_model.topological_sort()
     model = topo_model.model
-    bias_corr = BiasCorrection(model, quant_model, use_external_data_format, execution_providers)
-    bc_path = tempfile.TemporaryDirectory(prefix="vai.bc.")
-    bias_corr.quant_augmented_model_path = Path(bc_path.name).joinpath("quant_augmented_model.onnx").as_posix()
+
+    bias_corr = BiasCorrection(quant_model, use_external_data_format, execution_providers)
     quant_bc_pattern, quant_tensors_bc = bias_corr.augment_origin_quant_graph()
 
     bias_corr.execution_providers = execution_providers
-    quant_infer_session = bias_corr.create_inference_session(bias_corr.quant_augmented_model_path)
+    quant_infer_session = bias_corr.create_inference_session(bias_corr.augmented_quant_model)
     quant_clean_merged_dict, _ = bias_corr.collect_data(calibration_data_reader, quant_infer_session, quant_tensors_bc)
     quant_output_tensor_node_map = {}
     activation_type = get_tensor_type_from_qType(activation_type)
@@ -221,7 +224,7 @@ def bias_correction(model_input: str,
             quant_input = quant_clean_merged_dict[bc_input_tensor_name]
             quant_output = quant_clean_merged_dict[bc_output_tensor_name]
             quant_in_tensor = quant_input
-            float_output, _ = inference_sub_model_with_data(model, {bc_node_name: quant_in_tensor}, [bc_node_end.name])
+            float_output = inference_sub_model_with_data(model, {bc_node_name: quant_in_tensor}, [bc_node_end.name])
 
             quant_out_tensor = np.array(quant_output)
             float_out_tensor = np.array(float_output)
@@ -255,7 +258,7 @@ def bias_correction(model_input: str,
                     scale = scale * plus_bias / max_diff
                 bias_data_bc = bias_data_float + float_quant_diff_mean * scale
                 logger.debug(f'the bias_data_float max: {np.max(np.abs(bias_data_float))}')
-                logger.debug(f'the diff_mean max: {np.max(np.abs(float_quant_diff_mean*scale))}')
+                logger.debug(f'the diff_mean max: {np.max(np.abs(float_quant_diff_mean * scale))}')
                 quantized_data = None
                 if calibrate_method in [PowerOfTwoMethod.NonOverflow, PowerOfTwoMethod.MinMSE]:
                     symmetric = False if "ActivationSymmetric" not in extra_options else extra_options[

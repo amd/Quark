@@ -12,7 +12,7 @@ from typing import Optional, Any
 from .extensions import kernel_ext
 from torch.library import Library, impl
 from quark.torch.quantization.config.type import QSchemeType, Dtype
-from quark.torch.quantization.utils import get_dtype_params, reshape_to_blocks, t_exponent
+from quark.torch.quantization.utils import get_dtype_params, reshape_to_blocks, t_exponent, calculate_qmin_qmax
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 # impl_abstract renamed to register_fake in PyTorch 2.4
@@ -28,6 +28,58 @@ __all__ = [
     "quant_fp8_e4m3", "dequant_fp8_e4m3", "quant_fp8_e4m3_with_scale", "dequant_fp8_e4m3_with_scale", "quant_fp8_e5m2",
     "dequant_fp8_e5m2", "quant_fp8_e5m2_with_scale", "dequant_fp8_e5m2_with_scale", "scaled_fake_quantize"
 ]
+
+
+def prepare_inputs_per_group(inputs: torch.Tensor, scale: torch.Tensor, axis: int, group_size: int):
+    """
+    Ensures that the inputs and scale have the following shapes:
+
+    * ``scale``: [-1, inputs.size(axis) // group_size, 1]
+    * ``inputs```: [-1, inputs.size(axis) // group_size, group_size]
+
+    For example, the input:
+    * ``inputs`` of shape (256, 128, 64)
+    * ``scale`` of shape (256, 4, 64)
+    * ``axis=1``
+    * ``group_size=32``
+
+    gives ``inputs`` of shape (256 * 128, 4, 32)
+          ``scale`` of shape (256 * 128, 4, 1)
+
+    Passing the argument ``scales`` with the broadcasting dimension already present is accepted, for example:
+
+    * ``inputs`` of shape (256, 128, 64)
+    * ``scale`` of shape (8, 1, 128, 64)
+    * ``axis=0``
+    * ``group_size=32``
+
+    gives ``inputs`` of shape (128 * 64, 8, 32)
+          ``scale`` of shape (128 * 64, 8, 1)
+    """
+    inputs_ndim = inputs.ndim
+    inputs = inputs.to(torch.float32)
+    scale = scale.to(torch.float32)
+
+    inputs = reshape_to_blocks(inputs, group_size, axis)
+
+    # `reshape_to_blocks` reshapes to a 3D tensor [-1, axis_size // group_size, group_size].
+    # For the scale, the `1` dimension should be the last. Remove the dim from
+    # the scale tensor if it is already present.
+    # `axis_positive` axis is expected to be of dimension `axis_size // group_size`.
+    if scale.dim() == inputs_ndim + 1:
+        axis_positive = (inputs_ndim + axis) % inputs_ndim
+        scale = scale.squeeze(axis_positive + 1)
+
+    # Move the group dimension to the end: [..., inputs.size(axis) // group_size, 1].
+    scale = scale.transpose(axis, -1)
+    scale = scale.unsqueeze(-1)
+
+    # Finally, merge all dimensions except the end [inputs.size(axis) // group_size, 1].
+    if scale.dim() > inputs.dim():
+        scale = scale.reshape(-1, scale.shape[-2], scale.shape[-1])
+
+    return inputs, scale
+
 
 # namespace
 quant_scope_lib = Library("quark", "DEF")
@@ -134,14 +186,21 @@ def scaled_fake_quantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Te
                          axis: int, group_size: int, quant_min: float, quant_max: float, round_mode: int, qscheme: str,
                          mx_element_dtype: str) -> torch.Tensor:
     fake_quantizers = {
+        Dtype.int2.value: fake_quantize_int,
         Dtype.int4.value: fake_quantize_int,
+        Dtype.uint16.value: fake_quantize_int,
+        Dtype.int16.value: fake_quantize_int,
+        Dtype.int32.value: fake_quantize_int,
         Dtype.uint4.value: fake_quantize_int,
         Dtype.int8.value: fake_quantize_int,
         Dtype.uint8.value: fake_quantize_int,
         Dtype.fp8_e4m3.value: fake_quantize_fp8_e4m3,
         Dtype.fp8_e5m2.value: fake_quantize_fp8_e5m2,
         Dtype.bfloat16.value: fake_quantize_with_dtype_convert,
-        Dtype.float16.value: fake_quantize_with_dtype_convert
+        Dtype.float16.value: fake_quantize_with_dtype_convert,
+        Dtype.fp4.value: fake_quantize_fp4_fp6,
+        Dtype.fp6_e3m2.value: fake_quantize_fp4_fp6,
+        Dtype.fp6_e2m3.value: fake_quantize_fp4_fp6,
     }
 
     if quant_dtype not in fake_quantizers:
@@ -163,16 +222,20 @@ def scaled_fake_quantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Te
 
 
 quant_scope_lib.define(
-    "non_scaled_fake_quantize(Tensor input_tensor, str quant_dtype, str mx_element_dtype, int axis, int block_size) -> Tensor"
+    "non_scaled_fake_quantize(Tensor input_tensor, str quant_dtype, str mx_element_dtype, int axis, int block_size, str scale_calculation_mode) -> Tensor"
 )
 
 
 @impl(quant_scope_lib, "non_scaled_fake_quantize", "CompositeExplicitAutograd")
-def non_scaled_fake_quantize(input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int,
-                             block_size: int) -> torch.Tensor:
+def non_scaled_fake_quantize(input_tensor: torch.Tensor,
+                             quant_dtype: str,
+                             mx_element_dtype: str,
+                             axis: int,
+                             block_size: int,
+                             scale_calculation_mode: str = "even") -> torch.Tensor:
     fake_quantize_funcs = {
         Dtype.bfp16.value: fake_quantize_bfp16,
-        Dtype.mx.value: fake_quantize_mx,
+        Dtype.mx.value: partial(fake_quantize_mx, scale_calculation_mode=scale_calculation_mode),
         Dtype.mx6.value: partial(fake_quantize_mx6_mx9, quant_bit=5),
         Dtype.mx9.value: partial(fake_quantize_mx6_mx9, quant_bit=8),
     }
@@ -227,11 +290,14 @@ def fake_quantize_fp8_e4m3(inputs: torch.Tensor,
                            axis: Optional[int] = None,
                            qscheme: Optional[str] = None,
                            quant_dtype: Optional[str] = None,
+                           group_size: Optional[int] = None,
                            **kwargs: Any) -> torch.Tensor:
     if qscheme == QSchemeType.per_tensor.value:
         return fake_quantize_fp8_e4m3_per_tensor_with_scale(inputs, scale)
     elif qscheme == QSchemeType.per_channel.value:
         return fake_quantize_fp8_e4m3_per_channel_with_scale(inputs, scale, axis)
+    elif qscheme == QSchemeType.per_group.value:
+        return fake_quantize_fp8_per_group_with_scale(inputs, scale, axis, group_size, fp8_dtype=torch.float8_e4m3fn)
     else:
         raise ValueError(f"Unsupported QuantSchema: {qscheme} for quant_dtype: {quant_dtype}")  # pragma: no cover
 
@@ -241,13 +307,135 @@ def fake_quantize_fp8_e5m2(inputs: torch.Tensor,
                            axis: Optional[int] = None,
                            qscheme: Optional[str] = None,
                            quant_dtype: Optional[str] = None,
+                           group_size: Optional[int] = None,
                            **kwargs: Any) -> torch.Tensor:
     if qscheme == QSchemeType.per_tensor.value:
         return fake_quantize_fp8_e5m2_per_tensor_with_scale(inputs, scale)
     elif qscheme == QSchemeType.per_channel.value:
         return fake_quantize_fp8_e5m2_per_channel_with_scale(inputs, scale, axis)
+    elif qscheme == QSchemeType.per_group.value:
+        return fake_quantize_fp8_per_group_with_scale(inputs, scale, axis, group_size, fp8_dtype=torch.float8_e5m2)
     else:
         raise ValueError(f"Unsupported QuantSchema: {qscheme} for quant_dtype: {quant_dtype}")  # pragma: no cover
+
+
+def fake_quantize_fp8_per_group_with_scale(input_tensor: torch.Tensor, scale: torch.Tensor, axis: int, group_size: int,
+                                           fp8_dtype: torch.dtype, **kwargs: Any) -> torch.Tensor:
+    input_shape = list(input_tensor.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    eps = torch.finfo(torch.float32).eps
+    scale = scale.masked_fill(scale == 0.0, eps)
+
+    input_dtype = input_tensor.dtype
+    input_tensor = input_tensor.to(torch.float32)
+    scale = scale.to(torch.float32)
+
+    input_tensor = reshape_to_blocks(input_tensor, group_size, axis)
+    if scale.dim() < input_tensor.dim():
+        scale = scale.unsqueeze(-1)
+
+    input_tensor = input_tensor / scale
+
+    quark_dtype = Dtype.from_torch_dtype(fp8_dtype)
+    quant_min, quant_max = calculate_qmin_qmax(quark_dtype)
+    input_tensor = torch.clamp(input_tensor, quant_min, quant_max)
+    output_tensor = input_tensor.to(fp8_dtype).to(torch.float32)
+    output_tensor *= scale
+
+    output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
+    output_tensor = output_tensor[:, :input_shape[-1]].reshape(input_shape).to(input_dtype)
+    if scale.dim() > output_tensor.dim():
+        scale = scale.squeeze(-1)
+
+    assert not torch.isnan(output_tensor).any().item(), "output_tensor contains NaN!"
+    return output_tensor.transpose(axis, -1)
+
+
+def fake_quantize_fp4_fp6(inputs: torch.Tensor,
+                          scale: Optional[torch.Tensor] = None,
+                          axis: Optional[int] = None,
+                          qscheme: Optional[str] = None,
+                          quant_dtype: Optional[str] = None,
+                          group_size: Optional[int] = None,
+                          **kwargs: Any) -> torch.Tensor:
+    if qscheme == QSchemeType.per_tensor.value:
+        return fake_quantize_fp4_per_tensor_with_scale(inputs, scale)
+    elif qscheme == QSchemeType.per_channel.value:
+        return fake_quantize_fp4_fp6_per_channel_with_scale(inputs, scale, axis, quant_dtype)
+    elif qscheme == QSchemeType.per_group.value:
+        return fake_quantize_fp4_fp6_per_group_with_scale(inputs, scale, axis, group_size, quant_dtype, **kwargs)
+    else:
+        raise ValueError(f"Unsupported QuantSchema: {qscheme} for quant_dtype: {quant_dtype}")  # pragma: no cover
+
+
+def fake_quantize_fp4_per_tensor_with_scale(inputs, scale):
+    pass  # TODO
+
+
+def fake_quantize_fp4_fp6_per_channel_with_scale(inputs: torch.Tensor, scale: torch.Tensor, axis: int,
+                                                 quant_dtype: str) -> torch.Tensor:
+    inputs_type = inputs.dtype
+    dtype = Dtype.from_str(quant_dtype)
+    ebits, mbits, _ = get_dtype_params(dtype)
+    _, quant_max = calculate_qmin_qmax(dtype)
+    scale = scale.masked_fill(scale == 0.0, torch.finfo(torch.float32).eps).to(inputs_type).to(inputs.device)
+    if axis >= 0:
+        for k in range(inputs.dim() - axis - 1):
+            scale = scale.unsqueeze(-1)
+    else:
+        for k in range(-1 - axis):
+            scale = scale.unsqueeze(-1)
+    inputs = inputs / scale
+    qinputs = kernel_ext.fake_quantize_to_low_precision_fp(inputs.contiguous(), ebits, mbits, quant_max, 0)
+    outputs = qinputs * scale
+    return outputs.to(inputs.dtype)
+
+
+def fake_quantize_fp4_fp6_per_group_with_scale(input_tensor: torch.Tensor, scale: torch.Tensor, axis: int,
+                                               group_size: int, quant_dtype: Optional[str],
+                                               **kwargs: Any) -> torch.Tensor:
+    input_shape = list(input_tensor.shape)
+
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    ebits, mbits, _ = get_dtype_params(quant_dtype)
+    eps = torch.finfo(torch.float32).eps
+    scale = scale.masked_fill(scale == 0.0, eps)
+
+    input_dtype = input_tensor.dtype
+    input_tensor = input_tensor.to(torch.float32)
+    scale = scale.to(torch.float32)
+
+    input_tensor = reshape_to_blocks(input_tensor, group_size, axis)
+    if scale.dim() < input_tensor.dim():
+        scale = scale.unsqueeze(-1)
+
+    max_exp = pow(2.0, ebits) - 1
+    offset_exp = pow(2.0, ebits - 1) - 1
+    quant_max = pow(2.0, max_exp - offset_exp) * (1 + (pow(2.0, mbits) - 1) / (pow(2.0, mbits)))
+
+    if scale.dim() < input_tensor.dim():
+        scale = scale.unsqueeze(-1)
+
+    input_tensor = input_tensor / scale
+
+    output_tensor = kernel_ext.fake_quantize_to_low_precision_fp(input_tensor.contiguous(), ebits, mbits, quant_max, 0)
+    output_tensor *= scale
+
+    # We can not simply reshape to `(output_tensor.size(0), -1)` because
+    # in some cases the first dimension may be 0-sized, resulting in
+    # the error `cannot reshape tensor of 0 elements into shape [0, -1]`.
+    # This is e.g. the case with mixtral and qwen2_moe before
+    # https://github.com/huggingface/transformers/pull/32429,
+    # i.e. with transformers<=4.51.
+    output_tensor = output_tensor.reshape(output_tensor.size(0), output_tensor.shape[1:].numel())
+
+    output_tensor = output_tensor[:, :input_shape[-1]].reshape(input_shape).to(input_dtype)
+
+    if scale.dim() > output_tensor.dim():
+        scale = scale.squeeze(-1)
+    return output_tensor.transpose(axis, -1)
 
 
 def fake_quantize_with_dtype_convert(inputs: torch.Tensor,
@@ -422,7 +610,11 @@ def fake_quantize_bfp16(input_tensor: torch.Tensor, axis: int, block_size: int, 
     return output_tensor.transpose(axis, -1)
 
 
-def fake_quantize_mx(input_tensor: torch.Tensor, axis: int, block_size: int, **kwargs: Any) -> torch.Tensor:
+def fake_quantize_mx(input_tensor: torch.Tensor,
+                     axis: int,
+                     block_size: int,
+                     scale_calculation_mode: str = "even",
+                     **kwargs: Any) -> torch.Tensor:
     mx_element_dtype = kwargs["mx_element_dtype"]
     input_shape = list(input_tensor.shape)
     input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
@@ -430,7 +622,13 @@ def fake_quantize_mx(input_tensor: torch.Tensor, axis: int, block_size: int, **k
     block_x = reshape_to_blocks(input_tensor.detach(), block_size, axis)
     amax, _ = torch.max(torch.abs(block_x), dim=-1, keepdim=True)
     ebits, mbits, emax = get_dtype_params(mx_element_dtype)
-    scale = torch.pow(2, torch.floor(torch.log2(amax)) - emax)
+    if scale_calculation_mode == "floor":
+        scale = torch.pow(2, torch.floor(torch.log2(amax)) - emax)
+    elif scale_calculation_mode == "ceil":
+        scale = torch.pow(2, torch.ceil(torch.log2(amax)) - emax)
+    else:
+        from quark.torch.quantization.utils import even_round
+        scale = even_round(amax, Dtype(mx_element_dtype))
     eps = torch.finfo(torch.float32).eps
     scale = scale.masked_fill(scale == 0.0, eps)
 
@@ -522,6 +720,40 @@ def fake_quantize_mx6_mx9(input_tensor: torch.Tensor, axis: int, block_size: int
     return output_tensor.transpose(axis, -1)
 
 
+def fake_quantize_non_mx(input_tensor: torch.Tensor, element_dtype: Dtype, axis: int, block_size: int) -> torch.Tensor:
+    input_shape = list(input_tensor.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    block_x = reshape_to_blocks(input_tensor.detach(), block_size, axis)
+    amax, _ = torch.max(torch.abs(block_x), dim=-1, keepdim=True)
+    ebits, mbits, emax = get_dtype_params(element_dtype)
+    element_dtype_str = Dtype(element_dtype)
+
+    quant_bit_e, quant_bit_m, _ = get_dtype_params(element_dtype_str)
+    max_exp = pow(2.0, quant_bit_e) - 1
+    offset_exp = pow(2.0, quant_bit_e - 1) - 1
+    quant_max = pow(2.0, max_exp - offset_exp) * (1 + (pow(2.0, quant_bit_m) - 1) / (pow(2.0, quant_bit_m)))
+
+    scale = torch.div(amax, quant_max)
+
+    eps = torch.finfo(torch.float32).eps
+    scale = scale.masked_fill(scale == 0.0, eps)
+
+    input_dtype = input_tensor.dtype
+    input_tensor = input_tensor.to(torch.float32)
+    scale = scale.to(torch.float32)
+
+    input_tensor = reshape_to_blocks(input_tensor, block_size, axis)
+
+    input_tensor = input_tensor / scale
+    output_tensor = kernel_ext.fake_quantize_to_low_precision_fp(input_tensor.contiguous(), ebits, mbits, quant_max, 0)
+    output_tensor *= scale
+
+    output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
+    output_tensor = output_tensor[:, :input_shape[-1]].reshape(input_shape).to(input_dtype)
+    return output_tensor.transpose(axis, -1)
+
+
 quant_scope_lib.define(
     "scaled_real_quantize(str quant_dtype, Tensor inputs, Tensor scale, Tensor zero_point, int axis, int group_size, float quant_min, float quant_max, int round_mode, str qscheme) -> Tensor"
 )
@@ -533,6 +765,7 @@ def scaled_real_quantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Te
                          axis: int, group_size: int, quant_min: float, quant_max: float, round_mode: int,
                          qscheme: str) -> torch.Tensor:
     real_quantizers = {
+        Dtype.int2.value: real_quantize_int,
         Dtype.int4.value: real_quantize_int,
         Dtype.uint4.value: real_quantize_int,
         Dtype.int8.value: real_quantize_int,
@@ -541,6 +774,9 @@ def scaled_real_quantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Te
         Dtype.fp8_e5m2.value: real_quantize_fp8_e5m2,
         Dtype.bfloat16.value: real_quantize_with_dtype_convert,
         Dtype.float16.value: real_quantize_with_dtype_convert,
+        Dtype.fp4.value: real_quantize_fp4_fp6_per_group,
+        Dtype.fp6_e2m3.value: real_quantize_fp4_fp6_per_group,
+        Dtype.fp6_e3m2.value: real_quantize_fp4_fp6_per_group
     }
 
     if quant_dtype not in real_quantizers:
@@ -567,13 +803,18 @@ quant_scope_lib.define(
 @impl(quant_scope_lib, "non_scaled_real_quantize", "CompositeExplicitAutograd")
 def non_scaled_real_quantize(input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int,
                              block_size: int) -> torch.Tensor:
-    assert quant_dtype == "mx" and mx_element_dtype == "fp4", "Only mxfp4 is supported!"
+    assert quant_dtype == "mx" and mx_element_dtype in ["fp4", "fp6_e2m3", "fp6_e3m2"
+                                                        ], "Only mxfp4, mxfp6_e2m3 and mxfp6_e3m2 is supported!"
 
-    return real_quantize_mx_fp4(input_tensor=input_tensor, axis=axis, block_size=block_size)
+    return real_quantize_mxfp(input_tensor=input_tensor,
+                              mx_element_dtype=mx_element_dtype,
+                              axis=axis,
+                              block_size=block_size)
 
 
-def real_quantize_mx_fp4(input_tensor: torch.Tensor, axis: int, block_size: int, **kwargs: Any) -> torch.Tensor:
-    mx_element_dtype = "fp4"
+def real_quantize_mxfp(input_tensor: torch.Tensor, mx_element_dtype: str, axis: int, block_size: int,
+                       **kwargs: Any) -> torch.Tensor:
+    assert mx_element_dtype in ["fp4", "fp6_e2m3", "fp6_e3m2"], "Only mxfp4, mxfp6_e2m3 and mxfp6_e3m2 is supported!"
     assert input_tensor.shape[-1] % 32 == 0
     input_shape = list(input_tensor.shape)
     input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
@@ -587,6 +828,7 @@ def real_quantize_mx_fp4(input_tensor: torch.Tensor, axis: int, block_size: int,
 
     element_dtype = Dtype(mx_element_dtype)
 
+    input_dtype = input_tensor.dtype
     input_tensor = input_tensor.to(torch.float32)
     scale = scale.to(torch.float32)
 
@@ -600,10 +842,11 @@ def real_quantize_mx_fp4(input_tensor: torch.Tensor, axis: int, block_size: int,
     input_tensor = input_tensor / scale
     output_tensor = kernel_ext.fake_quantize_to_low_precision_fp(input_tensor.contiguous(), ebits, mbits, quant_max, 0)
     output_tensor = torch.cat([scale, output_tensor], dim=-1)
-
     output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
     input_shape[-1] = (input_shape[-1] // 32 * 33)
     output_tensor = output_tensor[:, :input_shape[-1]].reshape(input_shape)
+
+    input_tensor = input_tensor.to(input_dtype)
     return output_tensor.transpose(axis, -1)
 
 
@@ -794,6 +1037,34 @@ real_quantize_fp8_e5m2_per_channel_with_scale = partial(real_quantize_fp8_per_ch
                                                         max_value=57344)
 
 
+def real_quantize_fp4_fp6_per_group(input_tensor: torch.Tensor, scale: torch.Tensor, axis: int, group_size: int,
+                                    quant_dtype: Optional[str], **kwargs: Any) -> torch.Tensor:
+    input_shape = list(input_tensor.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    ebits, mbits, _ = get_dtype_params(quant_dtype)
+    eps = torch.finfo(torch.float32).eps
+    scale = scale.masked_fill(scale == 0.0, eps)
+
+    input_dtype = input_tensor.dtype
+
+    input_tensor, scale = prepare_inputs_per_group(input_tensor, scale, axis, group_size)
+
+    max_exp = pow(2.0, ebits) - 1
+    offset_exp = pow(2.0, ebits - 1) - 1
+    quant_max = pow(2.0, max_exp - offset_exp) * (1 + (pow(2.0, mbits) - 1) / (pow(2.0, mbits)))
+
+    input_tensor = input_tensor / scale
+    output_tensor = kernel_ext.fake_quantize_to_low_precision_fp(input_tensor.contiguous(), ebits, mbits, quant_max, 0)
+
+    output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
+    output_tensor = output_tensor[:, :input_shape[-1]].reshape(input_shape)
+
+    input_tensor = input_tensor.to(input_dtype)
+
+    return output_tensor.transpose(axis, -1)
+
+
 def _real_quantize_with_dtype_convert(inputs: torch.Tensor, quant_dtype: str) -> torch.Tensor:
     quant_torch_dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16}.get(quant_dtype)
     input_origin_type = inputs.dtype
@@ -811,7 +1082,19 @@ quant_scope_lib.define(
 @impl(quant_scope_lib, "dequantize", "CompositeExplicitAutograd")
 def dequantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor, axis: int,
                group_size: int, qscheme: str) -> torch.Tensor:
+    """
+    Dequantizes the unpacked tensor ``inputs`` using the quantization parameters ``scale`` and ``zero_point``.
+
+    In case ``qscheme="per_group"``, ``axis`` indicates the dimension for which the quantization parameters ``scale`` and ``zero_point`` are shared per group of ``group_size``.
+
+    In this case, an example of valid input is:
+    * ``inputs`` of shape (256, 128, 64)
+    * ``scale`` of shape (256, 128, 2)
+    * ``axis=-1``
+    * ``group_size=32``.
+    """
     dequantizers = {
+        Dtype.int2.value: dequantize_int,
         Dtype.int4.value: dequantize_int,
         Dtype.uint4.value: dequantize_int,
         Dtype.int8.value: dequantize_int,
@@ -820,6 +1103,9 @@ def dequantize(quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero
         Dtype.fp8_e5m2.value: dequantize_fp8,
         Dtype.bfloat16.value: dequantize_with_dtype_convert,
         Dtype.float16.value: dequantize_with_dtype_convert,
+        Dtype.fp4.value: dequantize_fp4_fp6_per_group,
+        Dtype.fp6_e2m3.value: dequantize_fp4_fp6_per_group,
+        Dtype.fp6_e3m2.value: dequantize_fp4_fp6_per_group
     }
 
     if quant_dtype not in dequantizers:
@@ -953,6 +1239,26 @@ def dequantize_fp8_per_channel_with_scale(inputs: torch.Tensor, scale: torch.Ten
             scale = scale.unsqueeze(-1)
     res = inputs.to(torch.float32) * scale.to(torch.float32)
     return res.contiguous()
+
+
+def dequantize_fp4_fp6_per_group(inputs: torch.Tensor, scale: torch.Tensor, axis: int, group_size: int,
+                                 **kwargs: Any) -> torch.Tensor:
+    input_shape = list(inputs.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    inputs_dtype = inputs.dtype
+
+    inputs, scale = prepare_inputs_per_group(inputs, scale, axis, group_size)
+
+    outputs = inputs * scale
+
+    outputs = outputs.reshape(outputs.size(0), -1)
+    outputs = outputs[:, :input_shape[-1]].reshape(input_shape).to(inputs_dtype)
+
+    if scale.dim() > outputs.dim():
+        scale = scale.squeeze(-1)
+
+    return outputs.transpose(axis, -1).contiguous()
 
 
 def _dequantize_with_dtype_convert(inputs: torch.Tensor, quant_dtype: str) -> torch.Tensor:

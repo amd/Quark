@@ -17,18 +17,23 @@ import argparse
 import evaluate
 from datasets import load_dataset
 from datasets import Dataset
+import pandas as pd
+import numpy as np
+import nltk
+import time
 
 
 def eval_model(args: argparse.Namespace, model: nn.Module, main_device, save_metrics_to_csv: bool = False, output_dir: Union[Path, str] = 'metrics_output_dir', multimodal: bool = False):
     testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, trust_remote_code=True,)
 
-    if args.num_eval_data != -1:
+    if args.num_eval_data != -1 and not args.use_mlperf_rouge:
         testenc = tokenizer("\n\n".join(testdata['text'][:args.num_eval_data]), return_tensors='pt')
     else:
         testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
     metrics = []
+    main_device = model.device
 
     # eval kv_cache ppl
     if args.use_ppl_eval_for_kv_cache:
@@ -40,6 +45,9 @@ def eval_model(args: argparse.Namespace, model: nn.Module, main_device, save_met
         ppl = ppl_eval(model, testenc, main_device)
         print("\n[INFO] Perplexity: {}".format(ppl.item()))
         metrics.append(['Perplexity', ppl.cpu().numpy()])
+    # eval model mlperf_rouge
+    if args.use_mlperf_rouge:
+        mlperf_rouge_eval(args, model, args.model_dir, main_device, args.eval_batch_size)
 
     # eval tasks
     if args.tasks is not None:
@@ -86,7 +94,6 @@ def ppl_eval(model: nn.Module, testenc: AutoTokenizer, dev: str, file_format: st
             generator.compute_logits()
             shift_logits = torch.tensor(generator.get_output("logits")[0][:-1]).to(dev)
         else:
-            # pytorch model logits
             lm_logits = model(batch)['logits']
             shift_logits = lm_logits[:, :-1, :].contiguous()
 
@@ -101,7 +108,7 @@ def ppl_eval(model: nn.Module, testenc: AutoTokenizer, dev: str, file_format: st
 
 
 @torch.no_grad()
-def task_eval(model: nn.Module, tokenizer: AutoTokenizer, batch_size: int = 1, max_batch_size: Optional[int] = None, tasks: Optional[List[str]] = None, num_fewshot: Optional[int] = None, apply_chat_template: bool = False, device: Optional[str] = 'cuda', multimodal: bool = False) -> None:
+def task_eval(model: nn.Module, tokenizer: AutoTokenizer, batch_size: int = 1, max_batch_size: Optional[int] = None, tasks: Optional[List[str]] = None, num_fewshot: Optional[int] = None, apply_chat_template: bool = False, device: Optional[str] = 'cuda', multimodal: bool = False, output_path: Optional[str] = None) -> None:
     import sys
     from typing import Optional, Type
     from lm_eval.__main__ import cli_evaluate, setup_parser
@@ -115,7 +122,6 @@ def task_eval(model: nn.Module, tokenizer: AutoTokenizer, batch_size: int = 1, m
         return model_obj
 
     HFLM.create_from_arg_obj = classmethod(create_from_arg_obj)
-
     parser = setup_parser()
     parser.set_defaults(
                         model='hf-multimodal' if multimodal else 'hf',
@@ -125,6 +131,7 @@ def task_eval(model: nn.Module, tokenizer: AutoTokenizer, batch_size: int = 1, m
                         tasks=tasks,
                         num_fewshot=num_fewshot,
                         apply_chat_template=apply_chat_template,
+                        output_path=output_path
                        )
     temp_args = sys.argv
     sys.argv = [sys.argv[0]]
@@ -263,16 +270,16 @@ def ppl_eval_for_kv_cache(model: nn.Module, testenc: torch.Tensor, context_size:
         ppl -= logprobs
         num_tokens_generated += len(future_context)
 
-        print(f'Iteration {idx+1} of {n_patches} Intermediate '
+        print(f'Iteration {idx + 1} of {n_patches} Intermediate '
               'Estimates:\n'
-              f'\tCross-entropy_intermediate={ppl/num_tokens_generated}\n'
-              f'\tPerplexity_intermediate={math.exp(ppl/num_tokens_generated)}')
+              f'\tCross-entropy_intermediate={ppl / num_tokens_generated}\n'
+              f'\tPerplexity_intermediate={math.exp(ppl / num_tokens_generated)}')
 
     ending_time = datetime.datetime.now()
     print(f'Done @ {ending_time} after processing for '
-          f'{ending_time-starting_time} generated {num_tokens_generated} tokens.')
+          f'{ending_time - starting_time} generated {num_tokens_generated} tokens.')
     print(f'Integral Cross-Entropy={ppl} Average Cross-Entropy='
-          f'{ppl/num_tokens_generated} PPL={math.exp(ppl/num_tokens_generated)}')
+          f'{ppl / num_tokens_generated} PPL={math.exp(ppl / num_tokens_generated)}')
 
 
 def rouge_meteor_generations(args: argparse.Namespace, dataset: str, model: nn.Module, tokenizer: AutoTokenizer) -> Dict[str, str]:
@@ -342,6 +349,7 @@ def rouge_meteor_generations(args: argparse.Namespace, dataset: str, model: nn.M
 
     return dataset_generations
 
+
 def rouge_eval(dataset, generations) -> Dict[str, float]:
 
     rouge = evaluate.load("rouge")
@@ -364,6 +372,7 @@ def rouge_eval(dataset, generations) -> Dict[str, float]:
     for k, val in rouge_preds.items():
         rouge_preds[k] = float(val)
     return rouge_preds
+
 
 def meteor_eval(dataset, generations) -> Dict[str, float]:
 
@@ -388,3 +397,117 @@ def meteor_eval(dataset, generations) -> Dict[str, float]:
         meteor_preds[k] = float(val)
 
     return meteor_preds
+
+
+def calculate_rouge_score(model_outputs, ref_outputs) -> Dict[str, float]:
+    metric = evaluate.load("rouge")
+
+    m_preds = [pred.strip() for pred in model_outputs]
+    m_targets = [target.strip() for target in ref_outputs]
+
+    # rougeLSum expects newline after each sentence
+    m_preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in m_preds]
+    m_targets = ["\n".join(nltk.sent_tokenize(target)) for target in m_targets]
+    m_result = metric.compute(
+        predictions=m_preds, references=m_targets, use_stemmer=True, use_aggregator=False
+    )
+    m_rouge_result = {k: round(np.mean(v) * 100, 4) for k, v in m_result.items()}
+
+    return m_rouge_result
+
+
+def evaluate_openorca(df: pd.DataFrame, result_keys: dict) -> str:
+    print("Evaluating OpenOrca score...")
+    gen_output = df[f"{result_keys['result']}"].tolist()
+    gt_output = df.output.tolist()
+    score = calculate_rouge_score(gen_output, gt_output)
+    gen_token_len = df[result_keys['length']].tolist()
+    gen_token_per_sample = sum(gen_token_len) / len(gen_token_len)
+    print(f"OpenOrca score: {score}, gen_token_per_sample: {gen_token_per_sample}")
+    return score
+
+
+@torch.no_grad()
+def mlperf_rouge_infer(args: argparse.Namespace, model: nn.Module, model_dir: str, main_device: str, batch_size: str) -> pd.DataFrame:
+    G_MAX_OUTPUT_SEQLEN = 1024
+
+    df = pd.read_pickle(args.eval_data_dir)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, padding_side="left", trust_remote_code=True,)
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # gen parameter. We stop at 1024
+    gen_kwargs = {
+        "max_new_tokens": G_MAX_OUTPUT_SEQLEN,
+        "do_sample": False,
+        "temperature": None,
+        "top_p": None,
+    }
+
+    # Start inference
+    BS = int(batch_size)
+    bidx = 0
+    model.eval()
+
+    input_tokens = []
+    input_tokens_lens = []
+    output_tokens = []
+    output_tokens_lens = []
+    output_texts = []
+
+    tic = time.time()
+    n_samples = min(len(df), args.num_eval_data)
+    for idx in range(0, n_samples, BS):
+        tac = time.time()
+        print(f"Processing {idx}/{n_samples}, time: {tac - tic}s")
+        sidx = idx
+        eidx = min(sidx + BS, n_samples)
+
+        # We use batch_encode_plus for batch inference.
+        batch_texts = df['input'][sidx:eidx].tolist()
+        batch_ids = tokenizer.batch_encode_plus(batch_texts, return_tensors="pt", padding=True)
+        tok_input_length = batch_ids['attention_mask'].sum(
+            axis=1).to(torch.int32).tolist()
+        input_tokens_lens += tok_input_length
+        tok_input_id = batch_ids['input_ids'].to(torch.int32).tolist()
+        # Remove eos from the input id
+        tok_input_id = [[element for element in sublist if element !=
+                        tokenizer.eos_token_id] for sublist in tok_input_id]
+        input_tokens += tok_input_id
+
+        batch_ids = batch_ids.to(main_device)
+        _, length = batch_ids.input_ids.shape
+        outputs = model.generate(**batch_ids, num_return_sequences=1, **gen_kwargs)
+
+        output_ids = outputs[:, length:].cpu().tolist()
+        output_tokens += output_ids
+
+        # Filter out EOS
+        id_filtered = [[num for num in sublist if num !=
+                        tokenizer.eos_token_id] for sublist in output_ids]
+        output_id_len = [len(out) for out in id_filtered]
+        output_tokens_lens += output_id_len
+
+        # Detokenizer
+        output_msgs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+        output_texts += output_msgs
+        bidx += 1
+
+    # Assemble the output
+    output_df = df[:len(output_tokens)].copy()
+    output_df["ref_output"] = output_texts
+    output_df["tok_ref_output"] = output_tokens
+    output_df["tok_ref_output_length"] = output_tokens_lens
+
+    return output_df
+
+
+def mlperf_rouge_eval(args: argparse.Namespace, model: nn.Module, model_dir: str, main_device: str, batch_size: str) -> None:
+    nltk.download('punkt_tab')
+    result_keys = {
+        "result": "ref_output",
+        "length": "tok_ref_output_length"
+    }
+    df = mlperf_rouge_infer(args, model, model_dir, main_device, batch_size)
+    evaluate_openorca(df, result_keys)

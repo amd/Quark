@@ -4,12 +4,10 @@
 //
 #pragma once
 
-#include "core/session/onnxruntime_cxx_api.h"
-#include "core/session/onnxruntime_c_api.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "onnxruntime_c_api.h"
+#define ORT_API_MANUAL_INIT
+#include "onnxruntime_cxx_api.h"
+#undef ORT_API_MANUAL_INIT
 
 struct Buffer {
   Buffer(size_t size);
@@ -19,7 +17,6 @@ struct Buffer {
 private:
   char* data_;
 };
-
 
 struct BFPFixNeuronKernel {
   BFPFixNeuronKernel(
@@ -78,7 +75,8 @@ struct BFPFixNeuronKernel {
   int64_t use_compiler_version_cpu_kernel_ = 0;
 };
 
-struct BFPFixNeuron : Ort::CustomOpBase<BFPFixNeuron, BFPFixNeuronKernel> {
+template <const char* OpName, int OpVersion>
+struct BFPFixNeuron : Ort::CustomOpBase<BFPFixNeuron<OpName, OpVersion>, BFPFixNeuronKernel> {
   explicit BFPFixNeuron() {}
 
   void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const { 
@@ -139,11 +137,16 @@ struct BFPFixNeuron : Ort::CustomOpBase<BFPFixNeuron, BFPFixNeuronKernel> {
   };
 #endif
 
-  const char* GetName() const { return "BFPFixNeuron"; };
+  const char* GetName() const { return OpName; };
+  int GetVersion() const { return OpVersion; };
 
-  const char* GetExecutionProviderType() const { 
-  #ifdef USE_CUDA
-    return "CUDAExecutionProvider"; 
+  const char* GetExecutionProviderType() const {
+  #ifdef NO_GPU
+    return "CPUExecutionProvider";
+  #elif defined(USE_ROCM)
+    return "ROCMExecutionProvider";
+  #elif defined(USE_CUDA)
+    return "CUDAExecutionProvider";
   #else
     return "CPUExecutionProvider";
   #endif
@@ -170,8 +173,3 @@ struct BFPFixNeuron : Ort::CustomOpBase<BFPFixNeuron, BFPFixNeuronKernel> {
   };
 #endif
 };
-
-#ifdef __cplusplus
-}
-#endif
-

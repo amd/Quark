@@ -12,8 +12,8 @@ from datetime import datetime
 import math
 import numpy as np
 import onnx
+import copy
 import os
-import sys
 import csv
 from typing import Any, Union, Tuple, List, Dict, Optional, Iterator
 from onnx import onnx_pb as onnx_proto
@@ -25,11 +25,23 @@ import onnxruntime as ort
 from onnxruntime import __version__ as OrtVersion
 from onnxruntime.quantization.calibrate import (CalibrationDataReader, CalibrationMethod)
 from onnxruntime.quantization.onnx_model import ONNXModel
-from onnxruntime.quantization.quant_utils import (QuantType, QUANT_OP_NAME, DEQUANT_OP_NAME)
+from onnxruntime.quantization.quant_utils import (QuantType, QUANT_OP_NAME, DEQUANT_OP_NAME,
+                                                  load_model_with_shape_infer, save_and_reload_model_with_shape_infer)
 from onnxruntime import SessionOptions
 from packaging import version as pv
 from quark.version import __version__ as versions
 from quark.version import git_version as commitid
+from quark.onnx.operators.custom_ops import (
+    get_library_path,
+    _COP_DOMAIN,
+    _COP_QUANT_OP_NAME,
+    _COP_DEQUANT_OP_NAME,
+    _COP_IN_OP_NAME,
+    _COP_LSTM_OP_NAME,
+    _COP_BFP_OP_NAME,
+    _COP_MX_OP_NAME,
+    _COP_VERSION,
+)
 
 try:
     from onnx.reference.custom_element_types import float8e4m3fn
@@ -45,31 +57,26 @@ except ImportError:
     int4 = None  # type: ignore
     uint4 = None  # type: ignore
 
-try:
-    # The custom op library may not have been compiled
-    from quark.onnx.operators.custom_ops import _COP_DOMAIN
-    from quark.onnx.operators.custom_ops import get_library_path as vai_library_path
-except Exception:
-    # Try to import from original path but may raise an error when call get_library_path
-    from quark.onnx.operators.custom_ops import _COP_DOMAIN
-    vai_library_path = None  # type: ignore
-
 logger = ScreenLogger(__name__)
 
 __producer__ = "quark.onnx"
 __version__ = '{}+{}'.format(versions, commitid)
 
 VAI_DOMAIN = "ai.onnx.contrib"  # domain for vai ops that inherited from python class
-COP_DOMAIN = _COP_DOMAIN  # domain for custom ops that implemented using c api
-COP_QUANT_OP_NAME = "VitisQuantizeLinear"
-COP_DEQUANT_OP_NAME = "VitisDequantizeLinear"
 FIX_OP_NAME = "FixNeuron"
-BFPFIX_OP_NAME = "BFPFixNeuron"
-MXFIX_OP_NAME = "MXFixNeuron"
-CUSTOM_VAI_DOMAIN = "com.vai.quantize"
+
+COP_DOMAIN = _COP_DOMAIN  # domain for custom ops that implemented using c api
+COP_QUANT_OP_NAME = _COP_QUANT_OP_NAME
+COP_DEQUANT_OP_NAME = _COP_DEQUANT_OP_NAME
+COP_IN_OP_NAME = _COP_IN_OP_NAME
+COP_LSTM_OP_NAME = _COP_LSTM_OP_NAME
+COP_BFP_OP_NAME = _COP_BFP_OP_NAME
+COP_MX_OP_NAME = _COP_MX_OP_NAME
+COP_VERSION = _COP_VERSION
 
 QUANT_OP_TYPES = [QUANT_OP_NAME, COP_QUANT_OP_NAME]
 DEQUANT_OP_TYPES = [DEQUANT_OP_NAME, COP_DEQUANT_OP_NAME]
+FN_OP_TYPES = [FIX_OP_NAME, COP_BFP_OP_NAME, COP_MX_OP_NAME]
 
 HARD_SIGMOID_SCALE = (2731. / 16384.) / (1. / 6.)
 annotate_op_type = ["Conv", "Add", "MaxPool", "AveragePool", "GlobalAveragePool", "MatMul", "Gemm", "ConvTranspose"]
@@ -80,7 +87,7 @@ FIX_OP_DEFAULT_ATTRS = {
     'bit_width': 8,
     'pos': 0,
 }
-BFPFIX_OP_DEFAULT_ATTRS = {
+BFP_OP_DEFAULT_ATTRS = {
     'bfp_method': "to_bfp",
     'axis': 1,
     'bit_width': 16,
@@ -90,7 +97,7 @@ BFPFIX_OP_DEFAULT_ATTRS = {
     'sub_block_shift_bits': 1,
     'convert_to_bfloat_before_bfp': 0,
 }
-MXFIX_OP_DEFAULT_ATTRS = {
+MX_OP_DEFAULT_ATTRS = {
     'element_dtype': "int8",
     'axis': 1,
     'block_size': 32,
@@ -122,13 +129,12 @@ def is_ort_version_below(target_version: str) -> bool:
     return current_version < pv.parse(target_version)
 
 
-def register_custom_ops_library(session_options: SessionOptions) -> None:
+def register_custom_ops_library(session_options: SessionOptions, device: str = 'CPU') -> None:
     try:
-        session_options.register_custom_ops_library(vai_library_path())
-    except Exception:
-        logger.warning("Due to mismatch of dependent libraries, the custom op library "
-                       "from the pre-built wheel package failed to register with ORT. "
-                       "Please try to re-build the quark.onnx's lib in current environment.")
+        session_options.register_custom_ops_library(get_library_path(device))
+    except Exception as e:
+        logger.warning(f"Failed to register custom op library {get_library_path(device)} to ORT with {e},"
+                       "please check if the library has been compiled successfully.")
 
 
 class Int16Method(Enum):
@@ -140,7 +146,56 @@ class PowerOfTwoMethod(Enum):
     MinMSE = 1
 
 
+class ExtendedQuantType(Enum):
+    QInt8 = 1
+    QUInt8 = 2
+    QInt16 = 3
+    QUInt16 = 4
+    QInt4 = 5
+    QUInt4 = 6
+    QInt32 = 7
+    QUInt32 = 8
+    QFloat16 = 9
+    QBFloat16 = 10
+    QBFP = 11
+    QMX = 12
+
+    def __str__(self) -> str:
+        return self.name
+
+    @staticmethod
+    def from_string(t: str) -> Any:
+        try:
+            return ExtendedQuantType[t]
+        except KeyError:
+            raise ValueError()
+
+    @property
+    def tensor_type(self) -> Any:
+        if self == ExtendedQuantType.QUInt8:
+            return TensorProto.UINT8
+        if self == ExtendedQuantType.QInt8:
+            return TensorProto.INT8
+        if self == ExtendedQuantType.QUInt16:
+            return TensorProto.UINT16
+        if self == ExtendedQuantType.QInt16:
+            return TensorProto.INT16
+        if self == ExtendedQuantType.QInt32:
+            return TensorProto.INT32
+        if self == ExtendedQuantType.QUInt32:
+            return TensorProto.UINT32
+        if self == ExtendedQuantType.QFloat16:
+            return TensorProto.FLOAT16
+        if self == ExtendedQuantType.QBFloat16:
+            return TensorProto.BFLOAT16
+        if self == ExtendedQuantType.QBFP or self == ExtendedQuantType.QMX:
+            return TensorProto.UNDEFINED
+        raise ValueError(f"Unexpected value qtype={self!r}.")
+
+
+# This is a deprecated class
 class VitisQuantType(Enum):
+
     QInt8 = 1
     QUInt8 = 2
     QInt16 = 3
@@ -164,29 +219,23 @@ class VitisQuantType(Enum):
         except KeyError:
             raise ValueError()
 
-    @property
-    def tensor_type(self) -> Any:
-        if self == VitisQuantType.QUInt8:
-            return TensorProto.UINT8
-        if self == VitisQuantType.QInt8:
-            return TensorProto.INT8
-        if self == VitisQuantType.QUInt16:
-            return TensorProto.UINT16
-        if self == VitisQuantType.QInt16:
-            return TensorProto.INT16
-        if self == VitisQuantType.QInt32:
-            return TensorProto.INT32
-        if self == VitisQuantType.QUInt32:
-            return TensorProto.UINT32
-        if self == VitisQuantType.QFloat16:
-            return TensorProto.FLOAT16
-        if self == VitisQuantType.QBFloat16:
-            return TensorProto.BFLOAT16
-        if self == VitisQuantType.QBFP or self == VitisQuantType.QMX:
-            return TensorProto.UNDEFINED
-        raise ValueError(f"Unexpected value qtype={self!r}.")
+
+class ExtendedQuantFormat(Enum):
+    QOperator = 0
+    QDQ = 1
+
+    def __str__(self) -> str:
+        return self.name
+
+    @staticmethod
+    def from_string(format: str) -> Any:
+        try:
+            return VitisQuantFormat[format]
+        except KeyError:
+            raise ValueError()
 
 
+# This is a deprecated class
 class VitisQuantFormat(Enum):
     QDQ = 2
     FixNeuron = 3
@@ -307,24 +356,24 @@ def _check_type(*args: Any, zero_point_index: int = -1) -> Any:
 
 
 @log_errors
-def get_tensor_type_from_qType(quant_type: Union[QuantType, VitisQuantType]) -> int:
-    if quant_type == QuantType.QUInt8 or quant_type == VitisQuantType.QUInt8:
+def get_tensor_type_from_qType(quant_type: Union[QuantType, ExtendedQuantType]) -> int:
+    if quant_type == QuantType.QUInt8 or quant_type == ExtendedQuantType.QUInt8:
         return TensorProto.UINT8
-    if quant_type == QuantType.QInt8 or quant_type == VitisQuantType.QInt8:
+    if quant_type == QuantType.QInt8 or quant_type == ExtendedQuantType.QInt8:
         return TensorProto.INT8
-    if quant_type == QuantType.QUInt16 or quant_type == VitisQuantType.QUInt16:
+    if quant_type == QuantType.QUInt16 or quant_type == ExtendedQuantType.QUInt16:
         return TensorProto.UINT16
-    if quant_type == QuantType.QInt16 or quant_type == VitisQuantType.QInt16:
+    if quant_type == QuantType.QInt16 or quant_type == ExtendedQuantType.QInt16:
         return TensorProto.INT16
-    if quant_type == VitisQuantType.QUInt32:
+    if quant_type == ExtendedQuantType.QUInt32:
         return TensorProto.UINT32
-    if quant_type == VitisQuantType.QInt32:
+    if quant_type == ExtendedQuantType.QInt32:
         return TensorProto.INT32
-    if quant_type == VitisQuantType.QFloat16:
+    if quant_type == ExtendedQuantType.QFloat16:
         return TensorProto.FLOAT16
-    if quant_type == VitisQuantType.QBFloat16:
+    if quant_type == ExtendedQuantType.QBFloat16:
         return TensorProto.BFLOAT16
-    if quant_type == VitisQuantType.QBFP or quant_type == VitisQuantType.QMX:
+    if quant_type == ExtendedQuantType.QBFP or quant_type == ExtendedQuantType.QMX:
         return TensorProto.UNDEFINED
     raise ValueError(f"Unexpected value qtype={quant_type!r}.")
 
@@ -501,11 +550,11 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
     """
 
     def __init__(self,
-                 model_path: str,
+                 model_input: Union[str, Path, onnx.ModelProto],
                  input_shape: Dict[str, List[int]] = {},
                  input_data_range: Optional[Dict[str, List[int]]] = None):
         """
-        :param model_path : Full path of the input model.
+        :param Union[str, Path, onnx.ModelProto] model_input: Full path or ModelProto of the input model.
         :param input_shape: If dynamic axes of inputs require specific value, users should provide its shapes.
                             The basic format of shape for single input is `list(int)` or `tuple(int)`,
                             and all dimensions should have concrete values (batch dimensions can be set to 1).
@@ -518,7 +567,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
         :param input_data_range: How to deal with input data range in the generated random data.
                             Default is none which means ignore data type, otherwise consider data type.
         """
-        self._model_path = model_path
+        self._model_input = model_input
         self._input_shape = input_shape
         self._input_data_range: Optional[Dict[str, List[int]]] = input_data_range
 
@@ -652,10 +701,9 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
         """
         if self.enum_data_dicts is None:
             so = ort.SessionOptions()
-            # TODO: To deal with onnxruntime_extension with ort1.17
-            # so.register_custom_ops_library(ext_lib_path())
-            # register_custom_ops_library(so)
-            session = ort.InferenceSession(self._model_path, so, providers=['CPUExecutionProvider'])
+            # TODO: register_custom_ops_library(so)
+            session = create_infer_session_for_onnx_model(self._model_input, so)
+
             enum_data: Dict[str, np.ndarray[Any, Any]] = {}
             for input_index, input_node in enumerate(session.get_inputs()):
                 input_name = self._get_input_name(input_node)
@@ -665,6 +713,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
                 input_type = self._get_input_type(input_node)
 
                 if input_shape is not None:
+                    np.random.seed(42)
                     if 'tensor(string)' in input_node.type:
                         input_data = np.chararray(tuple(input_shape))
                     else:
@@ -700,13 +749,16 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
     A CalibrationDataReader loading data from specified paths for model calibration.
     """
 
-    def __init__(self, model_path: str, data_path: str, input_shape: List[Any] = []) -> None:
+    def __init__(self,
+                 model_input: Union[str, Path, onnx.ModelProto],
+                 data_path: str,
+                 input_shape: List[Any] = []) -> None:
         """
-        :param model_path : Full path of the input model.
-        :param data_path  : Full path of the input data.
-        :param input_shape: List or dictionary specifying the input shapes.
+        :param Union[str, Path, onnx.ModelProto] model_path: Full path of the input model.
+        :param str data_path: Full path of the input data.
+        :param List[Any] input_shape: List or dictionary specifying the input shapes. Defaults to ``[]``.
         """
-        self._model_path = model_path
+        self._model_input = model_input
         self._data_path = data_path
         self._input_shape = input_shape
 
@@ -873,16 +925,8 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
         """
         if self.enum_data_iter is None:
             so = ort.SessionOptions()
-            try:
-                from onnxruntime_extensions import get_library_path as ext_lib_path
-                from quark.onnx.operators.custom_ops import get_library_path as vai_lib_path
-                so.register_custom_ops_library(ext_lib_path())
-                so.register_custom_ops_library(vai_lib_path())
-            except Exception:
-                logger.warning("Could not register the custom op libraries, "
-                               "since your onnxruntime is higher than 1.16.0 "
-                               "or GLIBC does not match in your environment.")
-            session = ort.InferenceSession(self._model_path, so, providers=['CPUExecutionProvider'])
+            # TODO: register_custom_ops_library(so)
+            session = create_infer_session_for_onnx_model(self._model_input, so)
 
             # load data from data path
             for input_index, input_node in enumerate(session.get_inputs()):
@@ -936,8 +980,11 @@ def infer_shape(model: ModelProto) -> ModelProto:
     :param model: the source model
     :return: the target model contains inferred shape
     """
-    inferred_onnx_model = shape_inference.infer_shapes(model)
-    return inferred_onnx_model
+    if model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
+        inferred_model = save_and_reload_model_with_shape_infer(model)
+    else:
+        inferred_model = shape_inference.infer_shapes(model)
+    return inferred_model  # type: ignore
 
 
 def get_datatype_shape(tensor: TensorProto) -> Tuple[str, List[Any]]:
@@ -955,7 +1002,7 @@ def get_datatype_shape(tensor: TensorProto) -> Tuple[str, List[Any]]:
 
 
 @log_errors
-def dump_model(model: Union[str, onnx.ModelProto],
+def dump_model(model_input: Union[str, Path, onnx.ModelProto],
                dump_data_reader: Optional[object] = None,
                random_data_reader_input_shape: Dict[str, List[int]] = {},
                dump_float: bool = False,
@@ -963,27 +1010,20 @@ def dump_model(model: Union[str, onnx.ModelProto],
     """
     This function dumps the simulation results of the quantized model,
     including weights and activation results.
-    :param model: the input model
-    :param dump_data_reader: data reader for dumpping
-    :param random_data_reader_input_shape: if use internal random data reader,
-           this is used to configure input node's shape
-    :param dump_float: dump results of the float model or not
-    :param output_dir: output directory for results
+
+    :param Union[str, Path, onnx.ModelProto] model_input: path or ModelProto of the input model
+    :param Optional[object] dump_data_reader: data reader for dumpping. Defaults to ``None``.
+    :param Dict[str, List[int]] random_data_reader_input_shape: if use internal random data reader, this is used to configure input node's shape. Defaults to ``{}``.
+    :param bool dump_float: dump results of the float model or not. Defaults to ``False``.
+    :param str output_dir: output directory for results. Defaults to ``'./dump_results'``.
     """
-    if isinstance(model, str):
-        model_path = model
-        model = onnx.load(model)
-    else:
-        raise ValueError("The model requires a string of the model path")
+    model = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # modify_output_nodes
+    # Modify_output_nodes, currently it supports FixNeuron quantized model only
     fn_node_pos = {}
     has_fixneuron = False
     for n in model.graph.node:
-        if n.op_type == "FixNeuron":
+        if n.op_type == FIX_OP_NAME:
             fn_node_pos[n.output[0]] = 2**int(n.attribute[1].s)
             has_fixneuron = True
     if not has_fixneuron:
@@ -998,23 +1038,23 @@ def dump_model(model: Union[str, onnx.ModelProto],
                 "Please use the parameter quant_format=VitisQuantFormat.FixNeuron to quantize the float model "
                 "if you want to dump the quantized tensor value.")
             logger.info("The float output results of each node in the model will be saved. ")
+
     node_output = []
     model.graph.ClearField("output")
     for node in model.graph.node:
         for output in node.output:
             model.graph.output.extend([onnx.ValueInfoProto(name=output)])
             node_output.append(output)
-    tmp_dump_model = str(Path(output_dir) / "./tmp_dump_model.onnx")
-    onnx.save(model, tmp_dump_model)
 
     so = ort.SessionOptions()
-    # TODO: To deal with onnxruntime_extension with ort1.17
-    # so.register_custom_ops_library(ext_lib_path())
-    # register_custom_ops_library(so)
-    sess = ort.InferenceSession(tmp_dump_model, so, providers=['CPUExecutionProvider'])
+    # TODO: register_custom_ops_library(so)
+    sess = create_infer_session_for_onnx_model(model, so)
 
     if dump_data_reader is None:
-        dump_data_reader = RandomDataReader(model_path, input_shape=random_data_reader_input_shape)
+        dump_data_reader = RandomDataReader(model, input_shape=random_data_reader_input_shape)
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     if isinstance(dump_data_reader, CalibrationDataReader):
         input = dump_data_reader.get_next()
@@ -1035,7 +1075,6 @@ def dump_model(model: Union[str, onnx.ModelProto],
                 if dump_float:
                     res.tofile(filename + '_float.bin')
                     np.savetxt(filename + "_float.txt", res, fmt="%s", delimiter=",")
-            os.remove(tmp_dump_model)
     else:
         raise ValueError("dump_data_reader is used for the dumping process. "
                          "It should be an instance of CalibrationDataReader.")
@@ -1199,11 +1238,11 @@ def get_annotate_tensors(model: onnx.ModelProto) -> List[str]:
 
 
 def get_qdq_to_remove(model: onnx.ModelProto,
-                      relu_input: List[str]) -> Tuple[List[onnx.NodeProto], List[onnx.NodeProto], Dict[str, str]]:
+                      annotate_tensors: List[str]) -> Tuple[List[onnx.NodeProto], List[onnx.NodeProto], Dict[str, str]]:
     """
     Return the names of nodes to be removed and a dictionary for converting input tensors
     :param model: model object
-    :param relu_input: the ReLU node inputs list
+    :param annotate_tensors: the annotate tensors
     :return: de-quantize & quantize nodes to remove and node mapping dict
     """
     q_nodes_to_remove = []
@@ -1211,12 +1250,12 @@ def get_qdq_to_remove(model: onnx.ModelProto,
     q_nodes_output_to_remove = []
     input_node_mapping = {}
     for node in model.graph.node:
-        if node.op_type in ("QuantizeLinear", "VitisQuantizeLinear") and node.input[0] in relu_input:
+        if node.op_type in QUANT_OP_TYPES and node.input[0] in annotate_tensors:
             input_node_mapping[node.input[0]] = node.output[0]
             q_nodes_to_remove.append(node)
             q_nodes_output_to_remove.append(node.output[0])
     for node in model.graph.node:
-        if node.op_type in ("DequantizeLinear", "VitisDequantizeLinear") and node.input[0] in q_nodes_output_to_remove:
+        if node.op_type in DEQUANT_OP_TYPES and node.input[0] in q_nodes_output_to_remove:
             for k, v in input_node_mapping.items():
                 if v == node.input[0]:
                     input_node_mapping[k] = node.output[0]
@@ -1224,11 +1263,11 @@ def get_qdq_to_remove(model: onnx.ModelProto,
     return dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping
 
 
-def customqdq_to_contribqdq(model_path: str, use_external_data_format: bool) -> None:
+def customqdq_to_contribqdq(model_input: Union[str, Path, onnx.ModelProto], use_external_data_format: bool) -> Any:
     """
     Convert the custom QDQs to the contrib QDQs in the model
-    :param model_path: the model path
-    :return: None
+    :param model_input: the model path or model proto
+    :return: None or model proto
     """
     from onnxruntime.quantization.quant_utils import QUANT_OP_NAME, DEQUANT_OP_NAME, ms_domain
 
@@ -1239,7 +1278,7 @@ def customqdq_to_contribqdq(model_path: str, use_external_data_format: bool) -> 
     OpDomain = ms_domain
     OpQuantType = (onnx.TensorProto.INT4, onnx.TensorProto.UINT4, onnx.TensorProto.INT8, onnx.TensorProto.UINT8,
                    onnx.TensorProto.INT16, onnx.TensorProto.UINT16, onnx.TensorProto.INT32)
-    model = onnx.load(model_path)
+    model = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
     onnx_model = ONNXModel(model)
 
     total_num = 0
@@ -1265,7 +1304,11 @@ def customqdq_to_contribqdq(model_path: str, use_external_data_format: bool) -> 
 
     if converted_num > 0:
         logger.info(f"Converted {converted_num}/{total_num} custom QDQs to contributed QDQs")
-        onnx_model.save_model_to_file(model_path, use_external_data_format=use_external_data_format)
+        if not isinstance(model_input, onnx.ModelProto):
+            onnx_model.save_model_to_file(model_input, use_external_data_format=use_external_data_format)
+            return None
+        else:
+            return onnx_model.model
 
 
 def remove_nodes(model: onnx.ModelProto, nodes_list: List[Any]) -> onnx.ModelProto:
@@ -1374,12 +1417,12 @@ def compute_scale_zp(rmin: np.ndarray[Any, Any],
     rmax = np.maximum(rmax, np.array(0, dtype=rmax.dtype))
 
     # Ensure that rmax-rmin is less than or equal to sys.float_info.max
-    if rmin == -np.inf:
+    if rmin == -np.inf or rmin < -np.finfo(np.float32).max / 2:
         logger.warning("rmin is set to -inf, replacing with a very small value.")
-        rmin = np.full_like(rmin, -sys.float_info.max / 2)
-    if rmax == np.inf:
+        rmin = np.full_like(rmin, -np.finfo(np.float32).max / 2)
+    if rmax == np.inf or rmax > np.finfo(np.float32).max / 2:
         logger.warning("rmax is set to inf, replacing with a very large value.")
-        rmax = np.full_like(rmax, sys.float_info.max / 2)
+        rmax = np.full_like(rmax, np.finfo(np.float32).max / 2)
 
     if symmetric:
         absmax = np.maximum(np.abs(rmin), np.abs(rmax))
@@ -1462,12 +1505,12 @@ def compute_scale_zp_fp(rmin: np.ndarray[Any, Any],
     rmax = np.maximum(rmax, np.array(0, dtype=rmax.dtype))
 
     # Ensure that rmax-rmin is less than or equal to sys.float_info.max
-    if rmin == -np.inf:
+    if rmin == -np.inf or rmin < -np.finfo(np.float32).max / 2:
         logger.warning("rmin is set to -inf, replacing with a very small value.")
-        rmin = np.full_like(rmin, -sys.float_info.max / 2)
-    if rmax == np.inf:
+        rmin = np.full_like(rmin, -np.finfo(np.float32).max / 2)
+    if rmax == np.inf or rmax > np.finfo(np.float32).max / 2:
         logger.warning("rmax is set to inf, replacing with a very large value.")
-        rmax = np.full_like(rmax, sys.float_info.max / 2)
+        rmax = np.full_like(rmax, np.finfo(np.float32).max / 2)
 
     if symmetric:
         absmax = np.maximum(np.abs(rmin), np.abs(rmax))
@@ -1623,7 +1666,7 @@ def save_tensor_hist_fig(calibrator: Any, dr: Any, extra_options: Dict[str, Any]
         return
 
     import matplotlib.pyplot as plt
-    with tempfile.TemporaryDirectory(prefix="ort.hist.") as hist_tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="quark_onnx.hist.") as hist_tmp_dir:
         hist_tmp_dir = "./tensor_hist"
         check_and_create_path(hist_tmp_dir)
         hist_tmp_dir = os.path.abspath(hist_tmp_dir)
@@ -1657,11 +1700,11 @@ def save_tensor_hist_fig(calibrator: Any, dr: Any, extra_options: Dict[str, Any]
             plt.close()
 
 
-def get_exclude_nodes(model_path: str, input_nodes: Union[List[str], None], output_nodes: Union[List[str],
-                                                                                                None]) -> List[str]:
+def get_exclude_nodes(input_model: Union[str, Path, onnx.ModelProto], input_nodes: Union[List[str], None],
+                      output_nodes: Union[List[str], None]) -> List[str]:
     """
     Return the nodes to be excluded based on the given input and output nodes.
-    :param model_path: the model path
+    :param input_model: the model path or ModelProto
     :param input_nodes: the nodes to start quantizing
     :param zero_point: the nodes to terminate quantizing
     :return: the nodes excluded from quantization
@@ -1683,19 +1726,20 @@ def get_exclude_nodes(model_path: str, input_nodes: Union[List[str], None], outp
         exclude_nodes = list(set(exclude_nodes) - set(output_nodes))
         return exclude_nodes
 
-    model = ONNXModel(onnx.load(model_path))
-    model.topological_sort()
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+    onnx_model = ONNXModel(model)
+    onnx_model.topological_sort()
 
     model_input_to_node: Dict[str, List[str]] = {}
     model_output_to_node: Dict[str, List[str]] = {}
     name_list: List[str] = []
     exclude_nodes: List[str] = []
 
-    for i in model.model.graph.input:
+    for i in onnx_model.model.graph.input:
         model_input_to_node[i.name] = []
-    for o in model.model.graph.output:
+    for o in onnx_model.model.graph.output:
         model_output_to_node[o.name] = []
-    for n in model.model.graph.node:
+    for n in onnx_model.model.graph.node:
         for i in n.input:
             for k, v in model_input_to_node.items():
                 if i == k:
@@ -1718,7 +1762,7 @@ def get_exclude_nodes(model_path: str, input_nodes: Union[List[str], None], outp
                     exclude_nodes = update_exclude_input_nodes(exclude_nodes, name_list, n, model_output_to_node[name])
             else:
                 logger.warning(
-                    f"Fail to find the {name} in {model_path}, the input_nodes {input_nodes} did not take effect, please check input_nodes parameter"
+                    f"Fail to find the {name} in the model, the input_nodes {input_nodes} did not take effect, please check input_nodes parameter"
                 )
 
     if output_nodes:
@@ -1733,20 +1777,21 @@ def get_exclude_nodes(model_path: str, input_nodes: Union[List[str], None], outp
                     exclude_nodes = update_exclude_output_nodes(exclude_nodes, name_list, n, model_input_to_node[name])
             else:
                 logger.warning(
-                    f"Fail to find the {name} in {model_path}, the input_nodes {input_nodes} did not take effect, please check input_nodes parameter"
+                    f"Fail to find the {name} in the model, the input_nodes {input_nodes} did not take effect, please check input_nodes parameter"
                 )
     return exclude_nodes
 
 
-def get_matmul_nodes_without_weights(model_path: str) -> List[str]:
-    model = ONNXModel(onnx.load(model_path))
-    model.topological_sort()
+def get_matmul_nodes_without_weights(input_model: Union[str, Path, onnx.ModelProto]) -> List[str]:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+    onnx_model = ONNXModel(model)
+    onnx_model.topological_sort()
 
-    initializer_names = {init.name for init in model.model.graph.initializer}
+    initializer_names = {init.name for init in onnx_model.model.graph.initializer}
 
     matmul_without_weights_nodes_name = []
 
-    for node in model.model.graph.node:
+    for node in onnx_model.model.graph.node:
         if node.op_type == 'MatMul':
             _, input2 = node.input
             if input2 not in initializer_names:
@@ -1756,39 +1801,37 @@ def get_matmul_nodes_without_weights(model_path: str) -> List[str]:
 
 
 @log_errors
-def run_onnx_model(model_path: str, data_reader: Any) -> None:
+def run_onnx_model(model_input: Union[str, Path, onnx.ModelProto], data_reader: Any) -> None:
     """
     Check if the input ONNX can run successfully
-    :param model_path: the model path
+    :param model_input: the model path or a ModelProto
     :param data_reader: the data reader for feeding data
     """
     try:
-        sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        sess = create_infer_session_for_onnx_model(model_input)
         inputs = data_reader.get_next()
         output = sess.run(None, inputs)
         if output:
-            logger.info(f"The input ONNX model {model_path} can run inference successfully")
+            logger.info("The input ONNX model can run inference successfully")
         else:
-            logger.warning(f"Fail to run inference, please check the {model_path} and the 'calibration_data_reader'.")
+            logger.warning("Fail to run inference, please check the input model and the 'calibration_data_reader'.")
     except Exception as e:
         raise ValueError(
-            f"Fail to run inference for {model_path}. Exception: {e}. Please check the {model_path} and the 'calibration_data_reader'."
-        )
+            f"Fail to run inference. Exception: {e}. Please check the input model and the 'calibration_data_reader'.")
 
 
 @log_errors
-def check_onnx_model(model_path: str) -> None:
+def check_onnx_model(model_input: Union[str, Path, onnx.ModelProto]) -> None:
     """
     Check if the input ONNX can create InferenceSession successfully
-    :param model_path: the model path
+    :param model_input: the model path or a ModelProto
     """
     try:
-        sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        logger.info(f"The input ONNX model {model_path} can create InferenceSession successfully")
+        create_infer_session_for_onnx_model(model_input)
+        logger.info("The input ONNX model can create InferenceSession successfully")
 
     except Exception as e:
-        raise ValueError(
-            f"Fail to create InferenceSession for {model_path}. Exception: {e}. Please check the {model_path}.")
+        raise ValueError(f"Fail to create InferenceSession. Exception: {e}. Please check the model.")
 
 
 def check_model_quantizable(model: ModelProto, op_types_to_quantize: Optional[List[str]],
@@ -1926,20 +1969,22 @@ def get_output_nodes_of_node(node: NodeProto, model: GraphProto) -> List[NodePro
 def get_clip_min_max(model: ModelProto, clip_node: NodeProto) -> Tuple[Optional[float], Optional[float], Optional[int]]:
     """
     Get clip min and max value from Clip node.
+
     :param model: onnx model instance
     :param clip_node: target Clip node
-    :return: the min, max value and para type
-             The meaning of para type is:
-             None - unknown
-             0 - attribute
-             1 - initializer
-             2 - other nodes
+
+    :return: the min, max value and para type The meaning of para type is:
+
+        * ``None``: unknown.
+        * ``0``: attribute.
+        * ``1``: initializer.
+        * ``2``: other nodes.
     """
 
     def _get_from_initializer(model: ModelProto, name: str) -> Any:
         for init in model.graph.initializer:
             if init.name == name:
-                return onnx.numpy_helper.to_array(init)
+                return onnx.numpy_helper.to_array(init).tolist()
         return None
 
     def _get_from_attribute(node: NodeProto) -> Any:
@@ -2011,14 +2056,15 @@ def check_relu_like_node(model: ModelProto, node: NodeProto) -> bool:
     return False
 
 
-def print_quantize_info(model_input: str, model_output: str, calibration_data_reader: str,
-                        calibration_data_path: Union[str, None], quant_format: Union[Any, VitisQuantFormat],
-                        input_nodes: Union[List[str], None], output_nodes: Union[List[str], None],
-                        op_types_to_quantize: Union[List[str], None], extra_op_types_to_quantize: Union[List[str],
-                                                                                                        None],
-                        per_channel: bool, reduce_range: bool, activation_type: Union[Any, VitisQuantType],
-                        weight_type: Union[Any, VitisQuantType], nodes_to_quantize: List[str],
-                        nodes_to_exclude: List[str], subgraphs_to_exclude: List[Tuple[List[str]]], optimize_model: bool,
+def print_quantize_info(model_input: Union[str, Path, onnx.ModelProto], model_output: Union[str, Path, None],
+                        calibration_data_reader: Union[CalibrationDataReader, None], calibration_data_path: Union[str,
+                                                                                                                  None],
+                        quant_format: Union[Any, ExtendedQuantFormat], input_nodes: Union[List[str], None],
+                        output_nodes: Union[List[str], None], op_types_to_quantize: Union[List[str], None],
+                        extra_op_types_to_quantize: Union[List[str], None], per_channel: bool, reduce_range: bool,
+                        activation_type: Union[Any, ExtendedQuantType], weight_type: Union[Any, ExtendedQuantType],
+                        nodes_to_quantize: List[str], nodes_to_exclude: List[str],
+                        subgraphs_to_exclude: List[Tuple[List[str]]], optimize_model: bool,
                         use_external_data_format: bool, calibrate_method: Union[Any, PowerOfTwoMethod, Int16Method],
                         execution_providers: Union[List[str], None], enable_npu_cnn: bool, enable_npu_transformer: bool,
                         specific_tensor_precision: bool, debug_mode: bool, convert_fp16_to_fp32: bool,
@@ -2073,7 +2119,8 @@ def print_quantize_info(model_input: str, model_output: str, calibration_data_re
         print quantized configuration information.
         """
         print("[QUARK_INFO]: Quantized Configuration information:")
-        print("{:>50}".format("model_input ---"), model_input)
+        print("{:>50}".format("model_input ---"),
+              type(model_input) if isinstance(model_input, onnx.ModelProto) else model_input)
         print("{:>50}".format("model_output ---"), model_output)
         print("{:>50}".format("calibration_data_reader ---"), calibration_data_reader)
         print("{:>50}".format("calibration_data_path ---"), calibration_data_path)
@@ -2114,9 +2161,9 @@ def print_quantize_info(model_input: str, model_output: str, calibration_data_re
         pass
 
 
-def print_quantize_dynamic_info(model_input: Union[str, Path, onnx.ModelProto], model_output: Union[str, Path],
+def print_quantize_dynamic_info(model_input: Union[str, Path, onnx.ModelProto], model_output: Union[str, Path, None],
                                 op_types_to_quantize: Union[List[str], None], per_channel: bool, reduce_range: bool,
-                                weight_type: Union[Any, VitisQuantType], nodes_to_quantize: List[str],
+                                weight_type: Union[Any, ExtendedQuantType], nodes_to_quantize: List[str],
                                 nodes_to_exclude: List[str], subgraphs_to_exclude: List[Tuple[List[str]]],
                                 use_external_data_format: bool, debug_mode: bool, extra_options: Dict[str,
                                                                                                       Any]) -> None:
@@ -2169,7 +2216,8 @@ def print_quantize_dynamic_info(model_input: Union[str, Path, onnx.ModelProto], 
         print quantized configuration information.
         """
         print("[QUARK_INFO]: Quantized Configuration information:")
-        print("{:>50}".format("model_input ---"), model_input)
+        print("{:>50}".format("model_input ---"),
+              type(model_input) if isinstance(model_input, onnx.ModelProto) else model_input)
         print("{:>50}".format("model_output ---"), model_output)
         print("{:>50}".format("op_types_to_quantize ---"), op_types_to_quantize)
         print("{:>50}".format("per_channel ---"), per_channel)
@@ -2239,10 +2287,10 @@ def remove_initializer_from_input(model: ModelProto) -> ModelProto:
     return model
 
 
-def fp32_nodes(input_model_path: str) -> Dict[str, int]:
+def fp32_nodes(model_input: Union[str, Path, ModelProto]) -> Dict[str, int]:
     try:
         fp32_nodes_dict = {}
-        fp32_model = onnx.load(input_model_path)
+        fp32_model = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
         onnx_model = ONNXModel(fp32_model)
 
         for node in onnx_model.model.graph.node:
@@ -2256,7 +2304,7 @@ def fp32_nodes(input_model_path: str) -> Dict[str, int]:
         return {}
 
 
-def print_fp32_nodes(fp32_nodes_dict: Dict[str, int], output_model_path: str) -> None:
+def print_fp32_nodes(fp32_nodes_dict: Dict[str, int], output_model_path: Union[str, Path, None]) -> None:
     try:
         fp32_nodes_list = list(fp32_nodes_dict.keys())
 
@@ -2273,9 +2321,11 @@ def print_fp32_nodes(fp32_nodes_dict: Dict[str, int], output_model_path: str) ->
             node_fp32_count = fp32_nodes_dict[node_op_type]
             table.add_row(node_op_type, str(node_fp32_count))
         table.add_section()
-        table.add_row("Quantized model path", output_model_path)
+        if output_model_path is not None:
+            output_path = output_model_path.as_posix() if isinstance(output_model_path, Path) else output_model_path
+            table.add_row("Quantized model path", output_path)
 
-        print(
+        logger.info(
             "The operation types and their corresponding quantities of the input float model is shown in the table below."
         )
         console.print(table)
@@ -2286,7 +2336,7 @@ def print_fp32_nodes(fp32_nodes_dict: Dict[str, int], output_model_path: str) ->
 
 # using data for sub_model to inference
 def inference_sub_model_with_data(input_model: onnx.ModelProto, start_node_map: Dict[str, List[float]],
-                                  end_node_list: List[str]) -> Tuple[List[float], str]:
+                                  end_node_list: List[str]) -> List[float]:
     node_name_map = get_model_node_name_dict(input_model.graph)
     start_node_tensor = []
     end_node_tensor = []
@@ -2300,12 +2350,17 @@ def inference_sub_model_with_data(input_model: onnx.ModelProto, start_node_map: 
         end_node = node_name_map[end_node_name]
         end_node_tensor.append(end_node.output[0])
 
-    sub_model_path = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-    opt_model_output = Path(sub_model_path.name).joinpath("all.onnx").as_posix()
-    sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
-    onnx.save_model(input_model, opt_model_output, save_as_external_data=False)
-    onnx.utils.extract_model(opt_model_output, sub_model_output, start_node_tensor, end_node_tensor, False)
-    session = ort.InferenceSession(sub_model_output, providers=['CUDAExecutionProvider'])
+    if input_model.ByteSize() < onnx.checker.MAXIMUM_PROTOBUF:
+        extractor = onnx.utils.Extractor(input_model)
+        sub_model = extractor.extract_model(start_node_tensor, end_node_tensor)
+        session = ort.InferenceSession(sub_model.SerializeToString())
+    else:
+        sub_model_path = tempfile.TemporaryDirectory(prefix="quark_onnx.submodel.")
+        opt_model_output = Path(sub_model_path.name).joinpath("all.onnx").as_posix()
+        sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
+        onnx.save(input_model, opt_model_output, save_as_external_data=True)
+        onnx.utils.extract_model(opt_model_output, sub_model_output, start_node_tensor, end_node_tensor, False)
+        session = ort.InferenceSession(sub_model_output)
     start_tensor_one_batch = {}
     end_tensor_list = []
     for key in start_tensor_map.keys():
@@ -2314,14 +2369,22 @@ def inference_sub_model_with_data(input_model: onnx.ModelProto, start_node_map: 
             start_tensor_one_batch[key] = values[bs]
             end_tensor_one_tensor = session.run(end_node_tensor, start_tensor_one_batch)
             end_tensor_list.append(end_tensor_one_tensor[0])
-    return end_tensor_list, sub_model_output
+    return end_tensor_list
 
 
-def extract_sub_model(model_path: str, start_tensors: List[str], end_tensors: List[str]) -> onnx.ModelProto:
-    sub_model_path = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-    sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
-    onnx.utils.extract_model(model_path, sub_model_output, start_tensors, end_tensors, check_model=False)
-    sub_model = onnx.load(sub_model_output)
+def extract_sub_model(input_model: Union[str, Path, ModelProto], start_tensors: List[str],
+                      end_tensors: List[str]) -> onnx.ModelProto:
+    if isinstance(input_model, ModelProto):
+        model = input_model
+        if input_model.ByteSize() < onnx.checker.MAXIMUM_PROTOBUF:
+            model = onnx.shape_inference.infer_shapes(input_model)
+        extractor = onnx.utils.Extractor(model)
+        sub_model = extractor.extract_model(start_tensors, end_tensors)
+    else:
+        sub_model_path = tempfile.TemporaryDirectory(prefix="quark_onnx.submodel.")
+        sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
+        onnx.utils.extract_model(input_model, sub_model_output, start_tensors, end_tensors, check_model=False)
+        sub_model = onnx.load(sub_model_output)
     return sub_model
 
 
@@ -2329,10 +2392,7 @@ def extract_sub_model(model_path: str, start_tensors: List[str], end_tensors: Li
 # return the output value
 def get_intermedia_output(model: onnx.ModelProto, input_feed_dict: Dict[str, List[float]],
                           output_tensors: List[str]) -> Any:
-    sub_model_path = tempfile.TemporaryDirectory(prefix="vai.submodel.")
-    sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
-    onnx.save(model, sub_model_output)
-    session = ort.InferenceSession(sub_model_output, providers=['CUDAExecutionProvider'])
+    session = create_infer_session_for_onnx_model(model)
     start_tensor_one_batch = {}
     end_tensor_list = []
     for key in input_feed_dict.keys():
@@ -2367,26 +2427,24 @@ def make_batch_size_fixed(model: onnx.ModelProto, batch_size: int = 1) -> onnx.M
 
 def make_batch_size_dynamic(model: onnx.ModelProto, bs: int) -> Any:
     onnx_model = ONNXModel(model)
-    model = onnx_model.model
-
-    for i in range(len(model.graph.input)):
-        model.graph.input[i].type.tensor_type.shape.dim[0].dim_value = bs
-    for i in range(len(model.graph.output)):
-        model.graph.output[i].type.tensor_type.shape.dim[0].dim_value = bs
-    for i in range(len(model.graph.value_info)):
-        if len(model.graph.value_info[i].type.tensor_type.shape.dim) > 1:
-            model.graph.value_info[i].type.tensor_type.shape.dim[0].dim_value = bs
-    for node in model.graph.node:
+    for i in range(len(onnx_model.model.graph.input)):
+        onnx_model.model.graph.input[i].type.tensor_type.shape.dim[0].dim_value = bs
+    for i in range(len(onnx_model.model.graph.output)):
+        onnx_model.model.graph.output[i].type.tensor_type.shape.dim[0].dim_value = bs
+    for i in range(len(onnx_model.model.graph.value_info)):
+        if len(onnx_model.model.graph.value_info[i].type.tensor_type.shape.dim) > 1:
+            onnx_model.model.graph.value_info[i].type.tensor_type.shape.dim[0].dim_value = bs
+    for node in onnx_model.model.graph.node:
         if node.op_type == 'Reshape':
             reshape_input_name = node.input[1]
-            for tensor in model.graph.initializer:
+            for tensor in onnx_model.model.graph.initializer:
                 if tensor.name == reshape_input_name:
                     tensor_array = onnx.numpy_helper.to_array(tensor)
                     tensor_array_shape = list(tensor_array)
                     tensor_array_shape[0] = bs
                     new_tensor_array = np.array(tensor_array_shape, dtype=np.int64)
                     new_tensor = onnx.numpy_helper.from_array(new_tensor_array, tensor.name)
-                    model.graph.initializer.extend([new_tensor])
+                    onnx_model.model.graph.initializer.extend([new_tensor])
                     onnx_model.remove_initializer(tensor)
     return onnx_model.model
 
@@ -2420,7 +2478,7 @@ def infer_custom_op_shape(model: onnx.ModelProto) -> onnx.ModelProto:
     cnt = 5
     while (need_infer):
         for node in model.graph.node:
-            if node.op_type in ['VitisQuantizeLinear', 'QuantizeLinear']:
+            if node.op_type in QUANT_OP_TYPES:
                 input_name = node.input[0]
                 zp_name = node.input[2]
                 output_name = node.output[0]
@@ -2438,7 +2496,7 @@ def infer_custom_op_shape(model: onnx.ModelProto) -> onnx.ModelProto:
                     shape_list = imap[input_name].dims
                     output_tensor = onnx.helper.make_tensor_value_info(output_name, imap[zp_name].data_type, shape_list)
                     model.graph.value_info.extend([output_tensor])
-            elif node.op_type in ['VitisDequantizeLinear', 'DequantizeLinear']:
+            elif node.op_type in DEQUANT_OP_TYPES:
                 input_name = node.input[0]
                 zp_name = node.input[2]
                 output_name = node.output[0]
@@ -2456,7 +2514,7 @@ def infer_custom_op_shape(model: onnx.ModelProto) -> onnx.ModelProto:
                     shape_list = imap[input_name].dims
                     output_tensor = onnx.helper.make_tensor_value_info(output_name, onnx.TensorProto.FLOAT, shape_list)
                     model.graph.value_info.extend([output_tensor])
-            elif node.op_type in [FIX_OP_NAME, BFPFIX_OP_NAME, MXFIX_OP_NAME]:
+            elif node.op_type in FN_OP_TYPES:
                 input_name = node.input[0]
                 output_name = node.output[0]
                 if input_name in vimap and output_name not in vimap:
@@ -2473,7 +2531,7 @@ def infer_custom_op_shape(model: onnx.ModelProto) -> onnx.ModelProto:
                     shape_list = imap[input_name].dims
                     output_tensor = onnx.helper.make_tensor_value_info(output_name, onnx.TensorProto.FLOAT, shape_list)
                     model.graph.value_info.extend([output_tensor])
-            elif node.op_type == 'VitisInstanceNormalization':
+            elif node.op_type == COP_IN_OP_NAME:
                 input_name = node.input[0]
                 output_name = node.output[0]
                 if input_name in vimap and output_name not in vimap:
@@ -2566,6 +2624,7 @@ class ONNXQuantizedModel(object):
             logger.debug(f"output {tensor_name} of {node.name} was a isolate node")
             return None, None
 
+        # this assertion maybe uncessary, in some special cases
         assert (len(self.in_name_to_nodes[tensor_name]) == 1)
 
         q_candidate = self.in_name_to_nodes[tensor_name][0]
@@ -2627,6 +2686,9 @@ class ONNXQuantizedModel(object):
                     dq, q = self._find_node_input_qdq(node, tensor_name)
                     input_qdqs.append((dq, q))
                 node_struct['input_qdqs'] = input_qdqs
+                temp_input_dqs = [item[0] for item in input_qdqs]
+                if None in temp_input_dqs:
+                    break
 
                 output_qdqs = []
                 for tensor_name in node.output:
@@ -2648,28 +2710,29 @@ def check_weights_in_node(model: ModelProto, node: NodeProto) -> bool:
     return weights_in_node
 
 
-def check_ir_version(model_path: str) -> bool:
-    model = onnx.load(model_path)
+def check_ir_version(input_model: Union[str, Path, ModelProto]) -> bool:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     ir_version = model.ir_version
     return ir_version >= 4
 
 
-def check_opset_version(model_path: str) -> bool:
-    model = onnx.load(model_path)
+def check_opset_version(input_model: Union[str, Path, ModelProto]) -> bool:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     opset_version: int = model.opset_import[0].version
     return opset_version >= 10
 
 
-def check_qdq_model(model_path: str) -> bool:
-    model = onnx.load(model_path)
+def check_qdq_model(input_model: Union[str, Path, ModelProto]) -> bool:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     nodes = [node.op_type for node in model.graph.node]
-    qdq_ops = {'QuantizeLinear', 'DequantizeLinear', 'VitisQuantizeLinear', 'VitisDequantizeLinear', 'BFPFixNeuron'}
+    qdq_ops = QUANT_OP_TYPES + DEQUANT_OP_TYPES + FN_OP_TYPES
     is_qdq_model = any(op in qdq_ops for op in nodes)
     return is_qdq_model
 
 
-def check_extra_quant_op_types(model_path: str, extra_op_types_to_quantize: list[str]) -> None:
-    model = onnx.load(model_path)
+def check_extra_quant_op_types(input_model: Union[str, Path, ModelProto],
+                               extra_op_types_to_quantize: list[str]) -> None:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     model_op_types = {node.op_type for node in model.graph.node}
     absent_op_types = [op_type for op_type in extra_op_types_to_quantize if op_type not in model_op_types]
 
@@ -2677,7 +2740,8 @@ def check_extra_quant_op_types(model_path: str, extra_op_types_to_quantize: list
         logger.warning(f"The model does not contain the following op types: {', '.join(absent_op_types)}")
 
 
-def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
+def print_quantized_info(model_quant: Union[str, Path, ModelProto], debug_mode: bool,
+                         shared_init_optypes: Optional[List[str]]) -> None:
     try:
         data_type_dict = {
             0: "",
@@ -2704,7 +2768,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
             23: 'FP4E2M1',
             40: 'BFP'
         }
-        qdq_ops = {'QuantizeLinear', 'DequantizeLinear', 'VitisQuantizeLinear', 'VitisDequantizeLinear', 'BFPFixNeuron'}
+        qdq_ops = QUANT_OP_TYPES + DEQUANT_OP_TYPES + FN_OP_TYPES
 
         op_type_with_weights_bias = [
             "MatMul", "Conv", "ConvTranspose", "Gemm", "LayerNormalization", "EmbedLayerNormalization",
@@ -2712,7 +2776,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
         ]
         quantized_data = []
 
-        quantized_model = onnx.load(quantized_model_path)
+        quantized_model = model_quant if isinstance(model_quant, ModelProto) else onnx.load(model_quant)
         onnx_model = ONNXModel(quantized_model)
 
         tensor_to_node_dict = {}
@@ -2728,7 +2792,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
         for node in onnx_model.model.graph.node:
             if len(node.input) >= 1:
                 if node.input[0] in tensor_to_node_dict and tensor_to_node_dict[
-                        node.input[0]].op_type == 'DequantizeLinear':
+                        node.input[0]].op_type == DEQUANT_OP_NAME:
                     act_dq_data_type = 0
                     weights_dq_data_type = 0
                     bias_dq_data_type = 0
@@ -2754,7 +2818,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
                     nodes_quantized_info_list.append(
                         [node.name, node.op_type, act_dq_data_type, weights_dq_data_type, bias_dq_data_type])
                 elif len(node.input) >= 2 and node.input[1] in tensor_to_node_dict and tensor_to_node_dict[
-                        node.input[1]].op_type == 'DequantizeLinear':
+                        node.input[1]].op_type == DEQUANT_OP_NAME:
                     act_dq_data_type = 0
                     weights_dq_data_type = 0
                     bias_dq_data_type = 0
@@ -2788,7 +2852,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
                     nodes_quantized_info_list.append(
                         [node.name, node.op_type, act_dq_data_type, weights_dq_data_type, bias_dq_data_type])
                 if node.input[0] in tensor_to_node_dict and tensor_to_node_dict[
-                        node.input[0]].op_type == 'BFPFixNeuron':
+                        node.input[0]].op_type == COP_BFP_OP_NAME:
                     act_dq_node = tensor_to_node_dict[node.input[0]]
                     weights_dq_node = None
                     bias_dq_node = None
@@ -2799,16 +2863,16 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
                     act_dq_data_type = 0
                     weights_dq_data_type = 0
                     bias_dq_data_type = 0
-                    if act_dq_node is not None and act_dq_node.op_type == "BFPFixNeuron":
+                    if act_dq_node is not None and act_dq_node.op_type == COP_BFP_OP_NAME:
                         act_dq_data_type = 40
-                    if weights_dq_node is not None and weights_dq_node.op_type == "BFPFixNeuron":
+                    if weights_dq_node is not None and weights_dq_node.op_type == COP_BFP_OP_NAME:
                         weights_dq_data_type = 40
-                    if bias_dq_node is not None and bias_dq_node.op_type == "BFPFixNeuron":
+                    if bias_dq_node is not None and bias_dq_node.op_type == COP_BFP_OP_NAME:
                         bias_dq_data_type = 40
                     nodes_quantized_info_list.append(
                         [node.name, node.op_type, act_dq_data_type, weights_dq_data_type, bias_dq_data_type])
                 if node.input[0] in tensor_to_node_dict and tensor_to_node_dict[
-                        node.input[0]].op_type == 'VitisDequantizeLinear':
+                        node.input[0]].op_type == COP_DEQUANT_OP_NAME:
                     act_dq_node = tensor_to_node_dict[node.input[0]]
                     weights_dq_node = None
                     bias_dq_node = None
@@ -2834,7 +2898,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
                     nodes_quantized_info_list.append(
                         [node.name, node.op_type, act_dq_data_type, weights_dq_data_type, bias_dq_data_type])
                 elif len(node.input) >= 2 and node.input[1] in tensor_to_node_dict and tensor_to_node_dict[
-                        node.input[1]].op_type == 'VitisDequantizeLinear':
+                        node.input[1]].op_type == COP_DEQUANT_OP_NAME:
                     act_dq_node = None
                     weights_dq_node = None
                     bias_dq_node = None
@@ -2891,7 +2955,7 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
                 data_type_dict[node_quantized_info[3]], data_type_dict[node_quantized_info[4]]
             ])
         if debug_mode:
-            print("The quantized information for all nodes is shown in the table below.")
+            logger.info("The quantized information for all nodes is shown in the table below.")
             console.print(table)
 
         op_types_dict: Any = {}
@@ -2941,11 +3005,15 @@ def print_quantized_info(quantized_model_path: str, debug_mode: bool) -> None:
             table.add_row(op_type, act_str, weights_str, bias_str)
             quantized_data.append([op_type, act_str, weights_str, bias_str])
         if not debug_mode:
-            print("The quantized information for all operation types is shown in the table below.")
-            print(
+            logger.info("The quantized information for all operation types is shown in the table below.")
+            logger.info(
                 "The discrepancy between the operation types in the quantized model and the float model is due to the application of graph optimization."
             )
             console.print(table)
+            if shared_init_optypes is not None:
+                logger.info(
+                    "Note: Due to NPU limitations, some shared parameters in certain models may need to be duplicated, which could lead to an increase in the model size after quantization."
+                )
 
         with open('quantized_info.csv', 'w', newline='') as file:
             writer = csv.writer(file)
@@ -2960,8 +3028,8 @@ def get_shape_from_tensor(tensor: onnx.TensorProto) -> List[int]:
     return shape
 
 
-def convert_fp16_scale_to_fp32(model_output: str, use_external_data_format: bool) -> None:
-    model = onnx.load(model_output)
+def convert_fp16_scale_to_fp32(input_model: Union[str, Path, ModelProto]) -> ModelProto:
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
 
     for tensor in model.graph.initializer:
         if tensor.data_type == onnx.TensorProto.FLOAT16:
@@ -3052,13 +3120,12 @@ def convert_fp16_scale_to_fp32(model_output: str, use_external_data_format: bool
                 before_output_node.output[0] = cast_node_name
 
     model.graph.node.extend(new_nodes)
+    return model
 
-    onnx.save_model(model, model_output, save_as_external_data=use_external_data_format)
 
-
-def get_eltwise_op(model_path: str) -> List[str]:
+def get_eltwise_op(input_model: Union[str, Path, ModelProto]) -> List[str]:
     eltwise_op_types = ["Mul", "Add", "Sub", "Div", "Min", "Max"]
-    model = onnx.load(model_path)
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     eltwise_tensors = []
     for node in model.graph.node:
         if node.op_type in eltwise_op_types:
@@ -3190,24 +3257,31 @@ def convert_to_bf16(model: ModelProto, qType: Any, original_data_type: int = 1) 
     return model
 
 
-def match_exclude_subgraphs(input_model_path: Union[str, Path, ModelProto],
-                            subgraphs: List[Tuple[List[str]]]) -> List[str]:
+def match_exclude_subgraphs(input_model: Union[str, Path, ModelProto], subgraphs: List[Tuple[List[str]]]) -> List[str]:
 
     def _dfs(node: NodeProto, exclude_nodes_list: List[str], start_nodes_list: List[str],
-             output2node_dict: Dict[str, NodeProto]) -> None:
+             output2node_dict: Dict[str, NodeProto], model_input_names_list: List[str], visited: List[str]) -> None:
         exclude_nodes_list.append(node.name)
-        for input_ in node.input:
-            if input_ not in output2node_dict:
+        for inp in node.input:
+            if inp in model_input_names_list:
+                visited.append(inp)
                 return
-            else:
-                if output2node_dict[input_].name in start_nodes_list:
-                    exclude_nodes_list.append(output2node_dict[input_].name)
+            if inp in visited:
+                return
+            if inp in output2node_dict:
+                if output2node_dict[inp].name in start_nodes_list:
+                    visited.append(inp)
+                    exclude_nodes_list.append(output2node_dict[inp].name)
                     return
                 else:
                     exclude_nodes_list.append(node.name)
-                    _dfs(output2node_dict[input_], exclude_nodes_list, start_nodes_list, output2node_dict)
+                    visited.append(inp)
+                    _dfs(output2node_dict[inp], exclude_nodes_list, start_nodes_list, output2node_dict,
+                         model_input_names_list, visited)
 
-    model = onnx.load(input_model_path)
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+
+    model_input_names_list = [inp.name for inp in model.graph.input]
 
     name2node_dict = {}
     for node in model.graph.node:
@@ -3215,6 +3289,7 @@ def match_exclude_subgraphs(input_model_path: Union[str, Path, ModelProto],
 
     onnx_model = ONNXModel(model)
     output2node_dict = onnx_model.output_name_to_node()
+    visited: List[str] = []
 
     exclude_nodes_list: List[str] = []
     for subgraph in subgraphs:
@@ -3225,15 +3300,20 @@ def match_exclude_subgraphs(input_model_path: Union[str, Path, ModelProto],
         exclude_nodes_list.extend(end_nodes_list)
         for end_node_name in end_nodes_list:
             father_node = name2node_dict[end_node_name]
-            _dfs(father_node, exclude_nodes_list, start_nodes_list, output2node_dict)
+            _dfs(father_node, exclude_nodes_list, start_nodes_list, output2node_dict, model_input_names_list, visited)
+    for input_name in model_input_names_list:
+        if input_name in visited:
+            raise ValueError(
+                f"Please verify that the value of parameter subgraphs_to_exclude {subgraphs} is valid by ensuring that its start and end nodes form a closed subgraph."
+            )
     exclude_nodes_list = list(set(exclude_nodes_list))
     return exclude_nodes_list
 
 
-def check_model_is_fp16(input_model_path: str) -> bool:
+def check_model_is_fp16(input_model: Union[str, Path, ModelProto]) -> bool:
     fp32_data_type = 1
     fp16_data_type = 10
-    model = onnx.load(input_model_path)
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     fp32_flag = 0
     fp16_flag = 0
 
@@ -3259,3 +3339,171 @@ def check_model_is_fp16(input_model_path: str) -> bool:
         return True
     else:
         return False
+
+
+def encrypt_data(unencrypted_data: bytes, iv: bytes, key: bytes) -> Any:
+    """
+    Encrypt data using AES-256 algorithm.
+    :param unencrypted_data: the original data to be encrypted
+    :param iv: initialization vector, 16 bytes
+    :param key: the key, 32 bytes (256 bits)
+    :return: the encrypted data
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes  # type: ignore
+    from cryptography.hazmat.primitives import padding  # type: ignore
+    from cryptography.hazmat.backends import default_backend  # type: ignore
+
+    # Apply PKCS7 padding
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(unencrypted_data) + padder.finalize()
+
+    # Encrypt using AES-256-CBC
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    return iv + ciphertext  # Store or transmit iv securely alongside the encrypted content
+
+
+def decrypt_data(encrypted_data: bytes, iv: bytes, key: bytes) -> Any:
+    """
+    Decrypt data using AES-256 algorithm.
+    :param encrypted_data: the data to be decrypted
+    :param iv: initialization vector, 16 bytes
+    :param key: the key, 32 bytes (256 bits)
+    :return: the decrypted data
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.backends import default_backend
+
+    assert iv == encrypted_data[:16]
+    ciphertext = encrypted_data[16:]
+
+    # Decrypt using AES-256-CBC
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove PKCS7 padding
+    unpadder = padding.PKCS7(128).unpadder()
+    decrypted_data = unpadder.update(decrypted_padded_data) + unpadder.finalize()
+
+    return decrypted_data
+
+
+def onnx_save_model_with_encryption(model: ModelProto, path: Union[str, Path], secret_key: bytes) -> None:
+    """
+    Encrypt model before saving to disk. Only supports <2GB models
+    :param model: the onnx ModelProto to be decrypted
+    :param path: the path for the saving
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    """
+    assert len(secret_key) == 48 and "This is an invalid secret key"
+
+    model_bytes = model.SerializeToString()
+
+    assert isinstance(secret_key, bytes)
+    encrypted_data = encrypt_data(model_bytes, secret_key[:16], secret_key[16:])
+
+    with open(path, "wb") as f:
+        f.write(encrypted_data)
+
+
+def onnx_load_model_with_decryption(path: Union[str, Path], secret_key: bytes) -> ModelProto:
+    """
+    Decrypt model before loading to memory. Only supports <2GB models
+    :param path: the model path
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    :return the loaded and decrypted model
+    """
+    assert len(secret_key) == 48 and "This is an invalid secret key"
+
+    with open(path, "rb") as f:
+        encrypted_data = f.read()
+
+    if encrypted_data[:16] != secret_key[:16]:  # Was not encrypted
+        try:
+            return onnx.load(path)
+        except Exception as e:
+            raise ValueError("Failed to load an unknown model file {path}")
+
+    assert isinstance(secret_key, bytes)
+    decrypted_data = decrypt_data(encrypted_data, secret_key[:16], secret_key[16:])
+
+    model = ModelProto()
+    model.ParseFromString(decrypted_data)
+    return model
+
+
+def cache_onnx_model_and_infer_shapes(input_model: Union[str, Path, ModelProto],
+                                      path: Union[str, Path],
+                                      save_as_external_data: bool = False,
+                                      secret_key: Optional[bytes] = None) -> ModelProto:
+    """
+    Save the model and then load it with shape infer and cryption if secret key provided
+    :param model: the onnx model path or ModelProto to be saved
+    :param path: the path for the saving
+    :param save_as_external_data: save external data for the models >2GB
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    :return the model proto
+    """
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+
+    if secret_key is not None and len(secret_key) == 48:
+        # TODO: If needed, we can use encryption onnx_save_model_with_encryption(model, path, secret_key)
+        # and return onnx.shape_inference.infer_shapes(onnx_load_model_with_decryption(path, secret_key))
+        assert save_as_external_data is False
+        return onnx.shape_inference.infer_shapes(copy.deepcopy(model))
+
+    save_onnx_model_with_external_data(model, path, save_as_external_data=save_as_external_data)
+    return load_model_with_shape_infer(Path(path))  # type: ignore
+
+
+def save_onnx_model_with_external_data(model: ModelProto,
+                                       path: Union[str, Path],
+                                       save_as_external_data: bool = False) -> None:
+    """
+    Save model to external data, the .data has same name as .onnx
+    :param model: the onnx ModelProto to be saved
+    :param path: the path for the saving
+    :param save_as_external_data: this option is for >2GB ModelProto
+    """
+    if save_as_external_data:
+        data_path = Path(path).name + ".data"
+        if os.path.exists(data_path):
+            os.remove(data_path)  # Avoid appending
+
+        onnx.external_data_helper.convert_model_to_external_data(model,
+                                                                 all_tensors_to_one_file=True,
+                                                                 location=data_path,
+                                                                 convert_attribute=True)
+    onnx.save(model, path)
+
+
+def create_infer_session_for_onnx_model(model_input: Union[str, Path, ModelProto],
+                                        sess_options: Optional[SessionOptions] = None,
+                                        providers: Optional[List[str]] = ['CPUExecutionProvider'],
+                                        provider_options: Optional[List[Dict[str, str]]] = None,
+                                        use_external_data_format: bool = False) -> ort.InferenceSession:
+    """
+    Create an Inference Session for onnx model
+    :param model_input: the onnx model, can be a path or ModelProto
+    :param session_options: session options
+    """
+    if use_external_data_format or (isinstance(model_input, onnx.ModelProto)
+                                    and model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF):
+        temp_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.utils.")
+        temp_path = Path(temp_dir.name).joinpath("infer_model.onnx").as_posix()
+        model_to_save = copy.deepcopy(model_input)
+        onnx.save(model_to_save, temp_path, save_as_external_data=True)  # type: ignore
+        return ort.InferenceSession(temp_path,
+                                    sess_options=sess_options,
+                                    providers=providers,
+                                    provider_options=provider_options)
+    else:
+        model = model_input.SerializeToString() if isinstance(model_input, onnx.ModelProto) else model_input
+        return ort.InferenceSession(model,
+                                    sess_options=sess_options,
+                                    providers=providers,
+                                    provider_options=provider_options)

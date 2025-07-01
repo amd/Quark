@@ -2,6 +2,7 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import quark.torch.kernel  # noqa
 
 import pytest
 import torch
@@ -9,7 +10,7 @@ from torch import ops
 from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
 from quark.torch.quantization.config.config import QuantizationSpec
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerChannelMinMaxObserver
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, SequentialQuantize
 from quark.torch.kernel import quant_fp8_e4m3, dequant_fp8_e4m3, quant_fp8_e5m2, dequant_fp8_e5m2
 from quark.shares.utils.testing_utils import torch_device
 
@@ -133,3 +134,113 @@ def test_fp8_qdq_functions(quant_func, dequant_func, qdq_op, scale):
     assert w.grad is not None
     wd = qdq_op(input_tensor).to(torch.float16)
     assert torch.all(torch.isclose(wd, wr))
+
+
+def process_fp4_per_group_fp8_per_tensor_scale_quantize(quantization_spec, device, scale1, scale2):
+
+    fake_quantize = SequentialQuantize(quantization_spec, device)
+    # fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
+    fake_quantize.enable_observer()
+
+    fake_quantize[0].scale = scale1.to(device)
+    fake_quantize[1].scale = scale2.to(device)
+    global input_tensor
+    input_tensor = input_tensor.to(device)
+    input_dtype = input_tensor.dtype
+    output_tensor = fake_quantize(input_tensor)
+
+    fake_quantize[0].scale = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
+        "fp8_e4m3", fake_quantize[0].scale, fake_quantize[1].scale, None,
+        fake_quantize[1].ch_axis, fake_quantize[1].group_size, -448, 448,
+        fake_quantize[1].round_method, "per_tensor", None)
+    golden_tensor = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
+        "fp4", input_tensor, fake_quantize[0].scale, None,
+        fake_quantize[0].ch_axis, fake_quantize[0].group_size, -6, 6,
+        fake_quantize[0].round_method, "per_group", None)
+
+    golden_tensor = golden_tensor.to(input_dtype)
+    assert torch.equal(output_tensor, golden_tensor)
+
+
+def test_fp4_per_group_fp8_per_tensor_scale_quantize():
+    from quark.torch.quantization import ScaleQuantSpec, FP4PerGroupSpec, FP8E4M3PerTensorSpec
+
+    FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC = ScaleQuantSpec(
+        first_stage=FP4PerGroupSpec(group_size=5, is_dynamic=False),
+        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False)
+    ).to_quantization_spec()
+
+    scale1 = torch.tensor([[4.0624, 5.7138],
+                           [7.5172, 9.7354],
+                           [6.5853, 2.2768],
+                           [1.7770, 0.7387],
+                           [1.3623, 5.6237],
+                           [3.5421, 1.2345],
+                           [5.7524, 0.5751],
+                           [0.9876, 1.0987],
+                           [1.2345, 3.5421],
+                           [0.5751, 5.7524]])
+    scale2 = torch.tensor([13.3567])
+    process_fp4_per_group_fp8_per_tensor_scale_quantize(FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC, torch_device, scale1, scale2)
+
+
+def process_fp8_int4_perchannel_quantize(quantization_spec, device, scale1, scale2, zero_point2):
+
+    fake_quantize = SequentialQuantize(quantization_spec, device)
+    # fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
+    fake_quantize.enable_observer()
+
+    fake_quantize[0].scale = scale1.to(device)
+    fake_quantize[1].scale = scale2.to(device)
+    fake_quantize[1].zero_point = zero_point2.to(device)
+    global input_tensor
+    input_dtype = input_tensor.dtype
+    input_tensor = input_tensor.to(device)
+    output_tensor = fake_quantize(input_tensor)
+
+    golden_tensor = quark.torch.kernel.scaled_real_quantize(  # type: ignore[attr-defined]
+        "fp8_e4m3", input_tensor, fake_quantize[0].scale, None,
+        fake_quantize[0].ch_axis, fake_quantize[0].group_size, -448, 448,
+        fake_quantize[0].round_method, "per_tensor")
+    golden_tensor = quark.torch.kernel.scaled_real_quantize(  # type: ignore[attr-defined]
+        "int4", golden_tensor, fake_quantize[1].scale, fake_quantize[1].zero_point.to(torch.int),
+        fake_quantize[1].ch_axis, fake_quantize[1].group_size, -8, 7,
+        fake_quantize[1].round_method, "per_channel")
+
+    golden_tensor = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
+        "int4", golden_tensor, fake_quantize[1].scale, fake_quantize[1].zero_point.to(torch.int),
+        fake_quantize[1].ch_axis, fake_quantize[1].group_size, "per_channel")
+    golden_tensor = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
+        "fp8_e4m3", golden_tensor, fake_quantize[0].scale, None,
+        fake_quantize[0].ch_axis, fake_quantize[0].group_size, "per_tensor")
+    golden_tensor = golden_tensor.to(input_dtype)
+    assert torch.equal(output_tensor, golden_tensor)
+
+
+def test_fp8_int4_perchannel_quantize():
+    from quark.torch.quantization import ProgressiveSpec
+    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QuantizationSpec(dtype=Dtype.fp8_e4m3,
+                                                       qscheme=QSchemeType.per_tensor,
+                                                       observer_cls=PerTensorMinMaxObserver,
+                                                       symmetric=True,
+                                                       scale_type=ScaleType.float,
+                                                       round_method=RoundType.half_even,
+                                                       is_dynamic=False)
+    DEFAULT_INT4_PER_CHANNEL_SYM_SPEC = QuantizationSpec(dtype=Dtype.int4,
+                                                         qscheme=QSchemeType.per_channel,
+                                                         observer_cls=PerChannelMinMaxObserver,
+                                                         symmetric=True,
+                                                         scale_type=ScaleType.float,
+                                                         round_method=RoundType.half_even,
+                                                         ch_axis=0,
+                                                         is_dynamic=False)
+
+    FP4_PER_TENSOR_INT4_PER_CHANNEL_SPEC = ProgressiveSpec(
+        first_stage=DEFAULT_FP8_PER_TENSOR_SYM_SPEC,
+        second_stage=DEFAULT_INT4_PER_CHANNEL_SYM_SPEC
+    ).to_quantization_spec()
+
+    scale1 = torch.tensor([13.3567])
+    scale2 = torch.tensor([4.0624, 5.7138, 7.5172, 9.7354, 6.5853, 2.2768, 1.7770, 0.7387, 1.3623, 5.6237])
+    zero_point2 = torch.tensor([0])
+    process_fp8_int4_perchannel_quantize(FP4_PER_TENSOR_INT4_PER_CHANNEL_SPEC, torch_device, scale1, scale2, zero_point2)

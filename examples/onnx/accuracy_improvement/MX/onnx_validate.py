@@ -183,7 +183,7 @@ def main():
         f_top1, f_top5 = evaluate(args.onnx_input, sess_options, providers,
                                   val_loader, args.print_freq)
         print(
-            f' * Prec@1 {f_top1.avg:.3f} ({100-f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100.-f_top5.avg:.3f})'
+            f' * Prec@1 {f_top1.avg:.3f} ({100 - f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100. - f_top5.avg:.3f})'
         )
     elif args.onnx_float and args.onnx_quant:
         val_loader = load_loader(args.data, args.batch_size, args.workers)

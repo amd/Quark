@@ -11,7 +11,7 @@ from onnx.onnx_ml_pb2 import TensorProto
 import onnxruntime
 import numpy as np
 from pathlib import Path
-from quark.onnx.operators.custom_ops import get_library_path
+from quark.onnx.operators.custom_ops import get_library_path, _COP_DOMAIN, _COP_IN_OP_NAME
 
 data_type_mapping = {"float32": TensorProto.FLOAT, "bfloat16": TensorProto.BFLOAT16}
 
@@ -73,10 +73,10 @@ if __name__ == "__main__":
         graph_def = helper.make_graph(
             nodes=[
                 helper.make_node(
-                    "VitisInstanceNormalization",
+                    _COP_IN_OP_NAME,
                     ["x", "gamma", "beta"],
                     ["y"],
-                    domain="com.vai.quantize",
+                    domain=_COP_DOMAIN,
                 ),
             ] + in_param_nodes,
             name="test-in",

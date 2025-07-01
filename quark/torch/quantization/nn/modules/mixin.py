@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 import torch
-from typing import Optional, Any, Dict
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
+from typing import Any, Dict, Union, List
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
 from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
 
 
@@ -26,35 +26,35 @@ class QuantMixin(torch.nn.Module):
                                                                   kwargs) if self._bias_qspec is not None else None
 
     @property
-    def input_quantizer(self) -> Optional[FakeQuantizeBase]:
+    def input_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
         return self._input_quantizer
 
     @property
-    def weight_quantizer(self) -> Optional[FakeQuantizeBase]:
+    def weight_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
         return self._weight_quantizer
 
     @property
-    def output_quantizer(self) -> Optional[FakeQuantizeBase]:
+    def output_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
         return self._output_quantizer
 
     @property
-    def bias_quantizer(self) -> Optional[FakeQuantizeBase]:
+    def bias_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
         return self._bias_quantizer
 
     @property
-    def input_qspec(self) -> Optional[QuantizationSpec]:
+    def input_qspec(self) -> Union[QuantizationSpec, List[QuantizationSpec], None]:
         return self._input_qspec
 
     @property
-    def output_qspec(self) -> Optional[QuantizationSpec]:
+    def output_qspec(self) -> Union[QuantizationSpec, List[QuantizationSpec], None]:
         return self._output_qspec
 
     @property
-    def weight_qspec(self) -> Optional[QuantizationSpec]:
+    def weight_qspec(self) -> Union[QuantizationSpec, List[QuantizationSpec], None]:
         return self._weight_qspec
 
     @property
-    def bias_qspec(self) -> Optional[QuantizationSpec]:
+    def bias_qspec(self) -> Union[QuantizationSpec, List[QuantizationSpec], None]:
         return self._bias_qspec
 
     def get_quant_input(self, x: torch.Tensor) -> torch.Tensor:
@@ -89,6 +89,7 @@ class QuantMixin(torch.nn.Module):
         else:
             return x
 
+    # TODO: this function is only used in load_params, add support for SequentialQuantize later
     def load_quant_params(self, params_dict: Dict[str, torch.Tensor]) -> None:
         device = next(self.parameters()).device
         if hasattr(self, "_input_quantizer") and self._input_quantizer is not None:

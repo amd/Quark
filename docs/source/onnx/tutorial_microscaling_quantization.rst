@@ -18,7 +18,7 @@ What is MX Quantization?
 ------------------------
 
 The `OCP MX specification <https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf>`__
-introduces several specific MX formats, including MXFP8, MXFP6, MXFP4, and MXINT8. These formats are implemented in the AMD Quark ONNX quantizer through a custom operation named MXFixNeuron, which has an ``element_dtype`` attribute to set the data type for the elements (while the data type for the shared scale is always E8M0).
+introduces several specific MX formats, including MXFP8, MXFP6, MXFP4, and MXINT8. These formats are implemented in the AMD Quark ONNX quantizer through a custom operation named "MXQuantizeDequantize", which has an ``element_dtype`` attribute to set the data type for the elements (while the data type for the shared scale is always E8M0).
 
 +-------------------+------------------------+
 | MX Formats        | "element_dtype" values |
@@ -36,7 +36,7 @@ introduces several specific MX formats, including MXFP8, MXFP6, MXFP4, and MXINT
 | MXINT8            | 'int8'                 |
 +-------------------+------------------------+
 
-If you initialize the quantizer with the MX configuration, it quantizes all the activations and weights using the MXFixNeuron.
+If you initialize the quantizer with the MX configuration, it quantizes all the activations and weights using the MXQuantizeDequantize nodes.
 
 How to Enable MX Quantization in AMD Quark for ONNX?
 ----------------------------------------------------
@@ -45,14 +45,14 @@ Here is a simple example of how to enable MX quantization with MXINT8 in AMD Qua
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantType, VitisQuantFormat
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.MXFixNeuron,
-                                     activation_type=VitisQuantType.QMX,
-                                     weight_type=VitisQuantType.QMX,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QMX,
+                                     weight_type=ExtendedQuantType.QMX,
                                      extra_options={
                                        'MXAttributes': {
                                          'element_dtype': 'int8',
@@ -100,14 +100,14 @@ Here is a simple example code which is fast finetuning a MXINT8 model:
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantFormat, VitisQuantType
+   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.MXFixNeuron,
-                                     activation_type=VitisQuantType.QMX,
-                                     weight_type=VitisQuantType.QMX,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QMX,
+                                     weight_type=ExtendedQuantType.QMX,
                                      include_fast_ft=True,
                                      extra_options={
                                        'MXAttributes': {

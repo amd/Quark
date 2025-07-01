@@ -398,22 +398,22 @@ class TestTensorQuantize(unittest.TestCase):
     def test_search_space(self):
         search_space = SearchSpace(level1_config)
         res = search_space.get_all_configs()
-        self.assertEqual(len(res), 320)
+        self.assertEqual(len(res), 384)
         del search_space
 
         search_space = SearchSpace(level12_config)
         res = search_space.get_all_configs()
-        self.assertEqual(len(res), 320 * 64)
+        self.assertEqual(len(res), 384 * 64)
         del search_space
 
         search_space = SearchSpace(level13_config)
         res = search_space.get_all_configs()
-        self.assertEqual(len(res), 320 * 24)
+        self.assertEqual(len(res), 384 * 24)
         del search_space
 
         search_space = SearchSpace(level123_config)
         res = search_space.get_all_configs()
-        self.assertEqual(len(res), 320 * 64 * 24)
+        self.assertEqual(len(res), 384 * 64 * 24)
         del search_space
 
     def test_valid_config_keys(self,):
@@ -422,7 +422,7 @@ class TestTensorQuantize(unittest.TestCase):
         level123_config['extra_options']['FastFinetune']['nonexist_key3'] = ["nonexist_l3"]
         search_space = SearchSpace(level123_config)
         res = search_space.get_all_configs()
-        self.assertEqual(len(res), 320 * 64 * 24)
+        self.assertEqual(len(res), 384 * 64 * 24)
         del search_space
 
     # level1 test auto search
@@ -625,6 +625,54 @@ class TestTensorQuantize(unittest.TestCase):
         del auto_search_config
         del auto_search_instance
         del l12_autosearch_config
+
+    # search space define None in the default space
+    @use_temporary_directory
+    def test_auto_search_space_outside(self, tmpdir: str):
+        temp_dir = Path(tmpdir, "./test_auto_search_temp").as_posix()
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.mkdir(temp_dir)
+        auto_search_config = AutoSearchConfig()
+
+        l1_autosearch_config = copy.deepcopy(auto_search_config)
+        l1_autosearch_config.search_space = None
+        l1_autosearch_config.search_cache_dir = Path(tmpdir, 'cache_dir').as_posix()
+        l1_autosearch_config.search_output_dir = Path(tmpdir, 'output_dir').as_posix()
+        l1_autosearch_config.search_log_path = Path(tmpdir, "auto_search.log").as_posix()
+        l1_autosearch_config.search_metric_tolerance = 1000.
+        l1_autosearch_config.search_stop_condition["find_n_candidates"] = 2
+        l1_autosearch_config.search_metric = "l1"
+
+        quantize_config = prepare_config()
+        input_model_path, _ = prepare_model(temp_dir)
+        data_reader = prepare_data()
+        output_model_path = Path(temp_dir, "quantized-output.onnx").as_posix()
+
+        auto_search_instance = AutoSearch(
+            config=quantize_config,
+            auto_search_config=l1_autosearch_config,
+            model_input=input_model_path,
+            model_output=output_model_path,
+            eval_dataloader=None,
+            calibration_data_reader=data_reader,
+            calibration_data_path = None
+        )
+
+        search_space_outside = {
+            "calibrate_method": [PowerOfTwoMethod.MinMSE, CalibrationMethod.MinMax,],
+            "activation_type": [QuantType.QInt8],
+            "weight_type": [QuantType.QInt8],
+            "include_cle": [True, False]
+        }
+        search_space_defined_outside = auto_search_instance.build_all_configs(search_space_outside)
+        auto_search_instance.all_configs = search_space_defined_outside
+
+        res = auto_search_instance.search_model()
+        self.assertEqual(len(res), 2)
+        del auto_search_config
+        del auto_search_instance
+        del l1_autosearch_config
 
 if __name__ == '__main__':
     unittest.main()

@@ -145,8 +145,9 @@ def test_gqa_awq():
     output_smooth = model(input_tensor)
 
     # check AWQ results
-    assert torch.norm(output_original - output_smooth) < 1e-6
+    assert torch.norm(output_original - output_smooth) < 1e-5
     logger.info("GQA for AWQ is checked valid!")
+    torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()

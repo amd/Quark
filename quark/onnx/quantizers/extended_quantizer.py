@@ -34,16 +34,15 @@ from onnxruntime.quantization.quant_utils import (
 
 from .qdq_quantizer import VitisQDQQuantizer
 from ..quant_utils import (
-    VitisQuantFormat,
     __producer__,
     __version__,
-    VitisQuantType,
+    ExtendedQuantType,
     FIX_OP_NAME,
     FIX_OP_DEFAULT_ATTRS,
-    BFPFIX_OP_NAME,
-    BFPFIX_OP_DEFAULT_ATTRS,
-    MXFIX_OP_NAME,
-    MXFIX_OP_DEFAULT_ATTRS,
+    COP_BFP_OP_NAME,
+    BFP_OP_DEFAULT_ATTRS,
+    COP_MX_OP_NAME,
+    MX_OP_DEFAULT_ATTRS,
     VAI_DOMAIN,
     COP_DOMAIN,
     COP_QUANT_OP_NAME,
@@ -72,7 +71,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         per_channel: bool,
         reduce_range: bool,
         mode: QuantizationMode.QLinearOps,
-        quant_format: Any,
         static: bool,
         weight_qType: Any,
         activation_qType: Any,
@@ -105,8 +103,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         self.tensors_to_quantize = {}
         self.model = ONNXModel(model)
         self.nodes_to_exclude = nodes_to_exclude
-        self.quant_format = quant_format
-        assert self.quant_format == VitisQuantFormat.QDQ
 
         # We add Q/DQ pair to weight (and bias) for float16 and bfloat16 by default,
         # which is aimed to avoid failure of data persistence check.
@@ -230,16 +226,16 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
     '''
 
     def _fn_name_and_attrs(self, qType: Any) -> tuple[str, Dict[str, Any]]:
-        if qType == VitisQuantType.QBFP:
-            fn_name = BFPFIX_OP_NAME
-            fn_attrs = copy.deepcopy(BFPFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for BFPFixNeuron
+        if qType == ExtendedQuantType.QBFP:
+            fn_name = COP_BFP_OP_NAME
+            fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
+            # Get attributes for custom BFP ops
             if self.extra_options is not None and "BFPAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["BFPAttributes"])
-        elif qType == VitisQuantType.QMX:
-            fn_name = MXFIX_OP_NAME
-            fn_attrs = copy.deepcopy(MXFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for MXFixNeuron
+        elif qType == ExtendedQuantType.QMX:
+            fn_name = COP_MX_OP_NAME
+            fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
+            # Get attributes for custom MX ops
             if self.extra_options is not None and "MXAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["MXAttributes"])
         else:
@@ -559,7 +555,7 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                     self._add_fn_pair_for_weight(initializer, tensor_info.axis, zp_type)
                 else:
                     if (zp_type is None and self.activation_qType in ONNX_BFP_QTYPES_LIST) or (
-                            zp_type is not None and zp_type in [VitisQuantType.QBFP, VitisQuantType.QMX]):
+                            zp_type is not None and zp_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]):
                         self._add_fn_pair_for_activation(tensor_name, '', '',
                                                          zp_type)  # BFP doesn't need scale and zero point
                         del self.tensors_to_quantize[tensor_name]
@@ -753,6 +749,9 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         convert_instance_norm_to_dpu_version = False
         if "ConvertInstanceNormToDPUVersion" in self.extra_options:
             convert_instance_norm_to_dpu_version = self.extra_options["ConvertInstanceNormToDPUVersion"]
+        convert_clip_to_dpu_version = False
+        if "ConvertClipToDPUVersion" in self.extra_options:
+            convert_clip_to_dpu_version = self.extra_options["ConvertClipToDPUVersion"]
 
         self.model.model, self.nodes_to_exclude = simulate_transforms(
             self.model.model,
@@ -766,4 +765,5 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             convert_reduce_mean_to_dpu_version=convert_reduce_mean_to_dpu_version,
             convert_softmax_to_dpu_version=convert_softmax_to_dpu_version,
             convert_instance_norm_to_dpu_version=convert_instance_norm_to_dpu_version,
+            convert_clip_to_dpu_version=convert_clip_to_dpu_version,
         )

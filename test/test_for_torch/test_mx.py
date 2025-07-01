@@ -12,12 +12,13 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.type import Dtype
+from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
 from quark.torch.quantization.observer.observer import PerBlockMXObserver
-from quark.torch.quantization import Config, QuantizationConfig, MXSpec, MX6Spec, MX9Spec
+from quark.torch.quantization import Config, QuantizationConfig, MX6Spec, MX9Spec, OCP_MXFP8E4M3Spec, OCP_MXFP8E5M2Spec, OCP_MXFP6E2M3Spec, OCP_MXFP6E3M2Spec, OCP_MXFP4Spec, OCP_MXINT8Spec, QuantizationSpec
 
 from quark.torch.quantization.utils import reshape_to_blocks, get_dtype_params
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
+from quark.torch.export.nn.modules import realquantizer
 
 
 class SimpleNetwork(nn.Module):
@@ -65,50 +66,36 @@ def create_quantize_run_simple_network(config: Config):
 
 
 valid_configs = [
-    ("mx", False, "fp8_e4m3", 4, True),
-    ("mx", False, "fp8_e4m3", 4, False),
-    ("mx", False, "fp8_e4m3", 32, True),
-    ("mx", False, "fp8_e4m3", 32, False),
-    ("mx", False, "fp8_e5m2", 4, True),
-    ("mx", False, "fp8_e5m2", 4, False),
-    ("mx", False, "fp8_e5m2", 32, True),
-    ("mx", False, "fp8_e5m2", 32, False),
-    ("mx", False, "fp6_e2m3", 4, True),
-    ("mx", False, "fp6_e2m3", 4, False),
-    ("mx", False, "fp6_e2m3", 32, True),
-    ("mx", False, "fp6_e2m3", 32, False),
-    ("mx", False, "fp6_e3m2", 4, True),
-    ("mx", False, "fp6_e3m2", 4, False),
-    ("mx", False, "fp6_e3m2", 32, True),
-    ("mx", False, "fp6_e3m2", 32, False),
-    ("mx", False, "fp4", 4, True),
-    ("mx", False, "fp4", 4, False),
-    ("mx", False, "fp4", 32, True),
-    ("mx", False, "fp4", 32, False),
-    ("mx", False, "int8", 4, True),
-    ("mx", False, "int8", 4, False),
-    ("mx", False, "int8", 32, True),
-    ("mx", False, "int8", 32, False),
-    ("mx6", False, None, 16, True),
-    ("mx6", False, None, 16, False),
-    ("mx9", False, None, 16, True),
-    ("mx9", False, None, 16, False),
+    ("mx", False, OCP_MXFP8E4M3Spec, None, True),
+    ("mx", False, OCP_MXFP8E4M3Spec, None, False),
+    ("mx", False, OCP_MXFP8E5M2Spec, None, True),
+    ("mx", False, OCP_MXFP8E5M2Spec, None, False),
+    ("mx", False, OCP_MXFP6E2M3Spec, None, True),
+    ("mx", False, OCP_MXFP6E2M3Spec, None, False),
+    ("mx", False, OCP_MXFP6E3M2Spec, None, True),
+    ("mx", False, OCP_MXFP6E3M2Spec, None, False),
+    ("mx", False, OCP_MXFP4Spec, None, True),
+    ("mx", False, OCP_MXFP4Spec, None, False),
+    ("mx", False, OCP_MXINT8Spec, None, True),
+    ("mx", False, OCP_MXINT8Spec, None, False),
+    ("mx6", False, MX6Spec, 16, True),
+    ("mx6", False, MX6Spec, 16, False),
+    ("mx9", False, MX9Spec, 16, True),
+    ("mx9", False, MX9Spec, 16, False),
 ]
 
 
-@pytest.mark.parametrize("dtype, is_dynamic, mx_element_dtype, group_size, weight_only",
+@pytest.mark.parametrize("dtype, is_dynamic, spec_class, group_size, weight_only",
                          valid_configs)
-def test_mx_valid_config_verification(dtype, is_dynamic, mx_element_dtype, group_size,
+def test_mx_valid_config_verification(dtype, is_dynamic, spec_class, group_size,
                                       weight_only):
     if dtype == "mx":
-        partial_spec = partial(MXSpec,
-                               mx_element_dtype=mx_element_dtype,
-                               block_size=group_size,
+        partial_spec = partial(spec_class,
                                is_dynamic=is_dynamic)
     elif dtype == "mx6":
-        partial_spec = partial(MX6Spec, block_size=group_size, is_dynamic=is_dynamic)
+        partial_spec = partial(spec_class, block_size=group_size, is_dynamic=is_dynamic)
     else:
-        partial_spec = partial(MX9Spec, block_size=group_size, is_dynamic=is_dynamic)
+        partial_spec = partial(spec_class, block_size=group_size, is_dynamic=is_dynamic)
 
     if weight_only:
         linear_config = QuantizationConfig(weight=partial_spec(ch_axis=-1).to_quantization_spec())
@@ -123,7 +110,6 @@ def test_mx_valid_config_verification(dtype, is_dynamic, mx_element_dtype, group
                         nn.Linear: linear_config,
                         nn.Conv2d: conv_config
                     })
-    # import pdb; pdb.set_trace()
     create_quantize_run_simple_network(config)
 
 
@@ -240,7 +226,7 @@ def create_4d_tensor_with_interesting_pattern():
 def test_per_block_simple_scale():
     element_dtype = "fp8_e4m3"
 
-    spec = MXSpec(mx_element_dtype=element_dtype, ch_axis=1).to_quantization_spec()
+    spec = OCP_MXFP8E4M3Spec(scale_calculation_mode="floor").to_quantization_spec()
     observer = PerBlockMXObserver(qspec=spec)
 
     a = torch.zeros(10, 10)
@@ -259,7 +245,7 @@ def test_per_block_simple_scale():
             scale_val = observer.eps
         # these values should be directly representable by floating point so direct comparison is valid here
         scale, _ = observer.calculate_qparams()
-        assert scale[i, 0, 0] == scale_val
+        assert scale[i, 0] == scale_val
 
 
 def test_per_block_scale_tiled():
@@ -273,17 +259,26 @@ def test_per_block_scale_tiled():
     #    [ -5, -4, -3, -2, -1, 0, 1, 2, 3, 4],
     #    [ 5, 4, 3, 2, 1, 0 , -1, -2, -3, -4]
     # ]
-    element_dtype = "fp8_e4m3"
-    spec = MXSpec(mx_element_dtype=element_dtype, ch_axis=1, block_size=5).to_quantization_spec()
+    spec = QuantizationSpec(dtype=Dtype.fp8_e4m3,
+                            observer_cls=PerBlockMXObserver,
+                            symmetric=None,
+                            scale_type=ScaleType.float,
+                            round_method=RoundType.half_even,
+                            scale_format="e8m0",
+                            scale_calculation_mode="even",
+                            qscheme=QSchemeType.per_group,
+                            ch_axis=1,
+                            is_dynamic=True,
+                            group_size=5)
     observer = PerBlockMXObserver(qspec=spec)
     observer(a)
 
     _, _, emax = get_dtype_params(Dtype.fp8_e4m3)
     scale, _ = observer.calculate_qparams()
-    assert scale[0, 0, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
-    assert scale[0, 1, 0] == math.pow(2.0, math.floor(math.log2(4)) - emax)
-    assert scale[1, 0, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
-    assert scale[1, 1, 0] == math.pow(2.0, math.floor(math.log2(4)) - emax)
+    assert scale[0, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
+    assert scale[0, 1] == math.pow(2.0, math.floor(math.log2(4)) - emax)
+    assert scale[1, 0] == math.pow(2.0, math.floor(math.log2(5)) - emax)
+    assert scale[1, 1] == math.pow(2.0, math.floor(math.log2(4)) - emax)
 
 
 per_block_to_quantize_mx = [("int8", 1, 8), ("fp8_e4m3", 1, 8), ("fp8_e5m2", 1, 8), ("fp6_e3m2", 1, 8),
@@ -293,7 +288,7 @@ per_block_to_quantize_mx = [("int8", 1, 8), ("fp8_e4m3", 1, 8), ("fp8_e5m2", 1, 
 @pytest.mark.parametrize("element_dtype, axis, block_size", per_block_to_quantize_mx)
 def test_per_block_to_fake_quantize_mx(element_dtype, axis, block_size):
     x_orig = create_4d_tensor_with_interesting_pattern()
-    fake_quantize_mx(x_orig, axis, block_size, mx_element_dtype=element_dtype)
+    fake_quantize_mx(x_orig, axis, block_size, mx_element_dtype=element_dtype, scale_calculation_mode="floor")
 
 
 @pytest.mark.parametrize("torch_dtype,qdtype,axis,block_size,expected_output", [
@@ -322,7 +317,7 @@ def test_per_block_to_fake_quantize_mx(element_dtype, axis, block_size):
 ])
 def test_per_block_to_fake_quantize_mx6_mx9(torch_dtype, qdtype, axis, block_size, expected_output):
     x_orig = create_4d_tensor_with_interesting_pattern().to(torch_dtype)
-    output_tensor = torch.ops.quark.non_scaled_fake_quantize(x_orig, qdtype, "", axis, block_size)
+    output_tensor = torch.ops.quark.non_scaled_fake_quantize(x_orig, qdtype, "", axis, block_size, "floor")
     assert torch.all(torch.isclose(output_tensor, expected_output))
 
 
@@ -612,7 +607,8 @@ def test_fake_quantize_mx(quark_mx_dtype):
                          scale=scale,
                          mx_element_dtype=mx_element_dtype,
                          axis=axis,
-                         block_size=block_size)
+                         block_size=block_size,
+                         scale_calculation_mode="floor")
 
 quark_supported_elem_dtype = {
     "fp8_e4m3": Dtype.fp8_e4m3,
@@ -646,7 +642,8 @@ def test_compare_quark_ao_mx_repo(elem_dtype):
                                            scale=scale,
                                            mx_element_dtype=mx_element_dtype,
                                            axis=axis,
-                                           block_size=block_size)
+                                           block_size=block_size,
+                                           scale_calculation_mode="floor")
     torchao_result = result[elem_dtype]["torchao_result"]
     MX_result = result[elem_dtype]["MX_result"]
 
@@ -656,6 +653,23 @@ def test_compare_quark_ao_mx_repo(elem_dtype):
     assert max_diff_MX == 0, f"The {elem_dtype} quantization result of quark and MX is different"
 
 
+def test_realquantizer_pipline():
+    torch.manual_seed(42)
+    qspec = OCP_MXINT8Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
+    qspec.mx_element_dtype = Dtype.fp4
+    input_quantizer = realquantizer.get_real_quantizer(
+        qspec=qspec,
+        quantizer=None,
+        reorder=False,
+        real_quantized=False,
+        float_dtype=Dtype.fp4,
+        device="cuda"
+    )
+    x = torch.randn(256, 256, device="cuda", dtype=torch.bfloat16)
+    input_quantizer.to_real_quantize_params(x)
+
+
 if __name__ == "__main__":
+    test_realquantizer_pipline()
     # test_per_block_simple_scale()
-    test_mx_valid_config_verification("mx", False, "fp8_e4m3", 4, True)
+    # test_mx_valid_config_verification("mx", False, "fp8_e4m3", 4, True)

@@ -169,26 +169,26 @@ val dataset:
 
 ::
 
-   python ../utils/onnx_validate_with_custom_op.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_quantized.onnx
+   python ../utils/onnx_validate.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_quantized.onnx
 
 If want to run faster with GPU support, you can also execute the following command:
 
 ::
 
-   python ../utils/onnx_validate_with_custom_op.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_quantized.onnx --gpu
+   python ../utils/onnx_validate.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_quantized.onnx --gpu
 
 Test the accuracy of the BFP16 quantized model with ADAQUANT on ImageNet val
 dataset:
 
 ::
 
-   python ../utils/onnx_validate_with_custom_op.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx
+   python ../utils/onnx_validate.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx
 
 If want to run faster with GPU support, you can also execute the following command:
 
 ::
 
-   python ../utils/onnx_validate_with_custom_op.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx --gpu
+   python ../utils/onnx_validate.py val_data --model-name mobilenetv2_050.lamb_in1k --batch-size 1 --onnx-input models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx --gpu
 
 Quantization Results
 --------------------

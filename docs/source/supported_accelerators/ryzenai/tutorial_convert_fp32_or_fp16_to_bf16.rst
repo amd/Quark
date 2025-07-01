@@ -97,14 +97,14 @@ If the accuracy of bfloat16 model can not meet your target, you can improve bflo
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, VitisQuantType, VitisQuantFormat
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
    from onnxruntime.quantization.calibrate import CalibrationMethod
    from quark.onnx.quantization.config.config import Config, QuantizationConfig
 
    quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=VitisQuantFormat.QDQ,
-                                     activation_type=VitisQuantType.QBFloat16,
-                                     weight_type=VitisQuantType.QBFloat16,
+                                     quant_format=ExtendedQuantFormat.QDQ,
+                                     activation_type=ExtendedQuantType.QBFloat16,
+                                     weight_type=ExtendedQuantType.QBFloat16,
                                      include_fast_ft=True,
                                      extra_options={
                                          'BF16QDQToCast': True,

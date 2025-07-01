@@ -38,7 +38,7 @@ from onnxruntime.quantization.quant_utils import (
 from onnxruntime.quantization.registry import CreateOpQuantizer
 from onnxruntime.quantization.base_quantizer import QuantizationParams
 
-from ..quant_utils import (__producer__, __version__, VitisQuantType, ONNX_FP_QTYPES_LIST, ONNX_BFP_QTYPES_LIST,
+from ..quant_utils import (__producer__, __version__, ExtendedQuantType, ONNX_FP_QTYPES_LIST, ONNX_BFP_QTYPES_LIST,
                            get_tensor_type_from_qType, get_qmin_qmax_for_qType, compute_scale_zp, compute_scale_zp_fp,
                            quantize_data_pof2s, ONNX_TYPE_TO_NP_TYPE)
 
@@ -145,13 +145,14 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         if "UsePowerOf2Scale" in self.extra_options:
             self.use_power_of_2_scale = self.extra_options["UsePowerOf2Scale"]
 
-        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, VitisQuantType.QInt16, VitisQuantType.QInt32,
-                                                     VitisQuantType.QFloat16, VitisQuantType.QBFloat16,
-                                                     VitisQuantType.QBFP, VitisQuantType.QMX) if "WeightSymmetric"
+        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, ExtendedQuantType.QInt16,
+                                                     ExtendedQuantType.QInt32, ExtendedQuantType.QFloat16,
+                                                     ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                                                     ExtendedQuantType.QMX) if "WeightSymmetric"
                                     not in self.extra_options else self.extra_options["WeightSymmetric"])
-        self.is_activation_symmetric = (activation_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16,
-                                                             VitisQuantType.QBFP,
-                                                             VitisQuantType.QMX) if "ActivationSymmetric"
+        self.is_activation_symmetric = (activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16,
+                                                             ExtendedQuantType.QBFP,
+                                                             ExtendedQuantType.QMX) if "ActivationSymmetric"
                                         not in self.extra_options else self.extra_options["ActivationSymmetric"])
 
         self.use_unsigned_relu = (False if "UseUnsignedReLU" not in self.extra_options else
@@ -218,7 +219,7 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
             return: result, scale_name, zero_point_name, scale_shape, zero_point_shape.
         """
 
-        if zero_point_type in [VitisQuantType.QFloat16, VitisQuantType.QBFloat16]:
+        if zero_point_type in [ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16]:
             zero_point_values = np.array([0], dtype=np.float32)
             scale_values = np.array([1], dtype=np.float32)
             zero_point_type = get_tensor_type_from_qType(zero_point_type)

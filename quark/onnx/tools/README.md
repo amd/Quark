@@ -2,7 +2,7 @@
 
 - [Convert a float16 model to a float32 model](#convert-a-float16-model-to-a-float32-model)
 - [Convert a NCHW input model to a NHWC model](#convert-a-nchw-input-model-to-a-nhwc-model)
-- [Quantize ONNX model using random input](#quantize-onnx-model-using-random-input)
+- [Quantize a Float Model with Random Data](#quantize-a-float-model-with-random-data)
 - [Convert a A8W8 NPU model to a A8W8 CPU model](#convert-a-a8w8-npu-model-to-a-a8w8-cpu-model)
 
 ## Convert a float16 model to a float32 model
@@ -119,16 +119,6 @@ Use the convert_nchw_to_nhwc tool to convert a NCHW model to a NHWC model:
 python -m quark.onnx.tools.convert_nchw_to_nhwc --input $NCHW_ONNX_MODEL_PATH --output $NHWC_ONNX_MODEL_PATH
 ```
 
-## Quantize ONNX model using random input
-
-Given some ONNX models without input for quantization, use random input for the onnx model quantization process.
-
-Use the random_quantize tool to quantize a onnx model:
-
-```bash
-python -m quark.onnx.tools.random_quantize --input_model $FLOAT_ONNX_MODEL_PATH --quant_model $QUANTIZED_ONNX_MODEL_PATH
-```
-
 ## Convert a A8W8 NPU model to a A8W8 CPU model
 
 Given that some models are quantized by A8W8 NPU, it's convenient and efficient to convert them to A8W8 CPU models.
@@ -196,7 +186,38 @@ We often need to compare the differences in output images before and after quant
 Use the evaluate tool:
 
 ```bash
-python -m quark.onnx.tools.evaluate.py --baseline_results_folder [BASELINE_RESULTS_FOLDER_PATH] --quantized_results_folder [QUANTIZED_RESULTS_FOLDER_PATH]
+python -m quark.onnx.tools.evaluate --baseline_results_folder [BASELINE_RESULTS_FOLDER_PATH] --quantized_results_folder [QUANTIZED_RESULTS_FOLDER_PATH]
+```
+
+## Quantize a Float Model with Random Data
+
+Customers often need to verify the performance of the quantized model regardless of quantization accuracy. So we support the quantization without calibration dataset using random data generated automatically.
+
+Use the random_quantize tool:
+
+```bash
+python -m quark.onnx.tools.random_quantize --input_model_path [FLOAT_MODEL_PATH] --quantized_model_path [QUANTIZED_MODEL_PATH]
+```
+
+## Assign Shapes for All Tensors in A Given Model
+
+An onnx model may be missing the shape of some tensors. So we provide a tool that automatically assigns the correct shape to all tensors, regardless of whether the input model is a float model or a QDQ model.
+
+Use the fix_shapes tool:
+
+```bash
+python -m quark.onnx.tools.fix_shapes --input_model_path [INPUT_MODEL_PATH] --output_model_path [OUTPUT_MODEL_PATH]
+```
+
+## Convert the Int32 Bias of the Quantized Model to Int16
+
+The bias in a quantized model may need to be int16 instead of int32 in some cases. So we provide a tool that converts the int32 bias of a quantized model to int16.
+**Note**: 1. ONNXRuntime only supports Int16 Bias inference when the opset version is 21 or higher, so please ensure that the input model's opset version is 21 or higher. 2. It is recommended to use the parameter **Int16Bias** together with **ADAROUND** or **ADAQUANT**; otherwise, the quantized model with Int16 bias may suffer from poor accuracy.
+
+Use the `convert_bias_int32_to_int16` tool:
+
+```bash
+python -m quark.onnx.tools.convert_bias_int32_to_int16 --input_model_path [INPUT_MODEL_PATH] --output_model_path [OUTPUT_MODEL_PATH]
 ```
 
 <!--

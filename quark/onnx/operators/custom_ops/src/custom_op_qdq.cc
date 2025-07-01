@@ -37,7 +37,7 @@ float MLFloat16::ToFloat() const {
 #endif
 
 
-namespace vai_q {
+namespace quark_onnx {
 
 /*
 * Return the total number of elements up to the specified axis.
@@ -498,4 +498,4 @@ void KernelCustomDequantizeLinear::Compute(OrtKernelContext* context) {
   return ComputeBase(context);
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

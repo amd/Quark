@@ -51,7 +51,8 @@ def cache_model_inps(model: nn.Module, modules: nn.ModuleList,
 
         # patch layer 0 to catch input and kwargs
 
-    cur_layer_device = get_device(modules[0])
+    cur_layer_device = get_device(
+        modules[0]) if not get_device(modules[0]) == torch.device("meta") else modules[0]._hf_hook.execution_device
     required_kwargs = inspect.signature(modules[0].forward).parameters
     modules[0] = Catcher(modules[0], inps, layer_args, layer_kwargs)
     for sample in samples:

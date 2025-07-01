@@ -5,36 +5,48 @@
 """Quark Exporting and Importing API for PyTorch."""
 
 from __future__ import annotations
-import json
-import tempfile
-from pathlib import Path
-from typing import Union, List, Dict, Tuple, Optional, Any, Callable, cast
-import dataclasses
-
-import torch
-import torch.nn as nn
-from safetensors.torch import save_file
-from tqdm import tqdm
-import subprocess
 import re
+import json
+import torch
+import tempfile
+import dataclasses
+import subprocess
+import torch.nn as nn
+from tqdm import tqdm
+from pathlib import Path
 from functools import partial
+from typing import Union, List, Dict, Tuple, Optional, Any, Callable, cast
 
-from quark.shares.utils.log import ScreenLogger, log_errors
-from quark.torch.quantization.utils import set_op_by_name
+from torch.distributed._tensor import distribute_tensor, Replicate, DTensor
+
+from quark.torch.quantization.utils import set_op_by_name, get_op_by_name
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
 from quark.torch.export.utils import preprocess_import_info
 from quark.torch.quantization.nn.modules import QuantLinear
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, NonScaledFakeQuantize
 from quark.torch.export.config.config import JsonExporterConfig, ExporterConfig
 from quark.torch.quantization.config.config import Config, QuantizationSpec
-from quark.torch.quantization.config.type import QuantizationMode
+from quark.torch.quantization.config.type import QuantizationMode, QSchemeType
 from quark.torch.quantization.model_transformation import prepare_for_attention_quant
 from quark.torch.export.json_export.builder.native_model_info_builder import NativeModelInfoBuilder
 from quark.torch.export.main_export.model_post_process import ModelPostProcessor
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser, get_layer_quant_config
 from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
-from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
+from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase, SequentialRealQuantizer, get_real_quantizer
 import quark.torch.export.nn.modules.qparamslinear
+from quark.torch.export.safetensors import export_hf_model, import_hf_model
+from quark.torch.export.onnx import convert_model_to_uint4_int4, export_onnx_model_optimization
+from quark.torch.utils.device import TPDeviceManager, e4m3fn_to_e4m3fnuz
+from quark.shares.utils.import_utils import is_transformers_available, is_accelerate_available, is_safetensors_available
+from quark.shares.utils.log import ScreenLogger
+
+if is_transformers_available():
+    from transformers import PreTrainedModel
+if is_accelerate_available():
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+if is_safetensors_available():
+    from safetensors.torch import save_file
 
 __all__ = ["ModelExporter", "save_params", "ModelImporter"]
 
@@ -83,12 +95,11 @@ def check_scaled_mm_available_dev() -> Optional[str]:
 
 class ModelExporter:
     """
-    Provides an API for exporting quantized Pytorch deep learning models.
+    Provides an API for exporting quantized PyTorch deep learning models.
     This class converts the quantized model to json-pth, json-safetensors files or onnx graph, and saves to export_dir.
 
-    Args:
-        config (ExporterConfig): Configuration object containing settings for exporting.
-        export_dir (Union[Path, str]): The target export directory. This could be a string or a pathlib.Path(string) object.
+    :param ExporterConfig config: Configuration object containing settings for exporting.
+    :param Union[Path, str] export_dir: The target export directory.
     """
 
     def __init__(self, config: ExporterConfig, export_dir: Union[Path, str] = tempfile.gettempdir()) -> None:
@@ -98,33 +109,34 @@ class ModelExporter:
 
     def export_quark_model(self, model: nn.Module, quant_config: Config, custom_mode: str = "quark") -> None:
         """
-        This function aims to export json and pth files of the quantized Pytorch model by quark file format.
+        Exports the quantized PyTorch model to quark file format using json and pth files.
+
         The model's network architecture or configuration is stored in the json file, and parameters including weight, bias, scale, and zero_point are stored in the pth file.
 
-        Parameters:
-            model (transformers.PreTrainedModel): The quantized model to be exported.
-            quant_config (Config): Configuration object containing settings for quantization. Default is None.
-            custom_mode (str): Whether to export the quantization config and model in a custom format expected by some downstream library. Possible options:
-                - `"quark"`: standard quark format. This is the default and recommended format that should be favored.
-                - `"awq"`: targets AutoAWQ library.
-                - `"fp8"`: targets vLLM-compatible fp8 models.
+        :param torch.nn.Module model: The quantized model to be exported.
+        :param Config quant_config: Configuration object containing settings for quantization. Default is ``None``.
+        :param str custom_mode: Whether to export the quantization config and model in a custom format expected by some downstream library. Possible options:
 
-        Returns:
-            None
-        **Examples**:
+            * ``"quark"``: standard quark format. This is the default and recommended format that should be favored.
+            * ``"awq"``: targets AutoAWQ library.
+            * ``"fp8"``: targets vLLM-compatible fp8 models.
 
-            .. code-block:: python
+        :return: ``None``
 
-                # default exporting:
-                export_path = "./output_dir"
-                from quark.torch import ModelExporter
-                from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
-                NO_MERGE_REALQ_CONFIG = JsonExporterConfig(weight_format="real_quantized",
-                                                           pack_method="reorder")
-                export_config = ExporterConfig(json_export_config=NO_MERGE_REALQ_CONFIG, onnx_export_config=OnnxExporterConfig())
-                exporter = ModelExporter(config=export_config, export_dir=export_path)
-                quant_config = get_config(args.quant_scheme, args.group_size, args.model_dir, args.kv_cache_dtype, args.fp8_attention_quant, args.exclude_layers, args.pre_quantization_optimization, args.pre_optimization_config_file_path, args.quant_algo, args.quant_algo_config_file_path, model_type)
-                exporter.export_quark_model(model, quant_config=quant_config, custom_mode=args.custom_mode)
+        Example:
+
+        .. code-block:: python
+
+            # default exporting:
+            export_path = "./output_dir"
+            from quark.torch import ModelExporter
+            from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
+            NO_MERGE_REALQ_CONFIG = JsonExporterConfig(weight_format="real_quantized",
+                                                       pack_method="reorder")
+            export_config = ExporterConfig(json_export_config=NO_MERGE_REALQ_CONFIG, onnx_export_config=OnnxExporterConfig())
+            exporter = ModelExporter(config=export_config, export_dir=export_path)
+            quant_config = get_config(args, model_type)
+            exporter.export_quark_model(model, quant_config=quant_config, custom_mode=args.custom_mode)
 
         Note:
             Currently, default exporting quark format (json + pth).
@@ -161,14 +173,15 @@ class ModelExporter:
 
         Module replacement converts the model's module (e.g. `QuantLinear`) according to the weight_format (to `QparamsLinear`).
 
-        Parameters:
-            model (transformers.PreTrainedModel): The quantized model to be exported.
-            quant_config (Config): Configuration object containing settings for quantization.
-            custom_mode (str): Whether to export the quantization config and model in a custom format expected by some downstream library. Possible options:
-                - `"quark"`: standard quark format. This is the default and recommended format that should be favored.
-                - `"awq"`: targets AutoAWQ library.
-                - `"fp8"`: targets vLLM-compatible fp8 models.
-        add_export_info_for_hf (bool): Whether to add export info of quark to config.json when using hf_format_export. When loading the model, we recover the kv_cache in autofp8 format through the weight file, but we need the name of kv_layer, it is very cumbersome to get it from quark's map, it is more reasonable to get it from config. If we find kv_scale in weight_flie and there is no special kv_layer_name, we will use k_proj,v_proj to recover kv_cache by default.
+
+        :param torch.nn.Module model: The quantized model to be exported.
+        :param Config quant_config: Model quantization configuration.
+        :param str custom_mode: Whether to export the quantization config and model in a custom format expected by some downstream library. Possible options:
+
+            * ``"quark"``: standard quark format. This is the default and recommended format that should be favored.
+            * ``"awq"``: targets AutoAWQ library.
+            * ``"fp8"``: targets vLLM-compatible fp8 models.
+        :param bool add_export_info_for_hf: Whether to add export info of quark to ``config.json`` when using hf_format_export. When loading the model, we recover the kv_cache in autofp8 format through the weight file, but we need the name of kv_layer, it is very cumbersome to get it from quark's map, it is more reasonable to get it from config. If we find ``kv_scale`` in weight_flie and there is no special kv_layer_name, we will use k_proj,v_proj to recover kv_cache by default.
         '''
 
         quark_quant_config = quant_config.to_dict()
@@ -236,37 +249,34 @@ class ModelExporter:
                           operator_export_type: torch.onnx.OperatorExportTypes = torch.onnx.OperatorExportTypes.ONNX,
                           uint4_int4_flag: bool = False) -> None:
         """
-        This function aims to export onnx graph of the quantized Pytorch model.
+        This function aims to export onnx graph of the quantized PyTorch model.
 
-        Parameters:
-            model (torch.nn.Module): The quantized model to be exported.
-            input_args (Union[torch.Tensor, Tuple[float]]): Example inputs for this quantized model.
-            input_names (List[str]): Names to assign to the input nodes of the onnx graph, in order. Default is empty list.
-            output_names (List[str]): Names to assign to the output nodes of the onnx graph, in order. Default is empty list.
-            verbose (bool): Flag to control showing verbose log or no. Default is False
-            opset_version (Optional[int]): The version of the default (ai.onnx) opset to target. If not set, it will be valued the latest version that is stable for the current version of PyTorch.
-            do_constant_folding (bool): Apply the constant-folding optimization. Default is False
-            operator_export_type (torch.onnx.OperatorExportTypes): Export operator type in onnx graph. The choices include OperatorExportTypes.ONNX, OperatorExportTypes.ONNX_FALLTHROUGH, OperatorExportTypes.ONNX_ATEN and OperatorExportTypes.ONNX_ATEN_FALLBACK. Default is OperatorExportTypes.ONNX.
-            uint4_int4_flag (bool): Flag to indicate uint4/int4 quantized model or not. Default is False.
+        :param torch.nn.Module model: The quantized model to be exported.
+        :param Union[torch.Tensor, Tuple[float]] input_args: Example inputs for this quantized model.
+        :param List[str] input_names: Names to assign to the input nodes of the onnx graph, in order. Defaults to ``[]``.
+        :param List[str] output_names: Names to assign to the output nodes of the onnx graph, in order. Defaults to ``[]``.
+        :param bool verbose: Flag to control showing verbose log or no. Default is ``False``.
+        :param Optional[int] opset_version: The version of the default (ai.onnx) opset to target. If not set, it will be valued the latest version that is stable for the current version of PyTorch. Defaults to ``None``.
+        :param torch.onnx.OperatorExportTypes operator_export_type: Export operator type in onnx graph. The choices include ``OperatorExportTypes.ONNX``, ``OperatorExportTypes.ONNX_FALLTHROUGH``, ``OperatorExportTypes.ONNX_ATEN`` and ``OperatorExportTypes.ONNX_ATEN_FALLBACK``. Default is ``OperatorExportTypes.ONNX``.
+        :param bool uint4_int4_flag: Flag to indicate uint4/int4 quantized model or not. Default is ``False``.
 
-        Returns:
-            None
+        :return: None
 
-        **Examples**:
+        Example:
 
-            .. code-block:: python
+        .. code-block:: python
 
-                from quark.torch import ModelExporter
-                from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-                export_config = ExporterConfig(json_export_config=JsonExporterConfig())
-                exporter = ModelExporter(config=export_config, export_dir=export_path)
-                exporter.export_onnx_model(model, input_args)
+            from quark.torch import ModelExporter
+            from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
 
-        Note:
+            export_config = ExporterConfig(json_export_config=JsonExporterConfig())
+            exporter = ModelExporter(config=export_config, export_dir=export_path)
+            exporter.export_onnx_model(model, input_args)
+
+        **Note**:
             Mix quantization of int4/uint4 and int8/uint8 is not supported currently.
             In other words, if the model contains both quantized nodes of uint4/int4 and uint8/int8, this function cannot be used to export the ONNX graph.
         """
-        from quark.torch.export.onnx import convert_model_to_uint4_int4
         logger.info("Start exporting quantized onnx model ...")
 
         for module in model.modules():
@@ -283,6 +293,7 @@ class ModelExporter:
                           opset_version=opset_version,
                           do_constant_folding=do_constant_folding,
                           operator_export_type=operator_export_type)
+        export_onnx_model_optimization(onnx_path)
         if uint4_int4_flag:
             convert_model_to_uint4_int4(onnx_path)
         else:
@@ -290,25 +301,23 @@ class ModelExporter:
 
     def export_gguf_model(self, model: nn.Module, tokenizer_path: Union[str, Path], model_type: str) -> None:
         """
-        This function aims to export gguf file of the quantized Pytorch model.
+        This function aims to export gguf file of the quantized PyTorch model.
 
-        Parameters:
-            model (torch.nn.Module): The quantized model to be exported.
-            tokenizer_path (Union[str, Path]): Tokenizer needs to be encoded into gguf model. This argument specifies the directory path of tokenizer which contains tokenizer.json, tokenizer_config.json and/or tokenizer.model
-            model_type (str): The type of the model, e.g. gpt2, gptj, llama or gptnext.
+        :param torch.nn.Module model: The quantized model to be exported.
+        :param Union[str, Path] tokenizer_path model_type: Tokenizer needs to be encoded into gguf model. This argument specifies the directory path of the tokenizer, which contains tokenizer.json, tokenizer_config.json and/or tokenizer.model.
+        :param str model_type: The model type of the model, e.g. ``"gpt2"``, ``"gptj"``, or ``"llama"``.
 
-        Returns:
-            None
+        :return: None
 
-        **Examples**:
+        Example:
 
-            .. code-block:: python
+        .. code-block:: python
 
-                from quark.torch import ModelExporter
-                from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-                export_config = ExporterConfig(json_export_config=JsonExporterConfig())
-                exporter = ModelExporter(config=export_config, export_dir=export_path)
-                exporter.export_gguf_model(model, tokenizer_path, model_type)
+            from quark.torch import ModelExporter
+            from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+            export_config = ExporterConfig(json_export_config=JsonExporterConfig())
+            exporter = ModelExporter(config=export_config, export_dir=export_path)
+            exporter.export_gguf_model(model, tokenizer_path, model_type)
 
         Note:
             Currently, only support asymetric int4 per_group weight-only quantization, and the group_size must be 32.
@@ -332,7 +341,45 @@ class ModelExporter:
 
         logger.info("GGUF quantized model exported to {} successfully.".format(gguf_path))
 
+    def export_safetensors_model(self,
+                                 model: nn.Module,
+                                 quant_config: Config,
+                                 custom_mode: str = "quark",
+                                 **kwargs: Any) -> None:
+        """
+        Exports the quantized PyTorch model to the safetensors format.
+
+        :param torch.nn.Module model: The quantized model to be exported.
+        :param Config quant_config: Configuration object containing settings for quantization. Default is ``None``.
+        :param str custom_mode: Whether to export the quantization config and model in a custom format expected by some downstream library. Possible options:
+
+            * ``"quark"``: standard quark format. This is the default and recommended format that should be favored.
+            * ``"awq"``: targets AutoAWQ library.
+            * ``"fp8"``: targets vLLM-compatible fp8 models.
+        """
+        if quant_config is None:
+            raise ValueError("quant_config should not be None when exporting Hugging Face safetensors format files.")
+
+        if not is_transformers_available() or not isinstance(model, PreTrainedModel):
+            raise NotImplementedError(
+                "Exporting to safetensors format is currently only supported for Transformers models. Please open an issue."
+            )
+        else:
+            # add_export_info_for_hf=True means export info of quark will be added in config.json, see the description of the get_export_model function
+            model = self.get_export_model(model,
+                                          quant_config=quant_config,
+                                          custom_mode=custom_mode,
+                                          add_export_info_for_hf=True)
+            export_hf_model(model=model, export_dir=self.export_dir, **kwargs)
+
+        # The export_func replaces some of the model's submodules and modifies the contents of the config, so restore them.
+        self.reset_model(model=model)
+
     def export_model_info_from_gguf(self, model: nn.Module, gguf_path: str, model_type: str) -> None:
+        if not is_safetensors_available():
+            raise ImportError(
+                "The function `export_model_info_from_gguf` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
+            )
 
         logger.info("Start exporting quantized model from gguf model ...")
 
@@ -372,41 +419,43 @@ def save_params(model: nn.Module,
     For eager mode quantization, the model's configurations are stored in json file, and parameters including weight, bias, scale, and zero_point are stored in safetensors file.
     For fx_graph mode quantization, the model's network architecture and parameters are stored in pth file.
 
-    Parameters:
-        model (torch.nn.Module): The quantized model to be saved.
-        model_type (str): The type of the model, e.g. gpt2, gptj, llama or gptnext.
-        args (Optional[Tuple[Any, ...]]): Example tuple inputs for this quantized model. Only available for fx_graph mode quantization. Default is None.
-        kwargs (Optional[Dict[str, Any]]): Example dict inputs for this quantized model. Only available for fx_graph mode quantization. Default is None.
-        export_dir (Union[Path, str]): The target export directory. This could be a string or a pathlib.Path(string) object.
-        quant_mode (QuantizationMode): The quantization mode. The choice includes "QuantizationMode.eager_mode" and "QuantizationMode.fx_graph_mode". Default is "QuantizationMode.eager_mode".
-        compressed (bool): export the compressed (real quantized) model or QDQ model, Default is False and export the QDQ model
-        reorder (bool): pack method, uses pack the weight(eg. packs four torch.int8 value into one torch.int32 value). Default is True
+    :param torch.nn.Module model: The quantized model to be saved.
+    :param str model_type: The type of the model, e.g. gpt2, gptj, llama or gptnext.
+    :param Optional[Tuple[Any, ...]] args: Example tuple inputs for this quantized model. Only available for fx_graph mode quantization. Default is ``None``.
+    :param Optional[Dict[str, Any]] kwargs: Example dict inputs for this quantized model. Only available for fx_graph mode quantization. Default is ``None``.
+    :param Union[Path, str] export_dir: The target export directory.
+    :param QuantizationMode quant_mode: The quantization mode. The choice includes ``QuantizationMode.eager_mode`` and ``QuantizationMode.fx_graph_mode``. Default is ``QuantizationMode.eager_mode``.
+    :param bool compressed: Export the compressed (real quantized) model or QDQ model, Default is ``False`` and it exports the QDQ model.
+    :param bool reorder: pack method, uses pack the weight (eg. packs four ``torch.int8`` value into one ``torch.int32`` value). Default is ``True``.
 
-    Returns:
-        None
+    :return: None
 
-    **Examples**:
+    Examples:
 
-        .. code-block:: python
+    .. code-block:: python
 
-            # eager mode:
-            from quark.torch import save_params
-            save_params(model, model_type=model_type, export_dir="./save_dir")
+        # eager mode:
+        from quark.torch import save_params
+        save_params(model, model_type=model_type, export_dir="./save_dir")
 
-        .. code-block:: python
+    .. code-block:: python
 
-            # fx_graph mode:
-            from quark.torch.export.api import save_params
-            save_params(model,
-                        model_type=model_type,
-                        args=example_inputs,
-                        export_dir="./save_dir",
-                        quant_mode=QuantizationMode.fx_graph_mode)
+        # fx_graph mode:
+        from quark.torch.export.api import save_params
+        save_params(model,
+                    model_type=model_type,
+                    args=example_inputs,
+                    export_dir="./save_dir",
+                    quant_mode=QuantizationMode.fx_graph_mode)
     """
     logger.info("Start saving parameters of quantized model ...")
     export_dir = Path(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
     if quant_mode is QuantizationMode.eager_mode:
+        if not is_safetensors_available():
+            raise ImportError(
+                "The function `save_params` with `quant_mode=QuantizationMode.eager_mode` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
+            )
         params_dict: Dict[str, torch.Tensor] = {}
         builder = NativeModelInfoBuilder(model=model, config=JsonExporterConfig())
         info = builder.build_model_info(params_dict, compressed=compressed, reorder=reorder)
@@ -434,18 +483,33 @@ def save_params(model: nn.Module,
     logger.info("Parameters of quantized model saved to {} successfully.".format(export_dir))
 
 
-@log_errors
 class ModelImporter:
     """
-    Provides an API for importing quantized Pytorch deep learning models.
+    Provides an API for importing quantized PyTorch deep learning models.
     This class load json-pth or json-safetensors files to model.
 
-    Args:
-        model_info_dir (str): The target import directory.
+    :param str model_info_dir: The target import directory.
+    :param str saved_format: Specifies the format to load from. This can be ``"quark_format"`` or ``"hf_format"`` (or ``"safetensors"``). Defaults to ``"quark_format"``.
+        multi_device (bool): Whether or not to use gpu + cpu mode to import models via "accelerate".
     """
+    SUPPORTED_FORMATS = ["quark_format", "hf_format", "safetensors"]
 
-    def __init__(self, model_info_dir: str) -> None:
+    def __init__(self, model_info_dir: str, saved_format: str = "quark_format", multi_device: bool = False) -> None:
         self.model_info_dir = model_info_dir
+
+        if saved_format not in self.SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Loading a model with `ModelImporter.import_model_info` using the format `format={format}` is not supported. Supported formats are 'quark_format', 'hf_format' and 'safetensors'."
+            )
+
+        self.saved_format = saved_format
+        self.multi_device = multi_device
+        self.model_config = self.get_model_config()
+
+        if self.model_config.weight_format == "fake_quantized":
+            self.is_real_quantized_mode = False
+        else:
+            self.is_real_quantized_mode = True
 
     def get_model_config(self) -> PretrainedConfig:
         model_config = PretrainedConfig(pretrained_dir=self.model_info_dir)
@@ -457,35 +521,44 @@ class ModelImporter:
 
     def import_model_info(self, model: nn.Module) -> nn.Module:
         """
-        This function aims to import quark(json-pth) files of the HuggingFace large language model.
+        Reloads a serialized quantized model, based on the non-quantized module.
 
-        It could recover the weight, bias, scale, and zeropoint information of the model and execute the inference
+        This function aims to import quark(json-pth) files of the Hugging Face large language model.
 
-        Parameters:
-            model (transformers.PreTrainedModel): The original HuggingFace large language model.
+        It could recover the weight, bias, scale, and zeropoint information of the model and execute the inference.
 
-        Returns:
-            model: Models that have completed weight import
-        **Examples**:
+        :param torch.nn.Module model: The original Hugging Face large language model.
 
-            .. code-block:: python
+        :return: Model with quantized weights and modules.
+        :rtype: torch.nn.Module
 
-                # default exporting:
-                import_model_dir = "./import_model_dir"
-                from quark.torch import ModelImporter
-                importer = ModelImporter(model_info_dir=args.import_model_dir)
-                model = importer.import_model_info(model)
+        Example:
+
+        .. code-block:: python
+
+            from quark.torch import ModelImporter
+
+            model_importer = ModelImporter(model_info_dir="./import_model_dir")
+            model = importer.import_model_info(model)
 
         """
-        logger.info("Start importing quark_format(pth_json) quantized model ...")
-        model_config = self.get_model_config()
-        model_state_dict = self.get_model_state_dict()
-        model = self.import_model(model, model_config, model_state_dict)
-        model.load_state_dict(model_state_dict)
-        logger.info("quark_format(pth_json) quantized model imported successfully.")
+        if self.saved_format == "quark_format":
+            logger.info("Start importing quark_format(pth_json) quantized model ...")
+            model_state_dict = self.get_model_state_dict()
+            model = self._build_model(model, self.model_config, model_state_dict)
+            model.load_state_dict(model_state_dict)
+            model = self._convert_model(model, self.model_config, model_state_dict)
+            logger.info("quark_format(pth_json) quantized model imported successfully.")
+        elif self.saved_format in ["safetensors", "hf_format"]:
+            model = import_hf_model(model_importer=self, model=model, model_info_dir=self.model_info_dir)
+        else:
+            raise ValueError(
+                f"Could not parse the format {self.saved_format} in ModelImporter.import_model_info. This is a bug, please open an issue."
+            )
+
         return model
 
-    def import_model(self, model: nn.Module, model_config: PretrainedConfig, model_state_dict: Dict[str,
+    def _build_model(self, model: nn.Module, model_config: PretrainedConfig, model_state_dict: Dict[str,
                                                                                                     Any]) -> nn.Module:
         """
         This function uses the loaded state_dict and config to build the model
@@ -512,22 +585,25 @@ class ModelImporter:
         else:
             quantization_config = Config.from_dict(model_config.quantization_config)
 
-        is_real_quantized_mode = True if model_config.weight_format in [None, "real_quantized"] else False
-
         if quantization_config.softmax_quant_spec is not None:
-            if is_real_quantized_mode:
-                get_quantize = partial(RealQuantizerBase.from_fake_quantizer,
+            if self.is_real_quantized_mode:
+                get_quantize = partial(get_real_quantizer,
                                        quantizer=None,
                                        reorder=False,
                                        real_quantized=False,
                                        float_dtype=torch.float32)
-                get_quantize = cast(Callable[[QuantizationSpec], Union[FakeQuantizeBase, RealQuantizerBase]],
-                                    get_quantize)
+                get_quantize = cast(
+                    Callable[[Union[QuantizationSpec, list[QuantizationSpec]]],
+                             Union[FakeQuantizeBase, RealQuantizerBase, SequentialQuantize, SequentialRealQuantizer]],
+                    get_quantize)
             else:
-                get_quantize = FakeQuantizeBase.get_fake_quantize
+                get_quantize = cast(
+                    Callable[[Union[QuantizationSpec, list[QuantizationSpec]]],
+                             Union[FakeQuantizeBase, RealQuantizerBase, SequentialQuantize, SequentialRealQuantizer]],
+                    FakeQuantizeBase.get_fake_quantize)
             prepare_for_attention_quant(model, quantization_config, get_quantize)
 
-        if is_real_quantized_mode:
+        if self.is_real_quantized_mode:
             logger.info("In-place OPs replacement start.")
             _map_to_quark(
                 model,
@@ -542,15 +618,55 @@ class ModelImporter:
             for name, float_module in tqdm(named_modules.items()):
                 layer_quantization_config = get_layer_quant_config(quantization_config, type(float_module), name)
                 if layer_quantization_config is not None and isinstance(float_module, nn.Linear):
+                    # Some QDQ buffers (`min_val`, `eps`, etc.) are not persistent
+                    # and will not be overriden from the checkpoint weights as
+                    # they are not saved in the checkpoint.
+                    # Thus, we need to initialize them on a materialized device.
+                    if float_module.weight.device.type == "meta":
+                        device = torch.device("cpu")
+                    else:
+                        device = float_module.weight.device
+
                     # TODO: add other types of modules, will del "original save_param and load_params in quantize_quark.py"
-                    quant_module = QuantLinear.from_float(float_module, layer_quantization_config)
+                    quant_module = QuantLinear.from_float(float_module, layer_quantization_config, device=device)
+                    # In import flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
+                    quant_module.register_buffer('export_enabled',
+                                                 torch.tensor([1], dtype=torch.uint8),
+                                                 persistent=False)
                     set_op_by_name(model, name, quant_module)
+            # enable observer and fake quant for dynamic quantization
             named_modules = dict(model.named_modules(remove_duplicate=False))
-            for name, module in named_modules.items():
-                if isinstance(module, FakeQuantizeBase):
-                    freezed_quantized_module = module.to_freezed_module()
-                    set_op_by_name(model, name, freezed_quantized_module)
+            for name, module in model.named_modules():
+                if isinstance(module, ScaledFakeQuantize):
+                    if module.is_dynamic and not (
+                            module.is_scale_quant and module.qscheme == QSchemeType.per_tensor
+                    ):  # For dynamic quantization, observer should be enable and update qparam every time.
+                        module.enable_observer()
+                        module.enable_fake_quant()
+                    else:
+                        module.disable_observer()
+                        module.enable_fake_quant()
+                elif isinstance(module, NonScaledFakeQuantize):
+                    module.enable_fake_quant()
         logger.info("Converting quantized ops end")
+
+        return model
+
+    def _convert_model(self, model: nn.Module, model_config: PretrainedConfig,
+                       model_state_dict: Dict[str, Any]) -> nn.Module:
+        """
+        This function uses the loaded state_dict and config to build the model
+        """
+        if model_config.quantization_config is None:
+            return model
+        custom_mode = model_config.quantization_config["quant_method"]
+        assert custom_mode in ["fp8", "awq", "quark"]
+        if custom_mode != "fp8":
+            return model
+
+        if self.is_real_quantized_mode and torch.version.hip is not None:
+            logger.info("In-place fp8 e4m3fn to e4m3fnuz conversion start.")
+            _convert_e4m3fn_to_e4m3fnuz(model)
 
         return model
 
@@ -577,5 +693,81 @@ def _map_to_quark(model: nn.Module, quantization_config: Config, pack_method: st
                 pack_method,
                 quant_config=layer_quantization_config,
             )
-
+            # for multi_device, hook can offer info.
+            if hasattr(float_module, "_hf_hook"):
+                hook = float_module._hf_hook
+                quark_hook = AlignDevicesHook(execution_device=hook.execution_device,
+                                              offload=hook.offload,
+                                              io_same_device=hook.io_same_device,
+                                              weights_map=hook.weights_map,
+                                              offload_buffers=hook.offload_buffers,
+                                              place_submodules=hook.place_submodules,
+                                              skip_keys=hook.skip_keys,
+                                              tied_params_map=hook.tied_params_map)
+                add_hook_to_module(qparams_linear, quark_hook)
             set_op_by_name(model, op_name, qparams_linear)
+            float_module.to("meta")
+            del float_module
+            # You have to add this func to lower the peak memory.
+            torch.cuda.empty_cache()
+
+
+def _convert_e4m3fn_to_e4m3fnuz(model: nn.Module) -> None:
+    """
+    Convert a model with QParamsLinear layers with fp8 weights to hip supported fp8 format.>
+
+    Parameters:
+        model (torch.nn.Module): An instance of the original not-quantized model. This model may be on `meta` device, or may have random weights.
+    """
+    if TPDeviceManager._tp_mesh is None:
+        return
+
+    named_modules = dict(model.named_modules(remove_duplicate=False))
+    for module_name, float_module in tqdm(named_modules.items()):
+        if isinstance(float_module, QParamsLinear):
+            qparams_linear = get_op_by_name(model, module_name)
+            # Use DTensor to speed up the conversion
+            placements = [Replicate()]
+            dweight = distribute_tensor(qparams_linear.weight.data.to(torch.float16),
+                                        device_mesh=TPDeviceManager._tp_mesh,
+                                        placements=placements)
+            dwscale = distribute_tensor(qparams_linear.weight_quantizer.scale.data,
+                                        device_mesh=TPDeviceManager._tp_mesh,
+                                        placements=placements)
+            dweight, dwscale = e4m3fn_to_e4m3fnuz(dweight, dwscale)
+
+            # Not always need to copy to CPU, if the GPU memory is enough, this step can be skip to save time.
+            if type(dweight) == DTensor and type(dwscale) == DTensor:
+                dweight = dweight.to_local().to('cpu')
+                dwscale = dwscale.to_local().to('cpu')
+
+            qparams_linear.weight = torch.nn.Parameter(dweight)
+            qparams_linear.weight_quantizer.scale = torch.nn.Parameter(dwscale)
+            set_op_by_name(model, module_name, qparams_linear)
+
+
+def _move_quantizer_to_dict(model: nn.Module) -> None:
+    """
+    Move the model's QParamsLinear quantizer to a dict which will work will tp
+
+    Parameters:
+        model (torch.nn.Module): An instance of the original not-quantized model. This model may be on `meta` device, or may have random weights.
+    """
+    dict_name = "_quant_dict"
+    quantizer_names = ["weight_quantizer", "input_quantizer", "output_quantizer", "bias_quantizer"]
+    named_modules = dict(model.named_modules(remove_duplicate=False))
+
+    for module_name, float_module in tqdm(named_modules.items()):
+        # If the current object have the quantizer specified as input names, update it to Nine and save to the dict.
+        if isinstance(float_module, (torch.nn.Linear, torch.nn.Module)):
+            if hasattr(float_module, dict_name):
+                qdict = {}
+                for quantizer_name in quantizer_names:
+                    if hasattr(float_module, quantizer_name):
+                        quantizer = getattr(float_module, quantizer_name, None)
+                        if quantizer is not None:
+                            qdict[quantizer_name] = quantizer
+                            setattr(float_module, quantizer_name, None)
+
+                if len(qdict) > 0:
+                    setattr(float_module, dict_name, qdict)

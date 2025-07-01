@@ -20,7 +20,7 @@
 #include <vector>
 #include <cmath>
 
-namespace vai_q {
+namespace quark_onnx {
 
 KernelCustomLSTM::KernelCustomLSTM(const OrtApi& api,
 		                   const OrtKernelInfo* info) : api_(api) {
@@ -243,4 +243,4 @@ void KernelCustomLSTM::Compute(OrtKernelContext* context) {
   }
 };
 
-}  // namespace vai_q
+}  // namespace quark_onnx

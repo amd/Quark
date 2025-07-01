@@ -3,8 +3,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-#pragma once
-
 #ifndef _INCLUDE_CUDA_BFP_KERNEL_H_
 #define _INCLUDE_CUDA_BFP_KERNEL_H_
 

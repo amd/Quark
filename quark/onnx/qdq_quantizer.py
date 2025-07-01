@@ -34,16 +34,15 @@ from onnxruntime.quantization.quant_utils import (
 )
 
 from .quant_utils import (
-    VitisQuantFormat,
     __producer__,
     __version__,
-    VitisQuantType,
+    ExtendedQuantType,
     FIX_OP_NAME,
     FIX_OP_DEFAULT_ATTRS,
-    BFPFIX_OP_NAME,
-    BFPFIX_OP_DEFAULT_ATTRS,
-    MXFIX_OP_NAME,
-    MXFIX_OP_DEFAULT_ATTRS,
+    COP_BFP_OP_NAME,
+    BFP_OP_DEFAULT_ATTRS,
+    COP_MX_OP_NAME,
+    MX_OP_DEFAULT_ATTRS,
     VAI_DOMAIN,
     COP_DOMAIN,
     COP_QUANT_OP_NAME,
@@ -71,22 +70,21 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
     """
     A class to perform quantization on an ONNX model using Quantize-Dequantize (QDQ) nodes.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        extra_options (Any, optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
-        OrtQDQQuantizer: Base class for ONNX QDQ quantization.
+        ``onnxruntime.quantization.qdq_quantizer.QDQQuantizer``: Base class for ONNX QDQ quantization.
     """
 
     def __init__(
@@ -120,6 +118,12 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         )
         self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
             "Int32Bias"]
+
+        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
+            "Int16Bias"]
+
+        if self.int16_bias:
+            self.int32_bias = True
 
         # weights-only quantization switch
         self.weights_only = False if "WeightsOnly" not in extra_options else extra_options["WeightsOnly"]
@@ -265,22 +269,21 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
     A class to perform quantization on an ONNX model using Quantize-Dequantize (QDQ) nodes
     optimized for NPU (Neural Processing Unit) Transformers.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
-        QDQQuantizer: Base class for ONNX QDQ quantization.
+        ``onnxruntime.quantization.qdq_quantizer.QDQQuantizer``: Base class for ONNX QDQ quantization.
     """
 
     def __init__(
@@ -314,6 +317,10 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
         )
         self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
             "Int32Bias"]
+        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
+            "Int16Bias"]
+        if self.int16_bias:
+            self.int32_bias = True
 
     def quantize_bias_tensor(self, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0) -> None:
         weight = find_by_name(bias_name, self.model.initializer())
@@ -379,38 +386,23 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
     """
     A class to perform Vitis-specific Quantize-Dequantize (QDQ) quantization on an ONNX model.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        calibrate_method (Any): The method used for calibration.
-        quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-        extra_options (Any, optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any calibrate_method: The method used for calibration.
+    :param Dict[Any, Any] quantized_tensor_type: Dictionary specifying quantized tensor types. Defaults to ``{}``.
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
         VitisONNXQuantizer: Base class for Vitis-specific ONNX quantization.
-
-    Attributes:
-        tensors_to_quantize (Dict[Any, Any]): Dictionary of tensors to be quantized.
-        bias_to_quantize (List[Any]): List of bias tensors to be quantized.
-        nodes_to_remove (List[Any]): List of nodes to be removed during quantization.
-        op_types_to_exclude_output_quantization (List[str]): List of op types to exclude from output quantization.
-        quantize_bias (bool): Whether to quantize bias tensors.
-        add_qdq_pair_to_weight (bool): Whether to add QDQ pairs to weights.
-        dedicated_qdq_pair (bool): Whether to create dedicated QDQ pairs for each node.
-        tensor_to_its_receiving_nodes (Dict[Any, Any]): Dictionary mapping tensors to their receiving nodes.
-        qdq_op_type_per_channel_support_to_axis (Dict[str, int]): Dictionary mapping op types to channel axis for per-channel quantization.
-        int32_bias (bool): Whether to quantize bias using int32.
-        weights_only (bool): Whether to perform weights-only quantization.
-
     """
 
     def __init__(
@@ -430,25 +422,6 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         quantized_tensor_type: Dict[Any, Any] = {},
         extra_options: Any = None,
     ):
-        """
-        Initializes the VitisQDQQuantizer with the provided configuration.
-
-        Args:
-            model (ModelProto): The ONNX model to be quantized.
-            per_channel (bool): Whether to perform per-channel quantization.
-            reduce_range (bool): Whether to reduce the quantization range.
-            mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-            static (bool): Whether to use static quantization.
-            weight_qType (Any): The quantization type for weights.
-            activation_qType (Any): The quantization type for activations.
-            tensors_range (Any): Dictionary specifying the min and max values for tensors.
-            nodes_to_quantize (List[str]): List of node names to be quantized.
-            nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-            op_types_to_quantize (List[str]): List of operation types to be quantized.
-            calibrate_method (Any): The method used for calibration.
-            quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-            extra_options (Any, optional): Additional options for quantization.
-        """
         self.calibrate_method = calibrate_method
         VitisONNXQuantizer.__init__(
             self,
@@ -473,7 +446,7 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         self.nodes_to_remove: List[Any] = []
 
         # Specific op types to exclude qdq quantization for their outputs.
-        # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, MatMul, Gemm
+        # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, Matmul, Gemm
         # because those ops may be followed by nodes that require high resolution inputs.
         # Adding QDQ for those ops' output may end up with worse accuracy.
         # So, we don't recommend to add QDQ to node's output under such condition.
@@ -495,6 +468,7 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         self.add_qdq_pair_to_weight = (False if extra_options is None or "AddQDQPairToWeight" not in extra_options else
                                        extra_options["AddQDQPairToWeight"])
 
+        # Whether to create dedicated QDQ pairs for each node.
         # The default behavior is that multiple nodes can share a QDQ pair as their inputs.
         # In TRT, QDQ pair can't be shared between nodes, so it will create dedicated QDQ pairs for each node.
         self.dedicated_qdq_pair = (False if extra_options is None or "DedicatedQDQPair" not in extra_options else
@@ -514,6 +488,10 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
             self.int32_bias = True
         if extra_options is not None and "Int32Bias" in extra_options:
             self.int32_bias = extra_options["Int32Bias"]
+        if extra_options is not None and "Int16Bias" in extra_options:
+            self.int16_bias = extra_options["Int16Bias"]
+            if self.int16_bias:
+                self.int32_bias = True
         if self.int32_bias and (self.weight_qType in ONNX_BFP_QTYPES_LIST
                                 or self.activation_qType in ONNX_BFP_QTYPES_LIST):
             self.int32_bias = False  # Cannot meet the requirement of bias_scale = input_scale * weight_scale
@@ -869,30 +847,23 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
     """
     A class to perform Vitis-specific Quantize-Dequantize (QDQ) quantization for NPU (Neural Processing Unit) on CNN models.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization (must be False for NPU).
-        reduce_range (bool): Whether to reduce the quantization range (must be False for NPU).
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights (must be QuantType.QInt8 for NPU).
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        calibrate_method (Any): The method used for calibration.
-        quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-        extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization (must be False for NPU).
+    :param bool reduce_range: Whether to reduce the quantization range (must be False for NPU).
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights (must be QuantType.QInt8 for NPU).
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any calibrate_method: The method used for calibration.
+    :param Dict[Any, Any] quantized_tensor_type: Dictionary specifying quantized tensor types. Defaults to ``{}``.
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
         VitisQDQQuantizer: Base class for Vitis-specific QDQ quantization.
-
-    Attributes:
-        tensors_to_quantize (Dict[Any, Any]): Dictionary of tensors to be quantized.
-        is_weight_symmetric (bool): Whether to enforce symmetric quantization for weights.
-        is_activation_symmetric (bool): Whether to enforce symmetric quantization for activations.
-
     """
 
     @log_errors
@@ -913,25 +884,6 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         quantized_tensor_type: Dict[Any, Any] = {},
         extra_options: Optional[Dict[str, Any]] = None,
     ):
-        """
-        Initializes the VitisQDQNPUCNNQuantizer with the provided configuration.
-
-        Args:
-            model (ModelProto): The ONNX model to be quantized.
-            per_channel (bool): Whether to perform per-channel quantization (must be False for NPU).
-            reduce_range (bool): Whether to reduce the quantization range (must be False for NPU).
-            mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-            static (bool): Whether to use static quantization.
-            weight_qType (Any): The quantization type for weights (must be QuantType.QInt8 for NPU).
-            activation_qType (Any): The quantization type for activations.
-            tensors_range (Any): Dictionary specifying the min and max values for tensors.
-            nodes_to_quantize (List[str]): List of node names to be quantized.
-            nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-            op_types_to_quantize (List[str]): List of operation types to be quantized.
-            calibrate_method (Any): The method used for calibration.
-            quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-            extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
-        """
         self.calibrate_method = calibrate_method
         VitisQDQQuantizer.__init__(
             self,
@@ -1134,6 +1086,9 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         convert_instance_norm_to_dpu_version = False
         if "ConvertInstanceNormToDPUVersion" in self.extra_options:
             convert_instance_norm_to_dpu_version = self.extra_options["ConvertInstanceNormToDPUVersion"]
+        convert_clip_to_dpu_version = False
+        if "ConvertClipToDPUVersion" in self.extra_options:
+            convert_clip_to_dpu_version = self.extra_options["ConvertClipToDPUVersion"]
 
         self.model.model, self.nodes_to_exclude = simulate_transforms(
             self.model.model,
@@ -1154,32 +1109,23 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
     """
     A class to perform extended Vitis-specific Quantize-Dequantize (QDQ) quantization.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        quant_format (Any): The format for quantization.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        calibrate_method (Any): The method used for calibration.
-        quantized_tensor_type (Dict[Any, Any]): Dictionary specifying quantized tensor types.
-        extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any calibrate_method: The method used for calibration.
+    :param Dict[Any, Any] quantized_tensor_type: Dictionary specifying quantized tensor types..
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
         VitisQDQQuantizer: Base class for Vitis-specific QDQ quantization.
-
-    Attributes:
-        tensors_to_quantize (Dict[Any, Any]): Dictionary of tensors to be quantized.
-        quant_format (Any): The format for quantization.
-        add_qdq_pair_to_weight (bool): Whether to add QDQ pair to weight (and bias).
-        fold_relu (bool): Whether to fold ReLU layers.
-
     """
 
     def __init__(
@@ -1188,7 +1134,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         per_channel: bool,
         reduce_range: bool,
         mode: QuantizationMode.QLinearOps,
-        quant_format: Any,
         static: bool,
         weight_qType: Any,
         activation_qType: Any,
@@ -1200,26 +1145,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         quantized_tensor_type: Dict[Any, Any],
         extra_options: Optional[Dict[str, Any]] = None,
     ):
-        """
-        Initializes the VitisExtendedQuantizer with the provided configuration.
-
-        Args:
-            model (ModelProto): The ONNX model to be quantized.
-            per_channel (bool): Whether to perform per-channel quantization.
-            reduce_range (bool): Whether to reduce the quantization range.
-            mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-            quant_format (Any): The format for quantization.
-            static (bool): Whether to use static quantization.
-            weight_qType (Any): The quantization type for weights.
-            activation_qType (Any): The quantization type for activations.
-            tensors_range (Any): Dictionary specifying the min and max values for tensors.
-            nodes_to_quantize (List[str]): List of node names to be quantized.
-            nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-            op_types_to_quantize (List[str]): List of operation types to be quantized.
-            calibrate_method (Any): The method used for calibration.
-            quantized_tensor_type (Dict[Any, Any]): Dictionary specifying quantized tensor types.
-            extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
-        """
         self.calibrate_method = calibrate_method
         VitisQDQQuantizer.__init__(
             self,
@@ -1239,9 +1164,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             extra_options,
         )
         self.tensors_to_quantize = {}
-
-        self.quant_format = quant_format
-        assert self.quant_format == VitisQuantFormat.QDQ
 
         # We add Q/DQ pair to weight (and bias) for float16 and bfloat16 by default,
         # which is aimed to avoid failure of data persistence check.
@@ -1351,16 +1273,16 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
     '''
 
     def _fn_name_and_attrs(self, qType: Any) -> tuple[str, Dict[str, Any]]:
-        if qType == VitisQuantType.QBFP:
-            fn_name = BFPFIX_OP_NAME
-            fn_attrs = copy.deepcopy(BFPFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for BFPFixNeuron
+        if qType == ExtendedQuantType.QBFP:
+            fn_name = COP_BFP_OP_NAME
+            fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
+            # Get attributes for custom BFP ops
             if self.extra_options is not None and "BFPAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["BFPAttributes"])
-        elif qType == VitisQuantType.QMX:
-            fn_name = MXFIX_OP_NAME
-            fn_attrs = copy.deepcopy(MXFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for MXFixNeuron
+        elif qType == ExtendedQuantType.QMX:
+            fn_name = COP_MX_OP_NAME
+            fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
+            # Get attributes for custom MX ops
             if self.extra_options is not None and "MXAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["MXAttributes"])
         else:
@@ -1677,7 +1599,7 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                     self._add_fn_pair_for_weight(initializer, tensor_info.axis, zp_type)
                 else:
                     if (zp_type is None and self.activation_qType in ONNX_BFP_QTYPES_LIST) or (
-                            zp_type is not None and zp_type in [VitisQuantType.QBFP, VitisQuantType.QMX]):
+                            zp_type is not None and zp_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]):
                         self._add_fn_pair_for_activation(tensor_name, '', '',
                                                          zp_type)  # BFP doesn't need scale and zero point
                         del self.tensors_to_quantize[tensor_name]
@@ -1860,6 +1782,9 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         convert_instance_norm_to_dpu_version = False
         if "ConvertInstanceNormToDPUVersion" in self.extra_options:
             convert_instance_norm_to_dpu_version = self.extra_options["ConvertInstanceNormToDPUVersion"]
+        convert_clip_to_dpu_version = False
+        if "ConvertClipToDPUVersion" in self.extra_options:
+            convert_clip_to_dpu_version = self.extra_options["ConvertClipToDPUVersion"]
 
         self.model.model, self.nodes_to_exclude = simulate_transforms(
             self.model.model,
@@ -1880,32 +1805,23 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
     """
     A class to perform Vitis-specific Block Floating Point (BFP) Quantization-Dequantization (QDQ) quantization.
 
-    Args:
-        model (ModelProto): The ONNX model to be quantized.
-        per_channel (bool): Whether to perform per-channel quantization.
-        reduce_range (bool): Whether to reduce the quantization range.
-        mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-        quant_format (Any): The format for quantization.
-        static (bool): Whether to use static quantization.
-        weight_qType (Any): The quantization type for weights.
-        activation_qType (Any): The quantization type for activations.
-        tensors_range (Any): Dictionary specifying the min and max values for tensors.
-        nodes_to_quantize (List[str]): List of node names to be quantized.
-        nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-        op_types_to_quantize (List[str]): List of operation types to be quantized.
-        calibrate_method (Any): The method used for calibration.
-        quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-        extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
+    :param onnx.ModelProto model: The ONNX model to be quantized.
+    :param bool per_channel: Whether to perform per-channel quantization.
+    :param bool reduce_range: Whether to reduce the quantization range.
+    :param QuantizationMode.QLinearOps mode: The quantization mode to be used.
+    :param bool static: Whether to use static quantization.
+    :param Any weight_qType: The quantization type for weights.
+    :param Any activation_qType: The quantization type for activations.
+    :param Any tensors_range: Dictionary specifying the min and max values for tensors.
+    :param List[str] nodes_to_quantize: List of node names to be quantized.
+    :param List[str] nodes_to_exclude: List of node names to be excluded from quantization.
+    :param List[str] op_types_to_quantize: List of operation types to be quantized.
+    :param Any calibrate_method: The method used for calibration.
+    :param Dict[Any, Any] quantized_tensor_type: Dictionary specifying quantized tensor types..
+    :param Any extra_options: Additional options for quantization. Defaults to ``None``.
 
     Inherits from:
         VitisQDQQuantizer: Base class for Vitis-specific QDQ quantization.
-
-    Attributes:
-        int32_bias (bool): Whether to quantize bias as int32.
-        is_activation_symmetric (bool): Whether to use symmetric quantization for activations.
-        quant_format (Any): The format for quantization.
-        fn_type: (string): The op type of the fix neuron.
-        fn_attrs (Dict[str, Any]): Attributes for BFP/MX fix neuron.
     """
 
     def __init__(self,
@@ -1913,7 +1829,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
                  per_channel: bool,
                  reduce_range: bool,
                  mode: QuantizationMode.QLinearOps,
-                 quant_format: Any,
                  static: bool,
                  weight_qType: Any,
                  activation_qType: Any,
@@ -1924,25 +1839,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
                  calibrate_method: Any,
                  quantized_tensor_type: Dict[Any, Any] = {},
                  extra_options: Optional[Dict[str, Any]] = None):
-        """
-        Initializes the VitisBFPQuantizer with the provided configuration.
-
-        Args:
-            model (ModelProto): The ONNX model to be quantized.
-            per_channel (bool): Whether to perform per-channel quantization.
-            reduce_range (bool): Whether to reduce the quantization range.
-            mode (QuantizationMode.QLinearOps): The quantization mode to be used.
-            static (bool): Whether to use static quantization.
-            weight_qType (Any): The quantization type for weights.
-            activation_qType (Any): The quantization type for activations.
-            tensors_range (Any): Dictionary specifying the min and max values for tensors.
-            nodes_to_quantize (List[str]): List of node names to be quantized.
-            nodes_to_exclude (List[str]): List of node names to be excluded from quantization.
-            op_types_to_quantize (List[str]): List of operation types to be quantized.
-            calibrate_method (Any): The method used for calibration.
-            quantized_tensor_type (Dict[Any, Any], optional): Dictionary specifying quantized tensor types.
-            extra_options (Optional[Dict[str, Any]], optional): Additional options for quantization.
-        """
         super().__init__(model, per_channel, reduce_range, mode, static, weight_qType, activation_qType, tensors_range,
                          nodes_to_quantize, nodes_to_exclude, op_types_to_quantize, calibrate_method,
                          quantized_tensor_type, extra_options)
@@ -1952,27 +1848,30 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             self.int32_bias = extra_options["Int32Bias"]
             logger.warning("Will not quantize Bias since do not support Int32Bias in BFP/MX mode")
 
+        if extra_options is not None and "Int16Bias" in extra_options and extra_options["Int16Bias"]:
+            self.int16_bias = extra_options["Int16Bias"]
+            if self.int16_bias:
+                self.int32_bias = True
+            logger.warning("Will not quantize Bias since do not support Int16Bias in BFP/MX mode")
+
         self.is_activation_symmetric = True
         if self.extra_options is not None and "ActivationSymmetric" in self.extra_options and not self.extra_options[
                 "ActivationSymmetric"]:
             self.is_activation_symmetric = self.extra_options["ActivationSymmetric"]
             logger.warning("Setting ActivationSymmetric to False has no effect on BFP/MX mode")
 
-        self.quant_format = quant_format
-        assert self.quant_format in [VitisQuantFormat.BFPFixNeuron, VitisQuantFormat.MXFixNeuron]
-
-        self.fn_name = ""
-        self.fn_attrs = {}
-        if self.quant_format == VitisQuantFormat.BFPFixNeuron:
-            self.fn_name = BFPFIX_OP_NAME
-            self.fn_attrs = copy.deepcopy(BFPFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for BFPFixNeuron
+        self.fn_name = COP_BFP_OP_NAME
+        self.fn_attrs = BFP_OP_DEFAULT_ATTRS
+        if weight_qType == ExtendedQuantType.QBFP and activation_qType == ExtendedQuantType.QBFP:
+            self.fn_name = COP_BFP_OP_NAME
+            self.fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
+            # Get attributes for custom BFP ops
             if extra_options is not None and "BFPAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["BFPAttributes"])
-        else:
-            self.fn_name = MXFIX_OP_NAME
-            self.fn_attrs = copy.deepcopy(MXFIX_OP_DEFAULT_ATTRS)
-            # Get attributes for MXFixNeuron
+        elif weight_qType == ExtendedQuantType.QMX and activation_qType == ExtendedQuantType.QMX:
+            self.fn_name = COP_MX_OP_NAME
+            self.fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
+            # Get attributes for custom MX ops
             if extra_options is not None and "MXAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["MXAttributes"])
 

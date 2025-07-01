@@ -1,1 +1,1 @@
-super-gradients
+super-gradients==3.7.1

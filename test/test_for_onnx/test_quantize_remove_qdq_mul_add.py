@@ -17,7 +17,8 @@ from quark.onnx.quantization.config.config import Config
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array([[0.36239759, 0.55816052, 0.28596501, 0.2115006]]).astype(np.float32)
-golden_output = np.array([[0.5625, -0.0390625, -0.0703125, 0.1484375]]).astype(np.float32)
+golden_output = np.array([[27.0, 15.5, 15.0, 19.0]]).astype(np.float32)
+
 
 class DataReader(CalibrationDataReader):
     def __init__(self, input_tensor):
@@ -43,12 +44,18 @@ class MultiMulAddModel(nn.Module):
         self.mul1 = nn.Linear(4, 4, bias=False)
         self.mul2 = nn.Linear(4, 4, bias=False)
         self.add = nn.Linear(4, 4, bias=False)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
         x1 = self.mul1(x) * 2
         x2 = self.mul2(x) * 3
         x = x1 + x2
         x = self.add(x)
+        x = x * 2 + 1
+        x = x * 5
+        x1 = self.relu(x)
+        x2 = x + 6
+        x = x1 + x2
         return x
 
 
@@ -76,6 +83,7 @@ def prepare_model(output_dir: str):
 def prepare_config(config):
     config_copy = copy.deepcopy(config)
     config_copy.extra_options['RemoveQDQMulAdd'] = True
+    config_copy.debug_mode = True
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
@@ -121,8 +129,9 @@ def tensor_quantize(input_data, output_dir: str):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_MultiMulAddModel(self, tmpdir: str):
-        with self.assertLogs('quark.onnx.tools.remove_qdq_mul_add_screen', level='INFO') as cm:
+        with self.assertLogs('quark.onnx.tools.remove_qdq_mul_add_screen', level='DEBUG') as cm:
             output, quantized_model_path = tensor_quantize(input_data, output_dir=tmpdir)
+        self.assertTrue(any("Skip pattern match: output of DequantizeLinear" in message for message in cm.output))
         self.assertTrue(any("Removed QuantizeLinear & DequantizeLinear operations: mul-add." in message for message in cm.output))
         comp_equal = np.allclose(output, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)

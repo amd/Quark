@@ -237,41 +237,34 @@ class TestTensorQuantize(unittest.TestCase):
 
     @use_temporary_directory
     def test_quantize_random_input_with_specific(self, tmpdir: str):
-        np.random.seed(6)
-        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='float'), np.array([[-0.9936558]]), atol=1e-1)
+        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='float'), np.array([[-0.9953757]]), atol=1e-1)
         self.assertEqual(comp_equal, True)
         delete_directory_content(tmpdir)
 
-        np.random.seed(6)
-        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='int8'), np.array([[-2.0879145]]), atol=1e-1)
+        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='int8'), np.array([[-1.9877828]]), atol=1e-1)
         self.assertEqual(comp_equal, True)
         delete_directory_content(tmpdir)
 
-        np.random.seed(6)
-        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='uint8'), np.array([[4.522602]]), atol=1e-1)
+        comp_equal = np.allclose(tensor_quantize_random_input_with_specific(output_dir=tmpdir, input_dtype='uint8'), np.array([[4.504177]]), atol=1e-1)
         self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
     def test_quantize_random_input_with_coarse(self, tmpdir: str):
-        np.random.seed(6)
-        comp_equal = np.allclose(tensor_quantize_random_input_with_coarse(output_dir=tmpdir), np.array([[-0.9670421]]), atol=1e-1)
+        comp_equal = np.allclose(tensor_quantize_random_input_with_coarse(output_dir=tmpdir), np.array([[-0.9756757]]), atol=1e-1)
         self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
     def test_quantize_random_input_with_abnormal(self, tmpdir: str):
-        np.random.seed(6)
         with self.assertRaises(ValueError) as context:
             tensor_quantize_random_input_with_abnormal(output_dir=tmpdir, abnormal_type='shape_key')
         self.assertIn(" Please check whether the parameter config.global_quant_config.extra_options[\"RandomDataReaderInputShape\"] is correct.", str(context.exception))
         delete_directory_content(tmpdir)
 
-        np.random.seed(6)
         with self.assertRaises(ValueError) as context:
             tensor_quantize_random_input_with_abnormal(output_dir=tmpdir, abnormal_type='range_key')
         self.assertIn(" Please check whether the parameter config.global_quant_config.extra_options[\"RandomDataReaderInputDataRange\"] is correct.", str(context.exception))
         delete_directory_content(tmpdir)
 
-        np.random.seed(6)
         with self.assertRaises(TypeError) as context:
             tensor_quantize_random_input_with_abnormal(output_dir=tmpdir, abnormal_type='dtype')
         self.assertIn("The RandomDataReaderInputShape must be a Dict[str, List[int]]", str(context.exception))

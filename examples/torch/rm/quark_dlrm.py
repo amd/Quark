@@ -152,12 +152,6 @@ def get_args():
         help="Whether export the compressed model",
     )
     parser.add_argument(
-        "--pack_reorder",
-        default=False,
-        action="store_true",
-        help="When True, 8 int4/uint4 values are packed into torch.int32 with packing order=[0, 2, 4, 6, 1, 3, 5, 7] i.e reorder, otherwise packing order=[0, 1, 2, 3, 4, 5, 6, 7].",
-    )
-    parser.add_argument(
         "--int8-configure-dir", type=str,
         default="./int8_configure.json",
         help="int8 recipe location"
@@ -208,10 +202,10 @@ def convert_int8_fx(
     int8_model_name: str,
     ds,
     compressed=False,
-    reorder=True,
 ):
     print("Get the validation data")
     dsx, lsi, lso, labels = ds.test_data.load_batch(range(0, max_batchsize))
+    model(dsx, lsi, lso)
     print("Quantizing the model using PT Quantizer")
 
     INT8_PER_TENSER_SPEC = QuantizationSpec(dtype=Dtype.uint8, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorHistogramObserverPro, symmetric=False, scale_type=ScaleType.float, round_method=RoundType.half_even, is_dynamic=False)
@@ -238,7 +232,7 @@ def convert_int8_fx(
 
     quantized_model(dsx, lsi, lso)
     freezeded_model = quantizer.freeze(quantized_model)
-    save_params(freezeded_model, model_type=int8_model_name, export_dir=int8_model_dir, compressed=compressed, reorder=reorder)
+    save_params(freezeded_model, model_type=int8_model_name, export_dir=int8_model_dir, compressed=compressed)
 
 def main():
     args = get_args()
@@ -287,6 +281,7 @@ def main():
         max_ind_range=args.max_ind_range,
         **kwargs,
     )
+    dsx, lsi, lso, labels = ds.test_data.load_batch(range(0, args.max_batchsize))
     # load model to backend
     model = backend.load(args, ds)
     # calibration
@@ -298,8 +293,7 @@ def main():
             args.int8_model_dir,
             args.int8_model_name,
             ds,
-            compressed=args.compressed,
-            reorder=args.pack_reorder
+            compressed=args.compressed
         )
 
 if __name__ == "__main__":

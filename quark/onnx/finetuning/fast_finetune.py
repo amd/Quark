@@ -10,13 +10,15 @@ from quark.onnx.finetuning.onnx_subgraph import Subgraph
 from quark.onnx.finetuning.torch_utils import optimize_module, setup_seed
 from quark.onnx.finetuning.onnx_evaluate import inference_model, average_L2
 from tqdm import tqdm
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 import time
 
 logger = ScreenLogger(__name__)
 
 
-def fast_finetune(float_model_path: str, quant_model_path: str, dr: Any, extra_options: Any) -> Any:
+def fast_finetune(float_model: Union[str, Path, onnx.ModelProto], quant_model: Union[str, Path, onnx.ModelProto],
+                  use_external_data_format: bool, data_reader: Any, extra_options: Any) -> Any:
     """ Fast finetune the quantized model to improving its accracy."""
 
     def _update_optimized_param(qmodel: Any, param_name: str, opt_param: Any) -> Any:
@@ -34,19 +36,18 @@ def fast_finetune(float_model_path: str, quant_model_path: str, dr: Any, extra_o
 
     selective_update = extra_options.get('FastFinetune', {}).get('SelectiveUpdate', False)
     dynamic_batch = extra_options.get('FastFinetune', {}).get('DynamicBatch', False)
-    parallel = extra_options.get('FastFinetune', {}).get('Parallel', False)
     data_size = extra_options.get('FastFinetune', {}).get('DataSize', None)
     output_index = extra_options.get('FastFinetune', {}).get('OutputIndex', None)
-    rmodel_path = extra_options.get('FastFinetune', {}).get('RefModelPath', None)
+    ref_model_path = extra_options.get('FastFinetune', {}).get('RefModelPath', None)
 
-    if rmodel_path is not None and os.path.exists(rmodel_path):
-        reference_model_path = rmodel_path
+    if ref_model_path is not None and isinstance(ref_model_path, str) and os.path.exists(ref_model_path):
+        reference_model = onnx.load(ref_model_path)
     else:
-        reference_model_path = float_model_path
+        reference_model = float_model if isinstance(float_model, onnx.ModelProto) else onnx.load(float_model)
 
     if selective_update:
-        float_results = inference_model(reference_model_path, dr, data_size, output_index)
-        quant_results = inference_model(quant_model_path, dr, data_size, output_index)
+        float_results = inference_model(reference_model, data_reader, data_size, output_index)
+        quant_results = inference_model(quant_model, data_reader, data_size, output_index)
         l2_distance = average_L2(float_results, quant_results)
         logger.info(f"Selective update for fast finetune, initial average L2 distance {l2_distance}")
 
@@ -56,14 +57,10 @@ def fast_finetune(float_model_path: str, quant_model_path: str, dr: Any, extra_o
     setup_seed(fixed_seed)
 
     logger.info(f"Start running fast finetune with seed {fixed_seed} ...")
-    sg = Subgraph(reference_model_path, quant_model_path, dr, extra_options)
+    sg = Subgraph(reference_model, quant_model, use_external_data_format, data_reader, extra_options)
 
-    if parallel:
-        assert (len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(sg.f_weight_list) == len(
-            sg.f_input_data_list) == len(sg.f_output_data_list) == len(sg.q_input_data_list))
-    else:
-        assert (len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(sg.f_weight_list) == len(
-            sg.f_input_data_list) == len(sg.f_output_data_list))
+    assert len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(
+        sg.f_weight_list), "The quantized model or float model has an incorrect number of subgraphs"
 
     onnx_inference_time = 0.0
     torch_training_time = 0.0
@@ -71,18 +68,22 @@ def fast_finetune(float_model_path: str, quant_model_path: str, dr: Any, extra_o
     # TODO: MUL GEMM shape
 
     for i, module in tqdm(enumerate(sg.subgraph_qmodel_list), total=len(sg.subgraph_qmodel_list)):
-
         # Prepare input and output data for fast finetune
         start_time = time.perf_counter()
-        if parallel:
+        if sg.mem_opt_level == 0:
+            f_input_data = np.array(sg.f_input_data_list[i])
+            f_output_data = np.array(sg.f_output_data_list[i])
+        else:
+            f_input_data, f_output_data = map(np.array, sg.get_f_input_output_data(i))
+
+        if sg.parallel:
             q_input_data = np.array(sg.q_input_data_list[i])
         else:
             q_input_data = np.array(sg.get_q_input_data(i))
         end_time = time.perf_counter()
         onnx_inference_time += (end_time - start_time)
 
-        f_input_data = np.array(sg.f_input_data_list[i])
-        f_output_data = np.array(sg.f_output_data_list[i])
+        # The following transformations require the arrays to expand one dimension before 'batch' dim
         f_input_data = f_input_data.reshape((-1, *f_input_data.shape[2:]))
         f_output_data = f_output_data.reshape((-1, *f_output_data.shape[2:]))
         q_input_data = q_input_data.reshape((-1, *q_input_data.shape[2:]))
@@ -114,7 +115,7 @@ def fast_finetune(float_model_path: str, quant_model_path: str, dr: Any, extra_o
 
         # If the L2 distance increased, restore the weight and bias
         if selective_update:
-            quant_results = inference_model(sg.qmodel, dr, data_size, output_index)
+            quant_results = inference_model(sg.qmodel, data_reader, data_size, output_index)
             l2_distance_new = average_L2(float_results, quant_results)
 
             if l2_distance_new < l2_distance:

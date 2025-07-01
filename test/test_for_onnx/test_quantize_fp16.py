@@ -153,6 +153,7 @@ def prepare_model(output_dir):
 
 def prepare_config():
     config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
+    config_copy.include_cle = False
     config_copy.extra_op_types_to_quantize = ['Cast']
     config_copy.extra_options['QuantizeFP16'] = True
     config_copy.extra_options['UseFP32Scale'] = True
@@ -161,6 +162,7 @@ def prepare_config():
 
 def prepare_no_fp16_flag_config():
     config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
+    config_copy.include_cle = False
     config_copy.extra_op_types_to_quantize = ['Cast']
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
@@ -235,7 +237,7 @@ class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fp16_constant_of_shape_node(self, tmpdir: str):
         model_path = prepare_constant_of_shape_model(tmpdir)
-        convert_fp16_scale_to_fp32(model_path, False)
+        convert_fp16_scale_to_fp32(model_path)
 
 
 if __name__ == '__main__':

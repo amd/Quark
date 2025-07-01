@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 
+import pytest
 import sys
 import random
 import torch
@@ -16,6 +17,7 @@ from quark.torch.pruning.config import Config, OSSCARConfig, BlockwiseTuningConf
 from quark.shares.utils.testing_utils import torch_device
 from quark.torch.algorithm.utils.module import get_dtype
 from quark.torch.pruning.model_transformation import prune_layer
+from quark.testing import skip_if_no_gpu, slow_test
 
 sys.path.append("..")
 
@@ -86,11 +88,16 @@ def llm_pruning_model(quant_config, dtype, model_name="Qwen/Qwen1.5-0.5B", multi
 
     return pruned_model
 
-
-def test_smoke_osscar():
+@slow_test
+@skip_if_no_gpu
+@pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16, torch.float32))
+def test_smoke_osscar(dtype):
     '''
         Pruning Algorithm: OSSCAR
     '''
+
+    if not torch.cuda.is_available() and dtype in (torch.float16, torch.bfloat16):
+        pytest.skip(f"This test with dtype {dtype} requires GPU support!")
 
     mlp_module = SimpleMLP(hidden_size, intermediate_size)
 
@@ -128,5 +135,4 @@ def test_smoke_osscar():
         epochs=1,
     )
 
-    for dtype in [torch.float16, torch.bfloat16, torch.float32]:
-        llm_pruning_model(pruning_config, dtype)
+    llm_pruning_model(pruning_config, dtype)

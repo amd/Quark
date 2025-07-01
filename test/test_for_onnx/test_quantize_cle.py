@@ -29,7 +29,7 @@ input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.96454802, 0.63258874, 0.30295267, 0.96720039],
                            [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float32)
 
-output_golden = np.array([[-0.5092657]], dtype=np.float32)
+output_golden = np.array([[-0.46227282]], dtype=np.float32)
 
 class DataReader(CalibrationDataReader):
 

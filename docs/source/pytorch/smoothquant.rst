@@ -1,20 +1,20 @@
 Activation/weight smoothing (SmoothQuant)
 =========================================
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark."
 
 AMD Quark supports through ``quark.torch`` a pre-processing step called SmoothQuant, introduced in `SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models <https://arxiv.org/abs/2211.10438>`__. Other libraries (for example, Brevitas) sometimes refer to SmoothQuant as **activation equalization**.
 
-The key idea of SmoothQuant is to apply a non-destructive rescaling on the weights and activations in order to balance out the distribution of the two. This means that SmoothQuant can be applied on a model alone, without quantization, and the model outputs would be identical to the original output.
+The key idea of SmoothQuant is to apply a non-destructive rescaling on the weights and activations in order to balance out the distribution of the two. This means that SmoothQuant can be applied to a model alone, without quantization, and the model outputs are identical to the original output.
 
-This is for example useful when later applying quantization, where the quantization difficulty is effectively then balanced between weights and activations, which typically results in better quantization results than without applying this pre-processing step.
+This is, for example, useful when later applying quantization, where the quantization difficulty is effectively then balanced between weights and activations, which typically results in better quantization results than without applying this pre-processing step.
 
 How does SmoothQuant work?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Let's take a linear layer, say
+Consider a linear layer, say
 
 .. math::
 
@@ -25,17 +25,23 @@ where :math:`x` is an activation of shape ``(batch_size, in_features)`` and :mat
 This is equivalent to
 
 .. math::
-    y = (x \frac{1}{s}) \times s^TW
 
-where :math:`s` is called a called the *scaling factor*, which is a scalar or of shape ``(1, in_features)``.
+    y = \left(x \frac{1}{s}\right) \times s^TW
 
-As weights are frozen/fixed at inference time, the scale :math:`s^T` can be fused ahead of time into an updated weight :math:`W' = s^TW`.
+where :math:`s` is called the *scaling factor*, which is a scalar or of shape ``(1, in_features)``.
 
-For activations, the scaling factor :math:`\frac{1}{s}` can be fused into a frozen preceding layer (AMD Quark approach), or in the worse case added as a pointwise ``mul`` node in the graph.
+Because weights are frozen/fixed at inference time, the scale :math:`s^T` can be fused ahead of time into an updated weight :math:`W' = s^TW`.
 
-In practice, for transformer-based networks, SmoothQuant is easily applied on the QKV projection, as well as on the first linear of the MLP (multi-layer perceptron) layer, as seen on the figure below. SmoothQuant may be applied on some other linear layers, for which special care needs to be taken when fusing the activation scale in the preceding layer:
+For activations, the scaling factor :math:`\frac{1}{s}` can be fused into a frozen preceding layer (AMD Quark approach), or in the worst case added as a pointwise ``mul`` node in the graph.
 
-* ``Linear1 -> activation -> Linear2``: This works well if the activation is pointwise linear (which may not be the case). Note however that the fusing of :math:`\frac{1}{s_2}` into ``Linear1`` weight might compromise its quantization.
+In practice, for transformer-based networks, SmoothQuant is easily applied on the QKV projection, as well as on the first linear of the MLP (Multi-Layer Perceptron) layer, as seen in the following figure. SmoothQuant might be applied on some other linear layers, for which special care needs to be taken when fusing the activation scale in the preceding layer:
+
+* ``Linear1 -> activation -> Linear2``: This works well if the activation is pointwise linear (which may not be the case).
+
+.. note::
+
+   Fusing of :math:`\frac{1}{s_2}` into ``Linear1`` weight might compromise its quantization.
+
 * ``Linear1 -> any linear op -> Linear2``: The fusing of :math:`\frac{1}{s_2}` into ``Linear1`` weight might compromise its quantization.
 
 SmoothQuant implementation in AMD Quark supports these cases as well.
@@ -46,23 +52,24 @@ SmoothQuant implementation in AMD Quark supports these cases as well.
 
    Simplified transformer architecture (based on llama), with SmoothQuant applied.
 
-If quantization is applied after this pre-processing, effectively the quantized tensors will be :math:`W' = s^TW` and :math:`x' = x \frac{1}{s}`, which may have a distribution less sensitive to quantization due to the rescaling.
+If quantization is applied after this pre-processing, effectively the quantized tensors are :math:`W' = s^TW` and :math:`x' = x \frac{1}{s}`, which might have a distribution less sensitive to quantization due to the rescaling.
 
 The scaling factor is defined as:
 
 .. math::
-    s = \frac{max(|x|)^\alpha}{max(|W|)^{(1 - \alpha)}}.
+    s = \frac{\max(|x|)^\alpha}{\max(|W|)^{(1 - \alpha)}}.
 
 Typically, the scaling factors are determined by using a calibration dataset that is run through the model in order to collect activation statistics.
 
 .. tip::
-    SmoothQuant has an hyperparameter ``alpha`` that specifies the balance between the quantization difficulty into weights and into activations.
 
-    * When weight-only quantization is used after smoothing, ``alpha = 0.0`` is recommended to shift all the quantization difficulty from the weights into from the activations.
-    * When activation-only quantization is used after smoothing, ``alpha = 1.0`` is recommended to shift all the quantization difficulty from the activations into the weights.
-    * When both weights and activations are quantized after smoothing, ``alpha`` must be tuned, but SmoothQuant paper typically recommends a value between 0.4 and 0.9 depending on the model.
+    SmoothQuant has a hyperparameter ``alpha`` that specifies the balance between the quantization difficulty in weights and in activations.
 
-In fact, we can verify the idea that SmoothQuant helps with lowering the output quantization error on a minimal dummy example that uses a single ``Linear`` layer, and a single ``LayerNorm`` to fold the activation scaling into.
+    * When weight-only quantization is used after smoothing, ``alpha = 0.0`` is recommended to shift all the quantization difficulty from the activations into the weights.
+    * When activation-only quantization is used after smoothing, ``alpha = 1.0`` is recommended to shift all the quantization difficulty from the weights into the activations.
+    * When both weights and activations are quantized after smoothing, ``alpha`` must be tuned, but the SmoothQuant paper typically recommends a value between 0.4 and 0.9 depending on the model.
+
+It is possible to verify the idea that SmoothQuant helps lower the output quantization error on a minimal dummy example that uses a single ``Linear`` layer and a single ``LayerNorm`` to fold the activation scaling into.
 
 .. container:: toggle
 
@@ -189,16 +196,17 @@ It is easy to check the difference in the weight and activation distribution bef
 .. figure:: ../_static/smoothquant/activation.png
    :align: center
 
-   Activation distribution is originally "hard" (activations distribution very narrow, will not be using many quantization bins).
+   Activation distribution is originally "hard" (activation distribution is very narrow, does not use many quantization bins).
 
-As seen on the figures, we can afford increasing weight quantization relative error, decreasing activation quantization relative error, with the benefit of overall decreasing the output error compared to the reference model.
+As seen in the figures, increasing the weight quantization relative error and decreasing the activation quantization relative error can benefit the model by overall decreasing the output error compared to the reference model.
+
 
 Using SmoothQuant in ``quark.torch``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The implementation of SmoothQuant in AMD Quark is designed for LLM models. One needs to define a pre-processing configuration:
 
-.. code:: python
+.. code-block:: python
 
     from quark.torch.quantization.config.config import SmoothQuantConfig, Config
 
@@ -223,7 +231,7 @@ The key ``model_decoder_layers`` is the named of a ``ModuleList`` module holding
 Examples of such configs can be found in ``quark/examples/torch/language_modeling/llm_ptq/models``. Here is an example for
 `Transformers' implementation of OPT <https://github.com/huggingface/transformers/blob/main/src/transformers/models/opt/modeling_opt.py>`__:
 
-.. code:: json
+.. code-block:: json
 
     {
         "name": "smooth",
@@ -249,12 +257,11 @@ Examples of such configs can be found in ``quark/examples/torch/language_modelin
         "model_decoder_layers": "model.decoder.layers"
     }
 
-..
-    TODO: Document AutoSmoothQuant. However currently having separate SmoothQuant/AutoSmoothQuant implementations is not ideal at all - they should be fused.
+
 
 .. raw:: html
 
-   <!-- 
+   <!--
    ## License
    Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
    -->

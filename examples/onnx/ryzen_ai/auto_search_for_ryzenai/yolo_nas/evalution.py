@@ -1628,8 +1628,8 @@ class Trainer:
                         item_device = inputs.device
                         input_item = {"input.1": inputs.cpu().numpy()}
                         output = self.ort_sess.run(None, input_item)
-                        output1 = torch.from_numpy(output[0]).to(item_device)
-                        output2 = torch.from_numpy(output[1]).to(item_device)
+                        output1 = torch.tensor(np.array(output[0])).to(item_device)
+                        output2 = torch.tensor(np.array(output[1])).to(item_device)
                         output = ((output1, output2))
                     else:
                         output = self.net(inputs)

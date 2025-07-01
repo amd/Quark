@@ -39,8 +39,8 @@ You can provide a folder containing PNG or JPG files as calibration data folder.
     wget -O calib_data/daisy.jpg https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification/cpu/test_images/daisy.jpg?raw=true
 
 
-Auto search for RyzenAI quantization
-------------------------------------
+Auto search for AMD Ryzen AI quantization
+-----------------------------------------
 
 - **build search space**
    Search space is a set of parameters to define the searching item. In the search space, we will list out all the possible combination of the config. An example is like below:

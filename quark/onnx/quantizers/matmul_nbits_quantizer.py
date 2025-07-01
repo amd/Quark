@@ -15,7 +15,6 @@ import numpy as np
 import numpy.typing as npt
 import onnx
 import torch
-from pathlib import Path
 
 from onnx.onnx_pb import GraphProto, ModelProto, NodeProto, TensorProto
 
@@ -288,11 +287,7 @@ class MatMulNBitsQuantizer:
             self.model.clean_initializers()
         elif self.algo_config.algorithm in ["GPTQ"]:
             from quark.onnx.gptq.gptq import GptqProcessor
-            import tempfile
-            gptq_path = tempfile.TemporaryDirectory(prefix="vai.quant.")
-            gptq_model_output = Path(gptq_path.name).joinpath("gptq_model.onnx").as_posix()
             gptq_processor = GptqProcessor(
-                gptq_model_output,
                 self.model_gptq,
                 self.model_gptq,
                 self.algo_config.calibration_data_reader,  # type: ignore[attr-defined]

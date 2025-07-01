@@ -11,29 +11,21 @@ BFP16 (Block floating point) Quantization
 Introduction
 ------------
 
-In this tutorial, we will learn how to use BFP16 data type with Quark.
+In this tutorial, you learn how to use the BFP16 data type with AMD Quark.
 
-BFP is short for block floating point. A floating point number consists
-of 1 sign bit, 8 exponent bits and 23 mantissa bits. The main idea of
-block floating point is a block of numbers sharing one exponent and the
-mantissa of each number shifting right accordingly.
+BFP is short for Block Floating Point. A floating-point number consists of one sign bit, eight exponent bits, and 23 mantissa bits. The main idea of Block Floating Point is a block of numbers sharing one exponent, and the mantissa of each number shifts right accordingly.
 
-This
-`paper <https://proceedings.neurips.cc/paper/2020/file/747e32ab0fea7fbd2ad9ec03daa3f840-Paper.pdf>`__
-introduces the attempt to apply BFP to deep neural networks(DNNs). The
-specific BFP16 is widely used across AI industry. The definition of
-BFP16 in quark is a block consisting of 8 numbers, the shared exponent
-consisting of 8 bits and the rest of each number consisting of 1 sign
-bit and 7 mantissa bits.
+This `paper <https://proceedings.neurips.cc/paper/2020/file/747e32ab0fea7fbd2ad9ec03daa3f840-Paper.pdf>`__ introduces an attempt to apply BFP to deep neural networks (DNNs). BFP16 is widely used across the AI industry. The definition of BFP16 in AMD Quark is a block consisting of eight numbers, the shared exponent consisting of eight bits, and the rest of each number consisting of one sign bit and seven mantissa bits.
 
-How to use BFP16 in Quark
--------------------------
 
-1. Install Quark:
-~~~~~~~~~~~~~~~~~
+How to use BFP16 in AMD Quark
+-----------------------------
 
-Follow the steps in the :doc:`installation guide <../install>` to
-install Quark
+
+1. Install AMD Quark
+~~~~~~~~~~~~~~~~~~~~
+
+Follow the steps in the :doc:`installation guide <../install>` to install AMD Quark.
 
 2. Set the model:
 ~~~~~~~~~~~~~~~~~
@@ -45,10 +37,8 @@ install Quark
    model.eval()
    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
 
-We are retrieving the model from
-`HuggingFace <https://huggingface.co/>`__ using their
-`Transformers <https://huggingface.co/docs/transformers/index>`__
-library. We are using the model facebook/opt-125m as an example
+The model is retrieved from `Hugging Face <https://huggingface.co/>`__ using their `Transformers <https://huggingface.co/docs/transformers/index>`__
+library. The ``facebook/opt-125m`` model is used as an example.
 
 3. Set the quantization configuration:
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -71,15 +61,13 @@ library. We are using the model facebook/opt-125m as an example
    DEFAULT_W_BFP16_PER_BLOCK_CONFIG = QuantizationConfig(weight=DEFAULT_BFP16_PER_BLOCK)
    quant_config = Config(global_quant_config=DEFAULT_W_BFP16_PER_BLOCK_CONFIG)
 
-In Quark, we store the 1 sign bit and 7 mantissa bits as a single int8,
-so the dtype should be ``Dtype.int8``. The observer class
-PerBlockBFPObserver is used for shared exponent calculation.
+In AMD Quark, the one sign bit and seven mantissa bits are stored as a single ``int8``, so the ``dtype`` is ``Dtype.int8``. The observer class ``PerBlockBFPObserver`` is used for shared exponent calculation.
+
 
 4. Do quantization
 ~~~~~~~~~~~~~~~~~~
 
-we initialize a ModelQuantizer with the quant_config constructed above
-and call the method ``quantize_model`` to do quantization:
+To perform quantization, initialize a ``ModelQuantizer`` with the ``quant_config`` constructed above and call the method ``quantize_model``:
 
 .. code:: python
 
@@ -92,15 +80,14 @@ and call the method ``quantize_model`` to do quantization:
 
 In practice, users should construct meaningful calibration datasets.
 
-How BFP16 works in Quark
-------------------------
+How BFP16 works in AMD Quark
+----------------------------
 
-Quantizing floating point tensor to BFP16 tensor consists of three main
-steps: getting shared exponent, shifting mantissas right accordingly and
-doing rounding on mantissa.
 
-We use the max exponent in each block as the shared exponent. Then we
-shift mantissa of each element right accordingly. Note that in BFP, the
-implicit one is included in mantissa. Finally, we do rounding and remove
-the trailing mantissa bits. Only the rounding method half_to_even has
-been supported by now.
+Quantizing a floating-point tensor to a BFP16 tensor consists of three main steps:
+
+1. Obtaining the shared exponent.
+2. Shifting mantissas right accordingly.
+3. Performing rounding on the mantissas.
+
+The maximum exponent in each block is used as the shared exponent. Then, the mantissa of each element is shifted right accordingly. Note that in BFP, the implicit one is included in the mantissa. Finally, rounding is performed and the trailing mantissa bits are removed. Currently, only the rounding method ``half_to_even`` is supported.

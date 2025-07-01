@@ -97,9 +97,14 @@ While Quark ONNX provides a granular API to handle diverse quantization scenario
     from quark.onnx.quantization.config.custom_config import get_default_config
 
     # Set up quantization with a specified configuration
-    # For example, use "XINT8" for Ryzen AI INT8 quantization
-    xint8_config = get_default_config("XINT8")
-    quantization_config = Config(global_quant_config=xint8_config )
+    # For example, use "A8W8" for Ryzen AI INT8 quantization
+    a8w8_config = get_default_config("A8W8")
+    quantization_config = Config(global_quant_config=a8w8_config )
+
+.. note::
+
+    The A8W8 configuration is our default setup. To minimize quantization time, accuracy-improvement strategies such as AdaRound or AdaQuant are not applied by default, which may lead to suboptimal accuracy in some cases. For better quantization accuracy, please refer to Section **How to Improve Quantization Accuracy** of :doc:`Float Scales (A8W8 and A16W8) Quantization <../supported_accelerators/ryzenai/tutorial_a8w8_and_a16w8_quantize>` page for details.
+
 
 4. Quantize the model
 ~~~~~~~~~~~~~~~~~~~~~
@@ -119,13 +124,13 @@ Once the model, input data, and quantization configuration are ready, quantizing
     quantizer = ModelQuantizer(quantization_config)
     quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
 
-The screenshots of the ResNet50 before and after quantization, viewed with Netron (https://netron.app), are shown in Figure 1. The original float model is shown on the left-hand side, and the right-hand side shows the "xint8" quantized model.
+The screenshots of the ResNet50 before and after quantization, viewed with Netron (https://netron.app), are shown in Figure 1. The original float model is shown on the left-hand side, and the right-hand side shows the "a8w8" quantized model.
 
-.. figure:: ../_static/float_and_xint8_quantized_resnet50.png
+.. figure:: ../_static/float_and_a8w8_quantized_resnet50.png
    :width: 80%
    :align: center
 
-   **Figure 1. Float and XINT8 Quantized ResNet50**
+   **Figure 1. Float and A8W8 Quantized ResNet50**
 
 .. note::
 

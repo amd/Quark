@@ -11,7 +11,13 @@ from onnx.onnx_ml_pb2 import TensorProto
 import onnxruntime
 import numpy as np
 from pathlib import Path
-from quark.onnx.operators.custom_ops import get_library_path
+from quark.onnx.operators.custom_ops import get_library_path, _COP_DOMAIN, _COP_QUANT_OP_NAME, _COP_DEQUANT_OP_NAME
+
+from quark.onnx.quant_utils import register_custom_ops_library
+try:
+    register_custom_ops_library(onnxruntime.SessionOptions(), "ROCM")
+except Exception as e:
+    print("Did not compile custom operations library on ROCm")
 
 
 def run(inputs: Any, output_dir: str) -> Any:
@@ -97,16 +103,16 @@ if __name__ == "__main__":
         graph_def = helper.make_graph(
             nodes=[
                 helper.make_node(
-                    "VitisQuantizeLinear",
+                    _COP_QUANT_OP_NAME,
                     ["x", "y_scale", "y_zero_point"],
                     ["q_out"],
-                    domain="com.vai.quantize",
+                    domain=_COP_DOMAIN,
                 ),
                 helper.make_node(
-                    "VitisDequantizeLinear",
+                    _COP_DEQUANT_OP_NAME,
                     ["q_out", "x_scale", "x_zero_point"],
                     ["y"],
-                    domain="com.vai.quantize",
+                    domain=_COP_DOMAIN,
                 )
             ] + quantize_param_nodes,
             name="test-qdq",

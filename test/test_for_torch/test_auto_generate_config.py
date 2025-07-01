@@ -12,7 +12,7 @@ from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.utils.auto_config import EasyGraph
 from transformers import AutoModelForCausalLM, AutoConfig
 from quark.shares.utils.testing_utils import torch_device
-import pytest
+from quark.testing import skip_if_no_gpu
 
 logger = ScreenLogger(__name__)
 logging = logger.info
@@ -149,7 +149,7 @@ def generate_config():
             f.write(json.dumps(parameterized_pair_config))
 
 
-@pytest.mark.gpu_test
+@skip_if_no_gpu  # TODO (tfernand): What is this all about? Many tests require GPU and have no @skip_if_no_gpu decorator
 def test_compare_generate_config_with_golden_config():
     generate_config()
     golden_config_dir = "golden_config_dir"

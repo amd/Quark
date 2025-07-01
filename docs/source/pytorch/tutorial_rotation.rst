@@ -13,24 +13,24 @@ Introduction
 
 Weight INT8 and Activation INT8 symmetric post-training quantization (W8A8) is one of the most common quantization methods supported by current hardware. It is highly compatible with hardware acceleration, facilitating efficient deployment on various platforms.
 
-Here we provide 4 most common quantization strategies of W8A8:
+The following are the four most common quantization strategies for W8A8:
 
 - Weight INT8 (per tensor) activation INT8 (per tensor) static quantization
 - Weight INT8 (per channel) activation INT8 (per tensor) static quantization
 - Weight INT8 (per channel) activation INT8 (per tensor) dynamic quantization
 - Weight INT8 (per channel) activation INT8 (per token) dynamic quantization
 
-Quark-Torch now offers two pre-optimizations that are friendly for W8A8 quantization:
+AMD Quark-Torch now offers two pre-optimizations that are suitable for W8A8 quantization:
 
-- Activation/weight smoothing (SmoothQuant). See more details :doc:`here <smoothquant>`.
+- Activation/weight smoothing (SmoothQuant). For more details, see :doc:`here <smoothquant>`.
 - `Rotation <https://arxiv.org/abs/2405.04532>`_ (R1 in `SpinQuant <https://arxiv.org/abs/2405.16406>`_ with Hadamard matrix)
 
-And sometimes we combine these 2 methods by smoothing ``Linear-Linear`` patterns(Smooth_fc_fc) in decoder layers and rotating ``RSMNorm-Linear`` patterns.
+Sometimes, these two methods are combined by smoothing ``Linear-Linear`` patterns (Smooth_fc_fc) in decoder layers and rotating ``RSMNorm-Linear`` patterns.
 
 Results
 -------
 
-Here we use meta-llama/Meta-Llama-3.1-8B-Instruct as example. We quantized all linear layers excluding "lm_head" with pre-trained Float16 model. (original Float16 model perplexity: 7.2155)
+In this example, ``meta-llama/Meta-Llama-3.1-8B-Instruct`` is used. All linear layers, excluding lm_head, are quantized using the pre-trained Float16 model (original Float16 model perplexity: 7.2155).
 
 +--------------------------------------------------------------------+--------------------+-------------------+------------------------------------------+
 | Quantization Strategy                                              | Smooth(alpha=0.85) | Smooth(alpha=0.5) | Smooth_fc_fc(alpha=0.5) + Rotation       |
@@ -61,8 +61,8 @@ Here we use meta-llama/Meta-Llama-3.1-8B-Instruct as example. We quantized all l
 Expanding with more models
 --------------------------
 
-We provide examples for some typical large language models (LLMs). However, if users want to try these strategies with new models, they may need to follow several steps.
+Examples are provided for some typical large language models (LLMs). However, if you want to try these strategies with new models, you may need to follow several steps.
 
-For Smooth, user could set hyperparameters and layer patterns manully with code or JSON file. Besides, we provide scripts for generating config automatically. 
+For Smooth, you can set hyperparameters and layer patterns manually with code or a JSON file. In addition, scripts are provided for generating the configuration automatically.
 
-For Rotation, users simply need to enable the rotation option. Quark-Torch supports analyzing the model structure with the torch.compile graph, helping users identify if there are any pattern layers that could be rotated. This feature is very user-friendly.
+For Rotation, you simply need to enable the rotation option. AMD Quark-Torch supports analyzing the model structure with the ``torch.compile`` graph, helping you identify if there are any pattern layers that could be rotated. This feature is user-friendly.

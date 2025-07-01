@@ -145,29 +145,27 @@ torch::Tensor mx(torch::Tensor& tensor, int block_size, int ebits, int mbits, in
 
 
 // Create python module via PYBIND11_MODULE macro
+
 #ifdef _WIN32
-PYBIND11_MODULE(custom_ops, m) {
-    m.def("bfp", &bfp, "A function that quantizes a tensor in BFP format");
-    m.def("bfp_prime", &bfp_prime, "A function that quantizes a tensor in BFP format by prime method");
-    m.def("mx", &mx, "A function that quantizes a tensor in MX format");
-}
-PYBIND11_MODULE(libcustom_ops, m) {
-    m.def("bfp", &bfp, "A function that quantizes a tensor in BFP format");
-    m.def("bfp_prime", &bfp_prime, "A function that quantizes a tensor in BFP format by prime method");
-    m.def("mx", &mx, "A function that quantizes a tensor in MX format");
-}
-#else
+
 #ifdef USE_CUDA
-PYBIND11_MODULE(libcustom_ops_gpu, m) {
-    m.def("bfp", &bfp, "A function that quantizes a tensor in BFP format");
-    m.def("bfp_prime", &bfp_prime, "A function that quantizes a tensor in BFP format by prime method");
-    m.def("mx", &mx, "A function that quantizes a tensor in MX format");
-}
+#define LIBRARY_FILE_NAME custom_ops_gpu
 #else
-PYBIND11_MODULE(libcustom_ops, m) {
+#define LIBRARY_FILE_NAME custom_ops
+#endif
+
+#else
+
+#ifdef USE_CUDA
+#define LIBRARY_FILE_NAME libcustom_ops_gpu
+#else
+#define LIBRARY_FILE_NAME libcustom_ops
+#endif
+
+#endif
+
+PYBIND11_MODULE(LIBRARY_FILE_NAME, m) {
     m.def("bfp", &bfp, "A function that quantizes a tensor in BFP format");
     m.def("bfp_prime", &bfp_prime, "A function that quantizes a tensor in BFP format by prime method");
     m.def("mx", &mx, "A function that quantizes a tensor in MX format");
 }
-#endif
-#endif

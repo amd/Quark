@@ -48,7 +48,7 @@ from onnxruntime.quantization.calibrate import TensorData
 from ..quant_utils import (
     __producer__,
     __version__,
-    VitisQuantType,
+    ExtendedQuantType,
     get_annotate_tensors,
     get_qdq_to_remove,
     remove_nodes,
@@ -97,6 +97,11 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         )
         self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
             "Int32Bias"]
+
+        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
+            "Int16Bias"]
+        if self.int16_bias:
+            self.int32_bias = True
 
         # weights-only quantization switch
         self.weights_only = False if extra_options is None or "WeightsOnly" not in extra_options else extra_options[
@@ -458,13 +463,14 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         # Scale weight and activation for floating point data types' quantization
         self.is_weight_scaled = True
-        if weight_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16, VitisQuantType.QBFP, VitisQuantType.QMX):
+        if weight_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                            ExtendedQuantType.QMX):
             self.is_weight_scaled = False if (extra_options is None
                                               or "WeightScaled" not in extra_options) else extra_options["WeightScaled"]
 
         self.is_activation_scaled = True
-        if activation_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16, VitisQuantType.QBFP,
-                                VitisQuantType.QMX):
+        if activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                                ExtendedQuantType.QMX):
             self.is_activation_scaled = False if (
                 extra_options is None or "ActivationScaled" not in extra_options) else extra_options["ActivationScaled"]
 
@@ -487,7 +493,7 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         self.nodes_to_remove: List[str] = []
 
         # Specific op types to exclude qdq quantization for their outputs.
-        # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, MatMul, Gemm
+        # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, Matmul, Gemm
         # because those ops may be followed by nodes that require high resolution inputs.
         # Adding QDQ for those ops' output may end up with worse accuracy.
         # So, we don't recommend to add QDQ to node's output under such condition.
@@ -538,14 +544,14 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                     "enable support.")
                 self.qdq_op_domain = ms_domain
 
-        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, QuantType.QInt16, VitisQuantType.QInt16,
-                                                     VitisQuantType.QInt32, VitisQuantType.QFloat16,
-                                                     VitisQuantType.QBFloat16, VitisQuantType.QBFP,
-                                                     VitisQuantType.QMX) if "WeightSymmetric" not in self.extra_options
-                                    else self.extra_options["WeightSymmetric"])
-        self.is_activation_symmetric = (activation_qType in (VitisQuantType.QFloat16, VitisQuantType.QBFloat16,
-                                                             VitisQuantType.QBFP,
-                                                             VitisQuantType.QMX) if "ActivationSymmetric"
+        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, QuantType.QInt16, ExtendedQuantType.QInt16,
+                                                     ExtendedQuantType.QInt32, ExtendedQuantType.QFloat16,
+                                                     ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
+                                                     ExtendedQuantType.QMX) if "WeightSymmetric"
+                                    not in self.extra_options else self.extra_options["WeightSymmetric"])
+        self.is_activation_symmetric = (activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16,
+                                                             ExtendedQuantType.QBFP,
+                                                             ExtendedQuantType.QMX) if "ActivationSymmetric"
                                         not in self.extra_options else self.extra_options["ActivationSymmetric"])
 
         self.quantization_params = self.calc_graph_quant_params()
@@ -560,6 +566,10 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             self.int32_bias = True
         if extra_options is not None and "Int32Bias" in extra_options:
             self.int32_bias = extra_options["Int32Bias"]
+        if extra_options is not None and "Int16Bias" in extra_options:
+            self.int16_bias = extra_options["Int16Bias"]
+            if self.int16_bias:
+                self.int32_bias = True
         if self.int32_bias and (self.weight_qType in ONNX_BFP_QTYPES_LIST
                                 or self.activation_qType in ONNX_BFP_QTYPES_LIST):
             self.int32_bias = False  # Cannot meet the requirement of bias_scale = input_scale * weight_scale

@@ -25,7 +25,7 @@ from quark.onnx.calibrate import create_calibrator_float_scale
 from quark.onnx.quant_utils import (CachedDataReader, RandomDataReader, check_and_create_path)
 from onnxruntime.quantization.calibrate import (CalibrationDataReader, CalibrationMethod, CalibraterBase)
 
-from typing import List, Dict, Any, Optional, Iterator
+from typing import List, Dict, Any, Optional, Iterator, Union
 from numpy.typing import NDArray
 
 logger = ScreenLogger(__name__)
@@ -308,19 +308,17 @@ def save_figure(calibrator: CalibraterBase, saved_path: Optional[str] = None) ->
 # Generate the percentile calibrator
 # Collect all data then save tensors to picture
 # Reset the DataReader
-def save_tensor_hist_figure(input_model_path: str,
+def save_tensor_hist_figure(input_model: Union[str, onnx.ModelProto],
                             dr: CalibrationDataReader,
                             output_figure_path: Optional[str] = None) -> None:
 
     # Need to reload & save the file if the input_model_path does not have write permissions
-    origin_input_model = onnx.load(input_model_path)
-    tmp_path = tempfile.TemporaryDirectory(prefix="vai.tools.")
-    tmp_model = Path(tmp_path.name).joinpath("converted.onnx").as_posix()
-    onnx.save(origin_input_model, tmp_model)
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+    tmp_path = tempfile.TemporaryDirectory(prefix="quark_onnx.tools.")
+
     # Generate the calibrator
-    # Need to save the augmented_model.onnx to tmp_path
     calibrator = create_calibrator_float_scale(
-        Path(tmp_model),
+        model,
         None,
         augmented_model_path=Path(tmp_path.name).joinpath("augmented_model.onnx").as_posix(),
         calibrate_method=CalibrationMethod.Percentile,

@@ -7,7 +7,7 @@ import unittest
 import torch
 import torch.nn as nn
 import numpy as np
-import onnxruntime
+import onnxruntime as ort
 
 from pathlib import Path
 from onnxruntime.quantization import CalibrationDataReader
@@ -32,8 +32,9 @@ input_data = np.array([[[[0.26619988, 0.73333566, 0.32430612, 0.56555123, 0.7856
                          [0.35564212, 0.58467473, 0.58606206, 0.27266265, 0.05458511],
                          [0.7195592, 0.20194915, 0.90723205, 0.96791405, 0.39916769],
                          [0.27560292, 0.40176254, 0.25091583, 0.39977971, 0.78865324]]]]).astype(np.float32)
-golden_output = np.array([[-0.3046875, -0.09375, -0.359375, -0.0234375, 0.0234375,
-                           -0.828125, 0.8046875, -0.2421875, -0.0703125, -0.6640625]]).astype(np.float32)
+
+golden_output = np.array([[0.02734375, 0.00390625, 0.0703125, -0.02539062, 0.07421875,
+                           -0.04980469, 0.07128906, -0.00488281, -0.07714844, -0.06054688]]).astype(np.float32)
 
 
 class DataReader(CalibrationDataReader):
@@ -69,16 +70,21 @@ class RemoveQDQBetweenOpsModel(nn.Module):
             nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=1),
             nn.PReLU()
         )
+        self.conv = nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=1)
+        self.relu1 = nn.PReLU()
+        self.relu2 = nn.ReLU()
         self.mul = nn.Linear(8 * 5 * 5, 10)
-        self.add = nn.Linear(10, 10)
 
     def forward(self, x):
         x = self.conv_relu(x)
         x = self.conv_leaky_relu(x)
         x = self.conv_prelu(x)
+        x = self.conv(x)
+        x1 = self.relu1(x)
+        x2 = self.relu2(x)
+        x = x1 + x2
         x = x.view(x.size(0), -1)
-        x = self.mul(x) * 0.5
-        x = self.add(x + 1.0)
+        x = self.mul(x)
         return x
 
 
@@ -105,12 +111,13 @@ def prepare_model(output_dir):
 
 def prepare_config(config, betweenops):
     config_copy = copy.deepcopy(config)
-    quant_config = Config(global_quant_config=config_copy)
     config_copy.extra_options['RemoveQDQConvRelu'] = False
     config_copy.extra_options['RemoveQDQConvLeakyRelu'] = False
     config_copy.extra_options['RemoveQDQConvPRelu'] = False
     config_copy.extra_options['RemoveQDQMulAdd'] = False
     config_copy.extra_options['RemoveQDQBetweenOps'] = betweenops
+    config_copy.debug_mode = True
+    quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
 
@@ -131,7 +138,9 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(input_data, quantized_model_path):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     output = sess.run([output_name], {input_name: input_data})
@@ -163,6 +172,14 @@ class TestTensorQuantize(unittest.TestCase):
         with self.assertLogs('quark.onnx.quantize_screen', level='WARNING') as cm:
             output, quantized_model_path = tensor_quantize(input_data, ('Conv', 'Relu'), tmpdir)
         self.assertTrue(any("'RemoveQDQBetweenOps' should be a list of (str, str) tuples. Actual: " in message for message in cm.output))
+        comp_equal = np.allclose(output, golden_output, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_MultiMulAddModel_skip_pattern_match(self, tmpdir: str):
+        with self.assertLogs('quark.onnx.tools.remove_qdq_between_ops_screen', level='DEBUG') as cm:
+            output, quantized_model_path = tensor_quantize(input_data, [('Conv', 'Relu')], tmpdir)
+        self.assertTrue(any("Skip pattern match: output of DequantizeLinear" in message for message in cm.output))
         comp_equal = np.allclose(output, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)
 

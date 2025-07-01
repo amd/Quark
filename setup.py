@@ -18,7 +18,7 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
   To make a wheel package:
     $ python setup.py sdist bdist_wheel -d $YOUR_TARGET
   To make a wheel package with specific python version and specific platform:
-    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET --python-tag py310 --plat-name=linux_x86_64
+    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET --python-tag py39 --plat-name=linux_x86_64
 
   By default, the generated version is X.Y.Z+git_commit_hash.
   For a nightly build, set the environment var QUARK_NIGHTLY=1 before building the wheel package.
@@ -64,7 +64,7 @@ class CustomBdistWheel(_bdist_wheel):
                     "libcustom_ops.so",
                     "libcustom_ops_gpu.so",
                     "custom_ops.dll",
-                    "custom_ops.pyd"
+                    "custom_ops_gpu.dll"
                 ]
                 for library_file in library_files:
                     library_path = os.path.join(library_dir, library_file)
@@ -172,5 +172,5 @@ if __name__ == '__main__':
           include_package_data=True,
           cmdclass=cmdclass,
           install_requires=install_requires,
-          python_requires='>=3.10.0,<3.13',
+          python_requires='>=3.9.0,<3.13',
           )

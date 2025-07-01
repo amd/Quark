@@ -16,6 +16,7 @@ import onnx
 from onnx import ModelProto, NodeProto
 from onnxruntime.quantization.onnx_model import ONNXModel
 
+from quark.onnx.quant_utils import get_tensor_to_consumer
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -33,9 +34,8 @@ def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[Tuple[str,
     """
 
     try:
-
+        tensor_to_consumer = get_tensor_to_consumer(model)
         nodes = model.graph.node
-
         nodes_to_remove = []
         edges_to_reconnect = []
 
@@ -47,8 +47,15 @@ def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[Tuple[str,
                     for input_name in lower_inputs:
                         dq_node = find_node_by_output(nodes, input_name)
                         if dq_node and dq_node.op_type == "DequantizeLinear":
-                            dq_input = dq_node.input[0]
+                            consumers = tensor_to_consumer[dq_node.output[0]]
+                            if len(consumers) > 1:
+                                consumer_str = ", ".join(f"{n.op_type}('{n.name}')" for n in consumers)
+                                logger.debug(
+                                    f"Skip pattern match: output of DequantizeLinear('{dq_node.name}') is connected to {len(consumers)} nodes: {consumer_str}."
+                                )
+                                continue
 
+                            dq_input = dq_node.input[0]
                             q_node = find_node_by_output(nodes, dq_input)
                             if q_node and q_node.op_type == "QuantizeLinear":
                                 q_input = q_node.input[0]

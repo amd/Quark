@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: MIT
 //
 
-#include <algorithm>
-#include <cstdint>
-#include <cmath>
 #include "bfp/cpu/bfp_kernel.h"
+
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 
-namespace vai_q {
+namespace quark_onnx {
   extern float float2bfloat_cpu(const float x, std::string str = "false");
 }
 
@@ -38,7 +38,7 @@ uint32_t GetMaxExponentCPU(const float* input, int n) {
 }
 
 float dpu_round(float x) {
-  return ((x < 0) && (x - floor(x) == 0.5))
+  return ((x < 0) && (x - std::floor(x) == 0.5))
               ? std::ceil(x)
               : std::round(x);
 }
@@ -279,7 +279,7 @@ void BFPPrimeCPUKernel(const float* input,
 
 void Float2BFloat(float* input, int n) {
   for (int i = 0; i < n; i++) {
-    *(input + i) = vai_q::float2bfloat_cpu(*(input + i), "false");
+    *(input + i) = quark_onnx::float2bfloat_cpu(*(input + i), "false");
   }
 }
 
