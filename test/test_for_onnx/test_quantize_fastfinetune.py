@@ -4,7 +4,7 @@
 #
 import unittest
 import numpy as np
-import onnxruntime
+import onnxruntime as ort
 import copy
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
@@ -35,23 +35,23 @@ input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.96454802, 0.63258874, 0.30295267, 0.96720039],
                            [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float32)
 
+
 output_tensor = np.array([[[[-0.13814753, 0.34536883, -0.16577704, 1.2502352],
-                            [-0.08288852, 0.29701722, 0.1519623, 0.8081631],
-                            [0.10361066, -0.15886967, -0.14505492, 1.409105],
-                            [0.46279424, -0.10361066, -0.13124016, 1.0291991],
-                            [-0.13124016, 0.12433279, 1.3538458, -0.12433279],
-                            [-0.08288852, 0.27629507, 0.33155409, 0.6423861],
-                            [1.4712713, -0.10361066, -0.04835164, -0.13814753],
-                            [-0.15886967, 0.1795918, 1.409105, -0.16577704],
-                            [1.3054942, -0.11051803, -0.04144426, 0.02762951],
-                            [1.3538458, -0.15886967, -0.16577704, 0.23485081],
-                            [-0.09670328, -0.04835164, 0.15886967, 1.1949762],
-                            [1.5679746, -0.16577704, -0.03453688, -0.16577704],
+                            [-0.08288852, 0.26248032, 0.08288852, 0.91177374],
+                            [-0.09670328, -0.09670328, -0.1519623, 1.5265303],
+                            [-0.03453688, -0.16577704, -0.16577704, 1.5541598],
+                            [-0.1174254, 0.10361066, 1.3331238, -0.1174254],
+                            [-0.08288852, 0.23485081, 0.18649918, 0.8357926],
+                            [1.4229196, -0.09670328, -0.02072213, -0.13124016],
+                            [-0.16577704, 0.1519623, 1.4229196, -0.16577704],
+                            [0.6147565, -0.1519623, -0.15886967, 1.0430139],
+                            [0.9255885, -0.16577704, -0.13124016, 0.7045525],
+                            [-0.1174254, 0.06216639, -0.0897959, 1.3331238],
+                            [1.5817894, -0.16577704, -0.06216639, -0.16577704],
                             [0.40753523, 0.02072213, 0.84960735, -0.08288852],
-                            [-0.1519623, 0.3868131, 1.1604394, -0.1174254],
+                            [-0.1519623 , 0.3868131, 1.1604394, -0.1174254],
                             [0.69073766, 0.01381475, 0.5664049, -0.08288852],
                             [-0.16577704, 0.25557294, 1.3331238, -0.14505492]]]]).astype(np.float32)
-
 
 # In order to cover all the op types we supported, we create a customized model here
 class CustomModel(torch.nn.Module):
@@ -150,7 +150,10 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(quantized_model_path):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor

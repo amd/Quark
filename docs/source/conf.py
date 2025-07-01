@@ -96,10 +96,14 @@ graphviz_output_format = 'svg'
 # rather than 'path/to/file:heading'
 autosectionlabel_prefix_document = True
 
+
+
 # Breathe Configuration
 breathe_projects = {
     "XRT":"../xml",
 }
+
+
 
 # Configuration for rst2pdf
 pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
@@ -107,6 +111,7 @@ pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
   # rst2pdf - name of the file that will be created
   # Sample rst2pdf doc - title of the pdf
   # Your Name - author name in the pdf
+
 
 # Configure 'Edit on GitHub' extension
 edit_on_github_project = '/amd/quark-documentation'
@@ -118,6 +123,7 @@ templates_path = ['_templates']
 # Expand/Collapse functionality
 def setup(app):
     app.add_css_file('custom.css')
+
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -166,6 +172,7 @@ todo_include_todos = False
 primary_domain = 'c'
 highlight_language = 'none'
 
+
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
@@ -181,6 +188,7 @@ if "READTHEDOCS" in os.environ:
     html_context["READTHEDOCS"] = True
 
 ##html_theme_path = ["./_themes"]
+
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
@@ -198,7 +206,7 @@ external_projects_current_project = "quark"
 html_theme_options = {
     # "flavor": "rocm-docs-home",
     "flavor": "local",
-    "repository_url": "https://github.com/amd/quark",
+    "repository_url": "https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark",
     "repository_provider": "github",
     "link_main_doc": False
 }
@@ -227,10 +235,12 @@ html_static_path = ['_static']
 #        'donate.html',
 #    ]}
 
+
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'ProjectName'
+
 
 # -- Options for LaTeX output ------------------------------------------------
 latex_engine = 'pdflatex'
@@ -260,6 +270,7 @@ latex_documents = [
      'AMD', 'manual'),
 ]
 
+
 # -- Options for manual page output ------------------------------------------
 
 # One entry per manual page. List of tuples
@@ -268,6 +279,7 @@ man_pages = [
     (master_doc, 'quark.tex', 'Quark',
      [author], 1)
 ]
+
 
 # -- Options for Texinfo output ----------------------------------------------
 
@@ -279,6 +291,7 @@ texinfo_documents = [
      author, 'AMD', 'One line description of project.',
      'Miscellaneous'),
 ]
+
 
 # -- Options for Epub output -------------------------------------------------
 
@@ -297,16 +310,23 @@ epub_title = project
 # A list of files that should not be packed into the epub file.
 epub_exclude_files = ['search.html']
 
+
+
+
 # -- Options for rinoh ------------------------------------------
+
 
 rinoh_documents = [dict(doc='index',        # top-level file (index.rst)
                         target='manual')]   # output file (manual.pdf)
+
+
 
 # -- Notfound (404) extension settings
 
 if "READTHEDOCS" in os.environ:
     components = urllib.parse.urlparse(os.environ["READTHEDOCS_CANONICAL_URL"])
     notfound_urls_prefix = components.path
+
 
 # -- Extension configuration -------------------------------------------------
 # At the bottom of conf.py

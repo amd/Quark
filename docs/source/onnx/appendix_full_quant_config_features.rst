@@ -64,6 +64,9 @@ Quantization Configuration
       tensor's distribution.
    -  quark.onnx.CalibrationMethod.Percentile: This method calculates
       quantization parameters using percentiles of the tensor values.
+   -  quark.onnx.LayerWiseMethod.LayerWisePercentile: This method calculates
+      quantization parameters using different percentiles for different layers 
+      according to minimize mean average error or mean square error loss value.
 
 *  **input_nodes**: (List of Strings) This parameter is a list of the
    names of the starting nodes to be quantized. Nodes in the model
@@ -263,6 +266,15 @@ Quantization Configuration
    -  **Percentile**: (Float) If the calibration method is set to
       'quark.onnx.CalibrationMethod.Percentile,' then this parameter can
       be set to the percentage for percentile. The default is 99.999.
+   -  **LWPMetric**: (String) If the calibration method is set to
+      'quark.onnx.LayerWiseMethod.LayerWisePercentile,' then this parameter can
+      be set to select the metric to judge the percentile value. The default is mae.
+   -  **ActivationBitWidth**: (Int) If the calibration method is set to
+      'quark.onnx.LayerWiseMethod.LayerWisePercentile', then this parameter can
+      be set to calculate the quantize/dequantize error. The default is 8.
+   -  **PercentileCandidates**: (List) If the calibration method is set to
+      'quark.onnx.LayerWiseMethod.LayerWisePercentile' then this parameter can
+      be set to the percentage for percentiles. The default is [99.99, 99.999, 99.9999].
    -  **UseRandomData**: (Boolean) Required to be true when the
       RandomDataReader is needed. The default value is false.
    -  **RandomDataReaderInputShape**: (Dict) It is required to use

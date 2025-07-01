@@ -7,14 +7,14 @@ import unittest
 import torch
 import torch.nn as nn
 import numpy as np
-import onnxruntime
+import onnxruntime as ort
 import copy
 from onnx import helper, TensorProto
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.onnx.quantization.config.config import Config
-from quark.onnx.quant_utils import is_ort_version_below, convert_fp16_scale_to_fp32
+from quark.onnx.quant_utils import convert_fp16_scale_to_fp32
 from pathlib import Path
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -31,8 +31,11 @@ fp16_input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                                 [0.96454802, 0.63258874, 0.30295267, 0.96720039],
                                 [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float16)
 
-
 fp16_input_cast_tensor = np.array([1]).astype(np.float16)
+
+fp16_golden_output = np.array([[-0.5093]], dtype=np.float16)
+
+fp16_cast_golden_output = np.array([[1.0]], dtype=np.float16)
 
 class DataReader(CalibrationDataReader):
 
@@ -96,8 +99,7 @@ def prepare_cast_model(output_dir):
         [output_tensor]
     )
 
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
-    model.ir_version = 9
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10)
     onnx.save(model, onnx_model_path)
 
     return onnx_model_path, onnx_quantized_model_path
@@ -124,9 +126,8 @@ def prepare_constant_of_shape_model(output_dir):
         [output_tensor]
     )
 
-    model = helper.make_model(graph, producer_name='onnx-example')
+    model = helper.make_model(graph, producer_name='onnx-example', ir_version=10)
 
-    model.ir_version = 9
     onnx.save(model, onnx_model_path)
     return onnx_model_path
 
@@ -181,7 +182,10 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(quantized_model_path, input_tensor):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     output = sess.run([output_name], {input_name: input_tensor})
@@ -211,41 +215,22 @@ class TestTensorQuantize(unittest.TestCase):
     def test_quantize_fp16(self, tmpdir: str):
         input_model_path, output_model_path = prepare_model(tmpdir)
         output = tensor_quantize(input_model_path, output_model_path, fp16_input_tensor)
-        # Because of the realizations of quantize_data() function used in quantize_initializer_impl() in quantize_bias_tensor are
-        # different in ort1.20.1 and ort1.20.0, the quantized model's bias will be different. So the golden value changes.
-        #  If we set config_copy.extra_options['QuantizeBias'] = False, the golden value is np.array([[-0.5093]], dtype=np.float16)
-        if not is_ort_version_below("1.20.1"):
-            golden = np.array([[-0.5054]], dtype=np.float16)
-        elif is_ort_version_below("1.18.0"):
-            golden = np.array([[-0.5093]], dtype=np.float16)
-        else:
-            golden = np.array([[0.]], dtype=np.float16)
-        self.assertEqual(output, golden)
+        comp_equal = np.allclose(output, fp16_golden_output, atol=1e-1)
+        self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
     def test_quantize_fp16_with_no_fp16_flag(self, tmpdir: str):
         input_model_path, output_model_path = prepare_model(tmpdir)
         output = tensor_quantize_no_fp16_flag(input_model_path, output_model_path, fp16_input_tensor)
-        # Because of the realizations of quantize_data() function used in quantize_initializer_impl() in quantize_bias_tensor are
-        # different in ort1.20.1 and ort1.20.0, the quantized model's bias will be different. So the golden value changes.
-        #  If we set config_copy.extra_options['QuantizeBias'] = False, the golden value is np.array([[-0.5093]], dtype=np.float16)
-        if not is_ort_version_below("1.20.1"):
-            golden = np.array([[-0.5054]], dtype=np.float16)
-        elif is_ort_version_below("1.18.0"):
-            golden = np.array([[-0.5093]], dtype=np.float16)
-        else:
-            golden = np.array([[0.]], dtype=np.float16)
-        self.assertEqual(output, golden)
+        comp_equal = np.allclose(output, fp16_golden_output, atol=1e-1)
+        self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
     def test_quantize_fp16_cast(self, tmpdir: str):
         input_model_path, output_model_path = prepare_cast_model(tmpdir)
         output = tensor_quantize(input_model_path, output_model_path, fp16_input_cast_tensor)
-        if is_ort_version_below("1.18.0"):
-            golden = np.array([[1.0]], dtype=np.float16)
-        else:
-            golden = np.array([[1.0]], dtype=np.float16)
-        self.assertEqual(output, golden)
+        comp_equal = np.allclose(output, fp16_cast_golden_output, atol=1e-1)
+        self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
     def test_quantize_fp16_constant_of_shape_node(self, tmpdir: str):

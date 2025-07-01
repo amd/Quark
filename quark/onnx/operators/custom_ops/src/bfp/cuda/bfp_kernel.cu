@@ -5,6 +5,7 @@
 
 #include "bfp/cuda/bfp_kernel.h"
 #include <stdio.h>
+#include <cstdint>
 #include <string>
 #include <cuda.h>
 #include <curand_kernel.h>

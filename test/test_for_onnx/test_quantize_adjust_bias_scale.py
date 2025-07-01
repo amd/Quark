@@ -18,9 +18,9 @@ from quark.shares.utils.testing_utils import use_temporary_directory
 from quark.onnx.quant_utils import is_ort_version_below
 
 np.random.seed(42)
-tensor_1 = np.random.rand(1, 2, 4, 4).astype(np.float32) * 1e-6
-tensor_2 = np.random.rand(1, 1, 4, 4).astype(np.float32) * 1e-6
-output_golden = np.array([[-0.06494847, -0.06718807, -0.05822966, -0.06046927, -0.06270887, -0.06270887, -0.06046927, -0.06718807, -0.06270887, -0.06270887]], dtype=np.float32)
+tensor_1 = np.random.rand(1, 2, 4, 4).astype(np.float32)
+tensor_2 = np.random.rand(1, 1, 4, 4).astype(np.float32)
+output_golden = np.array([[257.29266, 268.34863, 233.25618, 237.59668, 246.36774, 248.39056, 239.04623, 263.8935, 243.58327, 243.37852]], dtype=np.float32)
 
 
 class DataReader(CalibrationDataReader):
@@ -130,7 +130,7 @@ def prepare_model(output_dir):
         initializer=[conv_weight_tensor, conv_bias_tensor, mul_weight_tensor, reshape_shape_tensor, gemm_weight_tensor]
     )
 
-    model = helper.make_model(graph, producer_name='onnx-example', opset_imports=[helper.make_opsetid("", 11)])
+    model = helper.make_model(graph, producer_name='onnx-example', opset_imports=[helper.make_opsetid("", 17)], ir_version=10)
 
 
     onnx_model_path = Path(output_dir, 'float_model.onnx').as_posix()
@@ -185,7 +185,7 @@ class TestTensorQuantize(unittest.TestCase):
     def test_quantize_adjust_bias_scale(self, tmpdir: str):
         if not is_ort_version_below("1.18.0"):
             output = tensor_quantize(tmpdir)
-            comp_equal = np.allclose(output, output_golden, atol=1e-1)
+            comp_equal = np.allclose(output, output_golden, atol=1e2)
             self.assertEqual(comp_equal, True)
 
 

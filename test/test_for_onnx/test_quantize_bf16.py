@@ -104,7 +104,7 @@ def prepare_add_model(tmp_path):
     )
 
     opset_version = 13
-    model = helper.make_model(graph, producer_name='example_model', opset_imports=[helper.make_opsetid("", opset_version)])
+    model = helper.make_model(graph, producer_name='example_model', opset_imports=[helper.make_opsetid("", opset_version)], ir_version=10)
 
     onnx_model_path = Path(tmp_path, 'add_model.onnx').as_posix()
     onnx_quantized_model_path = Path(tmp_path, "add_bf16_model.onnx").as_posix()
@@ -138,7 +138,7 @@ def prepare_constant_model(tmp_path):
 
     graph = helper.make_graph(nodes = [constant_node], name = "ConstantGraph", inputs = [], outputs = [helper.make_tensor_value_info("const_output", onnx.TensorProto.FLOAT, [3])], initializer = [])
 
-    model = helper.make_model(graph, producer_name="constant-model")
+    model = helper.make_model(graph, producer_name="constant-model", ir_version=10)
     fp32_model_path = Path(tmp_path, 'constant_model.onnx').as_posix()
     bf16_model_path = Path(tmp_path, "bf16.onnx").as_posix()
     onnx.save(model, fp32_model_path)
@@ -156,7 +156,7 @@ def prepare_cast_model(tmp_path):
 
     graph = helper.make_graph(nodes = [cast_node, conv_node], name = "CastAndConvGraph", inputs = [input_tensor], outputs = [output_tensor], initializer = [weight_tensor])
 
-    model = helper.make_model(graph, producer_name="onnx-cast-and-conv-example")
+    model = helper.make_model(graph, producer_name="onnx-cast-and-conv-example", ir_version=10)
     fp32_model_path = Path(tmp_path, 'cast_model.onnx').as_posix()
     bf16_model_path = Path(tmp_path, "bf16.onnx").as_posix()
     onnx.save(model, fp32_model_path)
@@ -177,7 +177,7 @@ def prepare_2output_model(tmp_path):
 
     graph = helper.make_graph(nodes = [conv1_node, conv2_node], name = "TwoConvGraph", inputs = [input_tensor], outputs = [conv1_output_tensor, final_output_tensor], initializer = [conv1_weight, conv2_weight])
 
-    model = helper.make_model(graph, producer_name="onnx-two-conv-example")
+    model = helper.make_model(graph, producer_name="onnx-two-conv-example", ir_version=10)
     fp32_model_path = Path(tmp_path, '2output_model.onnx').as_posix()
     bf16_model_path = Path(tmp_path, "bf16.onnx").as_posix()
     onnx.save(model, fp32_model_path)

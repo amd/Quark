@@ -17,8 +17,6 @@ For further details on the features and capabilities of Quark, please refer to t
 """
 
 try:
-    from .version import __version__, git_version, is_release  # type: ignore[unused-ignore, import-not-found]
-    if git_version != "unknown" and not is_release:
-        __version__ += "+" + git_version
+    from .version import __version__  # type: ignore[unused-ignore, import-not-found]
 except ImportError:
     __version__ = 'unknown'

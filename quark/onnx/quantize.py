@@ -18,6 +18,7 @@ from onnxruntime.quantization.calibrate import (CalibrationDataReader, Calibrati
 from onnxruntime.quantization.quant_utils import (ms_domain, QuantizationMode, QuantType, QuantFormat)
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxsim import simplify
+from .calibrate import LayerWiseMethod
 from .calibrate import (create_calibrator_power_of_two, create_calibrator_float_scale)
 from .optimize import optimize
 from .equalization import cle_transforms, replace_all_clip6_to_relu
@@ -564,6 +565,9 @@ def quantize_static(
         ("Percentile", "percentile"),
         ("NumBins", "num_bins"),
         ("NumQuantizedBins", "num_quantized_bins"),
+        ("LWPMetric", "lwp_metric"),
+        ("ActivationBitWidth", "activation_bitwidth"),
+        ("PercentileCandidates", "percentile_candidates"),
     ]
     calib_extra_options = {
         key: extra_options.get(name)
@@ -758,7 +762,7 @@ def quantize_static(
                 quantized_tensor_type,
                 extra_options,
             )
-        elif calibrate_method in CalibrationMethod:
+        elif (calibrate_method in CalibrationMethod) or (calibrate_method in LayerWiseMethod):
             if quant_format is QuantFormat.QOperator:
                 quantizer = ONNXQuantizer(
                     model,

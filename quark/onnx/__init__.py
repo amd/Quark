@@ -6,6 +6,7 @@ from onnxruntime.quantization.calibrate import (CalibraterBase, CalibrationDataR
                                                 MinMaxCalibrater)
 from onnxruntime.quantization.quant_utils import (QuantizationMode, QuantFormat, QuantType, write_calibration_table)
 from .calibrate import (create_calibrator_power_of_two, create_calibrator_float_scale)
+from .calibrate import LayerWiseMethod
 from .qdq_quantizer import VitisExtendedQuantizer
 from .quant_utils import (PowerOfTwoMethod, VitisQuantType, VitisQuantFormat, dump_model, Int16Method)
 from .quantize import quantize_static

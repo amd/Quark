@@ -29,7 +29,7 @@ Stuck in the compilation phase for a long time (over ten minutes), the terminal 
 .. code-block:: bash
 
    [QUARK-INFO]: Configuration checking start.
-   [QUARK-INFO]: C++ kernel build directory [cache folder path]/torch_extensions/py39...
+   [QUARK-INFO]: C++ kernel build directory [cache folder path]/torch_extensions/py310...
 
 **Solution**:
 

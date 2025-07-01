@@ -3,9 +3,9 @@
 ## Installation
 
 1. Prerequisites
-    Python 3.9, 3.10, 3.11 or 3.12 is required. Python 3.13 is not supported at the moment.
+    Python 3.10, 3.11 or 3.12 is required. Python 3.13 is not supported at the moment.
     Install PyTorch for the compute platform(CUDA, ROCM, CPU...). Version of torch >= 2.2.0.
-    Install ONNX of version >= 1.16.0, ONNX Runtime of version ~= 1.17.0, onnxruntime-extensions of version >= 0.4.2
+    Install ONNX of version >= 1.16.0, ONNX Runtime of version ~= 1.22.0, onnxruntime-extensions of version >= 0.4.2
 
 2. Install quark wheel package in current path by
 

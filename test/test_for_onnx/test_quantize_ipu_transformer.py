@@ -4,7 +4,7 @@
 #
 import unittest
 import numpy as np
-import onnxruntime
+import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG, INT8_TRANSFORMER_ACCURATE_CONFIG, INT16_TRANSFORMER_DEFAULT_CONFIG, INT16_TRANSFORMER_ACCURATE_CONFIG
@@ -25,11 +25,11 @@ input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.96454802, 0.63258874, 0.30295267, 0.96720039],
                            [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float32)
 
-INT8_TRANSFORMER_golden_output = np.array([[0.4097347, -0.09403747, 0.06716962, -0.71199805, 0.44331953,
-                                            0.14777318, 0.27539545, 0.47018737, 0.6649793, 0.03358481]]).astype(np.float32)
+INT8_TRANSFORMER_golden_output = np.array([[0.14777318, 0.6985641, -0.7455828, -0.7858846, 0.24181065,
+                                            0.44331953, 0.12762229, 0.8799221, -0.10075444, -0.7321489]]).astype(np.float32)
 
-INT8_TRANSFORMER_ACCURATE_golden_output = np.array([[0.36263505, -0.28204948, 0.04700825, -0.75213194, 0.57081443,
-                                                     0.08058557, 0.26861855, 0.38278145, 0.7655629, 0.17460206]]).astype(np.float32)
+INT8_TRANSFORMER_ACCURATE_golden_output = np.array([[0.13430928, 0.69169277, -0.73198557, -0.8125711, 0.23504123,
+                                                     0.44322062, 0.12087835, 0.8998722, -0.11416288, -0.73198557]]).astype(np.float32)
 
 INT16_TRANSFORMER_golden_output = np.array([[0.13535856, 0.6938596, -0.7329068, -0.8139547, 0.2314869,
                                              0.44130704, 0.11938943, 0.8988707, -0.11625311, -0.7321228]]).astype(np.float32)
@@ -78,7 +78,10 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(quantized_model_path):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor

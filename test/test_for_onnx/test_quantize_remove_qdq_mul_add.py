@@ -7,17 +7,17 @@ import unittest
 import torch
 import torch.nn as nn
 import numpy as np
+import onnxruntime as ort
 
-import onnxruntime
+from pathlib import Path
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
 from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
 from quark.onnx.quantization.config.config import Config
-from pathlib import Path
+from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array([[0.36239759, 0.55816052, 0.28596501, 0.2115006]]).astype(np.float32)
-golden_output = np.array([[0.4375, -0.0625, -0.109375, 0.0546875]]).astype(np.float32)
-from quark.shares.utils.testing_utils import use_temporary_directory
+golden_output = np.array([[0.5625, -0.0390625, -0.0703125, 0.1484375]]).astype(np.float32)
 
 class DataReader(CalibrationDataReader):
     def __init__(self, input_tensor):
@@ -97,7 +97,10 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(input_data, quantized_model_path):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     output = sess.run([output_name], {input_name: input_data})

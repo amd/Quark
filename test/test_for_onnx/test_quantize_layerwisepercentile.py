@@ -1,17 +1,21 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import copy
 import unittest
 import numpy as np
-import onnxruntime as ort
-import copy
+import torch
+import torch.nn as nn
+import onnxruntime
+
+from pathlib import Path
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.onnx.quantization.config.config import Config
-from testing_utils import prepare_model_vit
 from quark.shares.utils.testing_utils import use_temporary_directory
+from quark.onnx.calibrate import LayerWiseMethod
 
 input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.06221361, 0.98258356, 0.38635129, 0.06492238],
@@ -26,10 +30,7 @@ input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
                            [0.96454802, 0.63258874, 0.30295267, 0.96720039],
                            [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float32)
 
-output_tensor = np.array([[
-    0.14102472, 0.72527003, -0.7118391, -0.78570914, 0.26861852, 0.42978963, 0.11416287, 0.8864411, -0.17460203, -0.7454164
-]]).astype(np.float32)
-
+output_golden = np.array([[-0.46227282]], dtype=np.float32)
 
 class DataReader(CalibrationDataReader):
 
@@ -50,10 +51,61 @@ class DataReader(CalibrationDataReader):
         self.index = 0
 
 
+class DoubleConvModel(nn.Module):
+
+    def __init__(self):
+        super(DoubleConvModel, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(1, 1)
+
+        with torch.no_grad():
+            self.conv2.weight *= 100.0
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = torch.clip(x, 0, 6)
+        x = self.global_avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+def prepare_model(output_dir):
+    torch.manual_seed(42)
+    model = DoubleConvModel()
+
+    dummy_input = torch.randn(1, 3, 4, 4)
+    onnx_model_path = Path(output_dir, 'double_conv_model.onnx').as_posix()
+    onnx_quantized_model_path = Path(output_dir, "double_conv_model_quantized.onnx").as_posix()
+    torch.onnx.export(model,
+                      dummy_input,
+                      onnx_model_path,
+                      input_names=['input'],
+                      output_names=['output'],
+                      opset_version=17)
+
+    print(f'Model has been saved to {onnx_model_path}')
+    return onnx_model_path, onnx_quantized_model_path
+
+
 def prepare_config():
     config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
-    config_copy.include_sq = True
-    config_copy.extra_options['SmoothAlpha'] = 0.8
+    config_copy.calibrate_method = LayerWiseMethod.LayerWisePercentile
+    quant_config = Config(global_quant_config=config_copy)
+    return quant_config
+
+
+def prepare_config_mse():
+    config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
+    config_copy.calibrate_method = LayerWiseMethod.LayerWisePercentile
+    config_copy.extra_options['LWPMetric'] = 'mse'
+    config_copy.extra_options['ActivationBitWidth'] = 8
+    config_copy.extra_options['PercentileCandidates'] = [99.99, 99.9999]
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
@@ -75,10 +127,7 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(quantized_model_path):
-    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
-    so = ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
+    sess = onnxruntime.InferenceSession(quantized_model_path)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor
@@ -87,10 +136,20 @@ def infer_quantized_model(quantized_model_path):
     return output
 
 
-def tensor_quantize_smooth_quant(output_dir):
-    input_model_path, output_model_path = prepare_model_vit(output_dir)
+def tensor_quantize(output_dir):
+    input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
     quant_config = prepare_config()
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    output = infer_quantized_model(quantized_model_path)
+    return output
+
+
+def tensor_quantize_mse(output_dir):
+    input_model_path, output_model_path = prepare_model(output_dir)
+    data_reader = prepare_data()
+    quant_config = prepare_config_mse()
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -100,8 +159,14 @@ def tensor_quantize_smooth_quant(output_dir):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize(self, tmpdir: str):
-        output = tensor_quantize_smooth_quant(tmpdir)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
+        output = tensor_quantize(tmpdir)
+        comp_equal = np.allclose(output, output_golden, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_mse(self, tmpdir: str):
+        output = tensor_quantize_mse(tmpdir)
+        comp_equal = np.allclose(output, output_golden, atol=1e-1)
         self.assertEqual(comp_equal, True)
 
 

@@ -18,13 +18,30 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
   To make a wheel package:
     $ python setup.py sdist bdist_wheel -d $YOUR_TARGET
   To make a wheel package with specific python version and specific platform:
-    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET --python-tag py39 --plat-name=linux_x86_64
+    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET --python-tag py310 --plat-name=linux_x86_64
+
+  By default, the generated version is X.Y.Z+git_commit_hash.
+  For a nightly build, set the environment var QUARK_NIGHTLY=1 before building the wheel package.
+    The resulting version will be X.Y.Z.devYYYYMMDD.
+  For a release build, set the environment var QUARK_RELEASE=1 before building the wheel package.
+    The resulting version will be X.Y.Z.
+
+  The version X.Y.Z is read from version.txt which lives in the repository.
 """
+
+def string_to_bool(s):
+    s = s.lower()
+    if s in ('true', '1', 'yes'):
+        return True
+    elif s in ('false', '0', 'no'):
+        return False
+    else:
+        raise ValueError("Invalid boolean string: {}".format(s))
 
 package_name = os.getenv("QUARK_WHEEL_NAME", "amd-quark")
 _version_txt = open("quark/version.txt", "r").read().strip()
-is_nightly = os.getenv('QUARK_NIGHTLY', 'false').lower() == 'true'
-is_release = os.getenv('QUARK_RELEASE', 'false').lower() == 'true'
+is_nightly = string_to_bool(os.getenv('QUARK_NIGHTLY', 'false')) is True
+is_release = string_to_bool(os.getenv('QUARK_RELEASE', 'false')) is True
 
 
 class CustomBdistWheel(_bdist_wheel):
@@ -142,9 +159,8 @@ if __name__ == '__main__':
     sha = get_git_hash()
     version_path = os_path_join(cwd, "quark", "version.py")
     with open(version_path, "w") as f:
-        f.write(f"__version__ = '{_version_txt}'\n")
+        f.write(f"__version__ = '{get_version(is_nightly, is_release)}'\n")
         f.write(f"git_version = '{sha}'\n")
-        f.write(f"is_release = {is_release}\n")
 
     setup(name=package_name,
           version=get_version(is_nightly, is_release),
@@ -156,5 +172,5 @@ if __name__ == '__main__':
           include_package_data=True,
           cmdclass=cmdclass,
           install_requires=install_requires,
-          python_requires='>=3.9.0,<3.13',
+          python_requires='>=3.10.0,<3.13',
           )

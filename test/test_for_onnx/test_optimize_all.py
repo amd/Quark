@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import onnx
-import onnxruntime
+import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader
 from quark.onnx import ModelQuantizer
 from quark.onnx.quantization.config.custom_config import XINT8_CONFIG, INT8_TRANSFORMER_DEFAULT_CONFIG
@@ -90,8 +90,8 @@ convert_clip_to_relu_golden_output = np.array([[[[0.2890625, 0.6171875, 0.453125
                                                  [0.1015625, 0.0703125, 0.3203125, 0.0703125],
                                                  [0.1328125, 0., 0., 0.0625]]]]).astype(np.float32)
 
-fuse_layer_norm_golden_output = np.array([[0.13433924, 0.6985641, -0.7321489, -0.8127524, 0.29554635,
-                                           0.43660256, 0.16792406, 0.900073, 0.02686785, -0.7321489]]).astype(np.float32)
+fuse_layer_norm_golden_output = np.array([[0.13433924, 0.69856405, -0.7321488, -0.8127524, 0.23509367,
+                                           0.43660253, 0.12090532, 0.90007293, -0.11418835, -0.7321488]]).astype(np.float32)
 
 fuse_gelu_golden_output = np.array([1.5], dtype=np.float32)
 
@@ -411,7 +411,10 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def infer_quantized_model(input_data, quantized_model_path):
-    sess = onnxruntime.InferenceSession(quantized_model_path)
+    # Disabling ORT Graph Optimization to achieve reproducible golden numbers across different servers
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(quantized_model_path, sess_options=so)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     output = sess.run([output_name], {input_name: input_data})

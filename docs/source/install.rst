@@ -8,12 +8,16 @@ If this is your first time setting up Quark, and want to try it out, this sectio
 that will run on a laptop without a GPU.
 When you are comfortable with the basic concepts you can come back to the following sections on this page for more advanced set up options.
 
-The suggested installation of AMD Quark is in a Python environment such as `Miniconda <https://docs.anaconda.com/miniconda/>`_.
+The suggested installation of AMD Quark is in a Python environment such as `Miniforge <https://github.com/conda-forge/miniforge>`_, but you can also use [Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install) or [Anaconda](https://www.anaconda.com/docs/getting-started/anaconda/install).
 You can then create an environment for Quark and its dependencies with:
 
 .. code-block:: bash
 
-   conda create -n AMD_Quark python=3.12
+   wget -O Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+   bash Miniforge3.sh -b -p "${HOME}/conda"
+   rm Miniforge3.sh
+   source "${HOME}/conda/etc/profile.d/conda.sh"
+   conda create -y -n AMD_Quark python=3.12
    conda activate AMD_Quark
 
 You may then use ``pip`` to install Quark from PyPI, and all dependencies.
@@ -21,7 +25,7 @@ You may then use ``pip`` to install Quark from PyPI, and all dependencies.
 .. note::
 
    On Windows it is common for developers to use a Linux environment with *WSL* (Windows Subsystem for Linux), by installing Ubuntu *via* the Microsoft Store.
-   In that case Linux installation instructions apply, and Miniconda is installed on Ubuntu.
+   In that case Linux installation instructions apply, and Miniforge is installed on Ubuntu.
    We suggest you do this for your first installation of Quark.
    It is also possible to install Quark on Windows directly.
    To do so, make sure to install the required dependencies as outlined in `Advanced Installation <#advanced>`_.
@@ -63,9 +67,9 @@ The rest of this guide gives more specific installation instructions for:
 Install Python
 ^^^^^^^^^^^^^^
 
-Python 3.9, 3.10, 3.11 or 3.12 is required. *Python 3.13 is not currently supported* by Quark's dependencies.
+Python 3.10, 3.11 or 3.12 is required. *Python 3.13 is not currently supported* by Quark's dependencies.
 
-On all platforms we recommend installing Python with an environment such as `Miniconda <https://docs.anaconda.com/miniconda/>`_,
+On all platforms we recommend installing Python with an environment such as `Miniforge <https://github.com/conda-forge/miniforge>`_,
 which will simplify installation of dependencies.
 
 .. note::
@@ -89,7 +93,7 @@ Verify your Python version is one of those supported with:
 
 You should see the version number returned e.g. ``Python 3.12.9``, which is fine.
 
-If you are using an Anaconda-based environment, such as Miniconda,
+If you are using an conda-based environment, such as Miniforge,
 we recommend that you install the following dependencies with ``pip install``.
 
 
@@ -209,8 +213,8 @@ Download and unzip 📥*amd_quark-\*.zip*, which has a wheel package in it.
 You can also download the wheel package 📥*amd_quark-\*.whl* directly.
 We strongly recommend downloading the ZIP file, as it includes examples compatible with the wheel package version.
 
-- `📥amd_quark.zip release_version (recommended) <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-@version@.zip>`__
-- `📥amd_quark.whl release_version <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-@version@-py3-none-any.whl>`__
+- `📥amd_quark.zip release_version (recommended) <https://download.amd.com/opendownload/Quark/amd_quark-@version@.zip>`__
+- `📥amd_quark.whl release_version <https://download.amd.com/opendownload/Quark/amd_quark-@version@-py3-none-any.whl>`__
 
 Directory Structure of the zip file:
 
@@ -292,6 +296,8 @@ Previous Versions of AMD Quark
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
+-  `quark_0.8.2.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.8.2.zip>`__
+-  `quark_0.8.1.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.8.1.zip>`__
 -  `quark_0.8.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.8.zip>`__
 -  `quark_0.7.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.7.zip>`__
 -  `quark_0.6.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.6.0.zip>`__

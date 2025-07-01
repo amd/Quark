@@ -1,8 +1,31 @@
 Release Notes
 ==============
 
-New Features (Version 0.8)
---------------------------
+Release 0.8.2
+-------------
+
+New Features
+^^^^^^^^^^^^
+
+**ONNX**
+
+* Added support for ONNX Runtime 1.22.0
+
+Release 0.8.1
+-------------
+
+Bug Fixes and Enhancements
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**ONNX**
+
+* Fixed BFP Kernel compilation issue for GCC 13
+
+Release 0.8
+-----------
+
+New Features
+^^^^^^^^^^^^
 
 -  **AMD Quark for PyTorch**
 

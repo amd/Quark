@@ -11,7 +11,7 @@
 # --------------------------------------------------------------------------
 from quark.shares.utils.log import ScreenLogger, log_errors
 from tqdm import tqdm
-
+from enum import Enum
 import numpy as np
 import onnx
 from pathlib import Path
@@ -19,6 +19,7 @@ from onnxruntime.quantization.calibrate import (CalibraterBase, CalibrationDataC
                                                 CalibrationMethod, MinMaxCalibrater as OrtMinMaxCalibrater,
                                                 EntropyCalibrater as OrtEntropyCalibrater, PercentileCalibrater as
                                                 OrtPercentileCalibrater)
+from onnxruntime.quantization.calibrate import HistogramCollector, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 from .quant_utils import (PowerOfTwoMethod, get_tensor_type_from_qType, quantize_data_pof2s, VitisQuantType)
 from typing import List, Dict, Any, Union, Optional, Sequence
@@ -32,6 +33,10 @@ calib_quant_type = [
     VitisQuantType.QInt32,
     VitisQuantType.QUInt32,
 ]
+
+
+class LayerWiseMethod(Enum):
+    LayerWisePercentile = 0
 
 
 class MinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
@@ -428,6 +433,128 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
         return thresholds_dict
 
 
+class LayerWisePercentileCalibrater(OrtPercentileCalibrater):  # type: ignore
+
+    def __init__(self,
+                 model_path: Union[str, Path],
+                 op_types_to_calibrate: Optional[Sequence[str]] = None,
+                 augmented_model_path: str = "augmented_model.onnx",
+                 use_external_data_format: bool = False,
+                 method: str = "percentile",
+                 symmetric: bool = False,
+                 num_bins: int = 2048,
+                 percentile: float = 99.999,
+                 lwp_metric: str = "mae",
+                 activation_bitwidth: int = 8,
+                 percentile_candidates: List[float] = [99.99, 99.999, 99.9999]):
+        """
+        :param model_path: ONNX model to calibrate. It is a model path
+        :param op_types_to_calibrate: operator types to calibrate. By default, calibrate all the float32/float16 tensors.
+        :param augmented_model_path: save augmented model to this path.
+        :param use_external_data_format: use external data format to store model which size is >= 2Gb
+        :param method: A string. One of ['entropy', 'percentile', 'distribution'].
+        :param symmetric: make range of tensor symmetric (central point is 0).
+        :param num_quantized_bins: number of quantized bins. Default 128.
+        :param percentile: A float number between [0, 100]. Default 99.99.
+        :param lwp_mtric: A str value which is use to judge the percentile's metric. One of ['mae', 'mse']. Default 'mae'.
+        :param activation_bitwithd.
+        :param percentile_candidates.
+        """
+        super().__init__(
+            model_path,
+            op_types_to_calibrate,
+            augmented_model_path,
+            use_external_data_format,
+            method=method,
+            symmetric=symmetric,
+            num_bins=num_bins,
+            percentile=percentile,
+        )
+        self.minmax_dict: Dict[str, float] = {}
+        self.percentile_dict: Dict[str, float] = {}
+        self.collector: Any = None
+        self.lwp_metric = lwp_metric
+        self.activation_bitwidth = activation_bitwidth
+        self.q_min = 0
+        self.q_max = 2**self.activation_bitwidth - 1
+        self.percentile_candidates = percentile_candidates
+
+    def collect_data(self, data_reader: CalibrationDataReader) -> None:
+        while True:
+            inputs = data_reader.get_next()
+            if not inputs:
+                break
+            self.intermediate_outputs.append(self.infer_session.run(None, inputs))
+
+        if len(self.intermediate_outputs) == 0:
+            raise ValueError("No data is collected.")
+
+        output_names = [self.infer_session.get_outputs()[i].name for i in range(len(self.intermediate_outputs[0]))]
+        output_dicts_list = [
+            dict(zip(output_names, intermediate_output)) for intermediate_output in self.intermediate_outputs
+        ]
+
+        merged_dict: Dict[str, Any] = {}
+        for d in output_dicts_list:
+            for k, v in d.items():
+                merged_dict.setdefault(k, []).append(v)
+
+        clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
+
+        if not self.collector:
+            self.collector = HistogramCollector(
+                method=self.method,
+                symmetric=self.symmetric,
+                num_bins=self.num_bins,
+                num_quantized_bins=self.num_quantized_bins,
+                percentile=self.percentile,
+                scenario=self.scenario,
+            )
+        self.collector.collect(clean_merged_dict)
+        # assign different percentiles to compute the tensors range
+        tensors_ranges_percentiles = []
+        for temp_percentile in self.percentile_candidates:
+            self.collector.percentile = temp_percentile
+            temp_ranges = self.collector.compute_percentile()
+            tensors_ranges_percentiles.append(temp_ranges)
+
+        baseline_tensors_range = tensors_ranges_percentiles[0]
+        for key in baseline_tensors_range.keys():
+            min_metric_value = 1000000.0
+            for idx in range(len(tensors_ranges_percentiles)):
+                temp_value = tensors_ranges_percentiles[idx][key]
+                q_min, q_max = self.q_min, self.q_max
+                temp_tensor = np.array(clean_merged_dict[key]).reshape(-1)
+                temp_scale = (temp_value[1] - temp_value[0]) / (q_max - q_min)
+                # Preventing spills of scale value
+                temp_scale = temp_scale + 1e-6
+                temp_zp = np.round(temp_value[0] / temp_scale - q_min)
+                q_temp_tensor = np.clip(np.round(temp_tensor / temp_scale - temp_zp), q_min, q_max)
+                qdq_temp_tensor = (q_temp_tensor + temp_zp) * temp_scale
+                if self.lwp_metric == "mse":
+                    temp_metric_value = np.mean((temp_tensor - qdq_temp_tensor)**2)
+                else:
+                    temp_metric_value = np.mean(np.abs(temp_tensor - qdq_temp_tensor))
+
+                if temp_metric_value < min_metric_value:
+                    min_metric_value = temp_metric_value
+                    self.minmax_dict[key] = temp_value
+                    self.percentile_dict[key] = self.percentile_candidates[idx]
+
+        self.clear_collected_data()
+
+    def compute_data(self) -> TensorsData:
+        """
+        Compute the min-max range of tensor
+        :return: dictionary mapping: {tensor name: (min value, max value)}
+        """
+        if not self.collector:
+            raise ValueError("No collector created and can't generate calibration data.")
+
+        cal = LayerWiseMethod.LayerWisePercentile
+        return TensorsData(cal, self.minmax_dict)
+
+
 def create_calibrator_power_of_two(
     model: Path,
     op_types_to_calibrate: List[str],
@@ -500,7 +627,7 @@ def create_calibrator_float_scale(
         model: Path,
         op_types_to_calibrate: Union[List[str], None],
         augmented_model_path: str = "augmented_model.onnx",
-        calibrate_method: CalibrationMethod = CalibrationMethod.MinMax,
+        calibrate_method: Union[CalibrationMethod, LayerWisePercentileCalibrater] = CalibrationMethod.MinMax,
         use_external_data_format: bool = False,
         execution_providers: Union[List[str], None] = ['CPUExecutionProvider'],
         extra_options: Dict[str, Any] = {},  # noqa: B006
@@ -574,6 +701,27 @@ def create_calibrator_float_scale(
             use_external_data_format=use_external_data_format,
             num_bins=num_bins,
             scenario=scenario,
+        )
+    elif calibrate_method == LayerWiseMethod.LayerWisePercentile:
+        num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
+        percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
+        symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
+        lwp_metric = "mae" if "lwp_metric" not in extra_options else extra_options["lwp_metric"]
+        activation_bitwidth = 8 if "activation_bitwidth" not in extra_options else extra_options["activation_bitwidth"]
+        percentile_candidates = [
+            99.99, 99.999, 99.99999
+        ] if "percentile_candidates" not in extra_options else extra_options["percentile_candidates"]
+        calibrator = LayerWisePercentileCalibrater(
+            model,
+            op_types_to_calibrate,
+            augmented_model_path,
+            use_external_data_format=use_external_data_format,
+            symmetric=symmetric,
+            num_bins=num_bins,
+            percentile=percentile,
+            lwp_metric=lwp_metric,
+            activation_bitwidth=activation_bitwidth,
+            percentile_candidates=percentile_candidates,
         )
 
     if calibrator:
