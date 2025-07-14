@@ -14,6 +14,7 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import re
 import sys
 import urllib.parse
 from datetime import datetime
@@ -25,9 +26,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath('_ext'))
 sys.path.insert(0, os.path.abspath('docs'))
 
-def get_version_from_file():
-    with open('version.txt', 'r') as f:
-        return f.read().strip()
+def get_version_from_file(version_file, full=True):
+    with open(version_file, 'r') as f:
+        version = f.read().strip()
+        if full:
+            return version
+        match = re.search(r"(\d+)(\.\d+)+", version)
+        return match.group(0)
+
 # -- Project information -----------------------------------------------------
 
 project = 'Quark'
@@ -35,9 +41,10 @@ copyright = '2024, Advanced Micro Devices, Inc'
 author = 'Advanced Micro Devices, Inc'
 
 # The short X.Y version
-version = '.'.join(get_version_from_file().split('.')[:2])
+version = get_version_from_file(os.path.join('..', '..', 'quark', 'version.txt'), full=False)
 # The full version, including alpha/beta/rc tags
-release = get_version_from_file()
+release = get_version_from_file(os.path.join('..', '..', 'quark', 'version.txt'), full=True)
+# The short X.Y version
 html_last_updated_fmt = datetime.now().strftime('%b %d, %Y')
 
 # -- General configuration ---------------------------------------------------
@@ -77,18 +84,13 @@ generate_autoapi_docs = "QUARK_SKIP_DOC_AUTOAPI" not in os.environ or os.environ
 if generate_autoapi_docs:
     extensions.append('sphinx.ext.autodoc')
 
-if "READTHEDOCS" not in os.environ:
-    # TODO: Pages from https://quark.docs.amd.com are built by readthedocs.com based on github.com/amd/quark-documentation repo
-    # which does not contain source-code, thus autoapi cannot be ran on READTHEDOCS infra
-    # Instead, we must run sphinx-build locally and submit the generated autoapi rst files to github.com/amd/quark-documentation
-    # where it will be used to build the public documentation page for Quark
-    if generate_autoapi_docs:
-        extensions.append('autoapi.extension')
-        autoapi_dirs = ['../../quark']
-        autoapi_keep_files = True
-        autoapi_add_toctree_entry = False
-        autoapi_options = ["members", "show-module-summary"]
-        autoapi_ignore = []
+if generate_autoapi_docs:
+    extensions.append('autoapi.extension')
+    autoapi_dirs = ['../../quark']
+    autoapi_keep_files = True
+    autoapi_add_toctree_entry = False
+    autoapi_options = ["members", "show-module-summary"]
+    autoapi_ignore = []
 
 graphviz_output_format = 'svg'
 
@@ -114,7 +116,7 @@ pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
 
 
 # Configure 'Edit on GitHub' extension
-edit_on_github_project = '/amd/quark-documentation'
+edit_on_github_project = '/amd/quark'
 edit_on_github_branch = 'main/docs'
 
 # Add any paths that contain templates here, relative to this directory.
@@ -206,7 +208,7 @@ external_projects_current_project = "quark"
 html_theme_options = {
     # "flavor": "rocm-docs-home",
     "flavor": "local",
-    "repository_url": "https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark",
+    "repository_url": "https://github.com/amd/quark",
     "repository_provider": "github",
     "link_main_doc": False
 }
