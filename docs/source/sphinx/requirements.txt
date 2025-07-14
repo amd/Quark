@@ -10,8 +10,10 @@ alabaster==1.0.0
     # via sphinx
 anyascii==0.3.3
     # via sphinx-autoapi
-astroid==3.3.11
-    # via sphinx-autoapi
+astroid==3.3.8
+    # via
+    #   -r source/sphinx/requirements.in
+    #   sphinx-autoapi
 babel==2.17.0
     # via
     #   pydata-sphinx-theme
