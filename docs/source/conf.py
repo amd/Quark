@@ -57,6 +57,7 @@ html_last_updated_fmt = datetime.now().strftime('%b %d, %Y')
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'autoapi.extension',
     'myst_parser',
     'sphinx.ext.graphviz',
     'breathe',
@@ -71,7 +72,6 @@ extensions = [
     'sphinx.ext.githubpages',
     'notfound.extension',
     'quark_version_substitution',
-    'quark_autoapi_build'
 	#'recommonmark',
 	#'sphinx_markdown_tables',
 	#'edit_on_github',
@@ -80,17 +80,12 @@ extensions = [
 	#'rst2pdf.pdfbuilder'
 ]
 
-generate_autoapi_docs = "QUARK_SKIP_DOC_AUTOAPI" not in os.environ or os.environ["QUARK_SKIP_DOC_AUTOAPI"].lower() in ("0", "false", "off")
-if generate_autoapi_docs:
-    extensions.append('sphinx.ext.autodoc')
-
-if generate_autoapi_docs:
-    extensions.append('autoapi.extension')
-    autoapi_dirs = ['../../quark']
-    autoapi_keep_files = True
-    autoapi_add_toctree_entry = False
-    autoapi_options = ["members", "show-module-summary"]
-    autoapi_ignore = []
+# Auto API settings
+autoapi_dirs = ['../../quark']
+autoapi_keep_files = True
+autoapi_add_toctree_entry = False
+autoapi_options = ["members", "show-module-summary"]
+autoapi_ignore = []
 
 graphviz_output_format = 'svg'
 
@@ -98,14 +93,10 @@ graphviz_output_format = 'svg'
 # rather than 'path/to/file:heading'
 autosectionlabel_prefix_document = True
 
-
-
 # Breathe Configuration
 breathe_projects = {
     "XRT":"../xml",
 }
-
-
 
 # Configuration for rst2pdf
 pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
@@ -113,7 +104,6 @@ pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
   # rst2pdf - name of the file that will be created
   # Sample rst2pdf doc - title of the pdf
   # Your Name - author name in the pdf
-
 
 # Configure 'Edit on GitHub' extension
 edit_on_github_project = '/amd/quark'
@@ -125,7 +115,6 @@ templates_path = ['_templates']
 # Expand/Collapse functionality
 def setup(app):
     app.add_css_file('custom.css')
-
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -159,12 +148,6 @@ language = 'en'
 # This patterns also effect to html_static_path and html_extra_path
 exclude_patterns = ['include', 'api_rst', '_build', 'Thumbs.db', '.DS_Store']
 
-# 'autoapi' pages are included on main index.rst by a sphinx extension (docs/source/_ext/quark_autoapi_build.py)
-# This is hacky, but needed to allow QUARK_SKIP_DOC_AUTOAPI=1 to pass without warnings during sphinx-build
-# that would the build to fail  when QUARK_DOC_FAIL_ON_WARNING=1
-if not generate_autoapi_docs:
-    exclude_patterns += ['autoapi']
-
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
@@ -173,7 +156,6 @@ todo_include_todos = False
 
 primary_domain = 'c'
 highlight_language = 'none'
-
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -190,7 +172,6 @@ if "READTHEDOCS" in os.environ:
     html_context["READTHEDOCS"] = True
 
 ##html_theme_path = ["./_themes"]
-
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
@@ -237,12 +218,10 @@ html_static_path = ['_static']
 #        'donate.html',
 #    ]}
 
-
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'ProjectName'
-
 
 # -- Options for LaTeX output ------------------------------------------------
 latex_engine = 'pdflatex'
@@ -272,7 +251,6 @@ latex_documents = [
      'AMD', 'manual'),
 ]
 
-
 # -- Options for manual page output ------------------------------------------
 
 # One entry per manual page. List of tuples
@@ -281,7 +259,6 @@ man_pages = [
     (master_doc, 'quark.tex', 'Quark',
      [author], 1)
 ]
-
 
 # -- Options for Texinfo output ----------------------------------------------
 
@@ -293,7 +270,6 @@ texinfo_documents = [
      author, 'AMD', 'One line description of project.',
      'Miscellaneous'),
 ]
-
 
 # -- Options for Epub output -------------------------------------------------
 
@@ -312,23 +288,16 @@ epub_title = project
 # A list of files that should not be packed into the epub file.
 epub_exclude_files = ['search.html']
 
-
-
-
 # -- Options for rinoh ------------------------------------------
-
 
 rinoh_documents = [dict(doc='index',        # top-level file (index.rst)
                         target='manual')]   # output file (manual.pdf)
-
-
 
 # -- Notfound (404) extension settings
 
 if "READTHEDOCS" in os.environ:
     components = urllib.parse.urlparse(os.environ["READTHEDOCS_CANONICAL_URL"])
     notfound_urls_prefix = components.path
-
 
 # -- Extension configuration -------------------------------------------------
 # At the bottom of conf.py
@@ -338,4 +307,3 @@ if "READTHEDOCS" in os.environ:
 #            'auto_toc_tree_section': 'Contents',
 #            }, True)
 #    app.add_transform(AutoStructify)
-
