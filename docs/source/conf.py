@@ -14,6 +14,7 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import re
 import sys
 import urllib.parse
 from datetime import datetime
@@ -23,9 +24,14 @@ from dataclasses import is_dataclass
 sys.path.insert(0, os.path.abspath('_ext'))
 sys.path.insert(0, os.path.abspath('docs'))
 
-def get_version_from_file():
-    with open('version.txt', 'r') as f:
-        return f.read().strip()
+def get_version_from_file(version_file, full=True):
+    with open(version_file, 'r') as f:
+        version = f.read().strip()
+        if full:
+            return version
+        match = re.search(r"(\d+)(\.\d+)+", version)
+        return match.group(0)
+
 # -- Project information -----------------------------------------------------
 
 project = 'AMD Quark'
@@ -33,9 +39,10 @@ copyright = '2024, Advanced Micro Devices, Inc'
 author = 'Advanced Micro Devices, Inc'
 
 # The short X.Y version
-version = '.'.join(get_version_from_file().split('.')[:2])
+version = get_version_from_file(os.path.join('..', '..', 'quark', 'version.txt'), full=False)
 # The full version, including alpha/beta/rc tags
-release = get_version_from_file()
+release = get_version_from_file(os.path.join('..', '..', 'quark', 'version.txt'), full=True)
+# The short X.Y version
 html_last_updated_fmt = datetime.now().strftime('%b %d, %Y')
 
 # -- General configuration ---------------------------------------------------
@@ -48,12 +55,13 @@ html_last_updated_fmt = datetime.now().strftime('%b %d, %Y')
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'autoapi.extension',
     'breathe',
     'myst_nb',
     'notfound.extension',
     'quark_version_substitution',
-    'quark_autoapi_build',
-    'toctree_filter',
+    'quark_jupyter_notebook_build',
+    'sphinx.ext.autodoc',
     'sphinx.ext.coverage',
     'sphinx.ext.doctest',
     'sphinx.ext.githubpages',
@@ -65,22 +73,12 @@ extensions = [
     'sphinx.ext.viewcode',
 ]
 
-generate_autoapi_docs = "QUARK_SKIP_DOC_AUTOAPI" not in os.environ or os.environ["QUARK_SKIP_DOC_AUTOAPI"].lower() in ("0", "false", "off")
-if generate_autoapi_docs:
-    extensions.append('sphinx.ext.autodoc')
-
-if "READTHEDOCS" not in os.environ:
-    # TODO: Pages from https://quark.docs.amd.com are built by readthedocs.com based on github.com/amd/quark-documentation repo
-    # which does not contain source-code, thus autoapi cannot be ran on READTHEDOCS infra
-    # Instead, we must run sphinx-build locally and submit the generated autoapi rst files to github.com/amd/quark-documentation
-    # where it will be used to build the public documentation page for Quark
-    if generate_autoapi_docs:
-        extensions.append('autoapi.extension')
-        autoapi_dirs = ['../../quark']
-        autoapi_keep_files = True
-        autoapi_add_toctree_entry = False
-        autoapi_options = ["members", "show-module-summary"]
-        autoapi_ignore = []
+# Auto API settings
+autoapi_dirs = ['../../quark']
+autoapi_keep_files = True
+autoapi_add_toctree_entry = False
+autoapi_options = ["members", "show-module-summary"]
+autoapi_ignore = []
 
 FACTORY_TYPES = {"typing.List": "[]", "typing.Dict": "{}", "str": "''"}
 
@@ -154,7 +152,7 @@ breathe_projects = {
 pdf_documents = [('index', u'', u'', u'AMD, Inc.'),]
 
 # Configure 'Edit on GitHub' extension
-edit_on_github_project = '/amd/quark-documentation'
+edit_on_github_project = '/amd/quark'
 edit_on_github_branch = 'main/docs'
 
 # Add any paths that contain templates here, relative to this directory.
@@ -163,9 +161,7 @@ templates_path = ['_templates']
 # Expand/Collapse functionality
 def setup(app):
     app.add_css_file('custom.css')
-
-    if generate_autoapi_docs:
-        app.connect("autodoc-process-signature", fix_signature)
+    app.connect("autodoc-process-signature", fix_signature)
 
 # The master toctree document.
 master_doc = 'index'
@@ -182,14 +178,6 @@ language = 'en'
 # This patterns also effect to html_static_path and html_extra_path
 exclude_patterns = ['include', 'api_rst', '_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints']
 nitpicky = True
-
-# 'autoapi' pages are included on main index.rst by a sphinx extension (docs/source/_ext/quark_autoapi_build.py)
-# This is hacky, but needed to allow QUARK_SKIP_DOC_AUTOAPI=1 to pass without warnings during sphinx-build
-# that would the build to fail  when QUARK_DOC_FAIL_ON_WARNING=1
-if not generate_autoapi_docs:
-    exclude_patterns += ['autoapi']
-
-exclude_patterns.append('*autoapi/quark/index.rst')
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
@@ -342,11 +330,6 @@ if "READTHEDOCS" in os.environ:
     components = urllib.parse.urlparse(os.environ["READTHEDOCS_CANONICAL_URL"])
     notfound_urls_prefix = components.path
 
-# Tutorials build take long time. Only build it when requested
-toctree_filter_exclude = []
-if "QUARK_SPHINX_BUILD_SKIP_TUTORIALS" in os.environ:
-    toctree_filter_exclude = ['tutorials']
-
 # -- Extension configuration -------------------------------------------------
 # At the bottom of conf.py
 #def setup(app):
@@ -356,88 +339,91 @@ if "QUARK_SPHINX_BUILD_SKIP_TUTORIALS" in os.environ:
 #            }, True)
 #    app.add_transform(AutoStructify)
 
-## myst_nb default settings
+if "READTHEDOCS" not in os.environ:
 
-# Custom formats for reading notebook; suffix -> reader
-# nb_custom_formats = {}
+    ## myst_nb default settings
 
-# Notebook level metadata key for config overrides
-# nb_metadata_key = 'mystnb'
+    # Custom formats for reading notebook; suffix -> reader
+    # nb_custom_formats = {}
 
-# Cell level metadata key for config overrides
-# nb_cell_metadata_key = 'mystnb'
+    # Notebook level metadata key for config overrides
+    # nb_metadata_key = 'mystnb'
 
-# Mapping of kernel name regex to replacement kernel name(applied before execution)
-# nb_kernel_rgx_aliases = {}
+    # Cell level metadata key for config overrides
+    # nb_cell_metadata_key = 'mystnb'
 
-# Regex that matches permitted values of eval expressions
-# nb_eval_name_regex = '^[a-zA-Z_][a-zA-Z0-9_]*$'
+    # Mapping of kernel name regex to replacement kernel name(applied before execution)
+    # nb_kernel_rgx_aliases = {}
 
-# Execution mode for notebooks
-# nb_execution_mode = 'auto'
+    # Regex that matches permitted values of eval expressions
+    # nb_eval_name_regex = '^[a-zA-Z_][a-zA-Z0-9_]*$'
 
-# Path to folder for caching notebooks (default: <outdir>)
-# nb_execution_cache_path = ''
+    # Execution mode for notebooks
+    # nb_execution_mode = 'auto'
 
-# Exclude (POSIX) glob patterns for notebooks
-# nb_execution_excludepatterns = ()
+    # Path to folder for caching notebooks (default: <outdir>)
+    # nb_execution_cache_path = ''
 
-# Execution timeout (seconds)
-nb_execution_timeout = 7200
+    # Exclude (POSIX) glob patterns for notebooks
+    # nb_execution_excludepatterns = ()
 
-# Use temporary folder for the execution current working directory
-# nb_execution_in_temp = False
+    # Execution timeout (seconds)
+    nb_execution_timeout = 7200
 
-# Allow errors during execution
-# nb_execution_allow_errors = False
+    # Use temporary folder for the execution current working directory
+    # nb_execution_in_temp = False
 
-# Raise an exception on failed execution, rather than emitting a warning
-nb_execution_raise_on_error = True
+    # Allow errors during execution
+    # nb_execution_allow_errors = False
 
-# Print traceback to stderr on execution error
-nb_execution_show_tb = True
+    # Raise an exception on failed execution, rather than emitting a warning
+    nb_execution_raise_on_error = True
 
-# Merge stdout/stderr execution output streams
-nb_merge_streams = True
+    # Print traceback to stderr on execution error
+    nb_execution_show_tb = True
 
-# The entry point for the execution output render class (in group `myst_nb.output_renderer`)
-# nb_render_plugin = 'default'
+    # Merge stdout/stderr execution output streams
+    nb_merge_streams = True
 
-# Remove code cell source
-# nb_remove_code_source = False
+    # The entry point for the execution output render class (in group `myst_nb.output_renderer`)
+    # nb_render_plugin = 'default'
 
-# Remove code cell outputs
-# nb_remove_code_outputs = False
+    # Remove code cell source
+    # nb_remove_code_source = False
 
-# Prompt to expand hidden code cell {content|source|outputs}
-# nb_code_prompt_show = 'Show code cell {type}'
+    # Remove code cell outputs
+    # nb_remove_code_outputs = False
 
-# Prompt to collapse hidden code cell {content|source|outputs}
-# nb_code_prompt_hide = 'Hide code cell {type}'
+    # Prompt to expand hidden code cell {content|source|outputs}
+    # nb_code_prompt_show = 'Show code cell {type}'
 
-# Number code cell source lines
-# nb_number_source_lines = False
+    # Prompt to collapse hidden code cell {content|source|outputs}
+    # nb_code_prompt_hide = 'Hide code cell {type}'
 
-# Overrides for the base render priority of mime types: list of (builder name, mime type, priority)
-# nb_mime_priority_overrides = ()
+    # Number code cell source lines
+    # nb_number_source_lines = False
 
-# Behaviour for stderr output
-# nb_output_stderr = 'show'
+    # Overrides for the base render priority of mime types: list of (builder name, mime type, priority)
+    # nb_mime_priority_overrides = ()
 
-# Pygments lexer applied to stdout/stderr and text/plain outputs
-# nb_render_text_lexer = 'myst-ansi'
+    # Behaviour for stderr output
+    # nb_output_stderr = 'show'
 
-# Pygments lexer applied to error/traceback outputs
-# nb_render_error_lexer = 'ipythontb'
+    # Pygments lexer applied to stdout/stderr and text/plain outputs
+    # nb_render_text_lexer = 'myst-ansi'
 
-# Options for image outputs (class|alt|height|width|scale|align)
-# nb_render_image_options = {}
+    # Pygments lexer applied to error/traceback outputs
+    # nb_render_error_lexer = 'ipythontb'
 
-# Options for figure outputs (classes|name|caption|caption_before)
-# nb_render_figure_options = {}
+    # Options for image outputs (class|alt|height|width|scale|align)
+    # nb_render_image_options = {}
 
-# The format to use for text/markdown rendering
-# nb_render_markdown_format = 'commonmark'
+    # Options for figure outputs (classes|name|caption|caption_before)
+    # nb_render_figure_options = {}
 
-# Javascript to be loaded on pages containing ipywidgets
-# nb_ipywidgets_js = {'https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js': {'integrity': 'sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=', 'crossorigin': 'anonymous'}, 'https://cdn.jsdelivr.net/npm/@jupyter-widgets/html-manager@1.0.6/dist/embed-amd.js': {'data-jupyter-widgets-cdn': 'https://cdn.jsdelivr.net/npm/', 'crossorigin': 'anonymous'}}
+    # The format to use for text/markdown rendering
+    # nb_render_markdown_format = 'commonmark'
+
+    # Javascript to be loaded on pages containing ipywidgets
+    # nb_ipywidgets_js = {'https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js': {'integrity': 'sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=', 'crossorigin': 'anonymous'}, 'https://cdn.jsdelivr.net/npm/@jupyter-widgets/html-manager@1.0.6/dist/embed-amd.js': {'data-jupyter-widgets-cdn': 'https://cdn.jsdelivr.net/npm/', 'crossorigin': 'anonymous'}}
+
