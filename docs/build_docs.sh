@@ -22,11 +22,20 @@ build_docs() {
     # Check if QUARK_SPHINX_BUILD_SKIP_TUTORIALS env var and skip the Jupyter notebook build when set
     # The `tutorials` subfolder is deleted from `./_docs/` to prevent warnings from unused files from sphinx-build
     QUARK_SPHINX_BUILD_SKIP_TUTORIALS=${QUARK_SPHINX_BUILD_SKIP_TUTORIALS:-""}
+    echo "[QUARK-INFO] QUARK_SPHINX_BUILD_SKIP_TUTORIALS=${QUARK_SPHINX_BUILD_SKIP_TUTORIALS}"
     if [[ "${QUARK_SPHINX_BUILD_SKIP_TUTORIALS}" == "1" || "${QUARK_SPHINX_BUILD_SKIP_TUTORIALS,,}" == "true" || "${QUARK_SPHINX_BUILD_SKIP_TUTORIALS,,}" == "yes" ]]
     then
-        echo "[QUARK-INFO] QUARK_SPHINX_BUILD_SKIP_TUTORIALS=${QUARK_SPHINX_BUILD_SKIP_TUTORIALS} was set."
-        echo "[QUARK-INFO] Deleteing tutorials/* subfolder from build..."
-        rm -rfv ./_docs/tutorials/
+        echo "[QUARK-INFO] Converting Jupyter Notebooks into ReStructuredText files from tutorials/* subfolder..."
+        # Install pandoc binary required by nbconvert
+        python -c "from pypandoc.pandoc_download import download_pandoc; download_pandoc()"
+        # Pandoc is installed by default on $HOME/bin
+        export PATH=~/bin:${PATH}
+
+        find "./_docs/tutorials/" -type f -name "*.ipynb" -print0 | while IFS= read -r -d $'\0' notebook_file; do
+            echo "Processing: $notebook_file"
+            jupyter nbconvert --to rst "${notebook_file}"
+            rm -v ${notebook_file}
+        done
     else
         unset QUARK_SPHINX_BUILD_SKIP_TUTORIALS
         install_jupyter_notebooks_dependencies

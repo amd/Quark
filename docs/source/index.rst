@@ -123,15 +123,15 @@ Key Features
    Optional Utilities <onnx/optional_utilities.rst>
    Tools <onnx/tools.rst>
 
-.. toctree-filter::
-   :maxdepth: 2
-   :caption: Tutorials
-
-   :tutorials:tutorials/torch/quickstart_tutorial/quickstart_tutorial.ipynb
+.. WARNING: The Jupyter Notebooks `.. toctree::` entry is defined at docs/source/jupyter_notebook_index.rst
+..          and post-processed by a Sphinx extension at `docs/source/_ext/quark_jupyter_notebook_build.py`
+..          to either 1) execute the jupyter notebooks and add the both jupyter notebooks and their outputs to the documentation when QUARK_SPHINX_BUILD_SKIP_TUTORIALS is not set
+..          or 2) convert the jupyter notebooks into rst and only add the notebook code as part of the documentation otherwise (fast build)
+@quark_jupyter_notebook_toc_placeholder@
 
 .. toctree::
    :hidden:
-   :caption: APIs
+   :caption: Reference API
    :maxdepth: 1
 
    PyTorch APIs <autoapi/pytorch_apis>

@@ -2,3 +2,5 @@ myst-nb
 sphinx-autoapi==3.6.0
 rocm-docs-core==1.21.1
 astroid>=3.3.8,<4.0  # https://github.com/zarr-developers/zarr-python/pull/2796, https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark/pull/2142 and https://github.com/readthedocs/readthedocs.org/issues/11975
+nbconvert
+pypandoc

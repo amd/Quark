@@ -1,8 +1,149 @@
 Release Notes
 ==============
 
-New Features (Version 0.8)
---------------------------
+Release 0.9
+-----------
+
+-  **AMD Quark for PyTorch**
+
+   -  New Features
+
+      -  OCP MXFP4 fake quantization and dequantization kernels
+
+         -  Efficient kernels are added to Quark's `torch/kernel/hw_emulation/csrc` for OCP MXFP4 quantization and dequantization. They are useful to simulate OCP MXFP4 workload on hardware that does not support natively this data type (e.g. MI300X GPUs).
+
+   -  Quantized models can be reloaded with no memory overhead
+
+         -  The method ``ModelImporter.import_model_info`` used to reload a quantized model checkpoint now supports using a non-quantized backbone placed on  ``torch.device("meta")`` (`reference <https://docs.pytorch.org/docs/stable/meta.html>`_) device, avoiding the memory overhead of instantiating the non-quantized model on device. More details are available `here <https://quark.docs.amd.com/latest/pytorch/export/quark_export_hf.html#loading-quantized-models-saved-in-hugging-face-format-safetensors-format>_`.
+
+           .. code-block:: python
+
+              from quark.torch.export.api import ModelImporter
+              from transformers import AutoConfig, AutoModelForCausalLM
+              import torch
+
+              model_importer = ModelImporter(
+                 model_info_dir="./opt-125m-quantized",
+                 saved_format="safetensors"
+              )
+
+              # We only need the backbone/architecture of the original model,
+              # not its weights, as weights are loaded from the quantized checkpoint.
+              config = AutoConfig.from_pretrained("facebook/opt-125m")
+              with torch.device("meta"):
+                 original_model = AutoModelForCausalLM.from_config(config)
+
+              quantized_model = model_importer.import_model_info(original_model)
+
+
+   -  Deprecations and breaking changes
+
+      -  Some quantization schemes in AMD Quark LLM PTQ example are deprecated (`reference <https://quark.docs.amd.com/latest/pytorch/example_quark_torch_llm_ptq.html>_`):
+
+         -  ``w_mx_fp4_a_mx_fp4_sym`` is deprecated in favor of: ``w_mxfp4_a_mxfp4``,
+         -  ``w_mx_fp6_e3m2_sym`` in favor of ``w_mxfp6_e3m2``,
+         -  ``w_mx_fp6_e2m3_sym`` in favor of ``w_mxfp6_e2m3``,
+         -  ``w_mx_int8_per_group_sym`` in favor of ``w_mxint8``,
+         -  ``w_mxfp4_a_mxfp4_sym`` in favor of ``w_mxfp4_a_mxfp4``,
+         -  ``w_mx_fp6_e2m3_a_mx_fp6_e2m3`` in favor of ``w_mxfp6_e2m3_a_mxfp6_e2m3``,
+         -  ``w_mx_fp6_e3m2_a_mx_fp6_e3m2`` in favor of ``w_mxfp6_e3m2_a_mxfp6_e3m2``,
+         -  ``w_mx_fp4_a_mx_fp6_sym`` in favor of ``w_mxfp4_a_mxfp6``,
+         -  ``w_mx_fp8_a_mx_fp8`` in favor of ``w_mxfp8_a_mxfp8``.
+
+   -  Bug fixes and minor improvements
+
+      - Fake quantization methods for FP4 and FP6 are made compatible with CUDA Graph.
+      - A summary of replaced modules for quantization is displayed when calling ``ModelQuantizer.quantize_model`` for easier inspection.
+
+   -  Model Support:
+
+      -  Support Gemma2 in OGA flow.
+
+   -  Quantization and Export:
+
+      -  Support quantization and export of models in MXFP settings, e.g. MXFP4, MXFP6.
+      -  Support sequential quantization, e.g. W-A-MXFP4+Scale-FP8e4m3.
+      -  Support more models with FP8 attention: OPT, LLaMA, Phi, Mixtral.
+
+   -  Algorithms:
+
+      -  Support GPTQ for MXFP4 Quantization.
+      -  QAT Enhancements using huggingface Trainer.
+      -  Fix AWQ implementation for qkv-packed MHA model (e.g., microsoft/Phi-3-mini-4k-instruct) and raise warning to users if using incorrect or unknown AWQ configurations.
+
+   -  Performance:
+
+      -  Speedup model export.
+      -  Accelerate FP8 inference acceleration.
+      -  Tensor parallelism for evaluation of quantized model.
+      -  Multi-device quantization as well as export.
+
+   -  FX Graph quantization:
+
+      -  Improve efficiency of power-of-2 scale quantization for less memory and faster computation.
+      -  Support channel-wise power-of-2 quantization by using per-channel MSE/NON-overflow observer.
+      -  Support Conv’s Bias for int32 power-of-2 quantization, where bias’s scale = weight’s scale * activation's scale.
+      -  Support export of INT16/INT32 quantization model to ONNX format and the corresponding ONNXRuntime.
+
+-  **AMD Quark for ONNX**
+
+   -  New Features:
+
+      -  Introduced an encrypted mode for scenarios demanding high model confidentiality.
+      -  Supported fixing the shape of all tensors.
+      -  Supported quantization with int16 bias.
+
+   -  Enhancements:
+
+      -  Supported compatibility with ONNX Runtime version 1.21.x and 1.22.0.
+      -  Reduced CPU/GPU memory usage to prevent OOM.
+      -  Improved auto search efficiency by utilizing a cached datareader.
+      -  Enhanced multi-platform support: now supports Windows (CPU/CUDA) and Linux (CPU/CUDA/ROCm).
+
+   -  Examples:
+
+      -  Provided quantization examples of TIMM models.
+
+   -  Documentation:
+
+      -  Added specifications for all custom operators.
+      -  Improved FAQ documentation.
+
+   -  Custom Operations:
+
+      -  Renamed custom operation types and updated their domain to the com.amd.quark:
+
+         -  BFPFixNeuron → BFPQuantizeDequantize.
+         -  MXFixNeuron → MXQuantizeDequantize.
+         -  VitisQuantFormat and VitisQuantType → ExtendedQuantFormat and ExtendedQuantType.
+
+   -  Bug fixes and minor improvements
+
+      -  Fixed the issue where extremely large or small values caused -inf/inf during scale calculation.
+
+
+Release 0.8.2
+-------------
+
+New Features
+^^^^^^^^^^^^
+
+**AMD Quark for PyTorch**
+
+* Added support for ONNX Runtime 1.22.0
+
+Release 0.8.1
+-------------
+
+Bug Fixes and Enhancements
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**AMD Quark for ONNX**
+
+* Fixed BFP Kernel compilation issue for GCC 13
+
+Release 0.8
+-----------
 
 -  **AMD Quark for PyTorch**
 
@@ -137,8 +278,8 @@ Bug Fixes and Enhancements
 * Fixed a bug when simplifying Llama2-7b without kv_cache.
 * Fixed import path and add parent directory to system path in BFP quantize_model.py example.
 
-New Features (Version 0.6.0)
-----------------------------
+Release 0.6
+-----------
 
 -  **AMD Quark for PyTorch**
 
@@ -201,8 +342,8 @@ New Features (Version 0.6.0)
 
       -  Supported GPTQ for both QDQ format and MatMulNBits format.
 
-New Features (Version 0.5.1)
-----------------------------
+Release 0.5.1
+-------------
 
 -  **AMD Quark for PyTorch**
 
@@ -217,8 +358,8 @@ New Features (Version 0.5.1)
 
       -  Supported compatibility with onnxruntime version 1.19.
 
-New Features (Version 0.5.0)
-----------------------------
+Release 0.5.0
+-------------
 
 -  **AMD Quark for PyTorch**
 
@@ -274,8 +415,8 @@ New Features (Version 0.5.0)
 
       -  Improved AdaQuant to support BFP data types.
 
-New Features (Version 0.2.0)
-----------------------------
+Release 0.2.0
+-------------
 
 -  **AMD Quark for PyTorch**
 
@@ -346,8 +487,8 @@ New Features (Version 0.2.0)
 
       -  Linux and Windows.
 
-New Features (Version 0.1.0)
-----------------------------
+Release 0.1.0
+-------------
 
 -  **AMD Quark for PyTorch**
 

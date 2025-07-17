@@ -1,0 +1,5 @@
+.. toctree::
+   :maxdepth: 2
+   :caption: Tutorials
+
+   tutorials/torch/quickstart_tutorial/quickstart_tutorial.ipynb

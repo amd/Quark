@@ -18,11 +18,14 @@ build:
       python: "3.12"
    jobs:
      pre_install:
+       - pip install "cmake<4.0"
+       - pip install torch==2.6.0
+       - bash -c "cd $READTHEDOCS_REPOSITORY_PATH && pip install ."
        - bash -c "cd docs && ./install_requirements.sh"
      build:
        htmlzip:
          - echo "Overriding default build command for htmlzip format to use Quark doc build script!"
          - mkdir -p $READTHEDOCS_OUTPUT/html
-         - bash -c "cd docs; ./build.sh"
+         - bash -c "export QUARK_SPHINX_BUILD_SKIP_TUTORIALS=1; cd docs && ./build_docs.sh"
          - bash -c "cp -rv _docs_build/html/* $READTHEDOCS_OUTPUT/html/"
 
