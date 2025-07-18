@@ -96,7 +96,7 @@ jinja2==3.1.6
     #   nbconvert
     #   sphinx
     #   sphinx-autoapi
-jsonschema==4.24.1
+jsonschema==4.25.0
     # via nbformat
 jsonschema-specifications==2025.4.1
     # via jsonschema

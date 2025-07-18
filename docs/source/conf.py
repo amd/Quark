@@ -177,6 +177,8 @@ language = 'en'
 # directories to ignore when looking for source files.
 # This patterns also effect to html_static_path and html_extra_path
 exclude_patterns = ['include', 'api_rst', '_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints']
+exclude_patterns.append('*autoapi/quark/index.rst')
+
 nitpicky = True
 
 # The name of the Pygments (syntax highlighting) style to use.

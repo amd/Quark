@@ -131,7 +131,7 @@ Key Features
 
 .. toctree::
    :hidden:
-   :caption: Reference API
+   :caption: APIs
    :maxdepth: 1
 
    PyTorch APIs <autoapi/pytorch_apis>

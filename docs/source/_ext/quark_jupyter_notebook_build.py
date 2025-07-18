@@ -23,7 +23,7 @@ def update_jupyter_notebook_toc_placeholder(app, docname, source):
 
     jupyter_notebook_index_rst = os.path.join('source', 'jupyter_notebook_index.rst_')
     if "READTHEDOCS" in os.environ:
-        READTHEDOCS_REPOSITORY_PATH= os.environ.get("READTHEDOCS_REPOSITORY_PATH")
+        READTHEDOCS_REPOSITORY_PATH = os.environ.get("READTHEDOCS_REPOSITORY_PATH")
         jupyter_notebook_index_rst = os.path.join(READTHEDOCS_REPOSITORY_PATH, 'docs', 'source', 'jupyter_notebook_index.rst_')
     jupyter_notebook_toc_placeholder = '@quark_jupyter_notebook_toc_placeholder@'
     with open(jupyter_notebook_index_rst, 'r') as f:
