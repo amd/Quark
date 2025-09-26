@@ -1,3 +1,4 @@
+.. Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 
 Microscaling (MX)
 =================
@@ -138,13 +139,3 @@ Example
 -------
 
 An example of quantizing a model using the Microscaling quantization is :doc:`available here <example_quark_onnx_MX>`.
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

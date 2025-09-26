@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Installation Guide
 ==================
 
@@ -8,19 +10,17 @@ If this is your first time setting up Quark, and want to try it out, this sectio
 that will run on a laptop without a GPU.
 When you are comfortable with the basic concepts you can come back to the following sections on this page for more advanced set up options.
 
-The suggested installation of AMD Quark is in a Python environment such as `Miniforge <https://github.com/conda-forge/miniforge>`_, but you can also use [Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install) or [Anaconda](https://www.anaconda.com/docs/getting-started/anaconda/install).
-You can then create an environment for Quark and its dependencies with:
+The suggested installation of AMD Quark is in a Python environment such as `Miniforge <https://github.com/conda-forge/miniforge>`_, but you can also use `Miniconda <https://www.anaconda.com/docs/getting-started/miniconda/install>`_, or `Anaconda <https://www.anaconda.com/docs/getting-started/anaconda/install>`_.
+For example, you can perform a typical interactive user installation of Miniconda, and then create and activate an environment for Quark and its dependencies with:
 
 .. code-block:: bash
 
-   wget -O Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
-   bash Miniforge3.sh -b -p "${HOME}/conda"
-   rm Miniforge3.sh
-   source "${HOME}/conda/etc/profile.d/conda.sh"
+   wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+   bash Miniforge3-$(uname)-$(uname -m).sh
    conda create -y -n AMD_Quark python=3.12
    conda activate AMD_Quark
 
-You may then use ``pip`` to install Quark from PyPI, and all dependencies.
+You may then use ``pip`` to install Quark into your Python environment from PyPI, and all dependencies.
 
 .. note::
 
@@ -120,12 +120,15 @@ If CUDA is not available, install PyTorch without GPU support:
 
 Linux
 """""
+.. note::
 
-To install **PyTorch with ROCm** 6.2.4 GPU support, in a Python environment using ``pip``:
+   The commands below assume **ROCm 6.4**, but for a different ROCm version or further options, consult the `PyTorch <https://pytorch.org/get-started/locally/>`__ install guide.
+
+To install **PyTorch with ROCm** 6.4 GPU support, in a Python environment using ``pip``:
 
 .. code-block:: bash
 
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2.4
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
 
 To install **PyTorch with CUDA** 12.6 GPU support:
 
@@ -138,9 +141,6 @@ If neither of these combinations is available on your system, you may install wi
 .. code-block:: bash
 
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-
-For further options, see the `PyTorch <https://pytorch.org/get-started/locally/>`__ install guide.
 
 
 Install a C++ Compiler
@@ -305,11 +305,3 @@ Previous Versions of AMD Quark
 -  `quark_0.5.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.5.0+fae64a406.zip>`__
 -  `quark_0.2.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.2.0+6af1bac23.zip>`__
 -  `quark_0.1.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.1.0+a9827f5.zip>`__
-
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

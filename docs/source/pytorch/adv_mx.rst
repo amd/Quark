@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Using OCP MX (Microscaling)
 ===========================
 
@@ -42,8 +44,8 @@ Replace all instances of ``<hf_token>`` with the token.
 .. code-block:: python
 
    from quark.torch.quantization.config.config import Config, OCP_MXFP8E4M3Spec, QuantizationConfig
-   
-   mxfp8_spec = OCP_MXFP8E4M3Spec(is_dynamic=False, 
+
+   mxfp8_spec = OCP_MXFP8E4M3Spec(is_dynamic=False,
                                   ch_axis=-1).to_quantization_spec()
 
    mxfp8_config = QuantizationConfig(weight=mxfp8_spec)

@@ -1,8 +1,9 @@
+.. Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+
 Best Practice for Ryzen AI in AMD Quark ONNX
 ============================================
 
 This topic outlines the best practice for Post-Training Quantization (PTQ) in AMD Quark ONNX. It provides guidance on fine-tuning your quantization strategy to meet target quantization accuracy.
-
 
 .. figure:: ../../_static/best_practice_in_quark_onnx.png
    :align: center
@@ -148,10 +149,3 @@ Excluding some nodes means that these nodes are quantized. The method can improv
                              --output_model_path models/resnet50-v1-12_quantized.onnx \
                              --config XINT8 \
                              --exclude_nodes "resnetv17_conv0_fwd; resnetv17_stage1_conv0_fwd"
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

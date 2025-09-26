@@ -1,5 +1,7 @@
-Quantizating a model with GPTQ
-==============================
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
+Quantizing a model with GPTQ
+============================
 
 This folder contains an example of quantizing a opt-125m model using the ONNX quantizer of Quark. It also shows how to use the GPTQ algorithm.
 
@@ -18,7 +20,7 @@ Install the necessary python packages:
 
 ::
 
-   python -m pip install -r requirements.txt
+   python -m pip install -r ../utils/requirements.txt
 
 Prepare Model
 ^^^^^^^^^^^^^

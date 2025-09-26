@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Welcome to AMD Quark Documentation!
 ===================================
 
@@ -28,7 +30,7 @@ Key Features
    - **Configurable Calibration Methods:** Optimize quantization accuracy with `MinMax`, `Percentile`, and `MSE` calibration methods.
 * **Advanced Capabilities:**
    - **Large Language Model Optimization:** Specialized support for quantizing large language models with `kv-cache` quantization.
-   - **Cutting-Edge Algorithms:** Leverage state-of-the-art algorithms like `SmoothQuant`, `AWQ`, and `GPTQ` for `uint4` quantization on GPUs, achieving optimal performance for demanding tasks.
+   - **Cutting-Edge Algorithms:** Leverage state-of-the-art algorithms like `SmoothQuant`, `AWQ`, `GPTQ`, `Qronos` for `uint4` quantization on GPUs, achieving optimal performance for demanding tasks.
 * **Seamless Integration and Deployment:**
    - **Export to multiple formats:** Export quantized models to `ONNX`, `JSON-safetensors`, and `GGUF` formats for deployment on a wide range of platforms.
    - **APL Integration:** Seamlessly integrate with AMD Pytorch-light (APL) for optimized performance on AMD hardware, to provide `INT-K`, `BFP16`, and `BRECQ` support.
@@ -48,7 +50,7 @@ Key Features
 * **Comprehensive Quantization Support**:
    - **Post-Training Quantization (PTQ):** Quantize pre-trained models without the need for retraining data.
    - **Flexible Quantization Strategies:** Choose from symmetric/asymmetric, weight-only/static/dynamic quantization, and various quantization levels (per tensor/channel) to fine-tune performance and accuracy trade-offs.
-   - **Extensive Data Type Support:** Quantize models using a wide range of data types, including `uint32`, `int32`, `float16`, `bfloat16`, `int16`, `uint16`, `int8`, `uint8`, Block Floating Point (typical `BFP16`), and `Microscaling (MX)` data types with `int8`, `fp8_e4m3fn`, `fp8_e5m2`, `fp4`, `fp6_e3m2`, and `fp6_e2m3` elements.
+   - **Extensive Data Type Support:** Quantize models using a wide range of data types, including `uint32`, `int32`, `float16`, `bfloat16`, `int16`, `uint16`, `int8`, `uint8`, `int4` `uint4`, `int3`, Block Floating Point (typical `BFP16`), and `Microscaling (MX)` data types with `int8`, `fp8_e4m3fn`, `fp8_e5m2`, `fp4`, `fp6_e3m2`, and `fp6_e2m3` elements.
    - **Configurable Calibration Methods:** Optimize quantization accuracy with `MinMax`, `Entropy`, `Percentile`, `NonOverflow` and `MinMSE` calibration methods.
 * **Advanced Capabilities:**
    - **Multiple Deployment Targets:** Target a variety of hardware platforms, including `NPU_CNN`, `NPU_Transformer`, and `CPU`.
@@ -70,9 +72,9 @@ Key Features
 
    Introduction to Quantization <intro.rst>
    Installation <install.rst>
-   Gettting started: Introduction <basic_usage.rst>
-   Gettting started: Quark for ONNX <onnx/basic_usage_onnx.rst>
-   Gettting started: Quark for PyTorch <pytorch/basic_usage_pytorch.rst>
+   Getting started: Introduction <basic_usage.rst>
+   Getting started: Quark for ONNX <onnx/basic_usage_onnx.rst>
+   Getting started: Quark for PyTorch <pytorch/basic_usage_pytorch.rst>
    PyTorch Examples <pytorch/pytorch_examples.rst>
    ONNX Examples <onnx/onnx_examples.rst>
 
@@ -91,13 +93,16 @@ Key Features
    :caption: Advanced AMD Quark Features for PyTorch
    :maxdepth: 1
 
-   Configuring PyTorch Quantization <pytorch/user_guide_config_description.rst>
+   Configuring PyTorch Quantization for Large Language Models <pytorch/user_guide_config_for_llm.rst>
+   Configuring PyTorch Quantization from Scratch <pytorch/user_guide_config_description.rst>
    Save and Load Quantized Models <pytorch/quark_save_load>
    Exporting Quantized Models <pytorch/export/quark_export.rst>
    Best Practices for Post-Training Quantization (PTQ) <pytorch/quark_torch_best_practices.rst>
    Debugging quantization Degradation <pytorch/debug.rst>
    Language Model Optimization <pytorch/llm_quark.rst>
    Activation/Weight Smoothing (SmoothQuant) <pytorch/smoothquant.rst>
+   Auto SmoothQuant <tutorials/torch/auto_smoothquant_document_and_example>
+   Activation-aware Weight Quantization (AWQ) <pytorch/awq_document.rst>
    Block Floating Point 16 <pytorch/tutorial_bfp16.rst>
    Extensions <pytorch/extensions.rst>
    Using MX (Microscaling) <pytorch/adv_mx.rst>
@@ -128,6 +133,13 @@ Key Features
 ..          to either 1) execute the jupyter notebooks and add the both jupyter notebooks and their outputs to the documentation when QUARK_SPHINX_BUILD_SKIP_TUTORIALS is not set
 ..          or 2) convert the jupyter notebooks into rst and only add the notebook code as part of the documentation otherwise (fast build)
 @quark_jupyter_notebook_toc_placeholder@
+
+.. toctree::
+   :hidden:
+   :caption: Third-party contributions
+   :maxdepth: 1
+
+   Introduction and guidelines <intro_contrib.rst>
 
 .. toctree::
    :hidden:

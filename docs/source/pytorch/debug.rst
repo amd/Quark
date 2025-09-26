@@ -1,3 +1,5 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Debugging quantization degradation in AMD Quark
 ===============================================
 
@@ -101,10 +103,3 @@ We see that the layer 31 (last layer) is very sensitive to quantization. In fact
    `model.layers.31.mlp.down_proj` reference (non-quantized) input distribution. We see a very large range of values.
 
 These indications may motivate us to quantize ``down_proj`` from the layer 31 (or perhaps all layers, or some other layers) in a different fashion, or to exclude it from being quantized.
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

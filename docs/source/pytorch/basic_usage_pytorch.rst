@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 AMD Quark for PyTorch
 =====================
 
@@ -40,7 +42,7 @@ The requirements of data loader are divided into two categories:
 **DataLoader required**
 
 * Weight and activation static quantization.
-* Advanced algorithms: SmoothQuant, AWQ and GPTQ.
+* Advanced algorithms: SmoothQuant, AWQ, GPTQ and Qronos.
 
 .. code-block:: python
 
@@ -54,7 +56,12 @@ Refer to :doc:`Adding Calibration Datasets <calibration_datasets>` to learn more
 3. Set the quantization configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Quark for PyTorch provides a granular API to handle diverse quantization scenarios, and it also offers streamlined APIs for common use cases. The example below demonstrates the granular API approach.
+Quark for PyTorch provides two main approaches for configuring quantization:
+
+3.1. General Configuration (All Models)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This approach provides a granular API to handle diverse quantization scenarios and is applicable to any PyTorch model. The example below demonstrates the granular API approach.
 
 .. code-block:: python
 
@@ -71,6 +78,18 @@ Quark for PyTorch provides a granular API to handle diverse quantization scenari
    DEFAULT_W_INT8_PER_TENSOR_CONFIG = QuantizationConfig(weight=DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
    quant_config = Config(global_quant_config=DEFAULT_W_INT8_PER_TENSOR_CONFIG)
 
+3.2. LLM Template Configuration (Large Language Models)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For Large Language Models, Quark provides a simplified configuration approach using the :py:class:`.LLMTemplate` class. This method is specifically optimized for LLM architectures and provides pre-defined configurations for popular models.
+
+.. code-block:: python
+
+   from quark.torch import LLMTemplate
+   # Get the template for your model type
+   template = LLMTemplate.get("llama")
+   quant_config = template.get_config(scheme="fp8", kv_cache_scheme="fp8")
+
 4. Quantize the model
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -85,24 +104,15 @@ Once the model, input data, and quantization configuration are ready, quantizing
 5. (Optional) Export the quantized model to other formats for deployment
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Exporting a model is only needed when users want to deploy models in another Deep Learning framework, such as ONNX, Hugging Face safetensors. To export a quantized model, users need to freeze the quantized model.
+Exporting a model is only needed when users want to deploy models in another Deep Learning framework, such as Hugging Face safetensors, ONNX, etc.
 
 .. code-block:: python
 
-    freezed_quantized_model = quantizer.freeze(quant_model)
-    from quark.torch import ModelExporter
-
-    # Generate dummy input
-    for data in calib_dataloader:
-        input_args = data
-        break
-
-    quant_model = quant_model.to('cuda')
-    input_args = input_args.to('cuda')
-    exporter = ModelExporter('export_path')
-    exporter.export_onnx_model(quant_model, input_args)
-
-If the code runs successfully, the terminal displays `[QUARK-INFO]: Model quantization has been completed.`
+    from quark.torch import export_safetensors
+    export_safetensors(
+        model=quant_model,
+        output_dir="./export_safetensors/"
+    )
 
 Further reading
 ---------------

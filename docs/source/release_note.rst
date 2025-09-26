@@ -1,5 +1,272 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Release Notes
-==============
+=============
+
+Release 0.10
+------------
+
+-  **AMD Quark for PyTorch**
+
+   -  New Features
+
+      - Support PyTorch 2.7.1 and 2.8.0.
+      - Support for int3 quantization and exporting of models.
+      - Support the AWQ algorithm with Gemma3 and Phi4.
+      - Support Qronos advanced quantization algorithm.
+      - Applying the `GPTQ algorithm <https://quark.docs.amd.com/latest/pytorch/quark_torch_best_practices.html#apply-quantization-algorithms>`_ runs x3-x4 faster compared to AMD Quark 0.9, using `CUDA/HIP Graph <https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-graph-semantics>`_ by default. If requirement, CUDA Graph for GPTQ can be disabled using the environment variable ``QUARK_GRAPH_DEBUG=0``.
+      - `Quarot <https://quark.docs.amd.com/latest/pytorch/tutorial_quarot.html>`_ algorithm supports a new configuration parameter ``rotation_size`` to define custom hadamard rotation sizes. Please refer to `QuaRotConfig documentation <https://quark.docs.amd.com/latest/autoapi/quark/torch/quantization/config/config/index.html#quark.torch.quantization.config.config.QuaRotConfig>`_.
+      - Support the Qronos post-training quantization algorithm. Please refer to the `arXiv paper <https://arxiv.org/abs/2505.11695>`_ and `Quark documentation <https://quark.docs.amd.com/latest/autoapi/quark/torch/quantization/config/config/index.html#quark.torch.quantization.config.config.QronosConfig>`_.
+
+   -  QuantizationSpec check:
+
+      - Every time user finishes init ``QuantizationSpec`` will automatically perform config check. If any invalid config is supplied, a warning or error message will be given to user for better correction. In this way, find  potential error as early as possible rather than cause a runtime error during quantization process.
+
+   -  LLM Depth-Wise Pruning tool:
+
+      - Depth-wise pruning tool that can decrease the LLM model size. This tool deletes the consecutive decode layers in LLM under a certain supplied pruning ratio.
+      - Based on PPL influence, the consecutive layers that have less influence on PPL will be regarded as having less influence on LLM and can be deleted.
+
+   -  Model Support:
+
+      - Support OCP MXFP4, MXFP6, MXFP8 quantization of new models: DeepSeek-R1, Llama4-Scout, Llama4-Maverick, gpt-oss-20b, gpt-oss-120b.
+
+   -  Deprecations and breaking changes
+
+      - OCP MXFP6 weight packing layout is modified to fit the expected layout by `CDNA4 <https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf>`_ ``mfma_scale`` instruction.
+
+      - In the ``examples/language_modeling/llm_ptq/quantize_quark.py`` example, the quantization scheme `"w_mxfp4_a_mxfp6"` is removed and replaced by `"w_mxfp4_a_mxfp6_e2m3"` and `"w_mxfp4_a_mxfp6_e3m2"`.
+
+   - Important bug fixes
+
+      - A bug in `Quarot <https://quark.docs.amd.com/latest/pytorch/tutorial_quarot.html>`_ and `Rotation <https://quark.docs.amd.com/latest/pytorch/tutorial_rotation.html>`_ algorithms where fused rotations were wrongly applied twice on input embeddings / LM head weights is fixed.
+
+      - Reduce the slowness of the reloading of large quantized models as DeepSeek-R1 using Transformers + Quark.
+
+-  **AMD Quark for ONNX**
+
+   -  New Features:
+
+      -  API Refactor (Introduced the new API design with improved consistency and usability)
+
+         -  Supported class-based algorithm usage.
+         -  Aligned data type both for Quark Torch and Quark ONNX.
+         -  Refactored quantization configs.
+
+      -  Auto Search Enhancements
+
+         -  Two-Stage Search: First identifies the best calibration config, then searches for the optimal FastFinetune config based on it. Expands the search space for higher efficiency.
+         -  Advanced-Fastft Search: Supports continuous search spaces, advanced algorithms (e.g., TPE), and parallel execution for faster, smarter searching.
+         -  Joint-Parameter Search: Combines coupled parameters into a unified space to avoid ineffective configurations and improve search quality.
+
+      -  Added support for ONNX 1.19 and ONNXRuntime 1.22.1
+      -  Added optimized weight-scale calculation with the MinMSE method to improve quantization accuracy.
+      -  Accelerated calibration with multi-process support, covering algorithms such as MinMSE, Percentile, Entropy, Distribution, and LayerwisePercentile.
+      -  Added progress bars for Percentile, Entropy, Distribution, and LayerwisePercentile algorithms.
+      -  Supported users to specify a directory for saving cache files.
+
+   -  Enhancements:
+
+      -  Significantly reduced memory usage across various configurations, including calibration and FastFinetune stages, with optimizations for both CPU and GPU memory.
+      -  Improved clarity of error and warning outputs, helping users select better parameters based on memory and disk conditions.
+
+   -  Bug fixes and minor improvements:
+
+      -  Provided actionable hints when OOM or insufficient disk space issues occur in calibration and fast fine-tuning.
+      -  Fixed multi-GPU issues during FastFinetune.
+      -  Fixed a bug related to converting BatchNorm to Conv.
+      -  Fixed a bug in BF16 conversion on models larger than 2GB.
+
+-  **Quark Torch API Refactor**
+
+   -  LLMTemplate for simplified quantization configuration:
+
+      - Introduced :py:class:`.LLMTemplate` class for convenient LLM quantization configuration
+      - Built-in templates for popular LLM architectures (Llama4, Qwen, Mistral, Phi, DeepSeek, GPT-OSS, etc.)
+      - Support for multiple quantization schemes: int4/uint4 (group sizes 32, 64, 128), int8, fp8, mxfp4, mxfp6e2m3, mxfp6e3m2, bfp16, mx6
+      - Advanced features: layer-wise quantization, KV cache quantization, attention quantization
+      - Algorithm support: AWQ, GPTQ, SmoothQuant, AutoSmoothQuant, Rotation
+      - Custom template and scheme registration capabilities for users to define their own template and quantization schemes
+
+         .. code-block:: python
+
+            from quark.torch import LLMTemplate
+
+            # List available templates
+            templates = LLMTemplate.list_available()
+            print(templates)  # ['llama', 'opt', 'qwen', 'mistral', ...]
+
+            # Get a specific template
+            llama_template = LLMTemplate.get("llama")
+
+            # Create a basic configuration
+            config = llama_template.get_config(scheme="fp8", kv_cache_scheme="fp8")
+
+   -  Export and import APIs are deprecated in favor of new ones:
+
+      -  ``ModelExporter.export_safetensors_model`` is deprecated in favor of ``export_safetensors``:
+
+         Before:
+
+         .. code-block:: python
+
+            from quark.torch import ModelExporter
+            from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+
+            export_config = ExporterConfig(json_export_config=JsonExporterConfig())
+            exporter = ModelExporter(config=export_config, export_dir=export_dir)
+            exporter.export_safetensors_model(model, quant_config)
+
+         After:
+
+         .. code-block:: python
+
+            from quark.torch import export_safetensors
+            export_safetensors(model, output_dir=export_dir)
+
+      -  ``ModelImporter.import_model_info`` is deprecated in favor of ``import_model_from_safetensors``:
+
+         Before:
+
+         .. code-block:: python
+
+            from quark.torch.export.api import ModelImporter
+
+            model_importer = ModelImporter(
+               model_info_dir=export_dir,
+               saved_format="safetensors"
+            )
+            quantized_model = model_importer.import_model_info(original_model)
+
+         After:
+
+         .. code-block:: python
+
+            from quark.torch import import_model_from_safetensors
+            quantized_model = import_model_from_safetensors(
+               original_model,
+               model_dir=export_dir
+            )
+
+-  **Quark ONNX API Refactor**
+
+   -  Before:
+
+      -  Basic Usage:
+
+        .. code-block:: python
+
+           from quark.onnx import ModelQuantizer
+           from quark.onnx.quantization.config.config import Config
+           from quark.onnx.quantization.config.custom_config import get_default_config
+
+           input_model_path = "demo.onnx"
+           quantized_model_path = "demo_quantized.onnx"
+           calib_data_path = "calib_data"
+           calib_data_reader = ImageDataReader(calib_data_path)
+
+           a8w8_config = get_default_config("A8W8")
+           quantization_config = Config(global_quant_config=a8w8_config )
+           quantizer = ModelQuantizer(quantization_config)
+           quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
+
+      -  Advanced Usage:
+
+        .. code-block:: python
+
+	   from quark.onnx import ModelQuantizer
+	   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+	   from onnxruntime.quantization.calibrate import CalibrationMethod
+	   from onnxruntime.quantization.quant_utils import QuantFormat, QuantType, ExtendedQuantType
+
+	   input_model_path = "demo.onnx"
+	   quantized_model_path = "demo_quantized.onnx"
+	   calib_data_path = "calib_data"
+	   calib_data_reader = ImageDataReader(calib_data_path)
+
+	   DEFAULT_ADAROUND_PARAMS = {
+	       "DataSize": 1000,
+	       "FixedSeed": 1705472343,
+	       "BatchSize": 2,
+	       "NumIterations": 1000,
+	       "LearningRate": 0.1,
+	       "OptimAlgorithm": "adaround",
+	       "OptimDevice": "cpu",
+	       "InferDevice": "cpu",
+	       "EarlyStop": True,
+	   }
+
+	   quant_config = QuantizationConfig(
+	       calibrate_method=CalibrationMethod.Percentile,
+	       quant_format=QuantFormat.QDQ,
+	       activation_type=QuantType.QInt8,
+	       weight_type=QuantType.QInt8,
+	       nodes_to_exclude=["/layer.2/Conv_1", "^/Conv/.*"],
+	       subgraphs_to_exclude=[(["start_node_1", "start_node_2"], ["end_node_1", "end_node_2"])],
+	       include_cle=True,
+	       include_fast_ft=True,
+	       specific_tensor_precision=True,
+	       use_external_data_format=False,
+	       extra_options={
+		   "MixedPrecisionTensor": {ExtendedQuantType.QInt16: ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
+		   "CLESteps": 2,
+		   "FastFinetune": DEFAULT_ADAROUND_PARAMS
+	       }
+	   )
+
+	   quantization_config = Config(global_quant_config=quant_config)
+	   quantizer = ModelQuantizer(quantization_config)
+	   quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
+
+   -  After:
+
+      -  Basic Usage:
+
+        .. code-block:: python
+
+           from quark.onnx import ModelQuantizer
+           from quark.onnx.quantization import QConfig
+
+           input_model_path = "demo.onnx"
+           quantized_model_path = "demo_quantized.onnx"
+           calib_data_path = "calib_data"
+           calib_data_reader = ImageDataReader(calib_data_path)
+
+           quantization_config = QConfig.get_default_config("A8W8")
+           quantizer = ModelQuantizer(quantization_config)
+           quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
+
+      -  Advanced Usage:
+
+        .. code-block:: python
+
+           from quark.onnx import ModelQuantizer
+           from quark.onnx.quantization import QConfig
+           from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec
+           from quark.onnx.quantization.config.data_type import Int16
+           from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig
+
+           input_model_path = "demo.onnx"
+           quantized_model_path = "demo_quantized.onnx"
+           calib_data_path = "calib_data"
+           calib_data_reader = ImageDataReader(calib_data_path)
+
+           int8_config = QLayerConfig(activation=Int8Spec, weight=Int8Spec)
+           cle_algo = CLEConfig(cle_steps=2)
+           adaround_algo = AdaRoundConfig(learning_rate=0.1, num_iterations=1000)
+
+           quantization_config = QConfig(
+               global_config=int8_config,
+               specific_layer_config={Int16: ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
+               layer_type_config={Int16: ["MatMul"] None: ["Gemm"]},
+               exclude=["/layer.2/Conv_1", "^/Conv/.*", (["start_node_1", "start_node_2"], ["end_node_1", "end_node_2"])],
+               algo_config=[cle_algo, adaround_algo],
+               use_external_data_format=False,
+               **kwargs
+           )
+           quantizer = ModelQuantizer(quantization_config)
+           quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
+
 
 Release 0.9
 -----------
@@ -14,7 +281,7 @@ Release 0.9
 
    -  Quantized models can be reloaded with no memory overhead
 
-         -  The method ``ModelImporter.import_model_info`` used to reload a quantized model checkpoint now supports using a non-quantized backbone placed on  ``torch.device("meta")`` (`reference <https://docs.pytorch.org/docs/stable/meta.html>`_) device, avoiding the memory overhead of instantiating the non-quantized model on device. More details are available `here <https://quark.docs.amd.com/latest/pytorch/export/quark_export_hf.html#loading-quantized-models-saved-in-hugging-face-format-safetensors-format>_`.
+         -  The method ``ModelImporter.import_model_info`` used to reload a quantized model checkpoint now supports using a non-quantized backbone placed on  ``torch.device("meta")`` (`see PyTorch reference <https://docs.pytorch.org/docs/stable/meta.html>`_) device, avoiding the memory overhead of instantiating the non-quantized model on device. More details are available `here <https://quark.docs.amd.com/latest/pytorch/export/quark_export_hf.html#loading-quantized-models-saved-in-hugging-face-format-safetensors-format>`_.
 
            .. code-block:: python
 
@@ -38,7 +305,7 @@ Release 0.9
 
    -  Deprecations and breaking changes
 
-      -  Some quantization schemes in AMD Quark LLM PTQ example are deprecated (`reference <https://quark.docs.amd.com/latest/pytorch/example_quark_torch_llm_ptq.html>_`):
+      -  Some quantization schemes in AMD Quark LLM PTQ example are deprecated (`see torch LLM PTQ reference <https://quark.docs.amd.com/latest/pytorch/example_quark_torch_llm_ptq.html>`_):
 
          -  ``w_mx_fp4_a_mx_fp4_sym`` is deprecated in favor of: ``w_mxfp4_a_mxfp4``,
          -  ``w_mx_fp6_e3m2_sym`` in favor of ``w_mxfp6_e3m2``,
@@ -82,7 +349,7 @@ Release 0.9
 
       -  Improve efficiency of power-of-2 scale quantization for less memory and faster computation.
       -  Support channel-wise power-of-2 quantization by using per-channel MSE/NON-overflow observer.
-      -  Support Conv’s Bias for int32 power-of-2 quantization, where bias’s scale = weight’s scale * activation's scale.
+      -  Support Conv's Bias for int32 power-of-2 quantization, where bias's scale = weight's scale * activation's scale.
       -  Support export of INT16/INT32 quantization model to ONNX format and the corresponding ONNXRuntime.
 
 -  **AMD Quark for ONNX**

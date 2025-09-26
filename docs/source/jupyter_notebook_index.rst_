@@ -3,3 +3,6 @@
    :caption: Tutorials
 
    tutorials/torch/quickstart_tutorial/quickstart_tutorial.ipynb
+   tutorials/torch/diffusion_tutorial/diffusion_tutorial.ipynb
+   tutorials/torch/depth_wise_pruning/llm_depth_pruning.ipynb
+   tutorials/torch/llm_tutorial/llm_tutorial.ipynb

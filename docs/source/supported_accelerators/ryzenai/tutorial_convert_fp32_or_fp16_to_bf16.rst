@@ -1,19 +1,21 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 FP32/FP16 to BF16 Model Conversion
 ==================================
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark".
 
 Introduction
 ------------
 
 BFloat16 (Brain Floating Point 16) is a floating-point format designed for deep learning, offering reduced memory usage and faster computation while maintaining sufficient numerical precision.
- 
-AMD’s latest NPU and GPU devices natively support BF16, enabling more efficient matrix operations and lower latency. This guide explains how to convert an FP32/FP16 model to BF16 using Quark.
+
+AMD's latest NPU and GPU devices natively support BF16, enabling more efficient matrix operations and lower latency. This guide explains how to convert an FP32/FP16 model to BF16 using Quark.
 
 .. figure:: ../../_static/convert_fp32_or_fp16_to_bf16.png
-   :width: 30%  
+   :width: 30%
    :align: center
 
    **Figure 1. How to Convert FP32/FP16 to BF16**
@@ -36,12 +38,12 @@ As the Figure 1 shows, you can use this command to convert a float16 model to bf
 
     python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT16_ONNX_MODEL_PATH --output $BFLOAT16_ONNX_MODEL_PATH --format with_cast
 
-.. note::  
-  
+.. note::
+
     In the conversion, graph optimization and saturation (overflow protection) will be automatically performed, and the ONNX converted from float32/float16 to bfloat16 looks like Figure 2. As you can see, compared to the float32/float16 model on the left, the bfloat16 model on the right includes additional pairs of Cast operations and some graph optimizations, for example merging three MatMul operations into one.
 
 .. figure:: ../../_static/example_of_converting_fp_to_bf16.png
-   :width: 90%  
+   :width: 90%
    :align: center
 
    **Figure 2. Convert FP32/FP16 Models to BF16**
@@ -98,39 +100,17 @@ If the accuracy of bfloat16 model can not meet your target, you can improve bflo
 .. code:: python
 
    from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, BFloat16Spec, CalibMethod
+   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaQuantConfig
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QBFloat16,
-                                     weight_type=ExtendedQuantType.QBFloat16,
-                                     include_fast_ft=True,
-                                     extra_options={
-                                         'BF16QDQToCast': True,
-                                         'QuantizeAllOpTypes': True,
-                                         'ForceQuantizeNoInputCheck': True,
-                                         'FastFinetune': {
-                                             'NumIterations': 1000,
-                                             'LearningRate': 1e-6,
-                                             'OptimAlgorithm': 'adaquant',
-                                         }
-                                      }
-                                     )
-
-   config = Config(global_quant_config=quant_config)
-
+   activation_spec = BFloat16Spec(calibration_method=CalibMethod.MinMax)
+   weight_spec = BFloat16Spec(calibration_method=CalibMethod.MinMax)
+   algo_conf = [CLEConfig(), AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
+   extra_info = {
+       'BF16QDQToCast': True,
+       'QuantizeAllOpTypes': True,
+       'ForceQuantizeNoInputCheck': True,
+   }
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
    quantizer = ModelQuantizer(config)
-
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

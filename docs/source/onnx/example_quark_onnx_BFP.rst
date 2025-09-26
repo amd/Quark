@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Block Floating Point (BFP) Example
 ==================================
 
@@ -115,8 +117,7 @@ The quantizer takes the float model and produce a BFP16 quantized model.
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config BFP16
+                            --calibration_dataset_path calib_data
 
 This command will generate a BFP16 quantized model under the **models**
 folder, which was quantized by BFP16 configuration.
@@ -138,8 +139,8 @@ Note: If the model has dynamic shapes, you need to convert the model to fixed sh
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k_fix.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config BFP16_ADAQUANT
+                            --use_adaquant \
+                            --calibration_dataset_path calib_data
 
 If the GPU is available in your environment, you can accelerate the training process by configuring parameter 'device' as 'rocm' or 'cuda'.
 
@@ -148,8 +149,8 @@ If the GPU is available in your environment, you can accelerate the training pro
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k_fix.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx \
+                            --use_adaquant \
                             --calibration_dataset_path calib_data \
-                            --config BFP16_ADAQUANT \
                             --device cuda
 
 This command will generate a BFP16 quantized model under the **models**
@@ -200,10 +201,10 @@ Quantization Results
 | Model | 8.7 MB            | 8.4 MB              | 8.4 MB            |
 | Size  |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
-| P     | 65.424 %          | 60.806 %            | 64.652 %          |
+| P     | 65.424 %          | 60.838 %            | 65.220 %          |
 | rec@1 |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
-| P     | 85.788 %          | 82.648 %            | 85.278 %          |
+| P     | 85.788 %          | 82.658 %            | 85.584 %          |
 | rec@5 |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
 

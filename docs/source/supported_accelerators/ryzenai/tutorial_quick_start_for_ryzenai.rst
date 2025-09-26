@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quick Start for Ryzen AI
 ========================
 
@@ -112,13 +114,12 @@ The code below shows how to quantize a float model with **A8W8**. For more detai
 
 .. code-block:: python
 
-    from quark.onnx.quantization.config import Config, get_default_config
+    from quark.onnx.quantization import QConfig
     from quark.onnx import ModelQuantizer
 
     # Set up quantization with a specified configuration
     # For example, use "A8W8" for Ryzen AI INT8 quantization
-    a8w8_config = get_default_config("A8W8")
-    quantization_config = Config(global_quant_config=a8w8_config)
+    quantization_config = QConfig.get_default_config("A8W8")
     quantizer = ModelQuantizer(quantization_config)
 
 .. note::
@@ -146,10 +147,11 @@ Let's try replacing the above corresponding two lines with the following a few l
 
 .. code-block:: python
 
-    a8w8_adaround_config = get_default_config("A8W8_ADAROUND")
-    # a8w8_adaquant_config = get_default_config("A8W8_ADAQUANT")
-    quantization_config = Config(global_quant_config=a8w8_adaround_config)
-    # quantization_config = Config(global_quant_config=a8w8_adaquant_config)
+    from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec
+    from quark.onnx.quantization.config.algorithm import AdaRoundConfig
+
+    adaround_algo = AdaRoundConfig(learning_rate=0.1, num_iterations=1000)
+    quantization_config = QConfig(QLayerConfig(activation=Int8Spec(), weight=Int8Spec()), algo_config=[adaround_algo])
 
 For more detailed information about AdaRound and AdaQuant, please see :doc:`Quantization Using AdaQuant and AdaRound <../../onnx/accuracy_algorithms/ada>`.
 
@@ -243,13 +245,3 @@ As shown in the table below, random quantization results in a very large L2 loss
      - 9.78
      - 1.43
      - 1.15
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
-~~~~~~~
-
-Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

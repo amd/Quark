@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quantizing LLMs for ONNX Runtime GenAI
 ======================================
 
@@ -87,8 +89,8 @@ For example, to quantize the model with 32 group size for lm_head, while 128 gro
 
 .. note::
 
-    This is an advanced feature that is **not supported** by the standard AWQ model format. 
-    As a result, the quantized model is stored in the Quark model format, which does **not** require 
+    This is an advanced feature that is **not supported** by the standard AWQ model format.
+    As a result, the quantized model is stored in the Quark model format, which does **not** require
     the ``--custom_mode awq`` argument.
 
     Support for the Quark model format in **ONNX Runtime GenAI** is coming soon in v0.7 release.
@@ -119,4 +121,3 @@ To export the quantized model to ONNX format, run the following command:
 
     - Using ``-p int4 -e dml`` will generate an ONNX model with float16 activations prepared for the DirectML execution provider for hybrid (NPU + iGPU) flow.
     - To generate an ONNX model with float32 activations for NPU flow, use the ``-p int4 -e cpu`` flag.
-

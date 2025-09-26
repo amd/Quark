@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Auto-Search for Ryzen AI Resnet50 ONNX Model Quantization
 =========================================================
 
@@ -77,7 +79,7 @@ When needing build more than one search space, you can build many space accordin
 
 - **evaluator**
 
-   Evaluator is a custom function which use the onnx model as input and output the metric. Based on this metric and the metric drop tolerance, auto search decide wether to stop the searching process. If set None, auto search will call the build-in evalutor.
+   Evaluator is a custom function which use the onnx model as input and output the metric. Based on this metric and the metric drop tolerance, auto search decide wether to stop the searching process. If set None, auto search will call the build-in evaluator.
 
 There are two ways to define evaluator function:
 - defined in auto_search_config as a static method:
@@ -94,7 +96,7 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
@@ -108,16 +110,16 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
-   auto_search_conig = AutoSearchConfig_Default()
+   auto_search_config = AutoSearchConfig_Default()
    auto_search_config.search_evaluator = custom_evaluator
 
 - **metric**
 
-   If evalutor is not None, metric is defined in the evaluator. If evalutor is None, we can support the metrics such as "L2", "L1", "cos", "psnr" and "ssim". Default is "L2".
+   If evaluator is not None, metric is defined in the evaluator. If evaluator is None, we can support the metrics such as "L2", "L1", "cos", "psnr" and "ssim". Default is "L2".
 
 - **target setting**
 

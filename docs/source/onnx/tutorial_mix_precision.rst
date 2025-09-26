@@ -1,19 +1,17 @@
-.. raw:: html
-
-   <!-- omit in toc -->
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 Mixed Precision
 ===============
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark."
 
-As the scale and complexity of AI models continue to grow, optimizing their performance and efficiency becomes a top priority. Quantizing models to mixed precision emerges as a powerful technique, allowing AI practitioners to balance computational speed, memory usage, and model accuracy. This tutorial introduces the characteristics and usage of AMD Quark for ONNX's mixed precision.  
-  
-What is Mixed Precision Quantization?  
--------------------------------------  
-  
+As the scale and complexity of AI models continue to grow, optimizing their performance and efficiency becomes a top priority. Quantizing models to mixed precision emerges as a powerful technique, allowing AI practitioners to balance computational speed, memory usage, and model accuracy. This tutorial introduces the characteristics and usage of AMD Quark for ONNX's mixed precision.
+
+What is Mixed Precision Quantization?
+-------------------------------------
+
 Mixed precision quantization involves using different precision levels for different parts of a neural network, such as using 8-bit integers for some layers while retaining higher precision, for example, 16-bit or 32-bit floating point, for others. This approach leverages the fact that not all parts of a model are equally sensitive to quantization. By carefully selecting which parts of the model can tolerate lower precision, you achieve significant computational savings while minimizing the impact on model accuracy.
 
 Benefits of Mixed Precision Quantization
@@ -36,7 +34,7 @@ Granularity refers to the level at which precision can be controlled within a mo
 
 - **Element-wise Granularity**
 
-Element-wise mixed precision allows assigning different numeric precisions to activations and weights at the individual computation level. For example: INT8 Weights for efficient storage and computation and INT16 Activation to preserve dynamic range.
+Element-wise mixed precision allows assigning different numeric precision levels to activations and weights at the individual computation level. For example: INT8 Weights for efficient storage and computation and INT16 Activation to preserve dynamic range.
 
 - **Layer-wise Granularity**
 
@@ -44,11 +42,11 @@ Different layers of a neural network can have varying levels of sensitivity to q
 
 - **Tensor-wise Granularity**
 
-Tensor-wise mixed precision enables assigning different precisions to individual tensors within a layer. For example, in an INT8 quantized model, specifying any sensitive tensor as INT16.
+Tensor-wise mixed precision enables assigning different precision levels to individual tensors within a layer. For example, in an INT8 quantized model, specifying any sensitive tensor as INT16.
 
 2. **Support for Various Data Types**
 
-AMD Quark for ONNX mixed precision is not limited to a few integer data types, it supports a wide range of precisions, including but not limited to:
+AMD Quark for ONNX mixed precision is not limited to a few integer data types, it supports a wide range of precision levels, including but not limited to:
 
 - **More Integer Data Types**
 
@@ -81,6 +79,10 @@ In fact, you can mix any two other data types equally.
 In this configuration, BFP16 is assigned to activations and BFloat16 to weights. Here the BFP16 quantization is
 executed by custom operator named "BFPQuantizeDequantize", whose default attributes make it work on BFP16 mode.
 
+.. note::
+
+    In this documentation, old APIs such as **Config**, **QuantizationConfig**, etc. will be replaced with the new APIs in the next release.
+
 .. code-block:: python
 
    from quark.onnx import ModelQuantizer, CalibrationMethod, ExtendedQuantFormat, ExtendedQuantType
@@ -110,13 +112,13 @@ You can also assign BFloat16 to activations while BFP16 to weights as follows:
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
        quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBloat16,
+       activation_type=ExtendedQuantType.QBFloat16,
        weight_type=ExtendedQuantType.QBFP,
    )
 
 - **Layer-wise**
 
-This is one of the common configurations for deploying models on hardware devices, where the computationally intensive layers are quantized into BFP16 to maintain accuracy while improving computational efficiency, and the remaining layers are quantized into BFloat16.  
+This is one of the common configurations for deploying models on hardware devices, where the computationally intensive layers are quantized into BFP16 to maintain accuracy while improving computational efficiency, and the remaining layers are quantized into BFloat16.
 
 
 .. code-block:: python
@@ -124,8 +126,8 @@ This is one of the common configurations for deploying models on hardware device
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
        quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBloat16,
-       weight_type=ExtendedQuantType.QBloat16,
+       activation_type=ExtendedQuantType.QBFloat16,
+       weight_type=ExtendedQuantType.QBFloat16,
        include_auto_mp=True,
        extra_options={
            "AutoMixprecision": {
@@ -144,8 +146,8 @@ a BFP node for BFP16 and custom QDQ pair for BF16 onto the same tensor. In this 
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
        quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBloat16,
-       weight_type=ExtendedQuantType.QBloat16,
+       activation_type=ExtendedQuantType.QBFloat16,
+       weight_type=ExtendedQuantType.QBFloat16,
        include_auto_mp=True,
        extra_options={
            "AutoMixprecision": {
@@ -164,8 +166,8 @@ to the parameter "extra_options", see the Microscaling tutorial for details.
    quant_config = QuantizationConfig(
        calibrate_method=CalibrationMethod.MinMax,
        quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBloat16,
-       weight_type=ExtendedQuantType.QBloat16,
+       activation_type=ExtendedQuantType.QBFloat16,
+       weight_type=ExtendedQuantType.QBFloat16,
        include_auto_mp=True,
        extra_options={
            "AutoMixprecision": {
@@ -268,13 +270,3 @@ how to use the L2 Norm metric to achieve automatic mixed precision:
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
 For a detailed example of using Top1 metric for mixed precision, refer to the :doc:`Mixed Precision Example <example_quark_onnx_mixed_precision>`.
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

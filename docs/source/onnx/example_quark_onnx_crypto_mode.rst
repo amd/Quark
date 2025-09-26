@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -23,15 +25,18 @@ On the basis of normal working mode, working in crypto mode only requires simple
 .. code:: python
 
     from quark.onnx import ModelQuantizer
-    from quark.onnx.quantization.config import Config, QuantizationConfig
+    from quark.onnx.quantization import QConfig
+    from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
 
     # Need a data reader ...
     dr = DataReader()
 
     # Create an ONNX quantizer
-    quant_config = QuantizationConfig()
-    quant_config.crypto_mode = True  # Step1. Enable crypto mode in quantization configuration
-    config = Config(global_quant_config=quant_config)
+    activation_spec = XInt8Spec()
+    weight_spec = XInt8Spec()
+    config = QConfig(
+        global_config=QLayerConfig(activation=activation_spec, weight=weight_spec), CryptoMode=True, EnableNPUCnn=True # Step1. Enable crypto mode in quantization configuration
+    )
     quantizer = ModelQuantizer(config)
 
     # Quantize the ONNX model (The crypto mode only supports <2GB models)
@@ -168,9 +173,9 @@ Test the accuracy of the quantized model on ImageNet val dataset:
 | Model    | 97.82 MB                   | 25.62 MB                     |
 | Size     |                            |                              |
 +----------+----------------------------+------------------------------+
-| Prec@1   | 74.114 %                   | 73.498 %                     |
+| Prec@1   | 74.114 %                   | 73.562 %                     |
 +----------+----------------------------+------------------------------+
-| Prec@5   | 91.716 %                   | 91.440 %                     |
+| Prec@5   | 91.716 %                   | 91.420 %                     |
 +----------+----------------------------+------------------------------+
 
 .. raw:: html

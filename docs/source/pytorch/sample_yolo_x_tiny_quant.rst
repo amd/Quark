@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 YOLO-X Tiny FX Graph Quantization
 =================================
 
@@ -45,7 +47,7 @@ Preparation & Workflow
 
       .. code-block:: python
 
-         # NOTE Weight, bias, output and input set to int8, per-tensor, pow-of-2, symmetric quantization, which is more friendly for AMD NPU hardward.
+         # NOTE Weight, bias, output and input set to int8, per-tensor, pow-of-2, symmetric quantization, which is more friendly for AMD NPU hardware.
          INT8_PER_WEIGHT_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
                                        qscheme=QSchemeType.per_tensor,
                                        observer_cls=PerTensorPowOf2MinMSEObserver,
@@ -74,7 +76,7 @@ Preparation & Workflow
 
          quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
          quantizer = ModelQuantizer(quant_config)
-         # NOTE. As we use MSEObserver, this is a time & computation-intensive operation, we only using one mini-batch to perform calibation.
+         # NOTE. As we use MSEObserver, this is a time & computation-intensive operation, we only using one mini-batch to perform calibration.
          calib_data = [x[0] for x in list(itertools.islice(self.evaluator.dataloader, 1))]
          quantized_model = quantizer.quantize_model(graph_model, calib_data)
 
@@ -107,13 +109,15 @@ Preparation & Workflow
       .. code-block:: python
 
          # Freeze model and do post-quant optimization to meet hardware(NPU) compile requirements.
-         freezeded_model = self.quantizer.freeze(self.model.base_model.eval())
-         self.model.base_model = freezeded_model
-         config = ExporterConfig(json_export_config=JsonExporterConfig())
-         exporter = ModelExporter(config=config, export_dir=self.file_name)
+         frozen_model = self.quantizer.freeze(self.model.base_model.eval())
+         self.model.base_model = frozen_model
          # NOTE for NPU compile, it is better using batch-size = 1 for better compliance
          example_inputs = (torch.rand(1, 3, 416, 416).to(self.device), )
-         exporter.export_onnx_model(self.model, example_inputs[0])
+         export_onnx(
+             model=frozen_model,
+             output_dir=self.file_name,
+             input_args=example_inputs[0]
+         )
          # For better visualization, user can use simplify tool
          from onnxsim import simplify
          quant_model = onnx.load("./***/quark_model.onnx")

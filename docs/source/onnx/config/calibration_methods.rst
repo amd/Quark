@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Calibration Methods
 ===================
 
@@ -17,7 +19,7 @@ The MSE (Mean Squared Error) calibration method involves performing calibration 
 
 Entropy Calibration Method
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-The Entropy calibration method determines the quantization parameters by considering the entropy algorithm of each tensor’s distribution.
+The Entropy calibration method determines the quantization parameters by considering the entropy algorithm of each tensor's distribution.
 
 NonOverflow Calibration Method
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

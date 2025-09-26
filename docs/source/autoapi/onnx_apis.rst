@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 AMD Quark APIs for ONNX
 =======================
 
@@ -13,11 +15,3 @@ AMD Quark APIs for ONNX
    QDQ Quantizer <../autoapi/quark/onnx/qdq_quantizer/index>
    Configuration <../autoapi/quark/onnx/quantization/config/config/index>
    Quantization Utilities <../autoapi/quark/onnx/quant_utils/index>
-
-..
-  ------------
-  #####################################
-  License
-  #####################################
-
-  AMD Quark is licensed under MIT License. Refer to the LICENSE file for the full license text and copyright notice.

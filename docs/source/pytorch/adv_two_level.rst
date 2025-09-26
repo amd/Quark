@@ -1,8 +1,10 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Two Level Quantization Formats (MX4, MX6, MX9: shared Microexponents)
 =====================================================================
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark."
 
 AMD Quark supports the MX6 and MX9 quantization formats through ``quark.torch``, as introduced in `With Shared Microexponents, A Little Shifting Goes a Long Way <https://arxiv.org/abs/2302.08007>`__.
@@ -42,7 +44,7 @@ Another strategy to balance quantization error with the number of bits per weigh
 Two-level Quantization: MX6 and MX9 Data Types
 ----------------------------------------------
 
-Refer to MX9, MX6, and MX4 specifications in `[1] <https://arxiv.org/abs/2302.08007>`__. 
+Refer to MX9, MX6, and MX4 specifications in `[1] <https://arxiv.org/abs/2302.08007>`__.
 The MX6 and MX9 data types leverage both the granularity of the scale factors and the precision allocated to them to:
 
 - Minimize the number of bits per weight

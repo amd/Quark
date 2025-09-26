@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -119,14 +121,14 @@ If you customize the calibration data and evaluation data, please use the comman
 .. code:: bash
 
 
-   python quantize_yolo.py --model_name yolo_nas_s --calib_data_path [CALIB_DATA_PATH] --eval_data_path [CUSTOME_EVAL_DATA] --config XINT8
+   python quantize_yolo.py --model_name yolo_nas_s --calib_data_path [CALIB_DATA_PATH] --eval_data_path [CUSTOM_EVAL_DATA] --config XINT8
 
 
 If you want to use GPU, use the following command instead:
 
 .. code:: bash
 
-   python quantize_yolo.py --model_name yolo_nas_s --calib_data_path [CALIB_DATA_PATH] --eval_data_path [CUSTOME_EVAL_DATA] --config XINT8 --gpu
+   python quantize_yolo.py --model_name yolo_nas_s --calib_data_path [CALIB_DATA_PATH] --eval_data_path [CUSTOM_EVAL_DATA] --config XINT8 --gpu
 
 
 .. note::

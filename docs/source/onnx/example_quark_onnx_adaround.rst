@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quark ONNX Quantization Example
 ===============================
 
@@ -98,8 +100,7 @@ The quantizer takes the float model and produces a quantized model without ADARO
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config S8S8_AAWS
+                            --calibration_dataset_path calib_data
 
 This command generates a quantized model under the **models** folder, which was quantized by the S8S8_AAWS configuration (Int8 symmetric quantization) without ADAROUND.
 
@@ -113,8 +114,8 @@ The quantizer takes the float model and produces a quantized model with ADAROUND
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_adaround_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config S8S8_AAWS_ADAROUND
+                            --use_adaround \
+                            --calibration_dataset_path calib_data
 
 This command generates a quantized model under the **models** folder, which was quantized by the S8S8_AAWS configuration (Int8 symmetric quantization) with ADAROUND.
 
@@ -153,11 +154,11 @@ Test the accuracy of the quantized model with ADAROUND on the ImageNet val datas
    * - P rec@1
      - 65.424 %
      - 1.708 %
-     - 41.420 %
+     - 39.790 %
    * - P rec@5
      - 85.788 %
      - 5.690 %
-     - 64.802 %
+     - 63.004 %
 
 .. note::
 

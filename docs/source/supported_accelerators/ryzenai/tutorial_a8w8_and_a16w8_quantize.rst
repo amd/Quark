@@ -1,28 +1,30 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Float Scales (A8W8 and A16W8) Quantization
 ==========================================
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark".
 
 Introduction
 ------------
 
 A8W8 and A16W8 are two commonly used quantization configurations for the Ryzen AI NPU.
- 
+
     A8W8: Uses symmetric INT8 activation, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
 
     A16W8: Uses symmetric INT16 activation, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
 
 As the activation bit width increases, the quantized model's accuracy improves. This means A16W8 generally offers better accuracy than A8W8. However, A8W8 provides better performance compared to A16W8.
- 
+
 Please choose the appropriate quantization configuration based on your specific needs. This guide explains how to quantize a float model using the A8W8 or A16W8 configuration and provides strategies to improve accuracy.
 
 How to Quantize a Float Model with A8W8/A16W8 Config
 ----------------------------------------------------
 
 .. figure:: ../../_static/a8w8_and_a16w8_quantize.png
-   :width: 30%  
+   :width: 30%
    :align: center
 
    **Figure 1. How to Quantize a Float Model with A8W8/A16W8 Config**
@@ -32,8 +34,8 @@ As the Figure 1 shows, you can refer to codes below:
 
 .. code-block:: python
 
-   from onnxruntime.quantization.calibrate import CalibrationDataReader
-   from quark.onnx.quantization.config import Config, get_default_config
+
+   from quark.onnx.quantization import QConfig
    from quark.onnx import ModelQuantizer
 
     # Define model paths
@@ -71,15 +73,14 @@ As the Figure 1 shows, you can refer to codes below:
 
     # Set up quantization with a specified configuration
     # For example, use "A8W8" for Ryzen AI A8W8 quantization
-    quant_config = get_default_config("A8W8") # Replace "A8W8" with "A16W8"
-    quantization_config = Config(global_quant_config=quant_config )
+    quantization_config = QConfig.get_default_config("A8W8")
     quantizer = ModelQuantizer(quantization_config)
 
     # Quantize the ONNX model and save to specified path
     quantizer.quantize_model(float_model_path, quantized_model_path, calib_data_reader)
 
-.. note::  
-  
+.. note::
+
     In the quantization, graph optimization will be automatically performed.
 
 How to Measure Accuracy (Compare Differences between FP32 and A8W8/A16W8)
@@ -132,75 +133,40 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, QuantType, QuantFormat, ExtendedQuantFormat, ExtendedQuantType
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec, CalibMethod
+   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig, AdaQuantConfig
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=QuantType.QInt8, # Replace with "activation_type=ExtendedQuantType.QInt16," when using A16W8
-                                     weight_type=QuantType.QInt8,
-                                     include_fast_ft=True,
-                                     extra_options={
-                                         'ActivationSymmetric': True,
-                                         'AlignSlice': False,
-                                         'FoldRelu': True,
-                                         'AlignConcat': True,
-                                         'AlignEltwiseQuantType': True,
-                                         'FastFinetune': {
-                                             'NumIterations': 1000,
-                                             'LearningRate': 0.1,
-                                             'OptimAlgorithm': 'adaround',
-                                         }
-                                      }
-                                     )
-
-   config = Config(global_quant_config=quant_config)
-
+   activation_spec = Int8Spec(calibration_method=CalibMethod.MinMax)  # Replace with Int16Spec when using A16W8
+   weight_spec = Int8Spec(calibration_method=CalibMethod.MinMax)
+   algo_conf = [CLEConfig(), AdaRoundConfig(num_iterations=1000, learning_rate=0.1)]
+   extra_info = {
+       'ActivationSymmetric': True,
+       'AlignSlice': False,
+       'FoldRelu': True,
+       'AlignConcat': True,
+       'AlignEltwiseQuantType': True,
+   }
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
    quantizer = ModelQuantizer(config)
-
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
 - **ADAQUANT**
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, QuantType, ExtendedQuantFormat, ExtendedQuantType
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec, CalibMethod
+   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig, AdaQuantConfig
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=QuantType.QInt8, # Replace with "activation_type=ExtendedQuantType.QInt16," when using A16W8
-                                     weight_type=QuantType.QInt8,
-                                     include_fast_ft=True,
-                                     extra_options={
-                                         'ActivationSymmetric': True,
-                                         'AlignSlice': False,
-                                         'FoldRelu': True,
-                                         'AlignConcat': True,
-                                         'AlignEltwiseQuantType': True,
-                                         'FastFinetune': {
-                                             'NumIterations': 1000,
-                                             'LearningRate': 1e-6,
-                                             'OptimAlgorithm': 'adaquant',
-                                         }
-                                      }
-                                     )
-
-   config = Config(global_quant_config=quant_config)
-
+   activation_spec = Int8Spec(calibration_method=CalibMethod.MinMax) # Replace with Int16Spec when using A16W8
+   weight_spec = Int8Spec(calibration_method=CalibMethod.MinMax)
+   algo_conf = [CLEConfig(), AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
+   extra_info = {
+       'ActivationSymmetric': True,
+       'AlignSlice': False,
+       'FoldRelu': True,
+       'AlignConcat': True,
+       'AlignEltwiseQuantType': True,
+   }
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
    quantizer = ModelQuantizer(config)
-
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

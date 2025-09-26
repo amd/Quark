@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 ExtendedQuantizeLinear
 ======================
 
@@ -69,7 +71,7 @@ Scale for doing quantization to get *y*. For per-tensor/per-layer quantization t
 
 - **y_zero_point** (optional, heterogeneous) - **T3**:
 
-Zero point for doing quantization to get *y*. Shape must match *y_scale*. Default is uint8 with zero point of 0 if it’s not specified.
+Zero point for doing quantization to get *y*. Shape must match *y_scale*. Default is uint8 with zero point of 0 if it's not specified.
 
 Outputs
 ```````
@@ -83,19 +85,12 @@ Type Constraints
 
 - **T1** in ( tensor(float) ):
 
-The type of the input ‘x’.
+The type of the input 'x'.
 
 - **T2** in ( tensor(float) ):
 
-The type of the input ‘y_scale’.
+The type of the input 'y_scale'.
 
 - **T3** in ( tensor(int32), tensor(int16), tensor(int8), tensor(uint32), tensor(uint16), tensor(uint8), tensor(float16), tensor(bfloat16) ):
 
-The type of the input ‘y_zero_point‘ and the output ‘y‘.
-
-.. raw:: html
-
-   <!-- 
-   ## License
-   Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->
+The type of the input 'y_zero_point' and the output 'y'.

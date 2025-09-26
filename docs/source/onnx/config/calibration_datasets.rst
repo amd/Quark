@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Adding Calibration Datasets
 ===========================
 
@@ -103,14 +105,13 @@ Example Code:
 
    import onnxruntime
    from quark.onnx import ModelQuantizer
-   from quark.onnx.quantization.config import Config, get_default_config
+   from quark.onnx.quantization.config.config import QConfig
 
    input_model_path = "path/to/your/resnet50.onnx"
    output_model_path = "path/to/your/resnet50_quantized.onnx"
    calib_data_path= "path/to/your/calib/data/folder"
 
-   quant_config = get_default_config("XINT8")
-   config = Config(global_quant_config=quant_config)
+   config = quant_config = QConfig.get_default_config("XINT8")
 
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None, calibration_data_path=calib_data_path)
@@ -127,14 +128,20 @@ Example Code:
 
    import onnxruntime
    from quark.onnx import ModelQuantizer
-   from quark.onnx.quantization.config import Config, get_default_config
+   from quark.onnx.quantization.config.config import QConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+   from quark.onnx.quantization.config.algorithm import CLEConfig
 
    input_model_path = "path/to/your/resnet50.onnx"
    output_model_path = "path/to/your/resnet50_quantized.onnx"
 
-   quant_config = get_default_config("XINT8")
-   quant_config.extra_options['UseRandomData'] = True
-   config = Config(global_quant_config=quant_config)
+   activation_spec = XInt8Spec()
+   weight_spec = XInt8Spec()
+   algo_confs = [CLEConfig()]
+   extra_info = {'UseRandomData': True, "EnableNPUCnn": True}
+   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
+                           algo_config=algo_confs,
+                           **extra_info)
 
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)

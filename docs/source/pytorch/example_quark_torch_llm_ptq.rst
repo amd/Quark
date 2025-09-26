@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Language Model Post Training Quantization (PTQ) Using Quark
 ===========================================================
 
@@ -226,8 +228,6 @@ Recipe 1: Evaluation of Llama Float16 Model without Quantization
 Recipe 2: FP8 (OCP fp8_e4m3) Quantization & Json_SafeTensors_Export with KV Cache
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you want to export the autofp8 format for use in downstream libraries such as vLLM, please add '--custom_mode fp8'.
-
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
@@ -239,8 +239,6 @@ If you want to export the autofp8 format for use in downstream libraries such as
 
 Recipe 3: INT Weight-Only Quantization & Json_SafeTensors_Export with AWQ
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If you want to export the autoawq format, please add '--custom_mode awq'.
 
 .. code-block:: bash
 
@@ -275,45 +273,27 @@ Recipe 5: Quantization & GGUF_Export with AWQ (W_uint4 A_float16 per_group asymm
                              --quant_scheme w_uint4_per_group_asym \
                              --quant_algo awq \
                              --num_calib_data 128 \
+                             --dataset pileval_for_awq_benchmark \
                              --group_size 32 \
                              --model_export gguf
 
-Recipe 6: MX Quantization
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Recipe 6: OCP MX Quantization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Quark now supports the datatype microscaling, abbreviated as MX. Use the following command to quantize the model to datatype MX:
 
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir [llama checkpoint folder] \
-                             --output_dir output_dir \
-                             --quant_scheme w_mxfp8 \
-                             --num_calib_data 32 \
-                             --group_size 32
-
-The command above is weight-only quantization. If you want activations to be quantized as well, use the command below:
+Quark now supports the datatype OCP MXINT8, MXFP8E4M3, MXFP8E5M2, MXFP4, MXFP6E3M2, MXFP6E2M3. Take ``w_mxfp4_a_mxfp4`` scheme as an example to quantize the model to datatype OCP MX:
 
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
                              --output_dir output_dir \
-                             --quant_scheme w_mxfp8_a_mxfp8 \
-                             --num_calib_data 32 \
-                             --group_size 32
+                             --quant_scheme w_mxfp4_a_mxfp4 \
+                             --num_calib_data 32
 
 Recipe 7: BFP16 Quantization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Quark now supports the datatype BFP16 (Block Floating Point 16 bits). Use the following command to quantize the model to datatype BFP16:
-
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir [llama checkpoint folder] \
-                             --output_dir output_dir \
-                             --quant_scheme w_bfp16 \
-                             --num_calib_data 16
-
-The command above is weight-only quantization. If you want activations to be quantized as well, use the command below:
 
 .. code-block:: bash
 
@@ -331,54 +311,10 @@ Quark now supports the datatype MX6. Use the following command to quantize the m
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
                              --output_dir output_dir \
-                             --quant_scheme w_mx6 \
-                             --num_calib_data 16
-
-The command above is weight-only quantization. If you want activations to be quantized as well, use the command below:
-
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir [llama checkpoint folder] \
-                             --output_dir output_dir \
                              --quant_scheme w_mx6_a_mx6 \
                              --num_calib_data 16
 
-Recipe 9: Two-Stage Quantization: 1st Stage FP4 Per-Group & 2nd Stage FP8 Per-Tensor for Scale of 1st Stage
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Quark now supports the two-stage quantization scheme. The first stage is FP4 Per-Group and the second stage is FP8 Per-Tensor quantization for scale of 1st Stage.
-
-  .. code-block:: bash
-
-    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
-                              --output_dir output_dir \
-                              --quant_scheme w_fp4_scale_fp8 \
-                              --num_calib_data 16
-
-The command above is weight-only quantization. If you want activations to be quantized as well, use the command below:
-
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir [llama checkpoint folder] \
-                             --output_dir output_dir \
-                             --quant_scheme w_fp4_a_fp4_scale_fp8 \
-                             --num_calib_data 16
-
-Recipe 10: MOE Model Experts Weights Second Step Quantization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-For MOE structure model, Quark supports second step quantization for weights in the expert layers. Use the following command to quantize the model:
-
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir [moe structure model checkpoint folder] \
-                             --output_dir output_dir \
-                             --quant_scheme w_fp8_a_fp8 \
-                             --kv_cache_dtype fp8 \
-                             --moe_experts_second_step_config w_int4_per_channel_sym \
-                             --num_calib_data 16
-
-Recipe 11: Import Quantized Model & Evaluation
+Recipe 9: Import Quantized Model & Evaluation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The quantized model can be imported and evaluated:
@@ -392,7 +328,7 @@ The quantized model can be imported and evaluated:
 
 .. note::
 
-   Exporting quantized MX6 model is not supported yet.
+   Exporting quantized BFP16 and MX6 models is not supported yet.
 
 Tutorial: Running a Model Not on the Supported List
 ---------------------------------------------------
@@ -431,45 +367,89 @@ For a new model that is not listed in Quark, you need to modify some relevant fi
                                                     trust_remote_code=True,
                                                     use_fast=use_fast)
 
-3. [Optional] For some layers you don't want to quantize, add them to `MODEL_NAME_EXCLUDE_LAYERS_MAP` in `configuration_preparation.py`.
+3. Create a new LLM template for your model.
 
-   If you are quantizing an MoE model, the gate layers do not need to be quantized, or there are other layers that you do not want to quantize. You can add `model_type` and excluding layer name to `MODEL_NAME_EXCLUDE_LAYERS_MAP`.
-
-   .. code-block:: python
-
-      MODEL_NAME_EXCLUDE_LAYERS_MAP = {
-          "llama": ["lm_head"],
-          "opt": ["lm_head"],
-          ...
-          "cohere": ["lm_head"],  # <---- Add code HERE
-      }
-
-4. [Optional] If quantizing `kv_cache`, add the names of kv layers to `MODEL_NAME_KV_LAYERS_MAP` in `configuration_preparation.py`.
-
-   When quantizing `kv_cache`, add `model_type` and kv layers name to `MODEL_NAME_KV_LAYERS_MAP`.
+   For new models not supported by the built-in templates, you need to create a custom template using :py:class:`.LLMTemplate`.
 
    .. code-block:: python
 
-      MODEL_NAME_KV_LAYERS_MAP = {
-          "llama": ["*k_proj", "*v_proj"],
-          "opt": ["*k_proj", "*v_proj"],
-          ...
-          "cohere": ["*k_proj", "*v_proj"],  # <---- Add code HERE
-      }
+      from quark.torch import LLMTemplate
 
-5. [Optional] If using GPTQ, SmoothQuant, and AWQ, add `awq_config.json` and `gptq_config.json` for the model.
+      # Create a new template for your model
+      new_template = LLMTemplate(
+          model_type="cohere",
+          kv_layers_name=["*k_proj", "*v_proj"],  # KV projection layer patterns
+          q_layer_name="*q_proj",                 # Q projection layer pattern
+          exclude_layers_name=["lm_head"]         # Layers to exclude from quantization
+      )
 
-   Quark relies on `awq_config.json` and `gptq_config.json` to execute GPTQ, SmoothQuant, and AWQ.
+      # Register the template if you want to use the template in other places
+      LLMTemplate.register_template(new_template)
 
-   Create a model directory named after the `model_type` under `Quark/examples/torch/language_modeling/models` and create `awq_config.json` and `gptq_config.json` in this directory.
+   Now you can use the template for quantization configuration:
+
+   .. code-block:: python
+
+      # Create quantization configuration
+      quant_config = new_template.get_config(
+          scheme="fp8",
+          kv_cache_scheme="fp8"
+      )
+
+5. [Optional] If using AWQ, GPTQ, SmoothQuant for the new model, create the algorithm config json file for the model
 
    For GPTQ:
 
-   The config file should be named `gptq_config.json`. You should collate all linear layers in decoder layers and put them in the `inside_layer_modules` list and put the decoder layers name in the `model_decoder_layers` list.
+   In the config json file, you should collate all linear layers in decoder layers and put them in the `inside_layer_modules` list and put the decoder layers name in the `model_decoder_layers` list.
 
-   For SmoothQuant and AWQ:
+   For AWQ:
 
-   SmoothQuant and AWQ use the same file named `awq_config.json`. In general, for each decoder layer, you need to process four parts (`linear_qkv`, `linear_o`, `linear_mlp_fc1`, `linear_mlp_fc2`). You can refer to existing configurations for guidance.
+   You could refer to the :doc:`AWQ documentation <../pytorch/awq_document>` for guidance on writing the configuration file.
+
+   For SmoothQuant:
+
+   You could refer to the :doc:`SmoothQuant documentation <../pytorch/smoothquant>` for guidance on writing the configuration file.
+
+   After creating the config json file, you can pass the config json file to template of the model:
+
+   .. code-block:: python
+
+      from quark.torch import LLMTemplate
+      from quark.torch.quantization.config.config import load_quant_algo_config_from_file
+
+      # Load the config json file
+      awq_config = load_quant_algo_config_from_file("awq_config.json")
+
+      # Create a new template for your model
+      new_template = LLMTemplate(
+          model_type="cohere",
+          exclude_layers_name=["lm_head"]         # Layers to exclude from quantization
+          awq_config=awq_config
+      )
+
+      # Register the template if you want to use the template in other places
+      LLMTemplate.register_template(new_template)
+
+   Now you can use the template for AWQ quantization:
+
+   .. code-block:: python
+
+      quant_config = new_template.get_config(
+          scheme="int4_wo_128",
+          quant_algo="awq"
+      )
+
+End to end tutorials
+--------------------
+
+In addition to the snippets above, you can refer to end-to-end tutorials:
+
+.. toctree::
+   :caption: More examples
+   :maxdepth: 1
+
+   FP4 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp4>
+   FP8 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp8>
 
 Tutorial: Generating AWQ Configuration Automatically (Experimental)
 -------------------------------------------------------------------

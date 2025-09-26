@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Auto-Search for Ryzen AI Yolov3 ONNX Model Quantization with Custom Evaluator
 =============================================================================
 
@@ -40,7 +42,7 @@ The search space defines the range of potential quantization configurations that
 
 The search space can be configured manually or based on predefined templates.
 
-- **GPU setting**: For taking advantage of GPU resources, we could set GPU to do model optimization and inference. Specifically, set the 'OptimDevice' and 'InferDevice' to be the GPU number in the 'FastFinetune' item. In order to call the GPU smoothly, we need to insall onnxruntime-gpu after uninstalling onnxruntime.
+- **GPU setting**: For taking advantage of GPU resources, we could set GPU to do model optimization and inference. Specifically, set the 'OptimDevice' and 'InferDevice' to be the GPU number in the 'FastFinetune' item. In order to call the GPU smoothly, we need to install onnxruntime-gpu after uninstalling onnxruntime.
 
 .. code-block:: python
 
@@ -83,7 +85,7 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
@@ -97,11 +99,11 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
-    auto_search_conig = AutoSearchConfig_Default()
+    auto_search_config = AutoSearchConfig_Default()
     auto_search_config.search_evaluator = custom_evaluator
 
 

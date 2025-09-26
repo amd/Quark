@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quark Format
 ============
 
@@ -60,6 +62,6 @@ Example of Quark Format Importing
 .. code:: python
 
    from quark.torch import ModelImporter
-   
+
    importer = ModelImporter(model_info_dir=args.import_model_dir)
    model = importer.import_model_info(model)

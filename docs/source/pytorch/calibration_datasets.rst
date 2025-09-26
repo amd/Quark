@@ -1,3 +1,5 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Adding Calibration Datasets
 ===========================
 
@@ -43,10 +45,3 @@ If the Dataset format is a dictionary, you should define the function `collate_f
 
    input_dict = {'input_ids': torch.rand(128, 128)}
    calib_dataloader = DataLoader(input_dict, batch_size=4, collate_fn=my_collate_fn)
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

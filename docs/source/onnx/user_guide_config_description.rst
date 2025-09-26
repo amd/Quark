@@ -1,23 +1,22 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Configuring ONNX Quantization
 =============================
 
-Configuration of quantization in ``AMD Quark for ONNX`` is set by Python ``dataclass`` because it is rigorous and can help you avoid typos. We provide a class ``Config`` in ``quark.onnx.quantization.config.config`` for configuration, as demonstrated in the previous example. In ``Config``, you should set certain instances (all instances are optional except ``global_quant_config``):
-
--  ``global_quant_config``: Global quantization  configuration applied to the entire model.
+Configuration of quantization in ``AMD Quark for ONNX`` is set by Python ``dataclass`` because it is rigorous and can help you avoid typos. We provide a class ``QConfig`` in ``quark.onnx.quantization.config.config`` for configuration, as demonstrated in the previous example. It can use ``get_default_config`` for predefined configurations.
 
 The ``Config`` should be like:
 
 .. code-block:: python
 
-   from quark.onnx.quantization.config import Config, get_default_config
-   config = Config(global_quant_config=...)
+   from quark.onnx.quantization import QConfig
+   quant_config = QConfig.get_default_config("xxx")
 
-We define some default global configurations, including ``XINT8`` and ``U8S8_AAWS``, which can be used like this:
+We define some default global configurations, including ``XINT8`` and ``A8W8``, which can be used like this:
 
 .. code-block:: python
 
-   quant_config = get_default_config("U8S8_AAWS")
-   config = Config(global_quant_config=quant_config)
+   quant_config = QConfig.get_default_config("A8W8")
 
 More Quantization Default Configurations
 ----------------------------------------
@@ -71,37 +70,32 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, PowerOfTwoMethod, QuantType
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import ModelQuantizer
+   from quark.onnx.quantization import QConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec
+   from quark.onnx.quantization.config.data_type import Int16
+   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig
 
-   quant_config = QuantizationConfig(
-       quant_format=quark.onnx.QuantFormat.QDQ,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       input_nodes=[],
-       output_nodes=[],
-       op_types_to_quantize=[],
-       per_channel=False,
-       reduce_range=False,
-       activation_type=quark.onnx.QuantType.QInt8,
-       weight_type=quark.onnx.QuantType.QInt8,
-       nodes_to_quantize=[],
-       nodes_to_exclude=[],
-       subgraphs_to_exclude=[],
-       optimize_model=True,
-       use_dynamic_quant=False,
+   input_model_path = "demo.onnx"
+   quantized_model_path = "demo_quantized.onnx"
+   calib_data_path = "calib_data"
+
+   int8_config = QLayerConfig(activation=Int8Spec, weight=Int8Spec)
+   cle_algo = CLEConfig(cle_steps=2)
+   adaround_algo = AdaRoundConfig(learning_rate=0.1, num_iterations=1000)
+
+   calib_data_reader = ImageDataReader(calib_data_path)
+   quantization_config = QConfig(
+       global_config=int8_config,
+       specific_layer_config={Int16: ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
+       layer_type_config={Int16: ["MatMul"] None: ["Gemm"]},
+       exclude=["/layer.2/Conv_1", "^/Conv/.*", (["start_node_1", "start_node_2"], ["end_node_1", "end_node_2"])],
+       algo_config=[cle_algo, adaround_algo],
        use_external_data_format=False,
-       execution_providers=['CPUExecutionProvider'],
-       enable_npu_cnn=False,
-       enable_npu_transformer=False,
-       convert_fp16_to_fp32=False,
-       convert_nchw_to_nhwc=False,
-       include_cle=True,
-       include_sq=False,
-       extra_options={},)
-   config = Config(global_quant_config=quant_config)
-
-   quantizer = ModelQuantizer(config)
-   quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)
+       **kwargs
+   )
+   quantizer = ModelQuantizer(quantization_config)
+   quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
 
 .. toctree::
    :hidden:
@@ -112,10 +106,3 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
    Quantization Strategies <config/quantization_strategies.rst>
    Quantization Schemes <config/quantization_schemes.rst>
    Quantization Symmetry <config/quantization_symmetry.rst>
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

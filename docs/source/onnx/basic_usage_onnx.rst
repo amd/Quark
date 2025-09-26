@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 AMD Quark for ONNX
 ==================
 
@@ -31,7 +33,7 @@ We will use the `OpenCV <https://opencv.org/>`_ library to read images.
 
 .. code-block:: bash
 
-   pip install opencv-python 
+   pip install opencv-python
 
 Next, you can refer to the following code to construct a calibration data reader class.
 
@@ -93,13 +95,11 @@ While Quark ONNX provides a granular API to handle diverse quantization scenario
 
 .. code-block:: python
 
-    from quark.onnx.quantization.config.config import Config
-    from quark.onnx.quantization.config.custom_config import get_default_config
+    from quark.onnx.quantization import QConfig
 
     # Set up quantization with a specified configuration
     # For example, use "A8W8" for Ryzen AI INT8 quantization
-    a8w8_config = get_default_config("A8W8")
-    quantization_config = Config(global_quant_config=a8w8_config )
+    quantization_config = QConfig.get_default_config("A8W8")
 
 .. note::
 

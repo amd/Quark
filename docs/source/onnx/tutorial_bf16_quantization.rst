@@ -1,12 +1,10 @@
-.. raw:: html
-
-   <!-- omit in toc -->
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 Introduction
 ============
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you  encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark."
 
 BFloat16 (Brain Floating Point 16) is a floating-point data format used in deep learning to reduce memory usage and computation while maintaining sufficient numerical precision. Unlike other quantization formats like INT8 or FP16, BF16 maintains the same range as FP32 but reduces precision, making it particularly useful for training and inference in neural networks.
@@ -20,18 +18,14 @@ Here is a simple example of how to enable BF16 quantization.
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.config import QConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, BFloat16Spec, CalibMethod
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QBFloat16,
-                                     weight_type=ExtendedQuantType.QBFloat16,
-                                     extra_options={'BF16QDQToCast': True}
-                                     )
-
-   config = Config(global_quant_config=quant_config)
+   activation_spec = BFloat16Spec()
+   weight_spec = BFloat16Spec()
+   activation_spec.set_calibration_method(CalibMethod.MinMax)
+   weight_spec.set_calibration_method(CalibMethod.MinMax)
+   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec), BF16QDQToCast=True)
 
    quantizer = ModelQuantizer(config)
 
@@ -51,15 +45,10 @@ in extra options if you are seeing overflow issues.
 
 .. code:: python
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QBFloat16,
-                                     weight_type=ExtendedQuantType.QBFloat16,
-                                     extra_options={
-                                         'WeightScaled': True,
-                                         'ActivationScaled': True,
-                                     }
-                                    )
+    activation_spec = BFloat16Spec()
+    weight_spec = BFloat16Spec()
+    config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
+                 WeightScaled=True, ActivationScaled=True,)
 
 .. note::
     When inference with ONNXRuntime, you need to register the custom OPs so(Linux) or dll(Windows) file in the ORT session options.
@@ -92,27 +81,10 @@ There is no explicit rounding in BF16 quantization, so only AdaQuant can be used
 
 .. code:: python
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QBFloat16,
-                                     weight_type=ExtendedQuantType.QBFloat16,
-                                     extra_options={
-                                         'FastFinetune': {
-                                             'NumIterations': 1000,
-                                             'LearningRate': 1e-6,
-                                             'OptimAlgorithm': 'adaquant',
-                                             'OptimDevice': 'cpu',
-                                             'InferDevice': 'cpu',
-                                         }
-                                     }
-                                    )
+    from quark.onnx.quantization.config.algorithm import AdaQuantConfig
 
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT
+    activation_spec = BFloat16Spec()
+    weight_spec = BFloat16Spec()
+    algo_conf = [AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
+    config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
+                    algo_config=algo_conf)

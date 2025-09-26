@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Accessing ONNX Examples
 =======================
 
@@ -41,7 +43,7 @@ ONNX Examples in AMD Quark for This Release
    Auto-Search for General Yolov3 ONNX Model Quantization <example_quark_onnx_auto_search>
    Auto-Search for Ryzen AI Yolo-nas ONNX Model Quantization <example_quark_onnx_ryzenai_yolonas>
    Auto-Search for Ryzen AI Resnet50 ONNX Model Quantization <example_ryzenai_autosearch_resnet50>
-   Auto-Search for Ryzen AI Yolov3 ONNX Quantization with Custom Evalutor <example_quark_onnx_ryzenai_yolov3_custom_evaluator>
+   Auto-Search for Ryzen AI Yolov3 ONNX Quantization with Custom Evaluator <example_quark_onnx_ryzenai_yolov3_custom_evaluator>
 
 .. toctree::
    :caption: Dynamic Quantization
@@ -67,7 +69,7 @@ ONNX Examples in AMD Quark for This Release
    :maxdepth: 1
 
    Quantizing an Llama-2-7b Model Using the ONNX MatMulNBits <example_quark_onnx_weights_only_quant_int4_matmul_nbits_llama2>
-   Quantizating Llama-2-7b model using MatMulNBits <example_quark_onnx_weights_only_quant_int8_qdq_llama2>
+   Quantizing Llama-2-7b model using MatMulNBits <example_quark_onnx_weights_only_quant_int8_qdq_llama2>
 
 .. toctree::
    :caption: Crypto Mode

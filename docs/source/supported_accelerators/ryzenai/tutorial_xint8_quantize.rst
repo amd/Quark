@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Power-of-Two Scales (Xint8) Quantization
 ========================================
 
@@ -24,8 +26,8 @@ As the Figure 1 shows, you can refer to codes below:
 
 .. code-block:: python
 
-   from onnxruntime.quantization.calibrate import CalibrationDataReader
-   from quark.onnx.quantization.config import Config, get_default_config
+
+   from quark.onnx.quantization.config import QConfig
    from quark.onnx import ModelQuantizer
 
     # Define model paths
@@ -63,8 +65,7 @@ As the Figure 1 shows, you can refer to codes below:
 
     # Set up quantization with a specified configuration
     # For example, use "XINT8" for Ryzen AI INT8 quantization
-    quant_config = get_default_config("XINT8")
-    quantization_config = Config(global_quant_config=quant_config )
+    quantization_config = QConfig.get_default_config("XINT8")
     quantizer = ModelQuantizer(quantization_config)
 
     # Quantize the ONNX model and save to specified path
@@ -124,31 +125,20 @@ If the accuracy of xint8 quantized model can not meet your target, you can impro
 
 .. code-block:: python
 
-   quant_config = get_default_config("XINT8_ADAROUND_CONFIG")
-   config = Config(global_quant_config=quant_config)
+   from quark.onnx.quantization import QConfig
+   from quark.onnx import ModelQuantizer
 
+   quantization_config = QConfig.get_default_config("XINT8_ADAROUND_CONFIG")
    quantizer = ModelQuantizer(config)
-
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
 - **ADAQUANT**
 
 .. code-block:: python
 
-   quant_config = get_default_config("XINT8_ADAQUANT_CONFIG")
-   config = Config(global_quant_config=quant_config)
+   from quark.onnx.quantization import QConfig
+   from quark.onnx import ModelQuantizer
 
+   quantization_config = QConfig.get_default_config("XINT8_ADAQUANT_CONFIG")
    quantizer = ModelQuantizer(config)
-
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

@@ -1,51 +1,50 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
 
-Auto-Search for General Yolov3 ONNX Quantization
+Auto-Search for General Yolov8 ONNX Quantization
 ================================================
 
-This folder contains an example of Auto search for quantizing a yolov3 model based on the ONNX quantizer of Quark. The example has the following parts:
+This folder contains an example of Auto search for quantizing a yolov8 model based on the ONNX quantizer of Quark. The example has the following parts:
 
 -  `Pip requirements <#pip-requirements>`__
 -  `Prepare model <#prepare-model>`__
 -  `Prepare data <#prepare-data>`__
 -  `Quantization with auto_search <#quantization-with-auto_search>`__
 
-
 Pip requirements
 ----------------
 
 Install the necessary python packages:
 
-.. code-block:: bash
+::
 
-   python -m pip install -r ./requirements.txt
+   python -m pip install -r requirements.txt
 
 Prepare model
 -------------
 
-Download the yolov3 model from huggingface url:
+To download the YOLOv8 model from Ultralytics, run the following commands:
 
-::
+.. code-block:: python
 
-   https://huggingface.co/amd/yolov3/tree/main
+   # We use yolov8n for this demo. Feel free to change to other YOLO models
+   model = YOLO("yolov8n.pt")
+   model.export(format="onnx")
 
 Prepare data
 ------------
 
-COCO 2017, commonly known as 'COCO'. This dataset include five thousand validation pictures with labels.
-
-In this example, we use the built-in evaluator, so we do not use the COCO2017 directly. Instead, at first you need to prepare the calibration dataset with coco 2017 preprocess and save in .npy format.
-
-The storage format of the val_data of the COCO2017 dataset organized as
-follows:
+COCO 2017 — commonly known simply as “COCO” — contains 5,000 validation images.
+Organize your data folder as follows:
 
 .. code-block::
 
    -  val_data
-         -  sample_1.npy
-         -  sample_2.npy
+         -  sample_1.jpg
+         -  sample_2.jpg
          -  …
 
 we use this dataset as evaluation dataset and calibration dataset at the same time.
@@ -53,29 +52,16 @@ we use this dataset as evaluation dataset and calibration dataset at the same ti
 Quantization with auto_search
 -----------------------------
 
-The quantize config, input model, calibration dataset is default.
-so we only need to excute the start script run.sh
+The quantization and auto-search configurations use their default settings. You can customize them in auto_search_model.py to suit your requirements.
+To start the auto-search, run the following Python script:
 
 .. code-block:: bash
 
-   python auto_search_model.py --model_name "yolov3" --input_model_path $YOLOV3_FLOAT_ONNX_PATH
+   python auto_search_model.py --model_path yolov8n.onnx --dataset_path val_data
 
-This command will generate a series of configs from the auto_search config. When stop condition is False, the instance will sample config from the whole search space according the search algorithm. Then the input model will be quantized using quark onnx and the sampled config. Based on the metric and the evaluator, the quantized model will calculate the metric and validate that if it is within the tolerance. If the metric satisfy the tolerance, the quantized model will be moved to the output dictionary, otherwise the model will be
+This command generates a series of configurations from the auto_search settings. As long as the stop condition remains false, the instance samples configurations from the entire search space according to the selected search algorithm. Each sampled configuration is then used to quantize the input model with Quark ONNX. The evaluator computes the chosen metric on the quantized model and checks whether it falls within the defined tolerance. Models that meet the tolerance are added to the output dictionary; those that don't are discarded.
 
-Evaluation
-----------
-
-Test the accuracy of the float model on ImageNet val dataset:
-
-.. code-block:: bash
-
-   python ../utils/onnx_validate.py val_data --model-name resnet152 --batch-size 1 --onnx-input models/resnet152.onnx
-
-Test the accuracy of the quantized model without CLE on ImageNet val dataset:
-
-.. raw:: html
-
-   <!-- omit in toc -->
+To reduce computational load for this demo, we only set to run two search spaces, but we have defined 10 more spaces in the auto_search_model.py. You are welcome to test all of them or define your own search spaces based on their needs.
 
 License
 -------

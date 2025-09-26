@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Rouge & Meteor Evaluations
 ==========================
 
@@ -45,7 +47,7 @@ Recipes
 -  The ``--num_eval_data`` arg is used to specify the number of samples
    used from an eval dataset.
 -  The ``--dataset`` arg specifies the dataset. Select from
-   ``[xsum, cnn_dm, samsum]``. Can specify multiple as comma-seperated:
+   ``[xsum, cnn_dm, samsum]``. Can specify multiple as comma-separated:
    ``--dataset samsum,xsum``.
 
 Rouge/Meteor on Torch Models

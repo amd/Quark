@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Accelerate with GPUs
 ====================
 
@@ -19,15 +21,13 @@ In the quantization workflow, calibration adjusts the model's weights and activa
 
 .. code-block:: python
 
-    from quark.onnx.quantization.config.config import Config, QuantizationConfig
+    from quark.onnx.quantization.config.config import QConfig
+    from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
 
-    quant_config = QuantizationConfig(
-        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-        quant_format=quark.onnx.QuantFormat.QDQ,
-        execution_providers=['ROCMExecutionProvider']
-    )
+    config = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+                    ExecutionProviders=['ROCMExecutionProvider'])
 
-    config = Config(global_quant_config=quant_config)
+
 
 .. note::
    By setting `execution_providers=['ROCMExecutionProvider']`, the calibration process is configured to run on the GPU for faster execution. Please check if GPUs are available beforehand.
@@ -41,36 +41,24 @@ Here is an example configuration for the `adaround` optimization algorithm:
 
 .. code-block:: python
 
-    from quark.onnx import ModelQuantizer, PowerOfTwoMethod, QuantType
-    from quark.onnx.quantization.config.config import Config, QuantizationConfig
+    from quark.onnx.quantization.config.config import QConfig
+    from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+    from quark.onnx.quantization.config.algorithm import AdaRoundConfig
 
-    quant_config = QuantizationConfig(
-        quant_format=QuantFormat.QDQ,
-        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-        activation_type=QuantType.QUInt8,
-        weight_type=QuantType.QInt8,
-        enable_npu_cnn=True,
-        include_fast_ft=True,
-        extra_options={
-            'ActivationSymmetric': True,
-            'FastFinetune': {
-                'OptimAlgorithm': 'adaround',
-                'OptimDevice': "cuda:0",  # Use GPU 0 in PyTorch training
-                'InferDevice': 'cuda:0',  # Use GPU 0 for ONNX inference
-                'BatchSize': 1,
-                'NumIterations': 1000,
-                'LearningRate': 0.1,
-            }
-        }
-    )
+    algo_confs = [AdaRoundConfig(optim_device="cuda:0", # Use GPU 0 in PyTorch training
+                            infer_device="cuda:0",  # Use GPU 0 for ONNX inference
+                            batch_size=1,
+                            num_iterations=1000,
+                            learning_rate=0.1)]
+    extra_info = {'UseRandomData': True, "EnableNPUCnn": True}
+    config = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+                           algo_config=algo_confs,
+                           **extra_info)
 
-    config = Config(global_quant_config=quant_config)
-    quantizer = ModelQuantizer(config)
-    quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)
 
 .. note::
-   - `OptimDevice: "cuda:0"` indicates that GPU (supports AMD and NVIDIA GPUs) acceleration is used during PyTorch training.
-   - `InferDevice: 'cuda:0'` indicates that GPU acceleration is used during ONNX inference via the `ROCMExecutionProvider` or `CUDAExecutionProvider`.
+   - `optim_device="cuda:0"` indicates that GPU (supports AMD and NVIDIA GPUs) acceleration is used during PyTorch training.
+   - `infer_device='cuda:0'` indicates that GPU acceleration is used during ONNX inference via the `ROCMExecutionProvider` or `CUDAExecutionProvider`.
 
 Inference
 ---------

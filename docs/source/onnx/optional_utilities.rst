@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Optional Utilities
 ==================
 
@@ -13,7 +15,7 @@ Tips:
 -----
 
 1. Before exporting, perform `model.eval()`.
-2. Models with opset 17 are recommended.
+2. Models with opset 21 or higher are recommended.
 3. NPU_CNN platforms do not support dynamic input shapes and allow only a batch size of 1. Ensure that the input shape is fixed and the batch dimension is set to 1.
 
 Example code:
@@ -24,14 +26,14 @@ Example code:
        model,
        input,
        model_output_path,
-       opset_version=17,
+       opset_version=21,
        input_names=['input'],
        output_names=['output'],
    )
 
-- **Opset Versions**: Models with opset 17 are recommended. Models must use opset 10 or higher to be quantized. If models use an opset lower than 10, you should reconvert them to ONNX from their original framework using a later opset. Alternatively, refer to the usage of the version converter for the `ONNX Version Converter <https://github.com/onnx/onnx/blob/main/docs/VersionConverter.html>`__. Opset 10 does not support some node fusions and might not achieve the best performance. We recommend updating the model to opset 17 for better performance. Moreover, per-channel quantization is supported for models using opset 13 or higher.
+- **Opset Versions**: Models with opset 21 or higher are recommended. Models must use opset 10 or higher to be quantized. If models use an opset lower than 10, you should reconvert them to ONNX from their original framework using a later opset. Alternatively, refer to the usage of the version converter for the `ONNX Version Converter <https://github.com/onnx/onnx/blob/main/docs/VersionConverter.html>`__. Opset 10 does not support some node fusions and might not achieve the best performance. We recommend updating the model to opset 21 or higher for better performance. Moreover, per-channel quantization is supported for models using opset 13 or higher.
 
-- **Large Models > 2GB**: Because of the 2 GB file size limit of Protobuf, additional data for ONNX models exceeding 2 GB is stored separately. Ensure that the ``.onnx`` file and the data files are placed in the same directory. Also, set the ``use_external_data_format`` parameter to ``True`` for large models when quantizing.  
+- **Large Models > 2GB**: Because of the 2 GB file size limit of Protobuf, additional data for ONNX models exceeding 2 GB is stored separately. Ensure that the ``.onnx`` file and the data files are placed in the same directory. Also, set the ``use_external_data_format`` parameter to ``True`` for large models when quantizing.
 
 
 Pre-processing on the Float Model

@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Bridge from Quark to llama.cpp
 ==============================
 
@@ -83,19 +85,14 @@ There's a handy API named ``ModelQuantizer`` in Quark. After initializing quanti
 Step 2: Export to GGUF
 ~~~~~~~~~~~~~~~~~~~~~~
 
-There's another easy-to-use API named ``ModelExporter`` to export quantized models. To export GGUF models, call ``exporter.export_gguf_model``
+There is another easy-to-use API named :py:func:`~quark.torch.export.api.export_gguf` to export quantized models. Here is an usage example:
 
 .. code:: python
 
-   # If you want to export the quantized model, please freeze the quantized model first
-   freezed_quantized_model = quantizer.freeze(quant_model)
-   export_path = "./output_dir"
-   model_dir = "<Hugging Face model directory>"
-   from quark.torch import ModelExporter
-   from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-   config = ExporterConfig(json_export_config=JsonExporterConfig())
-   exporter = ModelExporter(config=config, export_dir=export_path)
-   exporter.export_gguf_model(model, model_dir, model_type)
+   from quark.torch import export_gguf
+
+   model_dir = "meta-llama/Llama-2-7b-chat-hf"
+   export_gguf(quant_model, output_dir="output_dir", model_type="llama", tokenizer_path=model_dir)
 
 After running the code above successfully, there will be a ``.gguf`` file under export_path, ``./output_dir/llama.gguf`` for example. You can refer to `user guide <quark-torch-gguf-exporting>` for more information.
 

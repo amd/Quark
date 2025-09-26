@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Auto-Search for Ryzen AI Yolo-NAS ONNX Model Quantization
 =========================================================
 
@@ -100,7 +102,7 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
@@ -114,11 +116,11 @@ There are two ways to define evaluator function:
             # step 1) build onnx inference session
             # step 2) model post-processing if needed
             # step 3) build evaluation dataloader
-            # step 4) calcuate the metric
+            # step 4) calculate the metric
             # step 5) clean cache if needed
             # step 6) return the metric
 
-    auto_search_conig = AutoSearchConfig_Default()
+    auto_search_config = AutoSearchConfig_Default()
     auto_search_config.search_evaluator = custom_evaluator
 
 

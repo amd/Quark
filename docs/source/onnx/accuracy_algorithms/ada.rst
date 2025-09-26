@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quantization Using AdaQuant and AdaRound
 ========================================
 
@@ -10,55 +12,58 @@ Quantization Using AdaQuant and AdaRound
    For information on accessing AMD Quark ONNX examples, refer to :doc:`Accessing ONNX Examples <../onnx_examples>`.
    These examples and the relevant files are available at ``/onnx/accuracy_improvement/adaquant`` and ``/onnx/accuracy_improvement/adaround``.
 
+.. note::
+
+   AdaRound and AdaQuant cannot be used simultaneously; you can only choose one of them.
+
+
 Fast Finetune
 -------------
 
 Fast finetune improves the quantized model's accuracy by training the output of each layer as close as possible to the floating-point model. It includes two practical algorithms: "AdaRound" and "AdaQuant". Applying fast finetune might achieve better accuracy for some models but takes much longer time than normal PTQ. It is disabled by default to save quantization time but can be turned on if you encounter accuracy issues. If this feature is enabled, `quark.onnx` will require the PyTorch package.
 
+Here is a simple example showing how to apply the AdaRound algorithm on an A8W8 (Activation-8bit-Weight-8bit) quantization.
+
 .. code-block:: python
 
-    from quark.onnx import ModelQuantizer, PowerOfTwoMethod, QuantType
-    from quark.onnx.quantization.config.config import Config, QuantizationConfig
+    from quark.onnx import ModelQuantizer
+    from quark.onnx.quantization.config import QConfig
+    from quark.onnx.quantization.config.spec import QLayerConfig, UInt8Spec, Int8Spec
+    from quark.onnx.quantization.config.algorithm import AdaRoundConfig
 
-    quant_config = QuantizationConfig(
-        quant_format=QuantFormat.QDQ,
-        calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-        activation_type=QuantType.QUInt8,
-        weight_type=QuantType.QInt8,
-        enable_npu_cnn=True,
-        include_fast_ft=True,
-        extra_options={
-            'ActivationSymmetric': True,
-            'FastFinetune': {
-                'OptimAlgorithm': 'adaround',
-                'OptimDevice': 'cpu',
-                'BatchSize': 1,
-                'NumIterations': 1000,
-                'LearningRate': 0.1,
-            },
-        },
+    quant_config = QLayerConfig(activation=UInt8Spec(), weight=Int8Spec())
+
+    adaround_config = AdaRoundConfig(
+                      batch_size=1,
+                      num_iterations=1000,
+                      learning_rate=0.1)
+
+    config = QConfig(
+        global_config=quant_config,
+        algo_config=[adaround_config],
     )
-    config = Config(global_quant_config=quant_config)
 
     quantizer = ModelQuantizer(config)
-    quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)
+    quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
 
 Arguments
 ~~~~~~~~~
 
-- **include_fast_ft**: (Boolean) This parameter is a flag that determines whether to optimize the models using Fast Finetune. Set to True to enable fast finetune (default is False).
+Here we only list a few important and commonly used arguments, please refer to the documentation of full arguments list for more details.
 
-- **extra_options**: (Dictionary or None) Contains key-value pairs for various options in different cases. Fast finetune related options are packaged within `extra_options` as a member whose key is "FastFinetune" and values are:
+  - **data_size**: (Int) Specifies the size of the data used for finetuning. Its recommended setting the batch size of the data to 1 in the data reader to ensure counting the size accurately. It uses all the data from the data reader by default.
 
-  - **OptimAlgorithm**: (String) The specified algorithm for fast finetune. Optional values are "adaround" and "adaquant". "Adaround" adjusts the weight's rounding function, which is relatively stable and might converge faster, while "adaquant" trains the weight directly, potentially offering greater improvement. The default value is "adaround".
+  - **batch_size**: (Int) Batch size for finetuning. A larger batch size might result in better accuracy but longer training time. The default value is 1.
 
-  - **OptimDevice**: (String) Specifies the compute device used for PyTorch model training during fast finetuning. Optional values are "cpu" and "cuda:0". The default value is "cpu".
+  - **num_iterations**: (Int) The number of iterations for finetuning. More iterations can lead to better accuracy but also longer training time. The default value is 1000.
 
-  - **BatchSize**: (Int) Batch size for finetuning. A larger batch size might result in better accuracy but longer training time. The default value is 1.
+  - **learning_rate**: (Float) Learning rate for finetuning. It significantly impacts the improvement of fast finetune, and experimenting with different learning rates might yield better results for your model. The default value is 0.1.
 
-  - **NumIterations**: (Int) The number of iterations for finetuning. More iterations can lead to better accuracy but also longer training time. The default value is 1000.
+  - **optim_device**: (String) Specifies the compute device used for PyTorch model training during fast finetuning. Optional values are "cpu" and "cuda:0" (The latter is appliable for AMD and NV GPUs both). The default value is "cpu".
 
-  - **LearningRate**: (Float) Learning rate for finetuning. It significantly impacts the improvement of fast finetune, and experimenting with different learning rates might yield better results for your model. The default value is 0.1.
+  - **infer_device**: (String) Specifies the compute device used for ONNX model inference during fast finetuning. Optional values are "cpu" and "cuda:0" (The latter is appliable for AMD and NV GPUs both). The default value is "cpu".
+
+  - **mem_opt_level**: (Int) Specifies the level of memory optimization. Options are 0, 1 and 2. Setting it to 0 disables optimization, making training faster but using more memory for caching. Setting it to 1 caches data one layer at a time, reducing memory usage at the cost of longer training times. Setting it to 2 saves layer data to a cache directory on disk and loads only one batch at a time, greatly lowering memory consumption but further increasing training time. The default value is 1.
 
 AdaRound
 ~~~~~~~~
@@ -81,7 +86,7 @@ Benefits of AdaRound and AdaQuant
 Upgrades of AdaRound / AdaQuant in AMD Quark for ONNX
 -----------------------------------------------------
 
-Comparing with the original algorithm, AdaRound in AMD Quark for ONNX is modified and upgraded to be more flexible.
+Comparing with the original algorithms, AdaRound and AdaQuant in AMD Quark for ONNX are modified and upgraded to be more flexible.
 
 1. **Unified Framework**: These two algorithms were integrated into a unified framework named as "fast finetune".
 2. **Quantization Aware Finetuning**: Only the weight and bias (optional) will be updated, the scales and zero points are fixed, which ensures that all the quantizing information and the structure of the quantized model keep unchanged after finetuning.
@@ -91,23 +96,6 @@ Comparing with the original algorithm, AdaRound in AMD Quark for ONNX is modifie
    - **Early Stop**: If the average loss of the current batch iterations decreases compared to the previous batch of iterations, the training of the layer will stop early. It will accelerate the finetuning process.
    - **Selective Update**: If the end-to-end accuracy does not improve after training a certain layer, discard the finetuning result of that layer.
    - **Adjust Learning Rate**: Besides the overall learning rate, you could set up a scheme to adjust learning rate layer-wise. For example, apply a larger learning rate on the layer that has a bigger loss.
-
-How to Enable AdaRound / AdaQuant in AMD Quark?
------------------------------------------------
-
-AdaRound and AdaQuant are provided as options of optimal algorithms for fast finetune.
-
-Here is a simple example showing how to enable default AdaRound and AdaQuant configuration.
-
-.. code:: python
-
-   from quark.onnx.quantization.config import Config, QuantizationConfig, get_default_config
-   # Config of default AdaRound
-   quant_config = get_default_config("S8S8_AAWS_ADAROUND")
-   config = Config(global_quant_config=quant_config)
-   # Config of default AdaQuant
-   quant_config = get_default_config("S8S8_AAWS_ADAQUANT")
-   config = Config(global_quant_config=quant_config)
 
 Examples
 --------

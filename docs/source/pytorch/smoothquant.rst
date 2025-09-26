@@ -1,3 +1,5 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Activation/weight smoothing (SmoothQuant)
 =========================================
 
@@ -256,12 +258,3 @@ Examples of such configs can be found in ``quark/examples/torch/language_modelin
         ],
         "model_decoder_layers": "model.decoder.layers"
     }
-
-
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

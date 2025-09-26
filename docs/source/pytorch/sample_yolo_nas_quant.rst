@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 YOLO-NAS FX graph Quantization
 ==============================
 
@@ -218,7 +220,7 @@ Preparation
 
             # NOTE: For the above modification, some explanations:
             # In the above code, the quant scope starts from input of the forward function,
-            # meaning all param & opearation in [self.backbone] & [self.neck] & [self.heads] will be quantized
+            # meaning all param & operation in [self.backbone] & [self.neck] & [self.heads] will be quantized
             # (As we do not use self.dequant_stub),
 
             # However some codes (self.heads) used for generating constant tensors we do not need quant.
@@ -244,7 +246,7 @@ Preparation
                 # Why we modify in this way:
                 # Quant scope: quant_stub -> tensors -> dequant_stub
                 # Quark Fx tool will quant the tensor among the Quant scope,
-                # so, all tensor outof the Quant scope will not be quantized.
+                # so, all tensor out of the Quant scope will not be quantized.
                 def _generate_anchors(self, ...):
                     ...
                     '''
@@ -262,7 +264,7 @@ Preparation
                     # the code used for generate [anchor_points] & [stride_tensor] should not be quantized,
                     # as the code in this function:
                     #   1) have no trainable parameters
-                    #   2) anchor_points & stride_tensor are facilate tensor whill not change during inference & training.
+                    #   2) anchor_points & stride_tensor are facilitate tensor will not change during inference & training.
                     #   3) quantizing these codes will accumulate quantized error and finally damage  [anchor_points] & [anchor_points] representation ability.
                     #   4) As we not use dequant_stub in customizable_detector.py, and the propagate mechanism, anchor_points and
                     #      stride_tensor will be quantized. In this way, we can maintain the accuracy as much as possible.
@@ -366,7 +368,7 @@ NOTE: the training result (QAT) rely on training and other parameters.
 .. code-block:: python
 
     # 1. Call freeze() will automatically perform the hardware constrain and optimization.
-    freezeded_model = quantizer.freeze(quantized_model.eval())
+    frozen_model = quantizer.freeze(quantized_model.eval())
 
     # Mask the output of raw_predictions
     class ModifiedModel(torch.nn.Module):
@@ -378,7 +380,7 @@ NOTE: the training result (QAT) rely on training and other parameters.
             outputs_1, outputs_2 = self.original_model(x)
             return outputs_1
 
-    modified_mode = ModifiedModel(freezeded_model)  # This model only has output of decoded_predictions, and used for export to ONNX
+    modified_mode = ModifiedModel(frozen_model)  # This model only has output of decoded_predictions, and used for export to ONNX
 
 
 
@@ -388,13 +390,13 @@ NOTE: the training result (QAT) rely on training and other parameters.
 .. code-block:: python
 
     # export to onnx model
-    from quark.torch import ModelExporter
-    from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-
-    config = ExporterConfig(json_export_config=JsonExporterConfig())
-    exporter = ModelExporter(config=config, export_dir=args.export_dir)
+    from quark.torch import export_onnx
     example_inputs = (torch.rand(1, 3, 640, 640).to(device), )  # As NPU compile can better compile with batch-size 1
-    exporter.export_onnx_model(modified_mode, example_inputs[0])
+    export_onnx(
+        model=modified_mode,
+        output_dir=args.export_dir,
+        input_args=example_inputs[0]
+    )
 
 
 
@@ -406,8 +408,8 @@ After quantization, visualize the onnx model to check whether quantization meet 
 .. code-block:: python
 
     from onnxsim import simplify
-    quanted_model = onnx.load(exported_onnx_model)
-    model_simp, check = simplify(quanted_model)
+    quantized_model = onnx.load(exported_onnx_model)
+    model_simp, check = simplify(quantized_model)
     onnx.save_model(model_simp, "./quant_result/sample_quark_model.onnx")
 
 

@@ -18,3 +18,8 @@
 | [0.5](https://quark.docs.amd.com/release-0.5.0/)    | September 135, 2024 |
 | [0.2](https://quark.docs.amd.com/release-0.2.0/)    | August 5, 2024      |
 | [0.1](https://quark.docs.amd.com/release-0.1.0/)    | June 17, 2024       |
+
+<!--
+## License
+Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

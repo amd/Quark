@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Configuring PyTorch Quantization
 ================================
 
@@ -120,6 +122,7 @@ Here is the algorithms configuration of Llama2-7b as an example:
    )
 
    ALGORITHM_CONFIG = RotationConfig(
+       model_decoder_layers="model.layers",
        scaling_layers = {
            "first_layer": [
                {"prev_modules": ["model.embed_tokens"],
@@ -165,6 +168,16 @@ Here is the algorithms configuration of Llama2-7b as an example:
        }
    )
 
+   ALGORITHM_CONFIG = QronosConfig(
+       inside_layer_modules=['self_attn.k_proj', 'self_attn.v_proj', 'self_attn.q_proj', 'self_attn.o_proj', 'mlp.up_proj', 'mlp.gate_proj', 'mlp.down_proj'],
+       model_decoder_layers='model.layers'
+       block_size=128,
+       desc_act=True,
+       static_groups=True,
+       alpha=1e-3,
+       beta=1e4
+   )
+
 For AWQ, AMD Quark for PyTorch only supports ``AWQ`` with quantization data type as ``uint4/int4`` and ``per group``, running on ``Linux`` with the ``GPU mode`` for now. More details are available in the :py:class:`.AWQConfig` documentation.
 
 
@@ -174,6 +187,7 @@ For GPTQ, AMD Quark for PyTorch only supports ``GPTQ`` with quantization
 data type as ``uint4/int4`` and ``per group``, running on ``Linux`` with
 the ``GPU mode`` for now. More details are available in the :py:class:`.GPTQConfig` documentation.
 
+For Qronos, AMD Quark for PyTorch only supports ``Qronos`` with quantization data type as one of ``[int3, int4, uint4, mxfp4]``, and ``per group``, running on ``Linux`` with the ``GPU mode`` for now. More details are available in the :py:class:`.QronosConfig` documentation.
 
 Step 4: Setting up the overall ``Config`` for the model.
 --------------------------------------------------------

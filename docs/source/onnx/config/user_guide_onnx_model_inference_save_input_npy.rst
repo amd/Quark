@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Using ONNX Model Inference and Saving Input Data in NPY Format
 ==============================================================
 
@@ -108,4 +110,3 @@ For Multi-Input Models
        calib_000004.npy
        calib_000005.npy
        ...
-

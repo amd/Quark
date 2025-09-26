@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Getting started with AMD Quark
 ==============================
 
@@ -31,9 +33,9 @@ Each Quark workflow (PyTorch and ONNX) possesses its own set of features, data t
 +--------------------+-------------------------------------------------+-----------------------------------------------+
 | Feature Name       | Quark for PyTorch                               | Quark for ONNX                                |
 +====================+=================================================+===============================================+
-| Data Type          | Float16 / Bfloat16 / Int4 / Uint4 / Int8 /      | Int8 / Uint8 / Int16 / Uint16 / Int32 /       |
-|                    | OCP_FP8_E4M3 / OCP_MXFP8_E4M3 / OCP_MXFP6 /     | Uint32 / Float16 / Bfloat16                   |
-|                    | OCP_MXFP4 / OCP_MXINT8                          |                                               |
+| Data Type          | Float16 / Bfloat16 / Int3 / Int4 / Uint4 /      | Int8 / Uint8 / Int16 / Uint16 / Int32 /       |
+|                    | Int8 / Uint8 / OCP_FP8_E4M3 / OCP_MXFP8_E4M3 /  | Uint32 / Float16 / Bfloat16                   |
+|                    | OCP_MXFP6 / OCP_MXFP4 / OCP_MXINT8              |                                               |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
 | Quant Mode         | Eager Mode / FX Graph Mode                      | ONNX Graph Mode                               |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
@@ -56,7 +58,7 @@ Each Quark workflow (PyTorch and ONNX) possesses its own set of features, data t
 | Pre-Quant          | SmoothQuant                                     | QuaRot / SmoothQuant (Single_GPU/CPU) /       |
 | Optimization       |                                                 | CLE / Bias Correction                         |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
-| Quantization       | AWQ / GPTQ                                      | AdaQuant / AdaRound / GPTQ                    |
+| Quantization       | AWQ / GPTQ / Qronos                             | AdaQuant / AdaRound / GPTQ                    |
 | Algorithm          |                                                 |                                               |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
 | Export Format      | ONNX / Json-safetensors / GGUF(Q4_1)            | N/A                                           |

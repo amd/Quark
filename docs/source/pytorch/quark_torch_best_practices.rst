@@ -1,8 +1,10 @@
+.. Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+
 Best Practices for Post-Training Quantization (PTQ)
 ===================================================
 
-.. note::  
-  
+.. note::
+
     In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of reference. When you encounter the term "Quark" without the "AMD" prefix, it specifically refers to the AMD Quark quantizer unless otherwise stated. Please do not confuse it with other products or technologies that share the name "Quark."
 
 This topic outlines best practices for Post-Training Quantization (PTQ) in AMD Quark PyTorch. It provides guidance on fine-tuning your quantization strategy to address accuracy degradation issues. The model ``meta-llama/Llama-3.1-8B-Instruct`` and code files from ``Quark/examples/torch/language_modeling/llm_ptq`` are used as an example to demonstrate the methodology in the following image.
@@ -64,7 +66,7 @@ SmoothQuant reduces activation outliers by shifting the quantization challenge f
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
                              --quant_scheme w_int8_a_int8_per_tensor_sym \
-                             --pre_quantization_optimization smoothquant
+                             --quant_algo smoothquant
 
 - **AutoSmoothQuant**
 
@@ -77,19 +79,6 @@ AutoSmoothQuant enhances SmoothQuant by automatically selecting the optimal :mat
                              --dataset pileval_for_awq_benchmark \
                              --quant_algo autosmoothquant
 
-
-- **QuaRot**
-
-QuaRot eliminates activation outliers using a rotation technique (Hadamard transform). AMD Quark supports QuaRot algorithm that can be used as follows:
-
-.. code-block:: bash
-
-   python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_int8_a_int8_per_tensor_sym \
-                             --pre_quantization_optimization quarot
-
-
-
 - **Rotation**
 
 QuaRot employs an online Hadamard transform in its algorithm, requiring kernel support for hardware deployment. Inspired by QuaRot and QServer, AMD Quark introduces the "Rotation" method, which enhances accuracy without requiring kernel modifications.
@@ -98,7 +87,7 @@ QuaRot employs an online Hadamard transform in its algorithm, requiring kernel s
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
                              --quant_scheme w_int8_a_int8_per_tensor_sym \
-                             --pre_quantization_optimization rotation
+                             --quant_algo rotation
 
 Try Different Quantization Schemes
 ----------------------------------
@@ -119,7 +108,7 @@ Experimenting with various quantization schemes can help improve accuracy. But k
 
 - **Symmetric vs. Asymmetric:** Try experimenting with symmetric or asymmetric quantization based on the model's sensitivity to signed or unsigned values.
 
-- **Data Types (Dtypes):** AMD Quark supports several data types, including INT4, INT8, FP8, MX-FPX, FP16, and BFloat16. Choose the proper data type that best balances accuracy and efficiency for your model.
+- **Data Types (Dtypes):** AMD Quark supports several data types, including INT3, INT4, INT8, FP8, MX-FPX, FP16, and BFloat16. Choose the proper data type that best balances accuracy and efficiency for your model.
 
 - **KV Cache Quantization:** Skipping KV cache quantization typically results in better performance. Applying this approach to the entire KV cache or specific parts of it might lead to better accuracy.
 
@@ -129,10 +118,3 @@ Try QAT
 -------
 
 Quantization-Aware Training (QAT) often delivers superior performance compared to PTQ, as demonstrated in models such as ChatGLM-3-6B. Consider using the AMD Quark QAT method.
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

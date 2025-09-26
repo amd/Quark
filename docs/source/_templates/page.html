@@ -8,9 +8,9 @@
         var coll = document.querySelectorAll('.toggle > .header');  // sdelect the toggles header.
         var i;
 
-        for (i = 0; i < coll.length; i++) {                        
+        for (i = 0; i < coll.length; i++) {
             coll[i].innerText = "Show code ▼\n\n";
-            
+
             coll[i].addEventListener("click", function() {
                 var content = this.nextElementSibling;  // code block.
                 if (content.style.display === "block") {

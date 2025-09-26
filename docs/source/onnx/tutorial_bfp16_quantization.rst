@@ -1,3 +1,5 @@
+.. Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+
 BFP16 (Block floating point) Quantization
 =========================================
 
@@ -38,17 +40,11 @@ for ONNX.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.config import QConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, BFP16Spec,
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFP,
-   )
-   config = Config(global_quant_config=quant_config)
+   config = QConfig(global_config=QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()))
+
 
 .. note:: When inferring with ONNX Runtime, we need to register the custom op's so (Linux) or dll (Windows) file in the ORT session options.
 
@@ -78,31 +74,14 @@ If you want to further improve the effectiveness of BFP16 quantization after app
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx.quantization.config.config import QConfig
+   from quark.onnx.quantization.config.spec import QLayerConfig, BFP16Spec,
+   from quark.onnx.quantization.config.algorithm import AdaQuantConfig
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFP,
-       include_fast_ft=True,
-       extra_options={
-           'FastFinetune': {
-               'DataSize': 100,
-               'FixedSeed': 1705472343,
-               'BatchSize': 5,
-               'NumIterations': 100,
-               'LearningRate': 0.000001,
-               'OptimAlgorithm': 'adaquant',
-               'OptimDevice': 'cpu',
-               'InferDevice': 'cpu',
-               'EarlyStop': True,
-           }
-       }
-   )
-   config = Config(global_quant_config=quant_config)
+   algo_conf = [AdaQuantConfig(num_iterations=100, learning_rate=1e-6, batch_size=5, data_size=100, early_stop=True)]
+   config = QConfig(global_config=QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()), algo_config=algo_conf)
+
+
 
 .. note:: You can install onnxruntime-gpu instead of onnxruntime to accelerate inference speed. The BFP QuantType only supports fast_finetune with AdaQuant, not AdaRound. Set 'InferDevice' to 'cuda:0' to use the GPU for inference. Additionally, set 'OptimDevice' to 'cuda:0' to accelerate fast_finetune training with the GPU.
 
@@ -110,13 +89,3 @@ Example
 -------
 
 An example of quantizing a model using the BFP16 quantization is :doc:`available here <example_quark_onnx_BFP>`.
-
-.. raw:: html
-
-   <!-- omit in toc -->
-
-License
--------
-
-Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
-SPDX-License-Identifier: MIT

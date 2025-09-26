@@ -1,3 +1,5 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Supported Data and Op Types
 ===========================
 
@@ -49,15 +51,15 @@ You can see in the table there are many non integer data types that onnxruntime 
 2. **Manually Add Paths to Environment Variables**
    Visual Studio's ``cl.exe``, ``MSBuild.exe``, and ``link.exe`` will be used. Ensure that the paths are added to the `PATH` environment variable. These programs are located in the Visual Studio installation directory. In the *Edit Environment Variables* window, click **New**, then paste the path to the folder containing ``cl.exe``, ``link.exe``, and ``MSBuild.exe``. Click **OK** on all windows to apply the changes.
 
-1. Quantizing to Other Precisions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Quantizing to Other Precision Levels
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In addition to the INT8/UINT8, the quark.onnx supports quantizing models to other data formats, including INT16/UINT16, INT32/UINT32, Float16 and BFloat16, which can provide better accuracy or be used for experimental purposes. These new data formats are achieved by a customized version of QuantizeLinear and DequantizeLinear named "ExtendedQuantizeLinear" and "ExtendedDequantizeLinear", which expand onnxruntime's UInt8 and Int8 quantization to support UInt16, Int16, UInt32, Int32, Float16, and
 BFloat16. This customized Q/DQ was implemented by a custom operations library in quark.onnx using onnxruntime's custom operation C API.
 
 The custom operations library was developed based on Linux and Windows.
 
-To use this feature, the ``quant_format`` should be set to ExtendedQuantFormat.QDQ. You might have noticed that in both the recommended NPU_CNN and NPU_Transformer configurations, the ``quant_format`` is set to QuantFormat.QDQ. NPU targets that support acceleration for models quantized to INT8/UINT8, do not support other precisions.
+To use this feature, the ``quant_format`` should be set to ExtendedQuantFormat.QDQ. You might have noticed that in both the recommended NPU_CNN and NPU_Transformer configurations, the ``quant_format`` is set to QuantFormat.QDQ. NPU targets that support acceleration for models quantized to INT8/UINT8, do not support other precision levels.
 
 .. note::
 
@@ -169,7 +171,7 @@ The quantizer also supports quantizing Float32 models to MXINT8 data formats. Th
 1.5 Quantizing Float32 Models to Mixed Data Formats
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The quantizer even supports setting the activation and weight to different precisions. For example, activation is Int16 while weight is Int8. This can be used when pure Int8 quantization can not meet accuracy requirements.
+The quantizer even supports setting the activation and weight to different precision levels. For example, activation is Int16 while weight is Int8. This can be used when pure Int8 quantization cannot meet accuracy requirements.
 
 .. code:: python
 
@@ -313,10 +315,3 @@ Table: List of Quark ONNX Supported Quantized Ops
    ExtendedLSTM <custom_operators/ExtendedLSTM.rst>
    BFPQuantizeDequantize <custom_operators/BFPQuantizeDequantize.rst>
    MXQuantizeDequantize <custom_operators/MXQuantizeDequantize.rst>
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

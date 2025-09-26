@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quantization with AMD Quark
 ===========================
 
@@ -168,4 +170,3 @@ A user-definable observer, such as:
 - PerBlockMXObserver
 
 is fed this data as it traverses the model to calculate representative minimum and maximum values needed to correctly quantize the data.
-

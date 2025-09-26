@@ -1,9 +1,9 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Accuracy Improvement Algorithms
 ===============================
 
-
 AMD Quark for ONNX provides several techniques to improve the accuracy for quantized models after PTQ.
-
 
 .. toctree::
    :hidden:

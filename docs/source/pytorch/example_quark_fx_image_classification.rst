@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Image Classification Models FX Graph Quantization
 =================================================
 
@@ -59,12 +61,13 @@ Initialize the Exporter to export to an ONNX model for hardware deployment (opti
 
 .. code-block:: python
 
-    config = ExporterConfig(json_export_config=JsonExporterConfig())
-    exporter = ModelExporter(config=config, export_dir=args.export_dir)
-
     # NOTE: For NPU compilation, it is recommended to use batch-size = 1 for better compliance
     example_inputs = (torch.rand(1, 3, 224, 224).to(device), )
-    exporter.export_onnx_model(freezeded_model, example_inputs[0])
+    export_onnx(
+        model=frozen_model,
+        output_dir=args.export_dir,
+        input_args=example_inputs[0]
+    )
 
 Experiment Results
 ------------------
@@ -81,26 +84,32 @@ We conducted several experiments on some classic models. The table below summari
      - Original Float Model
      - 69.76 / 89.08
    * - ResNet-18
-     - QAT: NON Overflow Observer (Pow-of-2 Scale)
-     - 69.69 / 89.01
+     - PTQ: MSE Observer, (Pow-of-2 Scale)
+     - 68.90 / 88.65
    * - ResNet-18
      - PTQ: Float Scale
      - 69.08 / 88.65
    * - ResNet-18
-     - PTQ: MSE Observer, (Pow-of-2 Scale)
-     - 68.90 / 88.65
+     - QAT: NON Overflow Observer (Pow-of-2 Scale)
+     - 69.69 / 89.01
+   * - ResNet-18
+     - QAT: A8W8, MinMax Observer, (Float Scale)
+     - 70.052 / 89.18
    * - MobileNet-V2 (Torchvision)
      - Original Float Model
      - 71.87 / 90.29
    * - MobileNet-V2
-     - QAT: TQT Observer, (Pow-of-2 Scale)
-     - 71.49 / 90.09
+     - PTQ: MSE Observer, (Pow-of-2 Scale)
+     - 61.56 / 83.456
    * - MobileNet-V2
      - PTQ: Float Scale
      - 65.74 / 86.62
    * - MobileNet-V2
-     - PTQ: MSE Observer, (Pow-of-2 Scale)
-     - 61.56 / 83.456
+     - QAT: TQT Observer, (Pow-of-2 Scale)
+     - 71.49 / 90.09
+   * - MobileNet-V2
+     - QAT: A16W8, MinMax Observer, (Float Scale)
+     - 71.78 / 90.26
 
 The above experiment scripts can be found at: ``./examples/torch/vision/quantize.py``
 
@@ -116,6 +125,18 @@ For example:
                          --non_overflow \
                          --data_dir={DATA_PATH_to_Imagenet}
 
+- For ResNet-18, using a A8W8 quantizer (Zero point = 0, scale: float Scale format, CPU deployable):
+
+  .. code-block:: shell
+
+      python quantize.py --model_name=resnet18 \
+                         --pretrained=./resnet18-f37072fd.pth  \
+                         --data_dir={DATA_PATH_to_Imagenet} \
+                         --a8w8 \
+                         --qat \
+                         --model_export onnx \
+                         --export_dir export_onnx_dir
+
 - For MobileNet-V2, using a TQT quantizer (Zero point = 0, scale: pow-of-2 format, NPU deployable):
 
   .. code-block:: shell
@@ -125,6 +146,18 @@ For example:
                          --qat \
                          --tqt \
                          --data_dir={DATA_PATH_to_Imagenet}
+
+- For MobileNet-V2, using a A16W8 quantizer (Zero point = 0, scale: float Scale format, CPU deployable):
+
+  .. code-block:: shell
+
+      python quantize.py --model_name=mobilenetv2 \
+                         --pretrained=./mobilenet_v2-b0353104.pth  \
+                         --data_dir={DATA_PATH_to_Imagenet} \
+                         --a16w8 \
+                         --qat \
+                         --model_export onnx \
+                         --export_dir export_onnx_dir
 
 Using the above scripts, users can reproduce the results based on the hyperparameters in the code. Due to time limitations, the hyperparameters in the provided scripts may not yield optimal results. Trying and adjust parameters may result in higher accuracy.
 

@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 MXQuantizeDequantize
 ====================
 
@@ -46,7 +48,7 @@ Table 1. Configurations of OCP MX data types
 +----------------------+------------------+------------------+------------------+------------------+------------------+------------------+
 |                      | MXFP8(E5M2)      | MXFP8(E4M3)      | MXFP6(E3M2)      | MXFP6(E2M3)      | MXFP4(E2M1)      | MXINT8           |
 +======================+==================+==================+==================+==================+==================+==================+
-| element_dtype        | fp8_e5m2         | fp8_e4m3         | fp6_e3m2         | fp6_e2m3         | fp4_e2m1         | int8             | 
+| element_dtype        | fp8_e5m2         | fp8_e4m3         | fp6_e3m2         | fp6_e2m3         | fp4_e2m1         | int8             |
 +----------------------+------------------+------------------+------------------+------------------+------------------+------------------+
 | axis                 | 1                | 1                | 1                | 1                | 1                | 1                |
 +----------------------+------------------+------------------+------------------+------------------+------------------+------------------+
@@ -75,10 +77,3 @@ Type Constraints
 - **T** in ( tensor(float) ):
 
 Constrain input and output types to float tensors.
-
-.. raw:: html
-
-   <!-- 
-   ## License
-   Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->

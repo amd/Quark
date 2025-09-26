@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quark for AMD Instinct Accelerators
 ===================================
 
@@ -17,5 +19,5 @@ Below are some references on how you can leverage Quark to seamlessly run accele
    :caption: Resources
    :maxdepth: 1
 
-   FP8 (OCP fp8_e4m3) Quantization & Json_SafeTensors_Export with KV Cache <../../pytorch/example_quark_torch_llm_ptq>
+   Language Model Post Training Quantization (PTQ) Using Quark <../../pytorch/example_quark_torch_llm_ptq>
    Evaluation of Quantized Models <../../pytorch/example_quark_torch_llm_eval_perplexity>

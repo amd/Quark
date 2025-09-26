@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 #
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+
 # Configuration file for the Sphinx documentation builder.
 #
 # This file does only contain a selection of the most common options. For a
@@ -33,8 +38,9 @@ def get_version_from_file(version_file, full=True):
         return match.group(0)
 
 # -- Project information -----------------------------------------------------
-
 project = 'AMD Quark'
+
+# Sphinx automatically adds the copyright to the footer of every page it generates
 copyright = '2024, Advanced Micro Devices, Inc'
 author = 'Advanced Micro Devices, Inc'
 
@@ -78,9 +84,10 @@ autoapi_dirs = ['../../quark']
 autoapi_keep_files = True
 autoapi_add_toctree_entry = False
 autoapi_options = ["members", "show-module-summary"]
-autoapi_ignore = []
+autoapi_ignore = ['*/quark/contrib/*']  # TODO: include contrib into documentation soon
+                                        # TODO: https://github.com/readthedocs/sphinx-autoapi/issues/312 must use *subfolder* pattern
 
-FACTORY_TYPES = {"typing.List": "[]", "typing.Dict": "{}", "str": "''"}
+FACTORY_TYPES = {"typing.List": "[]", "list": "[]", "typing.Dict": "{}", "dict": "{}", "str": "''"}
 
 def fix_signature(app, what, name, obj, options, signature, return_annotation):
     """
@@ -113,7 +120,7 @@ def fix_signature(app, what, name, obj, options, signature, return_annotation):
                         break
 
                 if default is None:
-                    raise RuntimeError("should not happen")
+                    raise RuntimeError(f"Unexpected data type for <factory>. Details:\n\twhat={what}, \n\tname={name}, \n\tobj={obj}, \n\toptions={options}, \n\tsignature={signature}, \n\treturn_annotation={return_annotation}")
 
                 fixed_arg = arg.replace("<factory>", default)
 
@@ -135,6 +142,7 @@ nitpick_ignore_regex = [(r'py:class', r'.*')]
 # Bypass `WARNING: more than one target found for cross-reference 'Config': quark.onnx.quantization.config.config.Config, quark.torch.pruning.config.Config, quark.torch.quantization.config.config.Config`, etc.
 suppress_warnings = [
     'ref.python',
+    'autoapi.python_import_resolution'
 ]
 
 graphviz_output_format = 'svg'

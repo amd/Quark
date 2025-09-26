@@ -76,8 +76,9 @@ here.
 .. code:: ipython3
 
     import os
-    if os.environ.get('LOCAL_MODEL_CACHE') is not None:
-        data_path = os.environ['LOCAL_MODEL_CACHE']
+    
+    if os.environ.get("LOCAL_MODEL_CACHE") is not None:
+        data_path = os.environ["LOCAL_MODEL_CACHE"]
     else:
         data_path = "./model_cache/"
 
@@ -105,7 +106,7 @@ PyTorch data loader.
     
     # Download training data from open datasets.
     training_data = datasets.FashionMNIST(
-        root=data_path, # Use the data path we defined earlier.
+        root=data_path,  # Use the data path we defined earlier.
         train=True,
         download=True,
         transform=ToTensor(),
@@ -113,7 +114,7 @@ PyTorch data loader.
     
     # Download test data from open datasets.
     test_data = datasets.FashionMNIST(
-        root=data_path, # Use the data path we defined earlier.
+        root=data_path,  # Use the data path we defined earlier.
         train=False,
         download=True,
         transform=ToTensor(),
@@ -142,7 +143,7 @@ data set by indexing into it.
 
     import matplotlib.pyplot as plt
     
-    sample_idx = 123 # Or any index you like.
+    sample_idx = 123  # Or any index you like.
     
     # The training data returns the image data, as a tensor, and a number for the label (category).
     img, label = training_data[sample_idx]
@@ -163,7 +164,7 @@ data set by indexing into it.
     
     plt.title(labels_map[label])
     plt.axis("off")
-    plt.imshow(img.squeeze(), cmap="gray") # The images are grayscale, so set that here to display correctly.
+    plt.imshow(img.squeeze(), cmap="gray")  # The images are grayscale, so set that here to display correctly.
     plt.show()
 
 We also defined a simple model to use.
@@ -176,11 +177,7 @@ We also defined a simple model to use.
             super().__init__()
             self.flatten = nn.Flatten()
             self.linear_relu_stack = nn.Sequential(
-                nn.Linear(28*28, 512),
-                nn.ReLU(),
-                nn.Linear(512, 512),
-                nn.ReLU(),
-                nn.Linear(512, 10)
+                nn.Linear(28 * 28, 512), nn.ReLU(), nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 10)
             )
     
         def forward(self, x):
@@ -219,7 +216,7 @@ accuracy statistics. That’s just a return statement at the end.
     def test(dataloader, model, loss_fn):
         size = len(dataloader.dataset)
         num_batches = len(dataloader)
-        model.eval() # Put model into evaluation mode.
+        model.eval()  # Put model into evaluation mode.
         test_loss, correct = 0, 0
         with torch.no_grad():
             for X, y in dataloader:
@@ -230,7 +227,7 @@ accuracy statistics. That’s just a return statement at the end.
         test_loss /= num_batches
         correct /= size
         ## I added this section at the end to help make a comparison table later:
-        print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+        print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
         return correct, test_loss
 
 We then ran our training and testing for a number of epochs. Note here
@@ -256,9 +253,9 @@ epochs to gain some accuracy at the expense of more training time.
     model_acc = 0
     model_loss = 0
     
-    epochs = 5 ## Increase this to improve accuracy.
+    epochs = 5  ## Increase this to improve accuracy.
     for t in range(epochs):
-        print(f"Epoch {t+1}\n-------------------------------")
+        print(f"Epoch {t + 1}\n-------------------------------")
         train(train_dataloader, model, loss_fn, optimizer)
         model_acc, model_loss = test(test_dataloader, model, loss_fn)
     print("Done!")
@@ -337,15 +334,15 @@ pixels grayscale.
 Let’s just check that my sample images are on the right path, by loading
 them up and displaying them with ``matplotlib``:
 
-.. |anton’s shirt| image:: anton_2828_shirt.jpg
-.. |anton’s shoe| image:: anton_2828_shoe.jpg
+.. |anton’s shirt| image:: anton_shirt.jpg
+.. |anton’s shoe| image:: anton_shoe.jpg
 
 .. code:: ipython3
 
-    import matplotlib.image as mpimg # For reading images from files.
+    import matplotlib.image as mpimg  # For reading images from files.
     
-    img1 = mpimg.imread('anton_2828_shoe.jpg')
-    img2 = mpimg.imread('anton_2828_shirt.jpg')
+    img1 = mpimg.imread("anton_shoe.jpg")
+    img2 = mpimg.imread("anton_shirt.jpg")
     
     plt.axis("off")
     # Note that these images are not in a tensor, and so do not need to be "squeezed" first.
@@ -365,12 +362,12 @@ to a tensor representation using
 
 .. code:: ipython3
 
-    from PIL import Image # for loading images after training
+    from PIL import Image  # for loading images after training
     
     ## Choose one:
-    #img = Image.open('your_28x28_image.jpg')
-    img = Image.open('anton_2828_shirt.jpg')
-    #img = Image.open('anton_2828_shoe.jpg')
+    # img = Image.open('your_28x28_image.jpg')
+    img = Image.open("anton_shirt.jpg")
+    # img = Image.open('anton_shoe.jpg')
     
     # The image data needs to be "unsqueezed" into a tensor representation.
     img_tensor = ToTensor()(img).unsqueeze(0).to(device)
@@ -418,15 +415,13 @@ see if it works better for a model.
 .. code:: ipython3
 
     # Import Quark components.
-    from quark.torch.quantization.config.config import Config, QuantizationConfig
     from quark.torch.quantization import Int8PerTensorSpec
+    from quark.torch.quantization.config.config import Config, QuantizationConfig
     
     # Define a specification for our int8 data type with some sensible defaults; which techniques to use to convert from float to int.
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(observer_method="min_max",
-                                          symmetric=True,
-                                          scale_type="float",
-                                          round_method="half_even",
-                                          is_dynamic=False).to_quantization_spec()
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(
+        observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
+    ).to_quantization_spec()
     
     # Create a "quantization config" for Quark with our sensible starting parameters.
     DEFAULT_W_INT8_PER_TENSOR_CONFIG = QuantizationConfig(weight=DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
@@ -448,8 +443,8 @@ calibration data set from some of our test images:
 
     qmodel_acc, qmodel_loss = test(test_dataloader, model, loss_fn)
     
-    print(f"Original model:  Accuracy: {(100*model_acc):>0.1f}%, Avg loss: {model_loss:>8f} \n")
-    print(f"Quantized model: Accuracy: {(100*qmodel_acc):>0.1f}%, Avg loss: {qmodel_loss:>8f} \n")
+    print(f"Original model:  Accuracy: {(100 * model_acc):>0.1f}%, Avg loss: {model_loss:>8f} \n")
+    print(f"Quantized model: Accuracy: {(100 * qmodel_acc):>0.1f}%, Avg loss: {qmodel_loss:>8f} \n")
 
 .. code:: ipython3
 
@@ -491,8 +486,8 @@ new quantized model ``quant_model``, in place of the original ``model``.
 
     qmodel_acc, qmodel_loss = test(test_dataloader, quant_model, loss_fn)
     
-    print(f"Original model:  Accuracy: {(100*model_acc):>0.1f}%, Avg loss: {model_loss:>8f} \n")
-    print(f"Quantized model: Accuracy: {(100*qmodel_acc):>0.1f}%, Avg loss: {qmodel_loss:>8f} \n")
+    print(f"Original model:  Accuracy: {(100 * model_acc):>0.1f}%, Avg loss: {model_loss:>8f} \n")
+    print(f"Quantized model: Accuracy: {(100 * qmodel_acc):>0.1f}%, Avg loss: {qmodel_loss:>8f} \n")
 
 Now, if we did our quantization job right we should see accuracy very
 close to the original model, and very little additional loss.
@@ -518,12 +513,12 @@ photo-realistic as the test images?
 
 .. code:: ipython3
 
-    from PIL import Image # for loading images after training
+    from PIL import Image  # for loading images after training
     
     ## Choose one:
-    #img = Image.open('user_input.jpg')
-    #img = Image.open('anton_2828_shirt.jpg')
-    img = Image.open('anton_2828_shoe.jpg')
+    # img = Image.open('user_input.jpg')
+    # img = Image.open('anton_shirt.jpg')
+    img = Image.open("anton_shoe.jpg")
     
     img_tensor = ToTensor()(img).unsqueeze(0).to(device)
     answer = torch.argmax(quant_model(img_tensor))
@@ -556,7 +551,8 @@ quantization*, or *simulated* quantization. That means it’s not actually
 swapping the data types for the smaller ones and making the saving of
 memory, *yet*.
 
-.. figure:: container_bits.png
+.. figure::
+   ../../../_static/quickstart_tutorial_images/container_bits.png
    :alt: Image of a 32 bits float used to store an 8-bit integer
 
    Image of a 32 bits float used to store an 8-bit integer
@@ -690,3 +686,21 @@ types and see if we can spot any quality difference in the images the
 quantized models produce. We will follow on by looking at language
 models and chat prompts, and exporting models from Quark for inference
 runtimes outside of PyTorch.
+
+.. code:: ipython3
+
+    # This cell should have the remove-cell tag as we don't want it rendered in the documentation
+    # it's creating results for submission to the dashboard
+    import json
+    import os
+    from datetime import datetime
+    
+    if os.environ.get("QUARK_CI", False) and os.path.exists("../../../output/"):
+        results = {
+            "values": {"model_accuracy": model_acc, "qmodel_accuracy": qmodel_acc},
+            "report": "Quark Regressions",
+            "experiment": "quark_quickstart_tutorial",
+            "timestamp": str(datetime.now()),
+        }
+        with open("../../../output/quickstart_results.json", "w") as file:
+            file.write(json.dumps(results))

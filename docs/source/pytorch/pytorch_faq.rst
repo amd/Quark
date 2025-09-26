@@ -1,3 +1,5 @@
+.. Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+
 Frequently Asked Questions (FAQ)
 ================================
 
@@ -28,10 +30,3 @@ C++ Compilation Issues
 **Solution**:
 
 Delete the cache folder ``[cache folder path]/torch_extensions`` and run AMD Quark again.
-
-.. raw:: html
-
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->
