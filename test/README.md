@@ -21,9 +21,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ### Testing with external libraries
 
-Some tests may require external libraries that are not in Quark `requirements.txt`. It is best to add a marker for these specific libraries in `test/setup.cfg`, and mark such tests as `@pytest.mark.mylibrary_test`.
+Some tests may require external libraries that are not in Quark `requirements.txt`. It is best to add a marker for these specific libraries in `pyproject.toml`, and mark such tests as `@pytest.mark.mylibrary_test`.
 
-This allows to test Quark in the CI in a basic environement without many external libraries installed, and to run specific tests that are specific to an external library using `pytest test/ -s -vvvvvv -m "mylibrary_test"`
+This allows to test Quark in the CI in a basic environment without many external libraries installed, and to run specific tests that are specific to an external library using `pytest test/ -s -vvvvvv -m "mylibrary_test"`
 
 ### Flaky tests
 
@@ -36,3 +36,8 @@ from quark.shares.utils.testing_utils import retry_flaky_test
 def test_that_is_flaky():
     ...
 ```
+
+<!--
+## License
+Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

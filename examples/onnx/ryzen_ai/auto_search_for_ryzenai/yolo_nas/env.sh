@@ -1,5 +1,10 @@
 #!/bin/bash
 
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+
 pip install super-gradients==3.7.1
 pip install numpy==1.26.0
 pip install onnx==1.17.0

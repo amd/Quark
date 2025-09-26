@@ -4,32 +4,35 @@
 #
 
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Type, Tuple
-from dataclasses import dataclass, field
-from quark.torch.export.config.config import JsonExporterConfig
-from quark.torch.quantization.utils import deep_compare
-import torch.nn as nn
+
 import fnmatch
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig
-from quark.torch.quantization.config.config import AWQConfig as TrueAWQConfig
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Type
+
+import torch.nn as nn
+
+from quark.torch.export.config.config import JsonExporterConfig
 from quark.torch.export.constants import AWQ_QUANT_DTYPES
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerGroupMinMaxObserver
+from quark.torch.quantization.config.config import AWQConfig as TrueAWQConfig
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver, PerTensorMinMaxObserver
+from quark.torch.quantization.utils import deep_compare
 
 
 @dataclass
 class FP8Config:
-    activation_scheme: Optional[str] = None
-    ignored_layers: List[str] = field(default_factory=list)
-    kv_cache_scheme: Optional[str] = None
+    activation_scheme: str | None = None
+    ignored_layers: list[str] = field(default_factory=list)
+    kv_cache_scheme: str | None = None
     quant_method: str = "fp8"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "activation_scheme": self.activation_scheme,
             "ignored_layers": self.ignored_layers,
             "kv_cache_scheme": self.kv_cache_scheme,
-            "quant_method": self.quant_method
+            "quant_method": self.quant_method,
         }
 
 
@@ -37,13 +40,13 @@ class FP8Config:
 class AwqConfig:
     quant_method: str = field(default="awq")
     zero_point: bool = field(default=True)
-    group_size: Optional[int] = None
+    group_size: int | None = None
     bits: int = field(default=4)
     version: str = field(default="gemm")
-    modules_to_not_convert: Optional[List[str]] = None
+    modules_to_not_convert: list[str] | None = None
     pack_method: str = field(default="reorder")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "bits": self.bits,
             "group_size": self.group_size,
@@ -55,14 +58,11 @@ class AwqConfig:
         }
 
 
-def get_layer_quant_config(quant_config: Config, layer_type: Type[nn.Module],
-                           layer_name: str) -> Optional[QuantizationConfig]:
+def get_layer_quant_config(
+    quant_config: Config, layer_type: type[nn.Module], layer_name: str
+) -> QuantizationConfig | None:
     if layer_type not in [nn.Linear, nn.Conv2d]:
         return None
-
-    for exclude_layer in quant_config.exclude:
-        if fnmatch.fnmatch(layer_name, exclude_layer):
-            return None
 
     for name_pattern in quant_config.layer_quant_config.keys():
         if fnmatch.fnmatch(layer_name, name_pattern):
@@ -74,21 +74,43 @@ def get_layer_quant_config(quant_config: Config, layer_type: Type[nn.Module],
         else:
             layer_quantization_config = quant_config.global_quant_config
 
+    # check if the layer is in the kv_cache_quant_config
+    kv_cache_quant_or_not = False
+    kv_cache_quant_config = None
+    for name_pattern in quant_config.kv_cache_quant_config.keys():
+        if fnmatch.fnmatch(layer_name, name_pattern):
+            kv_cache_quant_or_not = True
+            kv_cache_quant_config = quant_config.kv_cache_quant_config[name_pattern]
+            break
+
+    # check if the layer is in the exclude
+    for exclude_layer in quant_config.exclude:
+        if fnmatch.fnmatch(layer_name, exclude_layer):
+            # In some cases, the kv layers are excluded, while the kv cache still need to be quantized,
+            # and the kv cache quant config is reflected in the output_tensors of kv_cache_quant_config.
+            # In this case, we need to set the output_tensors of this layer to kv cache quant config
+            if kv_cache_quant_or_not and kv_cache_quant_config is not None:
+                output_tensors = kv_cache_quant_config.output_tensors
+                layer_quantization_config = QuantizationConfig(
+                    weight=None, bias=None, input_tensors=None, output_tensors=output_tensors
+                )
+            else:
+                return None
+
     return layer_quantization_config
 
 
 class QuantConfigParser:
-
     def __init__(self, quant_config: Config, json_config: JsonExporterConfig) -> None:
         self._pack_method = json_config.pack_method
         self._config = quant_config
         self._kv_cache_group = json_config.kv_cache_group
         self._fp8_kv_cache_scheme = None
-        self._custom_mode: Optional[str] = None
+        self._custom_mode: str | None = None
         self._output_quant: bool = False
 
     @property
-    def custom_mode(self) -> Optional[str]:
+    def custom_mode(self) -> str | None:
         return self._custom_mode
 
     @property
@@ -96,10 +118,10 @@ class QuantConfigParser:
         return self._output_quant
 
     @property
-    def kv_cache_group(self) -> Optional[List[str]]:
+    def kv_cache_group(self) -> list[str] | None:
         return self._kv_cache_group
 
-    def fp8_kv_cache_check(self, layer_quant_config: Dict[str, Any]) -> None:
+    def fp8_kv_cache_check(self, layer_quant_config: dict[str, Any]) -> None:
         if self.kv_cache_group is None or len(self.kv_cache_group) == 0:
             self._fp8_kv_cache_scheme = None
             return
@@ -115,24 +137,30 @@ class QuantConfigParser:
             return
 
         weight_config = quant_configs[0].weight
-        if weight_config is None or weight_config.dtype != Dtype.fp8_e4m3 or weight_config.qscheme != QSchemeType.per_tensor:
+        if (
+            weight_config is None
+            or weight_config.dtype != Dtype.fp8_e4m3
+            or weight_config.qscheme != QSchemeType.per_tensor
+        ):
             self._fp8_kv_cache_scheme = None
             return
 
         input_config = quant_configs[0].input_tensors
-        if input_config is not None and (input_config.dtype != Dtype.fp8_e4m3
-                                         or input_config.qscheme != QSchemeType.per_tensor):
+        if input_config is not None and (
+            input_config.dtype != Dtype.fp8_e4m3 or input_config.qscheme != QSchemeType.per_tensor
+        ):
             self._fp8_kv_cache_scheme = None
             return
 
         output_config = quant_configs[0].output_tensors
-        if output_config is None or (output_config.dtype != Dtype.fp8_e4m3
-                                     or output_config.qscheme != QSchemeType.per_tensor):
+        if output_config is None or (
+            output_config.dtype != Dtype.fp8_e4m3 or output_config.qscheme != QSchemeType.per_tensor
+        ):
             self._fp8_kv_cache_scheme = None
             return
         self._fp8_kv_cache_scheme = "dynamic" if output_config.is_dynamic is True else "static"  # type: ignore
 
-    def get_custom_config(self) -> Tuple[Dict[str, Any], str]:
+    def get_custom_config(self) -> tuple[dict[str, Any], str]:
         """
         Returns the custom configuration that is required by external libraries for specific quantization schemes.
         """
@@ -176,41 +204,53 @@ class QuantConfigParser:
             # fp8 custom config, for vLLM compatibility.
             if input_config is None:
                 activation_scheme = None
-            elif (input_config.dtype == Dtype.fp8_e4m3 and input_config.qscheme == QSchemeType.per_tensor):
-                if output_config is None or (output_config.dtype == Dtype.fp8_e4m3
-                                             and output_config.qscheme == QSchemeType.per_tensor):
+            elif input_config.dtype == Dtype.fp8_e4m3 and input_config.qscheme == QSchemeType.per_tensor:
+                if output_config is None or (
+                    output_config.dtype == Dtype.fp8_e4m3 and output_config.qscheme == QSchemeType.per_tensor
+                ):
                     activation_scheme = "dynamic" if input_config.is_dynamic else "static"
                 else:
                     is_custom = False  # pragma: no cover
             else:
                 is_custom = False  # pragma: no cover
 
-            if is_custom and (bias_config is None or
-                              (bias_config.dtype == Dtype.fp8_e4m3 and bias_config.qscheme == QSchemeType.per_tensor)):
+            if is_custom and (
+                bias_config is None
+                or (bias_config.dtype == Dtype.fp8_e4m3 and bias_config.qscheme == QSchemeType.per_tensor)
+            ):
                 ignored_layers = self._config.exclude
                 custom_mode = "fp8"
-                custom_config = FP8Config(activation_scheme=activation_scheme,
-                                          kv_cache_scheme=self._fp8_kv_cache_scheme,
-                                          ignored_layers=ignored_layers).to_dict()
-        elif self._config.algo_config is not None and self._config.algo_config.name.lower() == "awq":
-            # AWQ custom config, for vLLM, AutoAWQ (and others) compatibility.
-            if weight_config.dtype in AWQ_QUANT_DTYPES and weight_config.qscheme == QSchemeType.per_group:
-                if input_config is None and output_config is None and bias_config is None:
-                    bits = weight_config.dtype.to_bitwidth()
+                custom_config = FP8Config(
+                    activation_scheme=activation_scheme,
+                    kv_cache_scheme=self._fp8_kv_cache_scheme,
+                    ignored_layers=ignored_layers,
+                ).to_dict()
+        elif self._config.algo_config is not None:
+            for i in range(len(self._config.algo_config)):
+                if self._config.algo_config[i].name.lower() != "awq":
+                    continue
+                # AWQ custom config, for vLLM, AutoAWQ (and others) compatibility.
+                if weight_config.dtype in AWQ_QUANT_DTYPES and weight_config.qscheme == QSchemeType.per_group:
+                    if input_config is None and output_config is None and bias_config is None:
+                        bits = weight_config.dtype.to_bitwidth()
 
-                    custom_mode = "awq"
-                    custom_config = AwqConfig(quant_method="awq",
-                                              zero_point=not weight_config.symmetric,
-                                              group_size=weight_config.group_size,
-                                              bits=bits,
-                                              modules_to_not_convert=self._config.exclude,
-                                              pack_method=self._pack_method).to_dict()
+                        custom_mode = "awq"
+                        custom_config = AwqConfig(
+                            quant_method="awq",
+                            zero_point=not weight_config.symmetric,
+                            group_size=weight_config.group_size,
+                            bits=bits,
+                            modules_to_not_convert=self._config.exclude,
+                            pack_method=self._pack_method,
+                        ).to_dict()
+                        break
 
         return custom_config, custom_mode
 
     @staticmethod
-    def from_custom_config(custom_config_dict: Dict[str, Any], is_bias_quantized: bool, is_kv_cache: bool,
-                           kv_layers_name: Optional[List[str]]) -> Config:
+    def from_custom_config(
+        custom_config_dict: dict[str, Any], is_bias_quantized: bool, is_kv_cache: bool, kv_layers_name: list[str] | None
+    ) -> Config:
         """
         Maps the custom quantization config Fp8Config and AwqConfig back to Quark's Config. Some important keys
         can not be inferred from this custom config, namely whether the outputs of quantized ops are quantized, and whether the bias are quantized.
@@ -248,7 +288,7 @@ class QuantConfigParser:
                 bias=q_spec if is_bias_quantized else None,
             )
 
-            KV_CACHE_CFG: Dict[str, QuantizationConfig] = {}
+            KV_CACHE_CFG: dict[str, QuantizationConfig] = {}
             if is_kv_cache:
                 if kv_layers_name is not None:
                     # We can check the pth or safetensor files to determine if kv_cache is being used
@@ -267,11 +307,13 @@ class QuantConfigParser:
                         )
                 else:
                     raise ValueError(
-                        "Initializing import_config requires kv_cache_layers_info but kv_layers_name is empty")
+                        "Initializing import_config requires kv_cache_layers_info but kv_layers_name is empty"
+                    )
 
             config = Config(
                 global_quant_config=global_quant_config,
                 layer_quant_config=KV_CACHE_CFG,
+                kv_cache_quant_config=KV_CACHE_CFG,
                 exclude=custom_config_dict["ignored_layers"],
                 quant_mode=QuantizationMode.eager_mode,
             )
@@ -314,7 +356,7 @@ class QuantConfigParser:
                 global_quant_config=global_quant_config,
                 exclude=custom_config_dict["modules_to_not_convert"],
                 quant_mode=QuantizationMode.eager_mode,
-                algo_config=TrueAWQConfig(),
+                algo_config=[TrueAWQConfig()],
             )
         else:
             config = Config.from_dict(custom_config_dict)

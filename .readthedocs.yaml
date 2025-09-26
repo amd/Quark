@@ -28,4 +28,3 @@ build:
          - mkdir -p $READTHEDOCS_OUTPUT/html
          - bash -c "export QUARK_SPHINX_BUILD_SKIP_TUTORIALS=1; cd docs && ./build_docs.sh"
          - bash -c "cp -rv _docs_build/html/* $READTHEDOCS_OUTPUT/html/"
-

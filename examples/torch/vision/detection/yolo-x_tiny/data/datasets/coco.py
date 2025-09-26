@@ -13,9 +13,11 @@
 
 import copy
 import os
+
 import cv2
 import numpy as np
 from pycocotools.coco import COCO
+
 from .datasets_wrapper import CacheDataset, cache_read_img
 
 
@@ -85,7 +87,7 @@ class COCODataset(CacheDataset):
             cache_dir_name=f"cache_{name}",
             path_filename=path_filename,
             cache=cache,
-            cache_type=cache_type
+            cache_type=cache_type,
         )
 
     def __len__(self):
@@ -124,11 +126,7 @@ class COCODataset(CacheDataset):
         img_info = (height, width)
         resized_info = (int(height * r), int(width * r))
 
-        file_name = (
-            im_ann["file_name"]
-            if "file_name" in im_ann
-            else "{:012}".format(id_) + ".jpg"
-        )
+        file_name = im_ann["file_name"] if "file_name" in im_ann else f"{id_:012}" + ".jpg"
 
         return (res, img_info, resized_info, file_name)
 

@@ -4,7 +4,7 @@ This document provides examples of quantizing and exporting the DLRM models usin
 
 ## Preparation
 
-### Envrionment
+### Environment
 
 Run the script to prepare the environment at first
 

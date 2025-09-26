@@ -2,38 +2,47 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import copy
+import json
 import unittest
+
+import numpy as np
+import onnx
+import onnxruntime
 import torch
 import torch.nn as nn
-import numpy as np
-import onnxruntime
-import json
-import onnx
-import copy
 from onnxruntime.quantization import CalibrationDataReader
+
 from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG
+from quark.onnx.quant_utils import is_version_below
 from quark.onnx.quantization.config.config import Config
-from quark.onnx.quant_utils import is_ort_version_below
-input_tensor = np.array([[-0.36716485, 0.01129738, 0.07908165, 0.35021877, -0.6665454,
-                         0.13556856, -0.01129738, 0.02259476],
-                         [0.20900153, -0.09037904, -0.15251462, -0.15816331, -0.14686593,
-                         0.6947889, 0.53097683, -0.17510939]]).astype(np.float32)
+from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG
 
-output_tensor_correct = np.array([[-1.2185992, 0.781493, 0.47684318, 1.4835122, -0.6490366,
-                                  1.4702665, -0.27815852, 0.49008882],
-                                  [-1.6821967, 0.6755279, -0.01324564, 1.2583362, -0.37087804,
-                                  1.2185992, -0.70201916, 0.31789547]]).astype(np.float32)
+input_tensor = np.array(
+    [
+        [-0.36716485, 0.01129738, 0.07908165, 0.35021877, -0.6665454, 0.13556856, -0.01129738, 0.02259476],
+        [0.20900153, -0.09037904, -0.15251462, -0.15816331, -0.14686593, 0.6947889, 0.53097683, -0.17510939],
+    ]
+).astype(np.float32)
 
-output_tensor_whole = np.array([[0.1373996, 0.14839157, 0.2802952, -0.08243977, 0.14839157,
-                                0.21434338, -0.70348597, 0.45616668],
-                                [0.12091165, 0.15938354, 0.21434338, -0.11541566, 0.13190362,
-                                0.26930323, -0.64852613, 0.5001345]]).astype(np.float32)
+output_tensor_correct = np.array(
+    [
+        [-1.2185992, 0.781493, 0.47684318, 1.4835122, -0.6490366, 1.4702665, -0.27815852, 0.49008882],
+        [-1.6821967, 0.6755279, -0.01324564, 1.2583362, -0.37087804, 1.2185992, -0.70201916, 0.31789547],
+    ]
+).astype(np.float32)
+
+output_tensor_whole = np.array(
+    [
+        [0.1373996, 0.14839157, 0.2802952, -0.08243977, 0.14839157, 0.21434338, -0.70348597, 0.45616668],
+        [0.12091165, 0.15938354, 0.21434338, -0.11541566, 0.13190362, 0.26930323, -0.64852613, 0.5001345],
+    ]
+).astype(np.float32)
 
 mlp_dim = 16
 
-class CorrectDummyModel(nn.Module):
 
+class CorrectDummyModel(nn.Module):
     def __init__(self, emb_size, mlp_dim):
         super(CorrectDummyModel, self).__init__()
         self.layer1 = nn.Linear(emb_size, mlp_dim)  # From definition, in_feat, out_feat. Weight, out_feat, in_feat
@@ -56,8 +65,8 @@ class CorrectDummyModel(nn.Module):
         x4 = self.layer4(x3)
         return x4
 
-class WholeDummyModel(nn.Module):
 
+class WholeDummyModel(nn.Module):
     def __init__(self, emb_size, mlp_dim):
         super(WholeDummyModel, self).__init__()
         self.layer1 = nn.Linear(emb_size, mlp_dim)  # From definition, in_feat, out_feat. Weight, out_feat, in_feat
@@ -84,11 +93,11 @@ class WholeDummyModel(nn.Module):
         x4 = self.layer4(t2)
         return x4
 
-class DataReader(CalibrationDataReader):
 
+class DataReader(CalibrationDataReader):
     def __init__(self, input_tensor):
         self.data = [input_tensor]
-        self.input_name = 'input'
+        self.input_name = "input"
         self.index = 0
 
     def get_next(self):
@@ -105,10 +114,7 @@ class DataReader(CalibrationDataReader):
 
 def prepare_model(gen_type="correct"):
     torch.manual_seed(42)
-    model_classes = {
-        "correct": CorrectDummyModel,
-        "whole": WholeDummyModel
-    }
+    model_classes = {"correct": CorrectDummyModel, "whole": WholeDummyModel}
 
     emb_size = 8
     ModelClass = model_classes.get(gen_type, WholeDummyModel)
@@ -116,19 +122,17 @@ def prepare_model(gen_type="correct"):
 
     dummy_input = torch.randn(2, emb_size)
 
-    onnx_model_path = 'dm_model.onnx'
-    torch.onnx.export(model,
-                      dummy_input,
-                      onnx_model_path,
-                      input_names=['input'],
-                      output_names=['output'],
-                      opset_version=17)
+    onnx_model_path = "dm_model.onnx"
+    torch.onnx.export(
+        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+    )
 
     # Further remove intializers from input. Because we need a formal name of each intializer.
     sim_model_path = "dm_simplified_model.onnx"
     fast_rename_initializers(onnx_model_path, sim_model_path)
 
     return sim_model_path, "dm_quantized_model.onnx"
+
 
 def fast_rename_initializers(model_input, sim_model_path):
     model = onnx.load(model_input)
@@ -147,20 +151,15 @@ def fast_rename_initializers(model_input, sim_model_path):
                     if output_name == old_name:
                         node.output[i] = initializer.name
     onnx.save_model(model, sim_model_path)
-    print(f'Model has been saved to {sim_model_path}')
+    print(f"Model has been saved to {sim_model_path}")
+
 
 def dump_roatation_config(rconfig_path, gen_type="correct"):
     if gen_type == "correct":
         data = {
             "R1_pairs": [
-                {
-                    "prev_nodes": ["/layer1/Gemm"],
-                    "next_nodes": ["/layer2/MatMul"]
-                },
-                {
-                    "prev_nodes": ["/layer3/MatMul"],
-                    "next_nodes": ["/layer4/Gemm"]
-                }
+                {"prev_nodes": ["/layer1/Gemm"], "next_nodes": ["/layer2/MatMul"]},
+                {"prev_nodes": ["/layer3/MatMul"], "next_nodes": ["/layer4/Gemm"]},
             ]
         }
     elif gen_type == "whole":
@@ -169,39 +168,28 @@ def dump_roatation_config(rconfig_path, gen_type="correct"):
                 {
                     "prev_nodes": ["/layer1/Gemm"],
                     "norm_node": "/norm1/LayerNormalization",
-                    "next_nodes": ["/layer2/MatMul"]
+                    "next_nodes": ["/layer2/MatMul"],
                 },
                 {
                     "prev_nodes": ["/layer3/MatMul"],
                     "norm_node": "/norm2/LayerNormalization",
-                    "next_nodes": ["/layer4/Gemm"]
-                }
+                    "next_nodes": ["/layer4/Gemm"],
+                },
             ]
         }
     elif gen_type == "wrong_node_name":
-        data = {
-            "R1_pairs": [
-                {
-                    "prev_nodes": ["/fake"]
-                }
-            ]
-        }
+        data = {"R1_pairs": [{"prev_nodes": ["/fake"]}]}
     elif gen_type == "wrong_node_type":
-        data = {
-            "R1_pairs": [
-                {
-                    "prev_nodes": ["/Add"]
-                }
-            ]
-        }
+        data = {"R1_pairs": [{"prev_nodes": ["/Add"]}]}
     else:
         raise NotImplementedError
 
     # Dump json
-    with open(rconfig_path, 'w') as json_file:
+    with open(rconfig_path, "w") as json_file:
         json.dump(data, json_file, indent=4)
 
     print(f"JSON file '{rconfig_path}' has been create.")
+
 
 def prepare_config(gen_type="correct", use_rconfig=True, use_random_had=False):
     config_copy = copy.deepcopy(INT8_TRANSFORMER_DEFAULT_CONFIG)
@@ -213,12 +201,11 @@ def prepare_config(gen_type="correct", use_rconfig=True, use_random_had=False):
         dump_roatation_config(rconfig_path, gen_type)
         if use_rconfig:
             config_copy.extra_options["RConfigPath"] = rconfig_path
-        config_copy.extra_options['RMatrixDim'] = mlp_dim
+        config_copy.extra_options["RMatrixDim"] = mlp_dim
         config_copy.extra_options["ActivationSymmetric"] = True
-        config_copy.extra_options['UseRandomHad'] = use_random_had
+        config_copy.extra_options["UseRandomHad"] = use_random_had
 
-
-    config_copy.extra_options['SimplifyModel'] = False
+    config_copy.extra_options["SimplifyModel"] = False
     config_copy.optimize_model = False
 
     quant_config = Config(global_quant_config=config_copy)
@@ -237,7 +224,7 @@ def prepare_quantizer(quant_config):
 
 def quantize_static(quantizer, input_model_path, output_model_path, data_reader):
     quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-    print('Quantized the ONNX model and saved it at:', output_model_path)
+    print("Quantized the ONNX model and saved it at:", output_model_path)
     return output_model_path
 
 
@@ -247,7 +234,7 @@ def infer_quantized_model(quantized_model_path):
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor
     output = sess.run([output_name], {input_name: input_data})
-    print(f'Model output: {output}')
+    print(f"Model output: {output}")
     return output
 
 
@@ -270,6 +257,7 @@ def tensor_quantize_rotation_abnormal1():
     output = infer_quantized_model(quantized_model_path)
     return output
 
+
 def tensor_quantize_rotation_abnormal2():
     input_model_path, output_model_path = prepare_model()
     data_reader = prepare_data()
@@ -278,6 +266,7 @@ def tensor_quantize_rotation_abnormal2():
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
     return output
+
 
 def tensor_quantize_rotation_abnormal3():
     input_model_path, output_model_path = prepare_model()
@@ -288,24 +277,24 @@ def tensor_quantize_rotation_abnormal3():
     output = infer_quantized_model(quantized_model_path)
     return output
 
-class TestTensorQuantize(unittest.TestCase):
 
+class TestTensorQuantize(unittest.TestCase):
     def test_quantize_correct(self):
-        if not is_ort_version_below("1.18.0"):
+        if not is_version_below(onnxruntime, "1.18.0"):
             torch.manual_seed(42)
             output = tensor_quantize_rotation("correct")
             comp_equal = np.allclose(output, output_tensor_correct, atol=1e-1)
             self.assertEqual(comp_equal, True)
 
     def test_quantize_whole(self):
-        if not is_ort_version_below("1.18.0"):
+        if not is_version_below(onnxruntime, "1.18.0"):
             torch.manual_seed(42)
             output = tensor_quantize_rotation("whole")
             comp_equal = np.allclose(output, output_tensor_whole, atol=1e-1)
             self.assertEqual(comp_equal, True)
 
     def test_quantize_abnormal(self):
-        if not is_ort_version_below("1.18.0"):
+        if not is_version_below(onnxruntime, "1.18.0"):
             # Trigger no rotation config
             torch.manual_seed(42)
             with self.assertRaises(AssertionError) as context:
@@ -322,8 +311,8 @@ class TestTensorQuantize(unittest.TestCase):
             # Trigger wrong node type
             with self.assertRaises(ValueError) as context:
                 output = tensor_quantize_rotation("wrong_node_type")
-            self.assertIn("do not have a input which has a name include \"weight\"!", str(context.exception))
+            self.assertIn('do not have a input which has a name include "weight"!', str(context.exception))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

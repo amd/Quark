@@ -4,21 +4,23 @@
 #
 
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, List
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+
 if TYPE_CHECKING:
     from quark.torch.pruning.config import BlockwiseTuningConfig
-from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import get_device, move_to_device
-from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map, get_model_layers
-from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward, blockwise_training
-from quark.torch.algorithm.utils.utils import clear_memory
-
 from tqdm import tqdm
 
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward, blockwise_training
+from quark.torch.algorithm.processor import BaseAlgoProcessor
+from quark.torch.algorithm.utils.module import get_device, move_to_device
+from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
 
@@ -29,9 +31,13 @@ CUDA = torch.device("cuda")
 
 
 class BlockwiseTuningProcessor(BaseAlgoProcessor):
-
-    def __init__(self, fp_model: nn.Module, model: nn.Module, algo_config: BlockwiseTuningConfig,
-                 data_loader: DataLoader[torch.Tensor]) -> None:
+    def __init__(
+        self,
+        fp_model: nn.Module,
+        model: nn.Module,
+        algo_config: BlockwiseTuningConfig,
+        data_loader: DataLoader[torch.Tensor],
+    ) -> None:
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
 
@@ -46,8 +52,9 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
         self.trainable_modules = algo_config.trainable_modules
         self.data_loader = data_loader
         self.device_map = init_device_map(self.model)
-        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(self.model, self.model_decoder_layers,
-                                                                          self.data_loader)
+        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(
+            self.model, self.model_decoder_layers, self.data_loader
+        )
         self.modules_fp = get_model_layers(self.fp_model, self.model_decoder_layers)
 
     def apply(self) -> None:
@@ -57,10 +64,10 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
         num_batches = len(self.inps)
 
         layer_inputs = [inp.detach().requires_grad_(False) for inp in self.inps]
-        layer_outputs: List[torch.Tensor] = []
+        layer_outputs: list[torch.Tensor] = []
 
         fp_layer_inputs = [inputs for inputs in layer_inputs]
-        fp_layer_outputs: List[torch.Tensor] = []
+        fp_layer_outputs: list[torch.Tensor] = []
 
         forward_pass_use_cache = self.model.config.use_cache
         self.model.config.use_cache = False
@@ -83,19 +90,44 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
             cur_layer_device = get_device(layer)
 
             # layer_fp.forward
-            fp_layer_outputs = block_forward(layer_fp, self.module_kwargs, num_batches, cur_layer_device,
-                                             fp_layer_inputs, fp_layer_outputs, cache_examples_on_gpu)
+            fp_layer_outputs = block_forward(
+                layer_fp,
+                self.module_kwargs,
+                num_batches,
+                cur_layer_device,
+                fp_layer_inputs,
+                fp_layer_outputs,
+                cache_examples_on_gpu,
+            )
 
             layer_fp = move_to_device(layer_fp, CPU if force_layer_back_to_cpu else cur_layer_device)
 
             # train
-            blockwise_training(layer, self.module_kwargs, self.trainable_modules, layer_inputs, fp_layer_outputs,
-                               cur_layer_device, self.epochs, self.weight_lr, self.min_lr_factor, self.weight_decay,
-                               self.max_grad_norm, i)
+            blockwise_training(
+                layer,
+                self.module_kwargs,
+                self.trainable_modules,
+                layer_inputs,
+                fp_layer_outputs,
+                cur_layer_device,
+                self.epochs,
+                self.weight_lr,
+                self.min_lr_factor,
+                self.weight_decay,
+                self.max_grad_norm,
+                i,
+            )
 
             # layer.forward
-            layer_outputs = block_forward(layer, self.module_kwargs, num_batches, cur_layer_device, layer_inputs,
-                                          layer_outputs, cache_examples_on_gpu)
+            layer_outputs = block_forward(
+                layer,
+                self.module_kwargs,
+                num_batches,
+                cur_layer_device,
+                layer_inputs,
+                layer_outputs,
+                cache_examples_on_gpu,
+            )
 
             layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
 

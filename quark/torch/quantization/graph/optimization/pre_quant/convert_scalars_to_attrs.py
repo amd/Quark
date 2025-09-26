@@ -3,15 +3,16 @@
 # SPDX-License-Identifier: MIT
 #
 import torch
-from quark.torch.quantization.graph.torch_utils import is_math_arithmetic_node
 from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
+
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.graph.torch_utils import is_math_arithmetic_node
 
 logger = ScreenLogger(__name__)
 
 
 def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModule:
-    '''
+    """
     Convert constant number to tensor
     e.g.
 
@@ -25,7 +26,7 @@ def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModul
         e.g The model in GPU, but some operations/Tensors in CPU
         In this case, we will skip convert if one operation's Tensor device diff with model.
         ref: torch/ao/quantization/quantizer/xnnpack_quantizer_utils.py: _convert_scalars_to_attrs
-    '''
+    """
     model_device = [module for module in model.parameters()][0].device  # cpu/gpu
     for n in model.graph.nodes:
         if not is_math_arithmetic_node(n):
@@ -35,12 +36,12 @@ def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModul
 
         # NOTE in some case
         # model in GPU, but some operations/Tensor in CPU
-        nodes = list(filter(lambda n: isinstance(n, torch.fx.Node) and ('val' in n.meta), args))
-        tensor_device = [n.meta['val'].device for n in nodes]
+        nodes = list(filter(lambda n: isinstance(n, torch.fx.Node) and ("val" in n.meta), args))
+        tensor_device = [n.meta["val"].device for n in nodes]
         if len(set(tensor_device)) >= 2 or (len(tensor_device) >= 1 and tensor_device[0] != model_device):
             logger.warning(
-                "In Node: {}'s args, contaion multi/diff (with model) devices:{}, skip convert to attrs".format(
-                    n.name, tensor_device))
+                f"In Node: {n.name}'s args, contaion multi/diff (with model) devices:{tensor_device}, skip convert to attrs"
+            )
             continue
 
         new_args = []
@@ -58,10 +59,11 @@ def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModul
                 get_attr_node = model.graph.create_node("get_attr", tensor_constant_name, (), {})
                 get_attr_node.meta["val"] = fake_mode.from_tensor(attr_tensor, static_shapes=True)
                 # NOTE note the skip info for the node, Default set to not to skip quant
-                get_attr_node.meta['skip_quant'] = n.meta['skip_quant'] if 'skip_quant' in n.meta else False
+                get_attr_node.meta["skip_quant"] = n.meta["skip_quant"] if "skip_quant" in n.meta else False
                 new_args.append(get_attr_node)
-            logger.info("Node: {}'s {}_th args, convert scalar: {} to Tensor (type: {}) and save in attr Node".format(
-                n.name, i, args[i], attr_tensor.dtype))
+            logger.info(
+                f"Node: {n.name}'s {i}_th args, convert scalar: {args[i]} to Tensor (type: {attr_tensor.dtype}) and save in attr Node"
+            )
         n.args = tuple(new_args)
     model.graph.eliminate_dead_code()
     model.recompile()

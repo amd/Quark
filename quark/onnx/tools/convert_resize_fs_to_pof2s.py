@@ -2,19 +2,20 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert resize op's float scale to pof2s.
 
     Example : python -m quark.onnx.tools.convert_resize_fs_to_pof2s --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH
 
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import onnx
 from onnx import NodeProto, TensorProto
-from argparse import ArgumentParser, Namespace
-from pathlib import Path
-from typing import Dict, Any, Union, Optional
 
 
 def scale2pos(scale: float) -> int:
@@ -38,7 +39,7 @@ def pos2scale(pos: int) -> float:
     return float(np.power(2.0, -pos))
 
 
-def fs_to_pof2s(node: NodeProto, initializer_map: Dict[str, TensorProto]) -> None:
+def fs_to_pof2s(node: NodeProto, initializer_map: dict[str, TensorProto]) -> None:
     scale_name = node.input[1]
     zero_point_name = node.input[2]
 
@@ -57,20 +58,24 @@ def fs_to_pof2s(node: NodeProto, initializer_map: Dict[str, TensorProto]) -> Non
     pof2_scale = np.array(pos2scale(pos), dtype=scale_np.dtype)
 
     scale_init.CopyFrom(
-        onnx.helper.make_tensor(name=scale_init.name,
-                                data_type=onnx.TensorProto.FLOAT,
-                                dims=scale_init.dims,
-                                vals=pof2_scale.flatten().tolist()))
+        onnx.helper.make_tensor(
+            name=scale_init.name,
+            data_type=onnx.TensorProto.FLOAT,
+            dims=scale_init.dims,
+            vals=pof2_scale.flatten().tolist(),
+        )
+    )
 
     zero_init.CopyFrom(
-        onnx.helper.make_tensor(name=zero_init.name,
-                                data_type=onnx.TensorProto.INT8,
-                                dims=zero_init.dims,
-                                vals=new_zero.flatten().tolist()))
+        onnx.helper.make_tensor(
+            name=zero_init.name, data_type=onnx.TensorProto.INT8, dims=zero_init.dims, vals=new_zero.flatten().tolist()
+        )
+    )
 
 
-def convert_resize_fs_to_pof2s(input_model: Union[str, Path, onnx.ModelProto],
-                               output_model: Optional[Union[str, Path]] = None) -> Any:
+def convert_resize_fs_to_pof2s(
+    input_model: Union[str, Path, onnx.ModelProto], output_model: Union[str, Path] | None = None
+) -> Any:
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
 
     q_nodes = []
@@ -78,11 +83,11 @@ def convert_resize_fs_to_pof2s(input_model: Union[str, Path, onnx.ModelProto],
     resize_nodes = []
 
     for node in model.graph.node:
-        if node.op_type == 'QuantizeLinear':
+        if node.op_type == "QuantizeLinear":
             q_nodes.append(node)
-        elif node.op_type == 'DequantizeLinear':
+        elif node.op_type == "DequantizeLinear":
             dq_nodes.append(node)
-        elif node.op_type == 'Resize':
+        elif node.op_type == "Resize":
             resize_nodes.append(node)
 
     initializer_map = {init.name: init for init in model.graph.initializer}

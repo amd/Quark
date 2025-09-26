@@ -4,17 +4,14 @@
 #
 """Convert QDQ to QOperator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import argparse
+import os
+from typing import Any
 
 import onnx
-import os
-import argparse
 
 from quark.onnx.optimizations import convert_transforms_pipeline
 from quark.onnx.utils import model_utils
-from typing import Any
 
 
 def convert_qdq_to_qop(model: onnx.ModelProto) -> Any:
@@ -36,7 +33,7 @@ def run_main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.convert_qdq_to_qop --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
         )
@@ -46,9 +43,9 @@ def run_main() -> None:
     model = model_utils.copy_shared_nodes(model)
     converted_model = convert_qdq_to_qop(model)
     onnx.save(converted_model, FLAGS.output_model)
-    print('Conversion Finished!')
-    print('Converted model saved in: {}'.format(FLAGS.output_model))
+    print("Conversion Finished!")
+    print(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_main()

@@ -2,7 +2,7 @@
 # Modifications copyright(c) 2023 Advanced Micro Devices,Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-""" ONNX-runtime validation script
+"""ONNX-runtime validation script
 
 This script was created to verify accuracy and performance of exported ONNX
 models running with the onnxruntime. It utilizes the PyTorch dataloader/processing
@@ -10,40 +10,37 @@ pipeline for a fair comparison against the originals.
 
 Copyright 2020 Ross Wightman
 """
+
+import argparse
 import os
 import time
-import argparse
-import numpy as np
 
+import numpy as np
+import onnxruntime
 import torch
 import torchvision
-import onnxruntime
-from torchvision import transforms
-from timm.models import create_model
 from timm.data import resolve_data_config
+from timm.models import create_model
+from torchvision import transforms
+
 from quark.onnx.operators.custom_ops import get_library_path
 
-parser = argparse.ArgumentParser(description='ONNX Validation')
-parser.add_argument('data', metavar='DIR', help='path to dataset')
-parser.add_argument('--model-name', default='', type=str, help='timm model name')
-parser.add_argument('--onnx-input', default='', type=str, metavar='PATH', help='path to onnx model/weights file')
-parser.add_argument('--onnx-float', default='', type=str, metavar='PATH', help='path to onnx model/weights file')
-parser.add_argument('--onnx-quant', default='', type=str, metavar='PATH', help='path to onnx model/weights file')
-parser.add_argument('--onnx-output-opt',
-                    default='',
-                    type=str,
-                    metavar='PATH',
-                    help='path to output optimized onnx graph')
-parser.add_argument('--profile', action='store_true', default=False, help='Enable profiler output.')
-parser.add_argument('-j',
-                    '--workers',
-                    default=16,
-                    type=int,
-                    metavar='N',
-                    help='number of data loading workers (default: 2)')
-parser.add_argument('-b', '--batch-size', default=100, type=int, metavar='N', help='mini-batch size (default: 100)')
-parser.add_argument('--print-freq', '-p', default=1, type=int, metavar='N', help='print frequency (default: 1000)')
-parser.add_argument('--gpu', action='store_true', default=False, help='Enable profiler output.')
+parser = argparse.ArgumentParser(description="ONNX Validation")
+parser.add_argument("data", metavar="DIR", help="path to dataset")
+parser.add_argument("--model-name", default="", type=str, help="timm model name")
+parser.add_argument("--onnx-input", default="", type=str, metavar="PATH", help="path to onnx model/weights file")
+parser.add_argument("--onnx-float", default="", type=str, metavar="PATH", help="path to onnx model/weights file")
+parser.add_argument("--onnx-quant", default="", type=str, metavar="PATH", help="path to onnx model/weights file")
+parser.add_argument(
+    "--onnx-output-opt", default="", type=str, metavar="PATH", help="path to output optimized onnx graph"
+)
+parser.add_argument("--profile", action="store_true", default=False, help="Enable profiler output.")
+parser.add_argument(
+    "-j", "--workers", default=16, type=int, metavar="N", help="number of data loading workers (default: 2)"
+)
+parser.add_argument("-b", "--batch-size", default=100, type=int, metavar="N", help="mini-batch size (default: 100)")
+parser.add_argument("--print-freq", "-p", default=1, type=int, metavar="N", help="print frequency (default: 1000)")
+parser.add_argument("--gpu", action="store_true", default=False, help="Enable profiler output.")
 
 
 class AverageMeter:
@@ -66,23 +63,26 @@ class AverageMeter:
 
 
 def load_loader(model_name, data_dir, batch_size, workers):
-    timm_model = create_model(model_name, pretrained=False,)
+    timm_model = create_model(
+        model_name,
+        pretrained=False,
+    )
     data_config = resolve_data_config(model=timm_model, use_test_size=True)
-    crop_pct = data_config['crop_pct']
-    input_size = data_config['input_size']
+    crop_pct = data_config["crop_pct"]
+    input_size = data_config["input_size"]
     width = input_size[-1]
-    data_transform = transforms.Compose([
-        transforms.Resize(int(width / crop_pct)),
-        transforms.CenterCrop(width),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    data_transform = transforms.Compose(
+        [
+            transforms.Resize(int(width / crop_pct)),
+            transforms.CenterCrop(width),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
     dataset = torchvision.datasets.ImageFolder(data_dir, data_transform)
-    data_loader = torch.utils.data.DataLoader(dataset,
-                                              batch_size=batch_size,
-                                              shuffle=False,
-                                              num_workers=workers,
-                                              pin_memory=True)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True
+    )
     return data_loader
 
 
@@ -116,11 +116,13 @@ def evaluate(onnx_model_path, sess_options, providers, data_loader, print_freq):
         end = time.time()
 
         if i % print_freq == 0:
-            print(f'Test: [{i}/{len(data_loader)}]\t'
-                  f'Time {batch_time.val:.3f} ({batch_time.avg:.3f}, {input.size(0) / batch_time.avg:.3f}/s, '
-                  f'{100 * batch_time.avg / input.size(0):.3f} ms/sample) \t'
-                  f'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  f'Prec@5 {top5.val:.3f} ({top5.avg:.3f})')
+            print(
+                f"Test: [{i}/{len(data_loader)}]\t"
+                f"Time {batch_time.val:.3f} ({batch_time.avg:.3f}, {input.size(0) / batch_time.avg:.3f}/s, "
+                f"{100 * batch_time.avg / input.size(0):.3f} ms/sample) \t"
+                f"Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t"
+                f"Prec@5 {top5.val:.3f} ({top5.avg:.3f})"
+            )
 
     return top1, top5
 
@@ -137,37 +139,37 @@ def main():
     if args.onnx_output_opt:
         sess_options.optimized_model_filepath = args.onnx_output_opt
     if args.gpu:
-        if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
-            device = 'ROCM'
-            providers = ['ROCMExecutionProvider']
-        elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-            device = 'CUDA'
-            providers = ['CUDAExecutionProvider']
+        if "ROCMExecutionProvider" in onnxruntime.get_available_providers():
+            device = "ROCM"
+            providers = ["ROCMExecutionProvider"]
+        elif "CUDAExecutionProvider" in onnxruntime.get_available_providers():
+            device = "CUDA"
+            providers = ["CUDAExecutionProvider"]
         else:
-            device = 'CPU'
-            providers = ['CPUExecutionProvider']
+            device = "CPU"
+            providers = ["CPUExecutionProvider"]
             print("Warning: GPU is not available, use CPU instead.")
     else:
-        device = 'CPU'
-        providers = ['CPUExecutionProvider']
+        device = "CPU"
+        providers = ["CPUExecutionProvider"]
     sess_options.register_custom_ops_library(get_library_path(device))
 
     if args.onnx_input:
         val_loader = load_loader(args.model_name, args.data, args.batch_size, args.workers)
         f_top1, f_top5 = evaluate(args.onnx_input, sess_options, providers, val_loader, args.print_freq)
-        print(f' * Prec@1 {f_top1.avg:.3f} ({100 - f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100. - f_top5.avg:.3f})')
+        print(f" * Prec@1 {f_top1.avg:.3f} ({100 - f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100.0 - f_top5.avg:.3f})")
     elif args.onnx_float and args.onnx_quant:
         val_loader = load_loader(args.model_name, args.data, args.batch_size, args.workers)
         f_top1, f_top5 = evaluate(args.onnx_float, sess_options, providers, val_loader, args.print_freq)
-        f_top1 = format(f_top1.avg, '.2f')
-        f_top5 = format(f_top5.avg, '.2f')
+        f_top1 = format(f_top1.avg, ".2f")
+        f_top5 = format(f_top5.avg, ".2f")
 
         q_top1, q_top5 = evaluate(args.onnx_quant, sess_options, providers, val_loader, args.print_freq)
-        q_top1 = format(q_top1.avg, '.2f')
-        q_top5 = format(q_top5.avg, '.2f')
+        q_top1 = format(q_top1.avg, ".2f")
+        q_top5 = format(q_top5.avg, ".2f")
 
-        f_size = format(os.path.getsize(args.onnx_float) / (1024 * 1024), '.2f')
-        q_size = format(os.path.getsize(args.onnx_quant) / (1024 * 1024), '.2f')
+        f_size = format(os.path.getsize(args.onnx_float) / (1024 * 1024), ".2f")
+        q_size = format(os.path.getsize(args.onnx_quant) / (1024 * 1024), ".2f")
         """
         --------------------------------------------------------
         |             | float model    | quantized model |
@@ -179,17 +181,18 @@ def main():
         """
         from rich.console import Console
         from rich.table import Table
+
         console = Console()
 
         table = Table()
-        table.add_column('')
-        table.add_column('Float Model')
-        table.add_column('Quantized Model', style='bold green1')
+        table.add_column("")
+        table.add_column("Float Model")
+        table.add_column("Quantized Model", style="bold green1")
 
         table.add_row("Model", args.onnx_float, args.onnx_quant)
-        table.add_row("Model Size", str(f_size) + ' MB', str(q_size) + ' MB')
-        table.add_row("Prec@1", str(f_top1) + ' %', str(q_top1) + ' %')
-        table.add_row("Prec@5", str(f_top5) + ' %', str(q_top5) + ' %')
+        table.add_row("Model Size", str(f_size) + " MB", str(q_size) + " MB")
+        table.add_row("Prec@1", str(f_top1) + " %", str(q_top1) + " %")
+        table.add_row("Prec@5", str(f_top5) + " %", str(q_top5) + " %")
 
         console.print(table)
 
@@ -197,5 +200,5 @@ def main():
         print("Please specify both model-float and model-quant or model-input for evaluation.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

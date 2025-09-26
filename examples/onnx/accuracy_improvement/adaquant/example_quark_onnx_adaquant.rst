@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quark ONNX Quantization Example
 ===============================
 
@@ -107,8 +109,7 @@ without ADAQUANT.
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config S8S8_AAWS
+                            --calibration_dataset_path calib_data
 
 This command will generate a quantized model under the **models**
 folder, which was quantized by S8S8_AAWS configuration (Int8 symmetric
@@ -125,8 +126,8 @@ ADAQUANT.
    python quantize_model.py --model_name mobilenetv2_050.lamb_in1k \
                             --input_model_path models/mobilenetv2_050.lamb_in1k.onnx \
                             --output_model_path models/mobilenetv2_050.lamb_in1k_adaquant_quantized.onnx \
-                            --calibration_dataset_path calib_data \
-                            --config S8S8_AAWS_ADAQUANT
+                            --use_adaquant \
+                            --calibration_dataset_path calib_data
 
 This command will generate a quantized model under the **models**
 folder, which was quantized by S8S8_AAWS configuration (Int8 symmetric
@@ -162,10 +163,10 @@ dataset:
 | Model | 8.4 MB            | 2.3 MB              | 2.4 MB            |
 | Size  |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
-| P     | 65.424 %          | 1.708 %             | 52.322 %          |
+| P     | 65.424 %          | 1.708 %             | 56.936 %          |
 | rec@1 |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
-| P     | 85.788 %          | 5.690 %             | 75.756 %          |
+| P     | 85.788 %          | 5.690 %             | 79.284 %          |
 | rec@5 |                   |                     |                   |
 +-------+-------------------+---------------------+-------------------+
 

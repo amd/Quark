@@ -4,14 +4,15 @@
 #
 import abc
 import inspect
-from typing import Optional
-from typing import Callable, List, Any
+from typing import Any, Callable, List, Optional
+
 from torch.fx.graph_module import GraphModule
+
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
-__all__ = ['OptPassManager', 'OptPassBase']
+__all__ = ["OptPassManager", "OptPassBase"]
 
 
 class OptPassBase(abc.ABC):
@@ -81,7 +82,7 @@ class OptPassManager:
             callable which modifies an object and returns a PassResu
     """
 
-    def __init__(self, passes: Optional[List[Callable[[GraphModule], GraphModule]]] = None) -> None:
+    def __init__(self, passes: list[Callable[[GraphModule], GraphModule]] | None = None) -> None:
         self.passes = passes if passes is not None else []
 
     def add_pass(self, _pass: Callable[[GraphModule], GraphModule]) -> None:
@@ -122,7 +123,7 @@ class OptPassManager:
         # Run the set of passes on the graph module
         for i, fn in enumerate(self.passes):
             fn_name = fn.__name__ if inspect.isfunction(fn) else type(fn).__name__
-            logger.info("Running {}_th pass {}".format(i + 1, fn_name))
+            logger.info(f"Running {i + 1}_th pass {fn_name}")
             model = fn(model)
         model: GraphModule = GraphModule(model, model.graph)
         return model

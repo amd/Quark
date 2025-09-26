@@ -8,31 +8,44 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from quark.shares.utils.log import ScreenLogger, log_errors
-from typing import List, Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import onnx
 import onnx.numpy_helper
-from onnx import TensorProto, ModelProto
+from onnx import ModelProto, TensorProto
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.qdq_quantizer import QDQBiasQuantInfo
-from onnxruntime.quantization.quant_utils import (QuantType, QuantizationMode, DEQUANT_OP_NAME,
-                                                  add_dequant_output_suffix, add_dequant_suffix,
-                                                  add_quant_output_suffix, add_quant_suffix, find_by_name)
+from onnxruntime.quantization.quant_utils import (
+    DEQUANT_OP_NAME,
+    QuantizationMode,
+    QuantType,
+    add_dequant_output_suffix,
+    add_dequant_suffix,
+    add_quant_output_suffix,
+    add_quant_suffix,
+    find_by_name,
+)
 
-from ..quant_utils import (__producer__, __version__, get_annotate_tensors, get_qdq_to_remove, remove_nodes,
-                           modified_annotate_input)
-from .qdq_quantizer import VitisQDQQuantizer
-from ..registry import CreateNPUCnnQDQQuantizer
+from quark.shares.utils.log import ScreenLogger, log_errors
+
+from ..quant_utils import (
+    __producer__,
+    __version__,
+    get_annotate_tensors,
+    get_qdq_to_remove,
+    modified_annotate_input,
+    remove_nodes,
+)
 from ..refine import adjust_quantize_info
+from ..registry import CreateNPUCnnQDQQuantizer
 from ..simulate_dpu import simulate_transforms
+from .qdq_quantizer import VitisQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
 class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
-
     @log_errors
     def __init__(
         self,
@@ -44,12 +57,12 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any] = {},
-        extra_options: Optional[Dict[str, Any]] = None,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         self.model = ONNXModel(model)
@@ -75,27 +88,32 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
 
         if per_channel:
             raise ValueError(
-                "Only per-tensor quantization is supported when enable_dpu=True, `per_channel` must be set to False.")
+                "Only per-tensor quantization is supported when enable_npu_cnn=True, `per_channel` must be set to False."
+            )
 
         if reduce_range:
-            raise ValueError("reduce_range is not supported when enable_dpu=True, `reduce_range` must be set to False.")
+            raise ValueError(
+                "reduce_range is not supported when enable_npu_cnn=True, `reduce_range` must be set to False."
+            )
 
         if weight_qType != QuantType.QInt8:
-            raise ValueError("Only QuantType.QInt8 weight_type is supported when enable_dpu=True.")
+            raise ValueError("Only QuantType.QInt8 weight_type is supported when enable_npu_cnn=True.")
 
-        # If using nable_dpu, QDQ should always set WeightSymmetric as True.
+        # If using enable_npu_cnn, QDQ should always set WeightSymmetric as True.
         if "WeightSymmetric" in self.extra_options and not self.extra_options["WeightSymmetric"]:
-            raise ValueError("When enable_dpu=True, WeightSymmetric must be set to true.")
+            raise ValueError("When enable_npu_cnn=True, WeightSymmetric must be set to true.")
         self.is_weight_symmetric = True
 
-        # If using enable_dpu, QDQ should always always set ActivationSymmetric as True.
+        # If using enable_npu_cnn, QDQ should always always set ActivationSymmetric as True.
         if "ActivationSymmetric" in self.extra_options and not self.extra_options["ActivationSymmetric"]:
-            raise ValueError("When enable_dpu=True, ActivationSymmetric must be set to true.")
+            raise ValueError("When enable_npu_cnn=True, ActivationSymmetric must be set to true.")
         self.is_activation_symmetric = True
-        self.int32_bias = False if extra_options is None or "Int32Bias" not in extra_options else extra_options[
-            "Int32Bias"]
-        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
-            "Int16Bias"]
+        self.int32_bias = (
+            False if extra_options is None or "Int32Bias" not in extra_options else extra_options["Int32Bias"]
+        )
+        self.int16_bias = (
+            False if extra_options is None or "Int16Bias" not in extra_options else extra_options["Int16Bias"]
+        )
         if self.int16_bias:
             self.int32_bias = True
 
@@ -119,7 +137,8 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
             self._quantize_bias_tensors()
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -179,24 +198,22 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
 
             self.model.add_node(dequant_node)
 
-    def quantize_bias_tensor(self,
-                             node_name: str,
-                             bias_name: str,
-                             input_name: str,
-                             weight_name: str,
-                             beta: float = 1.0) -> None:
+    def quantize_bias_tensor(
+        self, node_name: str, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0
+    ) -> None:
         weight = find_by_name(bias_name, self.model.initializer())
         if weight is not None:
             if weight.data_type in (onnx_proto.TensorProto.FLOAT, onnx_proto.TensorProto.FLOAT16):
                 if self.quantize_bias:
                     if bias_name not in self.bias_to_quantize:
                         if self.int32_bias:
-                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(node_name, input_name, weight_name,
-                                                                                beta)
+                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(
+                                node_name, input_name, weight_name, beta
+                            )
                         else:
                             self.quantize_weight_tensor(bias_name)
         else:
-            logger.warning("Expected {} to be a weight".format(bias_name))
+            logger.warning(f"Expected {bias_name} to be a weight")
 
     def _quantize_refine(self) -> None:
         max_loop_num = 5

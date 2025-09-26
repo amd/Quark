@@ -4,12 +4,8 @@
 #
 """Remove QDQ in the `mul + q + dq + add` structure operators."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import os
 import argparse
+import os
 from typing import Any, List, Optional
 
 import onnx
@@ -81,7 +77,7 @@ def remove_qdq_mul_add(onnx_model: ModelProto) -> Any:
         logger.warning(f"Unable to remove QuantizeLinear & DequantizeLinear operations: mul-add. Exception: {e}")
 
 
-def find_node_by_output(nodes: List[NodeProto], output_name: str) -> Optional[NodeProto]:
+def find_node_by_output(nodes: list[NodeProto], output_name: str) -> NodeProto | None:
     """
     Find a node that produces the specified output.
 
@@ -102,7 +98,7 @@ def main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.remove_qdq_mul_add --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
         )
@@ -111,9 +107,9 @@ def main() -> None:
     model = onnx.load_model(FLAGS.input_model)
     converted_model = remove_qdq_mul_add(model)
     onnx.save(converted_model, FLAGS.output_model)
-    logger.info('Conversion Finished!')
-    logger.info('Converted model saved in: {}'.format(FLAGS.output_model))
+    logger.info("Conversion Finished!")
+    logger.info(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

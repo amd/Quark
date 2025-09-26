@@ -4,24 +4,24 @@
 #
 
 import argparse
+
 import cv2
 import numpy as np
 import onnxruntime as ort
-
-from quark.onnx import get_library_path
 from ultralytics.utils import yaml_load
 from ultralytics.utils.checks import check_yaml
 
+from quark.onnx import get_library_path
+
 
 class Yolov8:
-
     def __init__(self, onnx_model, input_image, confidence_thres, iou_thres):
         self.onnx_model = onnx_model
         self.input_image = input_image
         self.confidence_thres = confidence_thres
         self.iou_thres = iou_thres
 
-        self.classes = yaml_load(check_yaml('coco128.yaml'))['names']
+        self.classes = yaml_load(check_yaml("coco128.yaml"))["names"]
 
         self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
 
@@ -32,15 +32,16 @@ class Yolov8:
 
         cv2.rectangle(img, (int(x1), int(y1)), (int(x1 + w), int(y1 + h)), color, 2)
 
-        label = f'{self.classes[class_id]}: {score:.2f}'
+        label = f"{self.classes[class_id]}: {score:.2f}"
 
         (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
 
         label_x = x1
         label_y = y1 - 10 if y1 - 10 > label_height else y1 + 10
 
-        cv2.rectangle(img, (label_x, label_y - label_height), (label_x + label_width, label_y + label_height), color,
-                      cv2.FILLED)
+        cv2.rectangle(
+            img, (label_x, label_y - label_height), (label_x + label_width, label_y + label_height), color, cv2.FILLED
+        )
 
         cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
@@ -106,7 +107,7 @@ class Yolov8:
     def infer(self):
         sess_options = ort.SessionOptions()
         sess_options.register_custom_ops_library(get_library_path())
-        session = ort.InferenceSession(self.onnx_model, sess_options, providers=['CPUExecutionProvider'])
+        session = ort.InferenceSession(self.onnx_model, sess_options, providers=["CPUExecutionProvider"])
 
         model_inputs = session.get_inputs()
 
@@ -121,13 +122,13 @@ class Yolov8:
         return self.postprocess(self.img, outputs)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_model_path', type=str, help='Input your ONNX model.')
-    parser.add_argument('--input_image', type=str, help='Path to input image.')
-    parser.add_argument('--output_image', type=str, help='Path to output image.')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='Confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
+    parser.add_argument("--input_model_path", type=str, help="Input your ONNX model.")
+    parser.add_argument("--input_image", type=str, help="Path to input image.")
+    parser.add_argument("--output_image", type=str, help="Path to output image.")
+    parser.add_argument("--conf-thres", type=float, default=0.5, help="Confidence threshold")
+    parser.add_argument("--iou-thres", type=float, default=0.5, help="NMS IoU threshold")
     args = parser.parse_args()
 
     detection = Yolov8(args.input_model_path, args.input_image, args.conf_thres, args.iou_thres)

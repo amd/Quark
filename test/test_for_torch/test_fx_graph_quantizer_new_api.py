@@ -4,38 +4,47 @@
 #
 
 import sys
+
 sys.path.append("..")
+import onnx
 import torch
 import torch.nn as nn
-import onnx
 from torch.fx import GraphModule
-from torch._export import capture_pre_autograd_graph
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d, QuantConvTransposeBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
-from quark.torch.quantization.graph.optimization.pre_quant.fold_bn_after_concat import fold_bn_after_concat
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
-from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
+
 from quark.shares.utils.log import ScreenLogger
+from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
+from quark.torch.quantization.graph.optimization.pre_quant.fold_bn_after_concat import fold_bn_after_concat
+from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
+from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import (
+    QuantConvTransposeBatchNorm2d,
+    QuantizedConvBatchNorm2d,
+)
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+
 logger = ScreenLogger(__name__)
 
 TEST_TOPIC = "New Fx quant API\n"
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
-float_scale_quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                              output_tensors=INT8_PER_TENSOR_SPEC,
-                                              weight=INT8_PER_TENSOR_SPEC,
-                                              bias=INT8_PER_TENSOR_SPEC)
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
+float_scale_quant_config = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+)
 fp_scale_quant_config = Config(global_quant_config=float_scale_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
@@ -64,14 +73,13 @@ def fx_contain_module_num(model: GraphModule, target_module: torch.nn.Module) ->
     return count
 
 
-'''
+"""
 =============== Test model strategy ===============
 To test the new API FxGraphQuantizer, meanwhile compliance with the old unified ModelQuantizer API
-'''
+"""
 
 
 class TinyShareWeightModel(nn.Module):
-
     def __init__(self):
         super().__init__()
         self.conv2d = nn.Conv2d(3, 32, 3, bias=True, padding=1)
@@ -128,22 +136,21 @@ class TinyShareWeightModel(nn.Module):
 
 @use_temporary_directory
 def test_fx_model_quantizer(tmpdir: str):
-    '''
+    """
     test torch model that if one submodel that contain parameter used over once
     , test code will show how the fx graph model is optimized for better deployment.
-    '''
+    """
     torch.cuda.empty_cache()
     float_model = TinyShareWeightModel().to(torch_device).eval()
-    example_inputs = (torch.rand(1, 3, 112, 112).to(torch_device), )
+    example_inputs = (torch.rand(1, 3, 112, 112).to(torch_device),)
     out_fp32 = float_model.eval()(example_inputs[0])
     # ========== test using graph_model as input ===============
     emp_config = QuantizationConfig()
     emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, fp_scale_quant_config]:
         fx_quantizer = FxGraphQuantizer(each_quant_config)
-        graph_model_1 = capture_pre_autograd_graph(float_model, example_inputs)
         graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
-        for model in [float_model, graph_model_1, graph_model_2]:
+        for model in [float_model, graph_model_2]:
             quantized_model = fx_quantizer.quantize_model(model, example_inputs, calibdata=example_inputs)  # only PTQ
             opt_fx_graph = quantized_model.eval()(example_inputs[0])
             # as scale after DPU's adaptive pool so skip : torch.allclose(out_fp32, opt_fx_graph)
@@ -153,19 +160,18 @@ def test_fx_model_quantizer(tmpdir: str):
             assert fx_contain_module_num(quantized_model, QuantLinear) == 3
             assert fx_contain_module_num(quantized_model, QuantConvTransposeBatchNorm2d) == 2
             assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [42, 0]
-            fx_quantizer.export_onnx_model(quantized_model, example_inputs, tmpdir + "w_quanted")
+            fx_quantizer.export_onnx_model(quantized_model, example_inputs, tmpdir + "w_quantized")
     logger.info(TEST_TOPIC + "split module that used over one to seperate module, Passed")
     torch.cuda.empty_cache()
 
 
-'''
+"""
 if linear -> concat -> batchnorm
 then: merge the bn to (transposeconv, linear, conv2c)
-'''
+"""
 
 
 class Timy_Linear_Cat_BN_Model(nn.Module):
-
     def __init__(self):
         super().__init__()
         self.linear1 = nn.Linear(16, 16)
@@ -184,15 +190,14 @@ class Timy_Linear_Cat_BN_Model(nn.Module):
 
 @use_temporary_directory
 def test_fold_bn_2_linear_after_concat_strategy(tmpdir: str):
-    '''
+    """
     TODO this is a strategy need to be supprted
-    '''
+    """
     torch.cuda.empty_cache()
     float_model = Timy_Linear_Cat_BN_Model().to(torch_device).eval()
-    example_inputs = (torch.rand(2, 16).to(torch_device), )
+    example_inputs = (torch.rand(2, 16).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit fold_bn_after_concat ===============
-    # graph_model = capture_pre_autograd_graph(float_model, example_inputs)
     graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     graph_model = fold_bn_after_concat(graph_model)
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
@@ -201,12 +206,10 @@ def test_fold_bn_2_linear_after_concat_strategy(tmpdir: str):
     assert fx_contain_module_num(graph_model, QuantLinear) == 0
 
     # ========== test quant pipeline===============
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
     fx_quantizer = FxGraphQuantizer(fp_scale_quant_config)
-    for model in [float_model, graph_model]:
-        quantized_model = fx_quantizer.quantize_model(model, example_inputs, calibdata=example_inputs)  # only PTQ
-        assert fx_contain_module_num(quantized_model, QuantLinear) == 3
-        assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 11
+    quantized_model = fx_quantizer.quantize_model(float_model, example_inputs, calibdata=example_inputs)  # only PTQ
+    assert fx_contain_module_num(quantized_model, QuantLinear) == 3
+    assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 11
     torch.cuda.empty_cache()
 
 

@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
-
-from .quant_base_ops import QuantizeWrapper
-from torch.nn import Linear
 from typing import Any
 
+import torch
+from torch.nn import Linear
 
-class QMatMul(QuantizeWrapper, Linear):
+from .quant_base_ops import QuantizeWrapper
 
+
+class QMatMul(QuantizeWrapper, Linear):  # type: ignore
     def __init__(self, **kwargs: Any) -> None:
         QuantizeWrapper.__init__(self, **kwargs)
         Linear.__init__(self, bias=False, **kwargs)

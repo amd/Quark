@@ -1,0 +1,10 @@
+{
+  "name": "qronos",
+  "inside_layer_modules": [
+    "attn.c_attn",
+    "mlp.w2",
+    "mlp.w1",
+    "mlp.c_proj"
+  ],
+  "model_decoder_layers": "transformer.h"
+}

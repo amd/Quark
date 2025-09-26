@@ -4,8 +4,10 @@
 #
 
 from __future__ import annotations
+
 import time
-from typing import Any, Dict, List, Union, cast, Tuple
+from typing import Any, Dict, List, Tuple, Union, cast
+
 import torch
 import torch.nn as nn
 from torch.amp.autocast_mode import autocast
@@ -13,51 +15,82 @@ from torch.amp.grad_scaler import GradScaler
 from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from quark.torch.algorithm.utils.module import move_to_device, get_dtype, get_device
-from quark.torch.algorithm.utils.utils import TensorData, clear_memory
 
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.utils.module import get_device, get_dtype, move_to_device
+from quark.torch.algorithm.utils.utils import TensorData, clear_memory
 
 logger = ScreenLogger(__name__)
 
 
-def block_batch_forward(layer: nn.Module, module_kwargs: Dict[str, Any], input: torch.Tensor,
-                        device: torch.device) -> torch.Tensor:
-
-    additional_layer_inputs: Dict[str, Union[None, torch.Tensor, nn.Module]] = {}
+def block_batch_forward(
+    layer: nn.Module, module_kwargs: dict[str, Any], input: torch.Tensor, device: torch.device
+) -> torch.Tensor:
+    additional_layer_inputs: dict[str, Union[None, torch.Tensor, nn.Module]] = {}
     for k, v in module_kwargs.items():
         if isinstance(v, torch.Tensor):
             additional_layer_inputs[k] = move_to_device(v, device)
         else:
             additional_layer_inputs[k] = v
     if "past_key_value" in additional_layer_inputs:
-        additional_layer_inputs['past_key_value'] = None
-    output = layer(input, **additional_layer_inputs)[0]
-    return cast(torch.Tensor, output)
+        additional_layer_inputs["past_key_value"] = None
+    output = layer(input, **additional_layer_inputs)
+
+    # Transformers used to return a `tuple[torch.Tensor, ...]` for some models in the decoder layers, but moved to return simply `torch.Tensor` in https://github.com/huggingface/transformers/pull/39120.
+    # Here, we support both cases.
+    if isinstance(output, tuple):
+        if not isinstance(output[0], torch.Tensor):
+            raise ValueError(
+                f"Expected the layer output[0] in block_batch_forward to be a torch.Tensor, but got output type tuple, output[0] type {type(output[0])}. Please open an issue."
+            )
+        output = output[0]
+    elif not isinstance(output, torch.Tensor):
+        raise ValueError(
+            f"Expected the layer output in block_batch_forward to be a torch.Tensor, but got: {type(output)}. Please open an issue."
+        )
+
+    return output
 
 
 @torch.no_grad()
-def block_forward(layer: nn.Module, module_kwargs: Dict[str, Any], num_batches: int, device: torch.device,
-                  layer_inputs: List[torch.Tensor], fp_layer_outputs: List[torch.Tensor],
-                  cache_examples_on_gpu: bool) -> List[torch.Tensor]:
-
+def block_forward(
+    layer: nn.Module,
+    module_kwargs: dict[str, Any],
+    num_batches: int,
+    device: torch.device,
+    layer_inputs: list[torch.Tensor],
+    fp_layer_outputs: list[torch.Tensor],
+    cache_examples_on_gpu: bool,
+) -> list[torch.Tensor]:
     if get_device(layer) != torch.device("meta"):
         layer = move_to_device(layer, device)
+
+    assert not isinstance(layer_inputs, torch.Tensor)
     for j in range(num_batches):
         layer_input = move_to_device(layer_inputs[j], device)
         layer_output = block_batch_forward(layer, module_kwargs, layer_input, device)
         layer_output = move_to_device(layer_output, device if cache_examples_on_gpu else torch.device("cpu"))
 
+        assert isinstance(layer_output, torch.Tensor)
         fp_layer_outputs.append(layer_output)
 
     return fp_layer_outputs
 
 
-def blockwise_training(layer: nn.Module, module_kwargs: Dict[str, Any], trainable_modules: List[str],
-                       layer_inputs: List[torch.Tensor], fp_layer_outputs: List[torch.Tensor], device: torch.device,
-                       epochs: int, weight_lr: float, min_lr_factor: float, weight_decay: float, max_grad_norm: float,
-                       layer_index: int) -> None:
-
+def blockwise_training(
+    layer: nn.Module,
+    module_kwargs: dict[str, Any],
+    trainable_modules: list[str],
+    layer_inputs: list[torch.Tensor],
+    fp_layer_outputs: list[torch.Tensor],
+    device: torch.device,
+    epochs: int,
+    weight_lr: float,
+    min_lr_factor: float,
+    weight_decay: float,
+    max_grad_norm: float,
+    layer_index: int,
+) -> None:
     criterion = nn.MSELoss()
 
     num_update_steps_per_epoch = max(len(layer_inputs), 1)
@@ -74,8 +107,9 @@ def blockwise_training(layer: nn.Module, module_kwargs: Dict[str, Any], trainabl
 
     train_parameters = set_trainable_parameters(layer, trainable_modules, layer_index)
 
-    optimizer, weight_scheduler = prepare_optimizer_and_scheduler(train_parameters, weight_decay, weight_lr,
-                                                                  min_lr_factor, max_steps)
+    optimizer, weight_scheduler = prepare_optimizer_and_scheduler(
+        train_parameters, weight_decay, weight_lr, min_lr_factor, max_steps
+    )
 
     layer_dtype = get_dtype(layer)
 
@@ -121,10 +155,13 @@ def blockwise_training(layer: nn.Module, module_kwargs: Dict[str, Any], trainabl
     clear_memory()
 
 
-def blockwise_eval(layer: nn.Module, module_kwargs: Dict[str, Any], tensordata_loader: DataLoader[tuple[torch.Tensor,
-                                                                                                        torch.Tensor]],
-                   criterion: nn.Module, device: torch.device) -> float:
-
+def blockwise_eval(
+    layer: nn.Module,
+    module_kwargs: dict[str, Any],
+    tensordata_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    criterion: nn.Module,
+    device: torch.device,
+) -> float:
     ret_loss = 0.0
     with torch.no_grad():
         layer.eval()
@@ -137,11 +174,11 @@ def blockwise_eval(layer: nn.Module, module_kwargs: Dict[str, Any], tensordata_l
     return ret_loss / len(tensordata_loader)
 
 
-def set_trainable_parameters(model: nn.Module, trainable_modules: List[str], layer_index: int) -> List[nn.Parameter]:
+def set_trainable_parameters(model: nn.Module, trainable_modules: list[str], layer_index: int) -> list[nn.Parameter]:
     params = []
     names = []
 
-    trainable_keywords = set(trainable_modules + ['layernorm'])
+    trainable_keywords = set(trainable_modules + ["layernorm"])
     for n, p in model.named_parameters():
         if not any(keyword in n for keyword in trainable_keywords):
             p.requires_grad = False
@@ -156,9 +193,13 @@ def set_trainable_parameters(model: nn.Module, trainable_modules: List[str], lay
     return params
 
 
-def prepare_optimizer_and_scheduler(train_parameters: List[torch.nn.Parameter], weight_decay: float, weight_lr: float,
-                                    min_lr_factor: float, max_steps: int) -> Tuple[AdamW, CosineAnnealingLR]:
-
+def prepare_optimizer_and_scheduler(
+    train_parameters: list[torch.nn.Parameter],
+    weight_decay: float,
+    weight_lr: float,
+    min_lr_factor: float,
+    max_steps: int,
+) -> tuple[AdamW, CosineAnnealingLR]:
     optimizer = AdamW(train_parameters, weight_decay=weight_decay, lr=weight_lr)
 
     weight_scheduler = CosineAnnealingLR(optimizer, T_max=max_steps, eta_min=weight_lr / min_lr_factor)

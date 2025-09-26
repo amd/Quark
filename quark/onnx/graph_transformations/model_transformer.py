@@ -5,53 +5,54 @@
 """Apply graph transformations to a onnx model."""
 
 import copy
+import enum
 import re
-from quark.shares.utils.log import ScreenLogger
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import onnx
-import enum
+from onnx import ModelProto, NodeProto, TensorProto, ValueInfoProto
 
 from quark.onnx.graph_transformations import transforms as transforms_mod
-
-from typing import Any, Dict, List, Optional, Union, Tuple
-from onnx import ModelProto, NodeProto, TensorProto, ValueInfoProto
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 NodeTree = transforms_mod.NodeTree
 
 
-class ModelTransformer(object):
+class ModelTransformer:
     """Matches patterns to apply transforms in a tf.keras model graph."""
 
-    def __init__(self,
-                 model: ModelProto,
-                 transforms: List[Any],
-                 candidate_nodes: Optional[Dict[str, Any]] = None,
-                 node_metadata: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        model: ModelProto,
+        transforms: list[Any],
+        candidate_nodes: dict[str, Any] | None = None,
+        node_metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Construct ModelTransformer.
 
-    Args:
-      model: Onnx model to be transformed.
-      transforms: List of transforms to be applied to the model.
-      candidate_nodes: Names of nodes which may be transformed. Only nodes
-        whose names are in candidate_nodes are matched against patterns. The
-        default is that all nodes may be transformed.
-      node_metadata: Dictionary of metadata associated with each node in the
-        model. The keys are node names.
-    """
+        Args:
+          model: Onnx model to be transformed.
+          transforms: List of transforms to be applied to the model.
+          candidate_nodes: Names of nodes which may be transformed. Only nodes
+            whose names are in candidate_nodes are matched against patterns. The
+            default is that all nodes may be transformed.
+          node_metadata: Dictionary of metadata associated with each node in the
+            model. The keys are node names.
+        """
         if not isinstance(model, onnx.ModelProto):
-            raise ValueError('Only onnx models can be transformed.')
+            raise ValueError("Only onnx models can be transformed.")
 
         if node_metadata is None:
             node_metadata = {}
 
         self.model: ModelProto = model
         self.transformed_model: ModelProto = copy.deepcopy(self.model)
-        self.transforms: List[transforms_mod.Transform] = transforms
-        self.candidate_nodes: Dict[str, Any] = {}
-        assert (node_metadata is not None), "node_metadata is None"
-        self.node_metadata: Dict[str, Any] = node_metadata
+        self.transforms: list[transforms_mod.Transform] = transforms
+        self.candidate_nodes: dict[str, Any] = {}
+        assert node_metadata is not None, "node_metadata is None"
+        self.node_metadata: dict[str, Any] = node_metadata
 
         self._update_status()
 
@@ -74,62 +75,62 @@ class ModelTransformer(object):
         return obj.__class__.__name__
 
     @staticmethod
-    def _map_name_to_node(model: ModelProto) -> Dict[str, NodeProto]:
+    def _map_name_to_node(model: ModelProto) -> dict[str, NodeProto]:
         """Returns a dict of name to node.
 
         Returns:
             {node.name: node}
         """
-        name_to_node_map: Dict[str, NodeProto] = {}
+        name_to_node_map: dict[str, NodeProto] = {}
         for node in model.graph.node:
             name_to_node_map[ModelTransformer._get_node_name(node)] = node
         return name_to_node_map
 
     @staticmethod
-    def _map_name_to_init(model: ModelProto) -> Dict[str, TensorProto]:
+    def _map_name_to_init(model: ModelProto) -> dict[str, TensorProto]:
         """Returns a dict of name to initializer.
 
         Returns:
             {initializer.name: initializer}
         """
-        name_to_init_map: Dict[str, TensorProto] = {}
+        name_to_init_map: dict[str, TensorProto] = {}
         for init in model.graph.initializer:
             name_to_init_map[init.name] = init
         return name_to_init_map
 
     @staticmethod
-    def _map_name_to_input(model: ModelProto) -> Dict[str, ValueInfoProto]:
+    def _map_name_to_input(model: ModelProto) -> dict[str, ValueInfoProto]:
         """Returns a dict of name to input.
 
         Returns:
             {initializer.name: initializer}
         """
-        name_to_input_map: Dict[str, ValueInfoProto] = {}
+        name_to_input_map: dict[str, ValueInfoProto] = {}
         for inp in model.graph.input:
             name_to_input_map[inp.name] = inp
         return name_to_input_map
 
     @staticmethod
-    def _map_tensor_to_producer(model: ModelProto) -> Dict[str, NodeProto]:
+    def _map_tensor_to_producer(model: ModelProto) -> dict[str, NodeProto]:
         """Returns a dict of tensor to its producer node.
 
         Returns:
             {tensor.name: producer_node}
         """
-        tensor_to_producer_map: Dict[str, NodeProto] = {}
+        tensor_to_producer_map: dict[str, NodeProto] = {}
         for node in model.graph.node:
             for output_tensor in node.output:
                 tensor_to_producer_map[output_tensor] = node
         return tensor_to_producer_map
 
     @staticmethod
-    def _map_tensor_to_consumer(model: ModelProto) -> Dict[str, List[NodeProto]]:
+    def _map_tensor_to_consumer(model: ModelProto) -> dict[str, list[NodeProto]]:
         """Returns a dict of tensor to its consumer nodes.
 
         Returns:
             {tensor.name: [consumer_nodes]}
         """
-        tensor_to_consumer_map: Dict[str, List[NodeProto]] = {}
+        tensor_to_consumer_map: dict[str, list[NodeProto]] = {}
         for node in model.graph.node:
             for input_tensor in node.input:
                 if input_tensor not in tensor_to_consumer_map:
@@ -141,41 +142,41 @@ class ModelTransformer(object):
     def _get_node_metadata(self, node_name: str) -> Any:
         return self._node_metadata_map.get(node_name, {})
 
-    def _get_consuming_nodes(self, check_node: Union[NodeProto, TensorProto, ValueInfoProto]) -> Dict[int, List[str]]:
+    def _get_consuming_nodes(self, check_node: Union[NodeProto, TensorProto, ValueInfoProto]) -> dict[int, list[str]]:
         """Returns all the nodes which are out nodes from the node.
 
         Returns:
           {output_index: [consumer_node_name]}
           {0: [nodes]} for initializers
         """
-        consuming_nodes: Dict[int, List[str]] = {}
+        consuming_nodes: dict[int, list[str]] = {}
         if self._node_type(check_node) == ModelTransformer.NodeType.NODE:
             for index, output_tensor in enumerate(check_node.output):
                 if output_tensor in self.tensor_to_consumer_map:
                     consuming_nodes[index] = [
                         self._get_node_name(node) for node in self.tensor_to_consumer_map[output_tensor]
                     ]
-        elif self._node_type(check_node) == ModelTransformer.NodeType.INITIALIZER:
-            consuming_nodes[0] = [
-                self._get_node_name(node) for node in self.tensor_to_consumer_map[self._get_node_name(check_node)]
-            ]
-        elif self._node_type(check_node) == ModelTransformer.NodeType.INPUT:
+        elif (
+            self._node_type(check_node) == ModelTransformer.NodeType.INITIALIZER
+            or self._node_type(check_node) == ModelTransformer.NodeType.INPUT
+        ):
             consuming_nodes[0] = [
                 self._get_node_name(node) for node in self.tensor_to_consumer_map[self._get_node_name(check_node)]
             ]
         else:
-            raise ValueError('Invalid node type for node: {}'.format(check_node))
+            raise ValueError(f"Invalid node type for node: {check_node}")
 
         return consuming_nodes
 
-    def _get_output_consumers(self, check_node: Union[NodeProto, TensorProto,
-                                                      ValueInfoProto]) -> Dict[int, ValueInfoProto]:
+    def _get_output_consumers(
+        self, check_node: Union[NodeProto, TensorProto, ValueInfoProto]
+    ) -> dict[int, ValueInfoProto]:
         """Returns if any tensors from the node are outputs of the model.
 
         Returns:
           {output_index: output_name} for nodes
         """
-        output_consumers: Dict[int, ValueInfoProto] = {}
+        output_consumers: dict[int, ValueInfoProto] = {}
         if self._node_type(check_node) == ModelTransformer.NodeType.NODE:
             output_tensors = check_node.output
             for output in self.transformed_model.graph.output:
@@ -201,19 +202,20 @@ class ModelTransformer(object):
         elif isinstance(node, onnx.ValueInfoProto):
             return ModelTransformer.NodeType.INPUT
         else:
-            raise ValueError('Unknown node type for node: {}'.format(node))
+            raise ValueError(f"Unknown node type for node: {node}")
 
-    def _get_matched_nodes(self, transform: transforms_mod.Transform) -> List[str]:
+    def _get_matched_nodes(self, transform: transforms_mod.Transform) -> list[str]:
         return self._transform_matched_nodes_map.get(self._name(transform), [])
 
     def _match_pattern(self, target: str, pattern: str) -> bool:
-        for p in pattern.split('|'):
-            if re.match('^' + p + '$', target) is not None:
+        for p in pattern.split("|"):
+            if re.match("^" + p + "$", target) is not None:
                 return True
         return False
 
-    def _match_node(self, node: Union[NodeProto, TensorProto, ValueInfoProto],
-                    pattern: transforms_mod.OpTypePattern) -> bool:
+    def _match_node(
+        self, node: Union[NodeProto, TensorProto, ValueInfoProto], pattern: transforms_mod.OpTypePattern
+    ) -> bool:
         """Check if any specific node or initializer matches the pattern."""
 
         if self.candidate_nodes and self._get_node_name(node) not in self.candidate_nodes:
@@ -226,15 +228,21 @@ class ModelTransformer(object):
             node_matched = True
 
         init_matched = False
-        match_init = pattern.op_type in ['initializer', '.*']
-        if match_init and node_type == ModelTransformer.NodeType.INITIALIZER and self._get_node_name(
-                node) in self.name_to_init_map:
+        match_init = pattern.op_type in ["initializer", ".*"]
+        if (
+            match_init
+            and node_type == ModelTransformer.NodeType.INITIALIZER
+            and self._get_node_name(node) in self.name_to_init_map
+        ):
             init_matched = True
 
         input_matched = False
-        match_input = pattern.op_type in ['input', '.*']
-        if match_input and node_type == ModelTransformer.NodeType.INPUT and self._get_node_name(
-                node) in self.name_to_input_map:
+        match_input = pattern.op_type in ["input", ".*"]
+        if (
+            match_input
+            and node_type == ModelTransformer.NodeType.INPUT
+            and self._get_node_name(node) in self.name_to_input_map
+        ):
             input_matched = True
 
         # TODO: match config
@@ -256,8 +264,8 @@ class ModelTransformer(object):
         Returns:
           whether match is supported.
         """
-        consuming_nodes: Dict[int, List[str]] = self._get_consuming_nodes(node)
-        consuming_nodes_list: List[str] = []
+        consuming_nodes: dict[int, list[str]] = self._get_consuming_nodes(node)
+        consuming_nodes_list: list[str] = []
         for L in consuming_nodes.values():
             consuming_nodes_list.extend(L)
         if len(consuming_nodes_list) > 1:
@@ -271,9 +279,9 @@ class ModelTransformer(object):
 
         return True
 
-    def _get_input_node_init_names(self, node: NodeProto) -> List[str]:
+    def _get_input_node_init_names(self, node: NodeProto) -> list[str]:
         """Get the names of a node's input nodes or initializers."""
-        input_node_init_names: List[str] = []
+        input_node_init_names: list[str] = []
         # Keep the order during matching
         if self._node_type(node) == ModelTransformer.NodeType.NODE:
             for input_tensor in node.input:
@@ -284,13 +292,13 @@ class ModelTransformer(object):
                 elif input_tensor in self.name_to_input_map:
                     input_node_init_names.append(self.name_to_input_map[input_tensor].name)
                 else:
-                    raise ValueError('Cannot find producer of tensor: {}'.format(input_tensor))
+                    raise ValueError(f"Cannot find producer of tensor: {input_tensor}")
             return input_node_init_names
 
         # Initializers and inputs have no inputs
         return []
 
-    def _get_nodes_inits(self, node_names: List[str]) -> List[Any]:
+    def _get_nodes_inits(self, node_names: list[str]) -> list[Any]:
         """Returns nodes or initializers with given names, keep the order."""
         nodes_inits = []
         for name in node_names:
@@ -301,11 +309,12 @@ class ModelTransformer(object):
             elif name in self.name_to_input_map:
                 nodes_inits.append(self.name_to_input_map[name])
             else:
-                raise ValueError('Cannot find node or initializer `{}` in the model.'.format(name))
+                raise ValueError(f"Cannot find node or initializer `{name}` in the model.")
         return nodes_inits
 
-    def _match_node_with_inputs(self, node: NodeProto, pattern: transforms_mod.OpTypePattern, is_head_node: bool,
-                                allow_multi_consumers: bool) -> Optional[NodeTree]:
+    def _match_node_with_inputs(
+        self, node: NodeProto, pattern: transforms_mod.OpTypePattern, is_head_node: bool, allow_multi_consumers: bool
+    ) -> NodeTree | None:
         """Match pattern at this node, and continue to match at its inputs."""
 
         if not self._match_node(node, pattern):
@@ -325,29 +334,29 @@ class ModelTransformer(object):
             return None
 
         input_match_node_matches = []
-        for input_node_init, pattern_ in zip(input_nodes_inits, pattern.inputs):
-            match_node = self._match_node_with_inputs(input_node_init,
-                                                      pattern_,
-                                                      is_head_node=False,
-                                                      allow_multi_consumers=allow_multi_consumers)
+        for input_node_init, pattern_ in zip(input_nodes_inits, pattern.inputs, strict=False):
+            match_node = self._match_node_with_inputs(
+                input_node_init, pattern_, is_head_node=False, allow_multi_consumers=allow_multi_consumers
+            )
             if not match_node:
                 return None
             input_match_node_matches.append(match_node)
 
         return NodeTree(node, [], input_match_node_matches, self._get_node_metadata(self._get_node_name(node)))
 
-    def _find_pattern(self,
-                      pattern: transforms_mod.OpTypePattern,
-                      matched_nodes: Optional[List[str]] = None,
-                      allow_multi_consumers: bool = False) -> Optional[NodeTree]:
+    def _find_pattern(
+        self,
+        pattern: transforms_mod.OpTypePattern,
+        matched_nodes: list[str] | None = None,
+        allow_multi_consumers: bool = False,
+    ) -> NodeTree | None:
         for node in self.transformed_model.graph.node:
             if matched_nodes and node.name in matched_nodes:
                 continue
 
-            match_node = self._match_node_with_inputs(node,
-                                                      pattern,
-                                                      is_head_node=True,
-                                                      allow_multi_consumers=allow_multi_consumers)
+            match_node = self._match_node_with_inputs(
+                node, pattern, is_head_node=True, allow_multi_consumers=allow_multi_consumers
+            )
 
             if match_node:
                 return match_node
@@ -359,20 +368,20 @@ class ModelTransformer(object):
         if self._name(transform) not in self._transform_matched_nodes_map:
             self._transform_matched_nodes_map[self._name(transform)] = []
 
-        assert (node_tree.node is not None), "node_tree.node is None"
+        assert node_tree.node is not None, "node_tree.node is None"
         self._transform_matched_nodes_map[self._name(transform)].append(self._get_node_name(node_tree.node))
 
     @staticmethod
-    def _get_node_names(node_tree: NodeTree) -> List[str]:
+    def _get_node_names(node_tree: NodeTree) -> list[str]:
         """Returns the list of node names in the node tree."""
-        assert (node_tree.node is not None), "node_tree.node is None"
+        assert node_tree.node is not None, "node_tree.node is None"
         result = [ModelTransformer._get_node_name(node_tree.node)]
         for input_node in node_tree.input_nodes:
             result.extend(ModelTransformer._get_node_names(input_node))
         return result
 
     @staticmethod
-    def _remove_nodes_inits(model: ModelProto, node_names: List[str]) -> None:
+    def _remove_nodes_inits(model: ModelProto, node_names: list[str]) -> None:
         """Remove the nodes and initializers/inputs from model."""
         left = set(node_names)
 
@@ -401,36 +410,37 @@ class ModelTransformer(object):
             model.graph.input.remove(inp)
 
         if left:
-            logger.warning('Cannot find nodes, initializers or inputs in model: {}'.format(left))
+            logger.warning(f"Cannot find nodes, initializers or inputs in model: {left}")
 
     @staticmethod
-    def _add_node_init(model: ModelProto, node_init_to_add: Union[NodeProto, TensorProto, ValueInfoProto,
-                                                                  None]) -> None:
+    def _add_node_init(
+        model: ModelProto, node_init_to_add: Union[NodeProto, TensorProto, ValueInfoProto, None]
+    ) -> None:
         """Add the node or initializer/input to the model."""
-        assert (node_init_to_add is not None), "node_init_to_add is None"
+        assert node_init_to_add is not None, "node_init_to_add is None"
         if ModelTransformer._node_type(node_init_to_add) == ModelTransformer.NodeType.NODE:
             for node in model.graph.node:
                 if node.name == node_init_to_add.name:
-                    logger.info('Node `{}` is already in model, skip adding it.'.format(node.name))
+                    logger.info(f"Node `{node.name}` is already in model, skip adding it.")
                     return
             new_node = model.graph.node.add()
             new_node.CopyFrom(node_init_to_add)
         elif ModelTransformer._node_type(node_init_to_add) == ModelTransformer.NodeType.INITIALIZER:
             for init in model.graph.initializer:
                 if init.name == node_init_to_add.name:
-                    logger.info('Initializer `{}` is already in model, skip adding it.'.format(init.name))
+                    logger.info(f"Initializer `{init.name}` is already in model, skip adding it.")
                     return
             new_init = model.graph.initializer.add()
             new_init.CopyFrom(node_init_to_add)
         elif ModelTransformer._node_type(node_init_to_add) == ModelTransformer.NodeType.INPUT:
             for inp in model.graph.input:
                 if inp.name == node_init_to_add.name:
-                    logger.info('Input `{}` is already in model, skip adding it.'.format(inp.name))
+                    logger.info(f"Input `{inp.name}` is already in model, skip adding it.")
                     return
             new_input = model.graph.input.add()
             new_input.CopyFrom(node_init_to_add)
 
-    def _get_leaf_nodes(self, node_tree: NodeTree) -> List[Union[NodeProto, TensorProto, ValueInfoProto, None]]:
+    def _get_leaf_nodes(self, node_tree: NodeTree) -> list[Union[NodeProto, TensorProto, ValueInfoProto, None]]:
         """Return leaf nodes from the node tree."""
         # Initializers will not be treated as leaf nodes.
         if not node_tree.input_nodes and self._node_type(node_tree.node) == ModelTransformer.NodeType.NODE:
@@ -462,9 +472,9 @@ class ModelTransformer(object):
         # 1. Point all consumers of the head of the matching sub-tree to the head
         # replacement node.
 
-        assert (matched_node_tree.node is not None), "matched_node_tree.node is None"
+        assert matched_node_tree.node is not None, "matched_node_tree.node is None"
         matched_head_node = matched_node_tree.node
-        assert (replacement_node_tree.node is not None), "replacement_node_tree.node is None"
+        assert replacement_node_tree.node is not None, "replacement_node_tree.node is None"
         replacement_head_node = replacement_node_tree.node
 
         consuming_nodes = self._get_consuming_nodes(matched_node_tree.node)
@@ -487,13 +497,14 @@ class ModelTransformer(object):
         replacement_leaf_nodes = self._get_leaf_nodes(replacement_node_tree)
 
         if len(original_leaf_nodes) != len(replacement_leaf_nodes):
-            raise RuntimeError('Difference size of leaf layers not supported yet({} vs {})'.format(
-                len(original_leaf_nodes), len(replacement_leaf_nodes)))
+            raise RuntimeError(
+                f"Difference size of leaf layers not supported yet({len(original_leaf_nodes)} vs {len(replacement_leaf_nodes)})"
+            )
 
-        for original_leaf_node, replacement_leaf_node in zip(original_leaf_nodes, replacement_leaf_nodes):
-            assert (original_leaf_node is not None), "original_leaf_node.node is None"
-            assert (replacement_leaf_node is not None), "replacement_leaf_node.node is None"
-            replacement_leaf_node.ClearField('input')
+        for original_leaf_node, replacement_leaf_node in zip(original_leaf_nodes, replacement_leaf_nodes, strict=False):
+            assert original_leaf_node is not None, "original_leaf_node.node is None"
+            assert replacement_leaf_node is not None, "replacement_leaf_node.node is None"
+            replacement_leaf_node.ClearField("input")
             for input_tensor in original_leaf_node.input:
                 replacement_leaf_node.input.append(input_tensor)
 
@@ -523,7 +534,7 @@ class ModelTransformer(object):
         # validate the transformed model
         return
 
-    def transform(self) -> Tuple[ModelProto, Dict[str, Any]]:
+    def transform(self) -> tuple[ModelProto, dict[str, Any]]:
         """Transforms the Onnx model by applying all the specified transforms.
 
         This is the main entry point function used to apply the transformations to
@@ -538,7 +549,7 @@ class ModelTransformer(object):
         # Stores map of Transform -> List of nodes names matched by transform.
         # Same transform should not match+replace the same node more than once
         # to prevent infinite loops.
-        self._transform_matched_nodes_map: Dict[str, List[str]] = {}
+        self._transform_matched_nodes_map: dict[str, list[str]] = {}
 
         # Maintains a current mutable copy of the metadata through transformation.
         self._node_metadata_map = copy.deepcopy(self.node_metadata)
@@ -552,8 +563,9 @@ class ModelTransformer(object):
                 # A transform may find multiple instances of a pattern in the model.
                 # Keep finding and replacing till done.
                 while True:
-                    matched_node_tree = self._find_pattern(transform.pattern(), self._get_matched_nodes(transform),
-                                                           transform.allow_multi_consumers)
+                    matched_node_tree = self._find_pattern(
+                        transform.pattern(), self._get_matched_nodes(transform), transform.allow_multi_consumers
+                    )
 
                     if not matched_node_tree:
                         break

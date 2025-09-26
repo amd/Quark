@@ -4,12 +4,12 @@
 #
 
 from typing import cast
+
 import torch
 import torch.nn as nn
 
 
 class ScaledActivation(nn.Module):
-
     def __init__(self, module: nn.Module, scales: torch.Tensor) -> None:
         super().__init__()
         self.act = module

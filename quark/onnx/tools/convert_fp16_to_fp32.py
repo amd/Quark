@@ -2,7 +2,7 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert tensor float16 type in the ONNX ModelProto input to tensor float.
 
 :param model: ONNX ModelProto object
@@ -34,25 +34,26 @@ python convert_fp16_to_fp32.py --input $FLOAT_16_ONNX_MODEL_PATH --output $FLOAT
 The conversion from float16 models to float32 models may result in
 the generation of unnecessary operations such as casts in the model.
 It is recommended to use onnx-simplifier to remove these redundant nodes.
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
 
 import onnx
-from . import float16
 import onnxsim
-from argparse import ArgumentParser, Namespace
+
+from . import float16
 
 
 def parse_args() -> Namespace:
     parser = ArgumentParser("float16Converter")
     parser.add_argument("input", type=str, required=True)
     parser.add_argument("output", type=str, required=True)
-    parser.add_argument('--save_as_external_data', action='store_true')
+    parser.add_argument("--save_as_external_data", action="store_true")
     args, _ = parser.parse_known_args()
     return args
 
 
 def convert(args: Namespace) -> None:
-
     model = onnx.load(args.input)
     model_fp32 = float16.convert_float16_to_float(model)
     try:
@@ -66,6 +67,6 @@ def convert(args: Namespace) -> None:
     print(f"Convert the float16 model {args.input} to the float32 model {args.output}.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     convert(args)

@@ -2,7 +2,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Quantize a float model without calibration dataset.
 
 Use the random_quantize.py to quantize a float model without calibration dataset:
@@ -11,45 +11,41 @@ Use the random_quantize.py to quantize a float model without calibration dataset
 python randome_quantize.py --input_model_path $FLOAT_MODEL_PATH --output_model_path $QUANTIZED_MODEL_PATH
 ```
 
-'''
+"""
 
-import re
 import copy
-from typing import List, Tuple
+import re
 from argparse import ArgumentParser, Namespace
+from typing import List, Tuple
 
-from quark.onnx.quant_utils import PowerOfTwoMethod
+from quark.onnx.calibration import PowerOfTwoMethod
+from quark.onnx.quantization.api import ModelQuantizer
 from quark.onnx.quantization.config.config import Config
 from quark.onnx.quantization.config.custom_config import get_default_config
-from quark.onnx.quantization.api import ModelQuantizer
 
 
 def parse_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--input_model_path", type=str, default="", help="input onnx model file path.")
     parser.add_argument("--quantized_model_path", type=str, default="", help="output quant model file path.")
-    parser.add_argument("--config",
-                        type=str,
-                        default="XINT8",
-                        help="The configuration for quantization",
-                        required=False)
-    parser.add_argument("--exclude_nodes", type=str, default='', help="The names of excluding nodes", required=False)
-    parser.add_argument("--exclude_subgraphs",
-                        type=str,
-                        default='',
-                        help="The lists of excluding subgraphs",
-                        required=False)
-    parser.add_argument('--save_as_external_data', action='store_true')
+    parser.add_argument(
+        "--config", type=str, default="XINT8", help="The configuration for quantization", required=False
+    )
+    parser.add_argument("--exclude_nodes", type=str, default="", help="The names of excluding nodes", required=False)
+    parser.add_argument(
+        "--exclude_subgraphs", type=str, default="", help="The lists of excluding subgraphs", required=False
+    )
+    parser.add_argument("--save_as_external_data", action="store_true")
     args, _ = parser.parse_known_args()
     return args
 
 
-def parse_subgraphs_list(exclude_subgraphs: str) -> List[Tuple[List[str]]]:
+def parse_subgraphs_list(exclude_subgraphs: str) -> list[tuple[list[str]]]:
     subgraphs_list = []
     tuples = exclude_subgraphs.split(";")
     for tup in tuples:
         tup = tup.strip()
-        pattern = r'\[.*?\]'
+        pattern = r"\[.*?\]"
         matches = re.findall(pattern, tup)
         assert len(matches) == 2
         start_nodes = matches[0].strip("[").strip("]").split(",")
@@ -85,6 +81,6 @@ def main(args: Namespace) -> None:
     quantizer.quantize_model(args.input_model_path, args.quantized_model_path, calib_datareader)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     main(args)

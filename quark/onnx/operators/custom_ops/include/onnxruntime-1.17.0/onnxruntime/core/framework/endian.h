@@ -1,5 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (C) 2025, Advanced Micro Devices, Inc. All rights
+// reserved.
+//
 
 #pragma once
 
@@ -21,7 +25,8 @@ enum class endian {
 };
 
 static_assert(
-    endian::native == endian::little || endian::native == endian::big,
-    "Only little-endian or big-endian native byte orders are supported.");
+  endian::native == endian::little || endian::native == endian::big,
+  "Only little-endian or big-endian native byte orders are supported."
+);
 
 }  // namespace onnxruntime

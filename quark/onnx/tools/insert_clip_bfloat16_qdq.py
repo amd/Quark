@@ -2,16 +2,19 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Insert Clip before bfloat16 activation custom Q/DQ nodes
-'''
-import onnx
-from onnx import helper, ModelProto, GraphProto, NodeProto, TensorProto
-from onnxruntime.quantization.onnx_model import ONNXModel
+"""
+
 import argparse
 import os
-from quark.shares.utils.log import ScreenLogger
 from typing import Any
+
+import onnx
+from onnx import GraphProto, ModelProto, NodeProto, TensorProto, helper
+from onnxruntime.quantization.onnx_model import ONNXModel
+
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -21,7 +24,7 @@ def insert_clip_bfloat16_qdq(model: ModelProto) -> Any:
     onnx_model = ONNXModel(model)
 
     def check_bfloat16_activation_qdq(graph: GraphProto, node: NodeProto) -> bool:
-        if node.op_type == 'ExtendedQuantizeLinear':
+        if node.op_type == "ExtendedQuantizeLinear":
             input_0 = onnx_model.get_initializer(node.input[0])
             zp = onnx_model.get_initializer(node.input[2])
             if (input_0 is None) and (zp.data_type == TensorProto.BFLOAT16):
@@ -76,9 +79,9 @@ def main() -> None:
     onnx.save(model, FLAGS.output_model)
 
     # Save the modified model
-    logger.info('Insertion Finished!')
-    logger.info(f'model saved in: {FLAGS.output_model}')
+    logger.info("Insertion Finished!")
+    logger.info(f"model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

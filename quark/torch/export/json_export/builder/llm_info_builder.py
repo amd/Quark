@@ -5,38 +5,51 @@
 
 from abc import abstractmethod
 from collections import OrderedDict
+from typing import Any, Dict, List, Optional, no_type_check
+
 import torch
 import torch.nn as nn
-from typing import Dict, List, Any, Optional
-from typing import no_type_check
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+
 from quark.torch.export.config.config import JsonExporterConfig
 from quark.torch.export.utils import find_patterns_groups
-from .llm_info import (CURRENT_VERSION, EmbeddingType, LayerNormType, QuantInfo, EmbeddingInfo, LayerNormInfo,
-                       LinearInfo, ActInfo, AttentionInfo, MLPInfo, DecoderInfo, ModelInfo)
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+
+from .llm_info import (
+    CURRENT_VERSION,
+    ActInfo,
+    AttentionInfo,
+    DecoderInfo,
+    EmbeddingInfo,
+    EmbeddingType,
+    LayerNormInfo,
+    LayerNormType,
+    LinearInfo,
+    MLPInfo,
+    ModelInfo,
+    QuantInfo,
+)
 
 
 class LLMInfoBuilder:
-
     def __init__(self, model: nn.Module, model_type: str, model_dtype: torch.dtype, config: JsonExporterConfig) -> None:
         self.model = model
         self.decoder_type = model_type
         self.model_dtype = model_dtype
         self.config = config
         self.vocab_size = 0
-        self.linear_infos_dict: Dict[str, LinearInfo] = {}
-        self.linear_weight_merged_groups: List[List[str]] = []
+        self.linear_infos_dict: dict[str, LinearInfo] = {}
+        self.linear_weight_merged_groups: list[list[str]] = []
         if hasattr(self.model, "config") and hasattr(self.model.config, "vocab_size"):
             self.vocab_size = self.model.config.vocab_size
         else:
             raise ValueError("Could not find vocab size config in model")
 
     @abstractmethod
-    def get_flatten_layers(self) -> Dict[str, Any]:
+    def get_flatten_layers(self) -> dict[str, Any]:
         pass
 
     def is_embed(self, module: nn.Module) -> bool:
-        return 'embedding' in module.__class__.__name__.lower()
+        return "embedding" in module.__class__.__name__.lower()
 
     def build_embed_info(self, name: str, module: nn.Module) -> EmbeddingInfo:
         assert self.is_embed(module)
@@ -70,23 +83,23 @@ class LLMInfoBuilder:
         return layernorm_info
 
     @staticmethod
-    def get_scale(quantizer: ScaledFakeQuantize) -> Optional[torch.Tensor]:
+    def get_scale(quantizer: ScaledFakeQuantize) -> torch.Tensor | None:
         """Returns scale from the quantizer as torch.Tensor."""
         if quantizer is None:
             return None
 
-        if hasattr(quantizer, 'scale') and quantizer.scale is not None and quantizer.scale.numel() > 0:
+        if hasattr(quantizer, "scale") and quantizer.scale is not None and quantizer.scale.numel() > 0:
             return quantizer.scale.detach().cpu()
 
         return None
 
     @staticmethod
-    def get_zero_point(quantizer: ScaledFakeQuantize) -> Optional[torch.Tensor]:
+    def get_zero_point(quantizer: ScaledFakeQuantize) -> torch.Tensor | None:
         """Returns zero point from the quantizer as torch.Tensor."""
         if quantizer is None:
             return None
 
-        if hasattr(quantizer, 'zero_point') and quantizer.zero_point is not None and quantizer.zero_point.numel() > 0:
+        if hasattr(quantizer, "zero_point") and quantizer.zero_point is not None and quantizer.zero_point.numel() > 0:
             return quantizer.zero_point.detach().cpu()
 
         return None
@@ -102,20 +115,24 @@ class LLMInfoBuilder:
 
         if hasattr(module, "_input_quantizer") and module._input_quantizer is not None:
             quantizer = module._input_quantizer
-            quant_info = QuantInfo(name=name + ".input_quant",
-                                   dtype=quantizer.dtype.name,
-                                   qscheme=quantizer.qscheme.name,
-                                   ch_axis=quantizer.ch_axis)
+            quant_info = QuantInfo(
+                name=name + ".input_quant",
+                dtype=quantizer.dtype.name,
+                qscheme=quantizer.qscheme.name,
+                ch_axis=quantizer.ch_axis,
+            )
             quant_info.scale = LLMInfoBuilder.get_scale(quantizer)
             quant_info.zero_point = LLMInfoBuilder.get_zero_point(quantizer)
             linear_info.input_quant_info = quant_info
 
         if hasattr(module, "_weight_quantizer") and module._weight_quantizer is not None:
             quantizer = module._weight_quantizer
-            quant_info = QuantInfo(name=name + ".weight_quant",
-                                   dtype=quantizer.dtype.name,
-                                   qscheme=quantizer.qscheme.name,
-                                   ch_axis=quantizer.ch_axis)
+            quant_info = QuantInfo(
+                name=name + ".weight_quant",
+                dtype=quantizer.dtype.name,
+                qscheme=quantizer.qscheme.name,
+                ch_axis=quantizer.ch_axis,
+            )
             quant_info.scale = LLMInfoBuilder.get_scale(quantizer)
             quant_info.zero_point = LLMInfoBuilder.get_zero_point(quantizer)
             quant_info.group_size = quantizer.group_size if quantizer.group_size is not None else 0
@@ -123,10 +140,12 @@ class LLMInfoBuilder:
 
         if hasattr(module, "_output_quantizer") and module._output_quantizer is not None:
             quantizer = module._output_quantizer
-            quant_info = QuantInfo(name=name + ".output_quant",
-                                   dtype=quantizer.dtype.name,
-                                   qscheme=quantizer.qscheme.name,
-                                   ch_axis=quantizer.ch_axis)
+            quant_info = QuantInfo(
+                name=name + ".output_quant",
+                dtype=quantizer.dtype.name,
+                qscheme=quantizer.qscheme.name,
+                ch_axis=quantizer.ch_axis,
+            )
             quant_info.scale = LLMInfoBuilder.get_scale(quantizer)
             quant_info.zero_point = LLMInfoBuilder.get_zero_point(quantizer)
             linear_info.output_quant_info = quant_info
@@ -184,21 +203,26 @@ class LLMInfoBuilder:
                     decoder_info.post_attention_layernorm = self.build_layernorm_info(key_name, mod)
 
         decoder_info.num_attention_heads = self.model.config.num_attention_heads
-        if (hasattr(decoder_info, "self_attn") and decoder_info.self_attn is not None
-                and hasattr(decoder_info.self_attn, "q_proj") and decoder_info.self_attn.q_proj is not None
-                and hasattr(decoder_info.self_attn.q_proj, "weight")
-                and decoder_info.self_attn.q_proj.weight is not None):
-            decoder_info.attention_head_size = decoder_info.self_attn.q_proj.weight.shape[
-                0] // decoder_info.num_attention_heads
+        if (
+            hasattr(decoder_info, "self_attn")
+            and decoder_info.self_attn is not None
+            and hasattr(decoder_info.self_attn, "q_proj")
+            and decoder_info.self_attn.q_proj is not None
+            and hasattr(decoder_info.self_attn.q_proj, "weight")
+            and decoder_info.self_attn.q_proj.weight is not None
+        ):
+            decoder_info.attention_head_size = (
+                decoder_info.self_attn.q_proj.weight.shape[0] // decoder_info.num_attention_heads
+            )
         decoder_info.num_kv_heads = self.model.config.num_key_value_heads
         decoder_info.max_position_embeddings = self.model.config.max_position_embeddings
 
         return decoder_info
 
     def is_decoder_list(self, module: nn.Module) -> bool:
-        return (module.__class__.__name__ == "ModuleList")
+        return module.__class__.__name__ == "ModuleList"
 
-    def build_decoder_list(self, name: str, module: nn.Module) -> List[DecoderInfo]:
+    def build_decoder_list(self, name: str, module: nn.Module) -> list[DecoderInfo]:
         assert self.is_decoder_list(module)
         decoder_list = []
         index = 0
@@ -210,7 +234,7 @@ class LLMInfoBuilder:
         return decoder_list
 
     @no_type_check
-    def merge_scaling_factor(self, linear_group: List[LinearInfo]) -> None:
+    def merge_scaling_factor(self, linear_group: list[LinearInfo]) -> None:
         weight_quant_or_not = all(linear_info.weight_quant_info is not None for linear_info in linear_group)
         if not weight_quant_or_not:
             return
@@ -218,14 +242,21 @@ class LLMInfoBuilder:
         if not per_tensor_or_not:
             return
         symmetric_quant_or_not = all(
-            torch.all(linear_info.weight_quant_info.zero_point == 0) for linear_info in linear_group)
+            torch.all(linear_info.weight_quant_info.zero_point == 0) for linear_info in linear_group
+        )
         if not symmetric_quant_or_not:
             return
 
         weight_quant_name = linear_group[0].weight_quant_info.name
         weight_scale_list = [linear_info.weight_quant_info.scale for linear_info in linear_group]
 
-        group_weight_scale = torch.stack(weight_scale_list, ).max(dim=0).values
+        group_weight_scale = (
+            torch.stack(
+                weight_scale_list,
+            )
+            .max(dim=0)
+            .values
+        )
 
         for linear_info in linear_group:
             # inear_info.weight_quant_info.name = weight_quant_name
@@ -238,14 +269,21 @@ class LLMInfoBuilder:
         if not per_tensor_or_not:
             return
         symmetric_quant_or_not = all(
-            torch.all(linear_info.output_quant_info.zero_point == 0) for linear_info in linear_group)
+            torch.all(linear_info.output_quant_info.zero_point == 0) for linear_info in linear_group
+        )
         if not symmetric_quant_or_not:
             return
 
         output_quant_name = linear_group[0].output_quant_info.name
         output_scale_list = [linear_info.output_quant_info.scale for linear_info in linear_group]
 
-        group_output_scale = torch.stack(output_scale_list, ).max(dim=0).values
+        group_output_scale = (
+            torch.stack(
+                output_scale_list,
+            )
+            .max(dim=0)
+            .values
+        )
 
         for linear_info in linear_group:
             # linear_info.output_quant_info.name = output_quant_name
@@ -261,9 +299,9 @@ class LLMInfoBuilder:
             self.merge_scaling_factor(linear_merge_group)
 
     def build_model_info(self) -> ModelInfo:
-        model_info = ModelInfo(version=CURRENT_VERSION,
-                               dtype=str(self.model_dtype).split('.')[1],
-                               vocab_size=self.vocab_size)
+        model_info = ModelInfo(
+            version=CURRENT_VERSION, dtype=str(self.model_dtype).split(".")[1], vocab_size=self.vocab_size
+        )
         flatten_layers = self.get_flatten_layers()
 
         for name, module in flatten_layers.items():
@@ -284,8 +322,7 @@ class LLMInfoBuilder:
 
 
 class LlamaModelInfoBuilder(LLMInfoBuilder):
-
-    def get_flatten_layers(self) -> Dict[str, nn.Module]:
+    def get_flatten_layers(self) -> dict[str, nn.Module]:
         flatten_layers = OrderedDict()
         for name, module in self.model.named_children():
             if self.is_linear(module):
@@ -316,10 +353,12 @@ class LlamaModelInfoBuilder(LLMInfoBuilder):
         return mlp_info
 
 
-def create_llm_builder(model: nn.Module, model_type: str, model_dtype: torch.dtype,
-                       config: JsonExporterConfig) -> LLMInfoBuilder:
+def create_llm_builder(
+    model: nn.Module, model_type: str, model_dtype: torch.dtype, config: JsonExporterConfig
+) -> LLMInfoBuilder:
     if "llama" in model_type:
         return LlamaModelInfoBuilder(model, model_type, model_dtype, config)
     else:
         raise ValueError(
-            f"Not support {model_type} type model when exporting vllm-adopted json-safetensors model currently")
+            f"Not support {model_type} type model when exporting vllm-adopted json-safetensors model currently"
+        )

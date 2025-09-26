@@ -9,29 +9,30 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Dict, Iterable, Sequence, Tuple
+
 import torch
-from typing import Sequence, Dict, Tuple, Any, Iterable
+
+from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
-try:
+
+if is_gguf_available_and_version_0_6_0():
     import gguf  # type: ignore
     from gguf.constants import MODEL_ARCH, GGMLQuantizationType  # type: ignore
     from gguf.tensor_mapping import get_tensor_name_map  # type: ignore
-except ImportError as e:
-    logger.exception(str(e))
-    raise ImportError("please install gguf==0.6.0")
 
-from .tensor_convert import convert_from_gguf, build_quant_cfg, gguf_shape
+from .tensor_convert import build_quant_cfg, convert_from_gguf, gguf_shape
 from .utils import inverse_permute
 
 
-class GGUFModelConverter():
+class GGUFModelConverter:
+    name_arch_map: dict[str, MODEL_ARCH] = {"llama": MODEL_ARCH.LLAMA}
 
-    name_arch_map: Dict[str, MODEL_ARCH] = {"llama": MODEL_ARCH.LLAMA}
-
-    def __init__(self, model_name: str, model_info: Dict[str, Any], param_info: Dict[str, torch.Tensor],
-                 gguf_path: Path) -> None:
+    def __init__(
+        self, model_name: str, model_info: dict[str, Any], param_info: dict[str, torch.Tensor], gguf_path: Path
+    ) -> None:
         self.model_name = model_name
         self.model_arch = self.name_arch_map[model_name]
         self._model_info = model_info
@@ -46,15 +47,16 @@ class GGUFModelConverter():
         n_kv_head = int(self.hparams.get("num_key_value_heads"))  # type: ignore
 
         self.name_map = get_tensor_name_map(self.model_arch, n_block)
-        self.gguf_name_tensor_map: Dict[str, gguf.gguf_reader.ReaderTensor] = {
-            tensor.name: tensor
-            for tensor in self.gguf_reader.tensors
+        self.gguf_name_tensor_map: dict[str, gguf.gguf_reader.ReaderTensor] = {
+            tensor.name: tensor for tensor in self.gguf_reader.tensors
         }
 
         for name, info in GGUFModelConverter.get_name_and_info(self._model_info["structure"]):
             if name not in self.name_map.mapping:
                 continue
             gguf_name = self.name_map.get_name(name)
+            if gguf_name is None:
+                continue
             weight_name = gguf_name + ".weight"
             if weight_name not in self.gguf_name_tensor_map:
                 continue
@@ -73,8 +75,10 @@ class GGUFModelConverter():
                 gguf_weight_data = inverse_permute(gguf_weight_data, n_head, n_kv_head)
 
             if gguf_weight_dtype in [
-                    GGMLQuantizationType.F32, GGMLQuantizationType.F16, GGMLQuantizationType.F64,
-                    GGMLQuantizationType.BF16
+                GGMLQuantizationType.F32,
+                GGMLQuantizationType.F16,
+                GGMLQuantizationType.F64,  # type: ignore[attr-defined]
+                GGMLQuantizationType.BF16,  # type: ignore[attr-defined]
             ]:
                 self._param_info[quark_name] = gguf_weight_data.to(weight_dtype)
             else:
@@ -86,7 +90,7 @@ class GGUFModelConverter():
                 self._param_info[quant_cfg["scale"]] = scale.to(weight_dtype)  # type: ignore
                 self._param_info[quant_cfg["zero_point"]] = zero_point.round().to(torch.int32)  # type: ignore
 
-    def load_hparams(self) -> Dict[str, Any]:
+    def load_hparams(self) -> dict[str, Any]:
         if self._model_info.get("config", None) is None:
             raise ValueError("Only support hugging face models' gguf-quark convertion")
         return self._model_info["config"]  # type: ignore
@@ -100,7 +104,7 @@ class GGUFModelConverter():
         raise KeyError(f"could not find any of: {keys}")
 
     @staticmethod
-    def get_name_and_info(model_info: Dict[str, Any], parent_key: str = "") -> Iterable[Tuple[str, Dict[str, Any]]]:
+    def get_name_and_info(model_info: dict[str, Any], parent_key: str = "") -> Iterable[tuple[str, dict[str, Any]]]:
         for key, value in model_info.items():
             new_key = f"{parent_key}.{key}" if parent_key else key
             if isinstance(value, dict):
@@ -112,9 +116,9 @@ class GGUFModelConverter():
                 continue
 
     @property
-    def model_info(self) -> Dict[str, Any]:
+    def model_info(self) -> dict[str, Any]:
         return self._model_info
 
     @property
-    def param_info(self) -> Dict[str, torch.Tensor]:
+    def param_info(self) -> dict[str, torch.Tensor]:
         return self._param_info

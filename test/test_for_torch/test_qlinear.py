@@ -5,22 +5,22 @@
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
 
 from quark.torch import ModelQuantizer
-from torch.utils.data import Dataset, DataLoader
+from quark.torch.quantization import Config, Int8PerTensorSpec, QuantizationConfig
 
-from quark.torch.quantization import Config, QuantizationConfig, Int8PerTensorSpec
+INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(
+    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
+).to_quantization_spec()
 
-INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(observer_method="min_max",
-                                         symmetric=True,
-                                         scale_type="float",
-                                         round_method="half_even",
-                                         is_dynamic=False).to_quantization_spec()
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+)
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                                             weight=INT8_PER_TENSOR_SPEC,
-                                                             bias=INT8_PER_TENSOR_SPEC,
-                                                             output_tensors=INT8_PER_TENSOR_SPEC)
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=10):
@@ -33,12 +33,12 @@ class SimpleCNN(nn.Module):
         x = self.fc(x)
         return x
 
+
 input_tensor = torch.randn(1, 64, 64)
 
 
 def test_net():
     class MyDataset(Dataset):
-
         def __init__(self):
             return
 
@@ -55,11 +55,11 @@ def test_net():
     quantizer = ModelQuantizer(quant_config)
     quant_model = quantizer.quantize_model(model, dataloader)
 
-    assert(
-        hasattr(quant_model.fc, "_input_quantizer") and
-        hasattr(quant_model.fc, "_weight_quantizer") and
-        hasattr(quant_model.fc, "_bias_quantizer") and
-        hasattr(quant_model.fc, "_output_quantizer")
+    assert (
+        hasattr(quant_model.fc, "_input_quantizer")
+        and hasattr(quant_model.fc, "_weight_quantizer")
+        and hasattr(quant_model.fc, "_bias_quantizer")
+        and hasattr(quant_model.fc, "_output_quantizer")
     )
 
 

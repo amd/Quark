@@ -1,5 +1,4 @@
 numpy
-onnx>=1.16.0
 onnxruntime-gpu
 onnxruntime_extensions
 Pillow

@@ -45,7 +45,7 @@ __global__ void MXCUDAKernel(const float* input,
                    const int emax,
                    const float max_norm,
                    const float min_norm,
-                   const rounding_mode_enum rounding_mode) { 
+                   const rounding_mode_enum rounding_mode) {
   int index = blockDim.x * blockIdx.x + threadIdx.x;
   if (index >= num_threads) {
     return;
@@ -54,7 +54,7 @@ __global__ void MXCUDAKernel(const float* input,
   const int axis_blocks = axis_size / block_size;
   const int block_index = index % axis_blocks;
   const int axis_index = index / axis_blocks;
-  
+
   int offset = axis_index * axis_size + block_index * block_size;
   // Loop over bounding box to find shared exponent
   uint32_t shared_exp = 0;
@@ -67,7 +67,7 @@ __global__ void MXCUDAKernel(const float* input,
       shared_exp = exp;
     }
   }
-  
+
   // Minus 127 to get unbiased value.
   int shared_exp_value = static_cast<int>(shared_exp) - 127;
   shared_exp_value = shared_exp_value - emax;

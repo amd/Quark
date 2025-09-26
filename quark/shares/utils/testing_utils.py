@@ -3,21 +3,25 @@
 # SPDX-License-Identifier: MIT
 #
 
-import os
-import unittest
-from typing import Any, Union, Optional
-import tempfile
-import shutil
 import functools
+import importlib.metadata
+import os
 import platform
+import shutil
+import sys
+import tempfile
+import unittest
+from typing import Any, Optional, Union
 
-from .import_utils import is_torch_available, is_accelerate_available
+from packaging import version
+
+from .import_utils import is_accelerate_available, is_torch_available
 
 if is_torch_available():  # pragma: no cover
     # Set env var CUDA_VISIBLE_DEVICES="" to force cpu-mode
     import torch
 
-    torch_device: Optional[Union[str, torch.device]] = None
+    torch_device: Union[str, torch.device] | None = None
     if "QUARK_TEST_DEVICE" in os.environ:
         torch_device = os.environ["QUARK_TEST_DEVICE"]
 
@@ -44,14 +48,16 @@ else:  # pragma: no cover
 def require_torch_cuda(test_case: Any) -> Any:  # pragma: no cover
     """Decorator marking a test that requires CUDA with at least two GPUs and PyTorch."""
     return unittest.skipUnless(
-        isinstance(torch_device, torch.device) and torch_device.type == "cuda", "test requires CUDA")(test_case)
+        isinstance(torch_device, torch.device) and torch_device.type == "cuda", "test requires CUDA"
+    )(test_case)
 
 
 def require_torch_multi_gpu(test_case: Any) -> Any:  # pragma: no cover
     """Decorator marking a test that requires CUDA and PyTorch."""
     return unittest.skipUnless(
         isinstance(torch_device, torch.device) and torch_device.type == "cuda" and torch.cuda.device_count() >= 2,
-        "test requires CUDA multi-gpu")(test_case)
+        "test requires CUDA multi-gpu",
+    )(test_case)
 
 
 def require_torch_hip(test_case: Any) -> Any:  # pragma: no cover
@@ -69,8 +75,18 @@ def require_linux(test_case: Any) -> Any:  # pragma: no cover
     return unittest.skipUnless(platform.system() == "Linux", "test requires Linux")(test_case)
 
 
-def use_temporary_directory(func):  # type: ignore
+def require_torch_higher_or_equal(min_version: str) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires the package `torch` with a version higher or equal than `version`."""
 
+    def decorator(test_case: Any) -> Any:
+        return unittest.skipUnless(
+            version.parse(torch.__version__) >= version.parse(min_version), f"test requires torch>={min_version}"
+        )(test_case)
+
+    return decorator
+
+
+def use_temporary_directory(func):  # type: ignore
     def wrapper(*args, **kwargs):  # type: ignore
         with tempfile.TemporaryDirectory() as tmpdir:
             result = func(*args, **kwargs, tmpdir=tmpdir)
@@ -105,7 +121,6 @@ def retry_flaky_test(max_attempts: int = 5):  # type: ignore
     """
 
     def decorator(test_func):  # type: ignore
-
         @functools.wraps(test_func)
         def wrapper(*args, **kwargs):  # type: ignore
             retry_count = 1
@@ -122,3 +137,74 @@ def retry_flaky_test(max_attempts: int = 5):  # type: ignore
         return wrapper
 
     return decorator
+
+
+def skip_if_amd_quark_nightly_wheel_is_installed(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that require non-nightly amd-quark packages."""
+
+    is_not_nightly_package = True
+    try:
+        importlib.metadata.metadata("amd-quark") is not None
+    except importlib.metadata.PackageNotFoundError:
+        is_not_nightly_package = False
+
+    return unittest.skipUnless(is_not_nightly_package, "test requires official `amd-quark` package")(test_case)
+
+
+class PatchEverywhere:
+    """
+    Finds all occurences of ``attribute_name`` in the loaded modules and patches them with ``patch``, which can be a function, a variable, a class, etc.
+
+    :param str attribute_name: The name of attribute to patch.
+    :param Any patch: The patch for the attribute.
+    :param Optional[str] module_name_prefix: If set, only module names starting with this prefix will be considered for patching. Defaults to ``None``.
+    """
+
+    def __init__(
+        self,
+        attribute_name: str,
+        patch: Any,
+        module_name_prefix: str | None = None,
+    ):
+        self.attribute_name = attribute_name
+        self.patch = patch
+        self.module_name_prefix = module_name_prefix
+
+        self.originals = {}
+        for name in list(sys.modules):
+            module = sys.modules[name]
+            if module_name_prefix is not None and not name.startswith(module_name_prefix):
+                continue
+            if hasattr(module, attribute_name):
+                self.originals[module.__name__ + attribute_name] = getattr(module, attribute_name)
+
+    def __enter__(self) -> None:
+        for name in list(sys.modules):
+            module = sys.modules[name]
+            if self.module_name_prefix is not None and not name.startswith(self.module_name_prefix):
+                continue
+            if hasattr(module, self.attribute_name):
+                setattr(module, self.attribute_name, self.patch)
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:  # type: ignore[no-untyped-def]
+        for name in list(sys.modules):
+            module = sys.modules[name]
+            if self.module_name_prefix is not None and not name.startswith(self.module_name_prefix):
+                continue
+            if hasattr(module, self.attribute_name):
+                key = module.__name__ + self.attribute_name
+                if key not in self.originals:
+                    raise ValueError(f"{key} not found in {self.originals.keys()}")
+
+                setattr(module, self.attribute_name, self.originals[key])
+
+
+def slow(test_case):  # type: ignore[no-untyped-def]
+    """
+    Decorator marking a test as slow.
+
+    Slow tests are skipped by default. Set the RUN_SLOW environment variable to a truthy value to run them.
+
+    """
+    run_slow = os.environ.get("RUN_SLOW", "0") == "1"
+    return unittest.skipUnless(run_slow, "test is slow")(test_case)

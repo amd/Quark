@@ -14,23 +14,26 @@ import functools
 import inspect
 import os
 from collections import defaultdict, deque
-import psutil
+
 import numpy as np
+import psutil
 import torch
 
 __all__ = [
-    "AverageMeter", "MeterBuffer", "get_total_and_free_memory_in_Mb",
-    "gpu_mem_usage", "mem_usage", "get_caller_name",
-    ]
+    "AverageMeter",
+    "MeterBuffer",
+    "get_total_and_free_memory_in_Mb",
+    "gpu_mem_usage",
+    "mem_usage",
+    "get_caller_name",
+]
 
 
 def get_total_and_free_memory_in_Mb(cuda_device):
-    devices_info_str = os.popen(
-        "nvidia-smi --query-gpu=memory.total,memory.used --format=csv,nounits,noheader"
-    )
+    devices_info_str = os.popen("nvidia-smi --query-gpu=memory.total,memory.used --format=csv,nounits,noheader")
     devices_info = devices_info_str.read().strip().split("\n")
     if "CUDA_VISIBLE_DEVICES" in os.environ:
-        visible_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(',')
+        visible_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
         cuda_device = int(visible_devices[cuda_device])
     total, used = devices_info[int(cuda_device)].split(",")
     return int(total), int(used)

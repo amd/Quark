@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 """Quark Exporting Config API for PyTorch"""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import List, Optional
 
 
 @dataclass(eq=True)
@@ -21,7 +23,7 @@ class ExporterConfig:
     json_export_config: JsonExporterConfig
 
     # Global onnx exporting configuration
-    onnx_export_config: Optional[OnnxExporterConfig] = None
+    onnx_export_config: OnnxExporterConfig | None = None
 
 
 # TODO: better `min_kv_scale` doc.
@@ -38,8 +40,8 @@ class JsonExporterConfig:
 
     """
 
-    weight_merge_groups: Optional[List[List[str]]] = None
-    kv_cache_group: List[str] = field(default_factory=list)
+    weight_merge_groups: list[list[str]] | None = None
+    kv_cache_group: list[str] = field(default_factory=list)
     min_kv_scale: float = 0.0
     weight_format: str = "real_quantized"
     pack_method: str = "reorder"
@@ -50,4 +52,5 @@ class OnnxExporterConfig:
     """
     A data class that specifies configurations for onnx exporting.
     """
+
     pass

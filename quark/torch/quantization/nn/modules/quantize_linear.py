@@ -3,16 +3,20 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, Optional, Dict, List
-import torch
 import re
+from typing import Any, Dict, List, Optional
+
+import torch
 from torch import nn
 from torch.nn import functional as F
-from .mixin import QuantMixin
+
+from quark.shares.utils.import_utils import is_accelerate_available
+from quark.shares.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QuantizationConfig
 from quark.torch.quantization.config.type import QSchemeType
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.import_utils import is_accelerate_available
+
+from .mixin import QuantMixin
+
 if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
@@ -23,12 +27,17 @@ __all__ = ["QuantLinear"]
 
 
 class QuantLinear(nn.Linear, QuantMixin):
-    """Quantized version of nn.Linear
+    """Quantized version of nn.Linear"""
 
-    """
-
-    def __init__(self, in_features: int, out_features: int, device: torch.device, bias: bool,
-                 quant_config: QuantizationConfig, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: torch.device,
+        bias: bool,
+        quant_config: QuantizationConfig,
+        **kwargs: Any,
+    ) -> None:
         super(QuantLinear, self).__init__(in_features, out_features, bias)
         if not bias:
             # if bias is None Modify user settings
@@ -53,13 +62,15 @@ class QuantLinear(nn.Linear, QuantMixin):
         pass
 
     @classmethod
-    def from_float(cls,
-                   float_module: nn.Module,
-                   layer_quant_config: QuantizationConfig,
-                   reload: bool = False,
-                   weight_tensor: Optional[torch.Tensor] = None,
-                   bias_tensor: Optional[torch.Tensor] = None,
-                   device: Optional[torch.device] = None) -> nn.Linear:
+    def from_float(
+        cls,
+        float_module: nn.Module,
+        layer_quant_config: QuantizationConfig,
+        reload: bool = False,
+        weight_tensor: torch.Tensor | None = None,
+        bias_tensor: torch.Tensor | None = None,
+        device: torch.device | None = None,
+    ) -> nn.Linear:
         if device is None:
             device = float_module.weight.device
 
@@ -76,24 +87,23 @@ class QuantLinear(nn.Linear, QuantMixin):
             # So get the buffer to the right device in the first place.
             hook = float_module._hf_hook
             # Default of hook.offload_buffers is False, we can't actually offload scale and zero, which would cause their values to be lost, unless you write them in weight_map.
-            quark_hook = AlignDevicesHook(execution_device=hook.execution_device,
-                                          offload=hook.offload,
-                                          io_same_device=hook.io_same_device,
-                                          weights_map=hook.weights_map,
-                                          offload_buffers=hook.offload_buffers,
-                                          place_submodules=hook.place_submodules,
-                                          skip_keys=hook.skip_keys,
-                                          tied_params_map=hook.tied_params_map)
+            quark_hook = AlignDevicesHook(
+                execution_device=hook.execution_device,
+                offload=hook.offload,
+                io_same_device=hook.io_same_device,
+                weights_map=hook.weights_map,
+                offload_buffers=hook.offload_buffers,
+                place_submodules=hook.place_submodules,
+                skip_keys=hook.skip_keys,
+                tied_params_map=hook.tied_params_map,
+            )
             if buffer_device == torch.device("meta"):
                 buffer_device = float_module._hf_hook.execution_device
 
         bias = False if (float_module.bias is None) and (reload is False or bias_tensor is None) else True
-        quant_linear = cls(float_module.in_features,
-                           float_module.out_features,
-                           buffer_device,
-                           bias,
-                           layer_quant_config,
-                           reload=reload)
+        quant_linear = cls(
+            float_module.in_features, float_module.out_features, buffer_device, bias, layer_quant_config, reload=reload
+        )
         if reload is True and weight_tensor is not None:
             quant_linear.weight.data = weight_tensor.to(device)
         else:
@@ -115,11 +125,14 @@ class QuantLinear(nn.Linear, QuantMixin):
         # In export or import flow, we need to modify the scale and zero_point to the right format, such as "_weight_quantizer.scale" -> "weight_scale",
         # "_weight_quantizer.zero_point" -> "weight_zero_point". However, in quantization flow, we need to get the state_dict as the original format, so we
         # add the "exported_enabled" flag to control whether we need to modify the state_dict format.
-        if not hasattr(self, 'export_enabled') or not self.export_enabled.item() == 1:
+        if not hasattr(self, "export_enabled") or not self.export_enabled.item() == 1:
             return super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
         destination = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
         params_names = [
-            "_weight_quantizer.*scale", "_bias_quantizer.*scale", "_input_quantizer.*scale", "_output_quantizer.*scale"
+            "_weight_quantizer.*scale",
+            "_bias_quantizer.*scale",
+            "_input_quantizer.*scale",
+            "_output_quantizer.*scale",
         ]
         for param_name in params_names:
             # find all keys that both contains prefix string and param_name, param_name is a regex
@@ -139,7 +152,7 @@ class QuantLinear(nn.Linear, QuantMixin):
                 del destination[keys[0]]
             elif all(index_key.isdigit() for index_key in index_keys):
                 # sort keys by index_keys from small to large
-                keys = [x for _, x in sorted(zip(index_keys, keys), key=lambda pair: pair[0])]
+                keys = [x for _, x in sorted(zip(index_keys, keys, strict=False), key=lambda pair: pair[0])]
                 tensor_name = keys[0].split(".")[-3].split("_")[-2]
                 for i, key in enumerate(keys):
                     if i == 0:
@@ -158,19 +171,19 @@ class QuantLinear(nn.Linear, QuantMixin):
 
     def _load_from_state_dict(
         self,
-        state_dict: Dict[str, Any],
+        state_dict: dict[str, Any],
         prefix: str,
-        local_metadata: Dict[str, Any],
+        local_metadata: dict[str, Any],
         strict: bool,
-        missing_keys: List[str],
-        unexpected_keys: List[str],
-        error_msgs: List[str],
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
     ) -> None:
         scale_quantizer_map = {
             "weight_scale*": "_weight_quantizer",
             "bias_scale*": "_bias_quantizer",
             "input_scale*": "_input_quantizer",
-            "output_scale*": "_output_quantizer"
+            "output_scale*": "_output_quantizer",
         }
 
         for scale_key, quantizer_name in scale_quantizer_map.items():
@@ -196,18 +209,21 @@ class QuantLinear(nn.Linear, QuantMixin):
                     key_index = 0
                     for i, module in enumerate(quantizer):
                         real_key = prefix + quantizer_name + "." + str(i) + ".scale"
-                        static_scale = (not module.is_dynamic) or \
-                            (module.is_scale_quant and module.qscheme == QSchemeType.per_tensor)
+                        static_scale = (not module.is_dynamic) or (
+                            module.is_scale_quant and module.qscheme == QSchemeType.per_tensor
+                        )
                         if getattr(module, "scale", None) is not None and static_scale:
                             state_dict[real_key] = state_dict[sorted_keys[key_index]]
                             del state_dict[sorted_keys[key_index]]
                             zero_point_key = prefix + sorted_keys[key_index].split(".")[-1].replace(
-                                "scale", "zero_point")
+                                "scale", "zero_point"
+                            )
                             if zero_point_key in state_dict and getattr(module, "zero_point", None) is not None:
                                 real_zero_point_key = prefix + quantizer_name + "." + str(i) + ".zero_point"
                                 state_dict[real_zero_point_key] = state_dict[zero_point_key]
                                 del state_dict[zero_point_key]
                             key_index += 1
 
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
-                                      error_msgs)  # type: ignore
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )  # type: ignore

@@ -3,17 +3,18 @@
 # SPDX-License-Identifier: MIT
 #
 import os
+from typing import Optional, Tuple
+
 import torch
-from typing import Tuple
 from torch.distributed import device_mesh
-'''
+
+"""
 Reserved code
 from torch.distributed._tensor import distribute_tensor, Replicate, DTensor
-'''
+"""
 
 
-def e4m3fn_to_e4m3fnuz(tensor: torch.Tensor, tensor_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-
+def e4m3fn_to_e4m3fnuz(tensor: torch.Tensor, tensor_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     ROCM_FP8_NAN_AS_INT = -128
     scale = 2.0
 
@@ -29,10 +30,34 @@ def e4m3fn_to_e4m3fnuz(tensor: torch.Tensor, tensor_scale: torch.Tensor) -> Tupl
     return tensor, tensor_scale
 
 
-class TPDeviceManager():
+class TPDeviceManager:
     _tp_mesh = None
     _device = None
     _rank = None
+
+    @property
+    def tp_mesh(self) -> device_mesh.DeviceMesh | None:
+        """Getter for the name attribute."""
+        return TPDeviceManager._tp_mesh
+
+    @tp_mesh.setter
+    def tp_mesh(self, mesh: device_mesh.DeviceMesh) -> None:
+        """Setter for the name attribute with validation."""
+        if not isinstance(mesh, device_mesh.DeviceMesh):
+            raise TypeError("Name must be a device_mesh.")
+        TPDeviceManager._tp_mesh = mesh
+
+    @property
+    def device(self) -> torch.device | None:
+        """Getter for the name attribute."""
+        return TPDeviceManager._device
+
+    @device.setter
+    def device(self, device: torch.device) -> None:
+        """Setter for the name attribute with validation."""
+        if not isinstance(device, torch.device):
+            raise TypeError("Name must be a device_mesh.")
+        TPDeviceManager._device = device
 
     @staticmethod
     def tp_mesh_init() -> None:
@@ -48,7 +73,7 @@ class TPDeviceManager():
 
                 TPDeviceManager._rank = rank
                 TPDeviceManager._device = device
-                TPDeviceManager._tp_mesh = device_mesh.init_device_mesh("cuda", (num_gpus, ), mesh_dim_names=("tp", ))
+                TPDeviceManager._tp_mesh = device_mesh.init_device_mesh("cuda", (num_gpus,), mesh_dim_names=("tp",))
             else:
                 print("tp envirement settings not found!")
 

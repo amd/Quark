@@ -2,7 +2,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert ONNX ModelProto with shared initializer to be unique initializer.
 
 :param model: ONNX ModelProto object
@@ -37,12 +37,13 @@ for given node op_types e.g. ["Conv", "Gemm"]. Empty list [] will include all
 op_types in the given onnx model, default is [].
 It is recommended to do conversion to satisfy the compilation need and model
 quantization FastFinetune need.
-'''
+"""
 
-import onnx
 import copy
 from argparse import ArgumentParser, Namespace
-from typing import Dict, Any
+from typing import Any, Dict
+
+import onnx
 
 
 def parse_args() -> Namespace:
@@ -54,10 +55,9 @@ def parse_args() -> Namespace:
     return args
 
 
-def convert(onnx_model: onnx.ModelProto,
-            support_op_types: list[str] = [],
-            prefix: str = "duplicated",
-            only_bias: bool = False) -> onnx.ModelProto:
+def convert(
+    onnx_model: onnx.ModelProto, support_op_types: list[str] = [], prefix: str = "duplicated", only_bias: bool = False
+) -> onnx.ModelProto:
     if support_op_types == []:
         support_op_types = []
         for node_idx in range(len(onnx_model.graph.node)):
@@ -70,7 +70,7 @@ def convert(onnx_model: onnx.ModelProto,
     for ini_item in onnx_model.graph.initializer:
         all_initializer_dict[ini_item.name] = ini_item
 
-    ini_used_static: Dict[str, Any] = {}
+    ini_used_static: dict[str, Any] = {}
 
     for i in range(len(onnx_model.graph.node)):
         if onnx_model.graph.node[i].op_type in support_op_types:
@@ -93,7 +93,7 @@ def convert(onnx_model: onnx.ModelProto,
     return onnx_model
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     onnx_model = onnx.load(args.input)
     if args.op_types is None:

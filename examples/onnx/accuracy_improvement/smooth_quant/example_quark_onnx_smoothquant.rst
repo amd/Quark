@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quantization using SmoothQuant
 ==============================
 
@@ -18,7 +20,7 @@ Install the necessary Python packages:
 
 ::
 
-   python -m pip install -r requirements.txt
+   python -m pip install -r ../utils/requirements.txt
 
 Prepare Model
 ^^^^^^^^^^^^^

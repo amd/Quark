@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
-from torch import nn
-from quark.shares.utils.import_utils import is_transformers_available
 from typing import TYPE_CHECKING
 
+import torch
+from torch import nn
+
+from quark.shares.utils.import_utils import is_transformers_available
+
 if TYPE_CHECKING and is_transformers_available():
-    from transformers.models.dbrx.modeling_dbrx import DbrxExperts, DbrxExpertGLU
+    from transformers.models.dbrx.modeling_dbrx import DbrxExpertGLU, DbrxExperts
+
 
 class DbrxExpertGLU_(nn.Module):
     def __init__(self, mlp: "DbrxExpertGLU"):
@@ -31,23 +34,15 @@ class DbrxExperts_(nn.Module):
     def __init__(self, experts_module: "DbrxExperts"):
         super().__init__()
         self.moe_num_experts = experts_module.moe_num_experts
-        self.mlp = nn.ModuleList([
-            DbrxExpertGLU_(
-                experts_module.mlp) for _ in range(self.moe_num_experts)])
+        self.mlp = nn.ModuleList([DbrxExpertGLU_(experts_module.mlp) for _ in range(self.moe_num_experts)])
         w1_chunked = experts_module.mlp.w1.view(
-            experts_module.mlp.moe_num_experts,
-            experts_module.mlp.ffn_hidden_size,
-            experts_module.mlp.hidden_size
+            experts_module.mlp.moe_num_experts, experts_module.mlp.ffn_hidden_size, experts_module.mlp.hidden_size
         )
         v1_chunked = experts_module.mlp.v1.view(
-            experts_module.mlp.moe_num_experts,
-            experts_module.mlp.ffn_hidden_size,
-            experts_module.mlp.hidden_size
+            experts_module.mlp.moe_num_experts, experts_module.mlp.ffn_hidden_size, experts_module.mlp.hidden_size
         )
         w2_chunked = experts_module.mlp.w2.view(
-            experts_module.mlp.moe_num_experts,
-            experts_module.mlp.ffn_hidden_size,
-            experts_module.mlp.hidden_size
+            experts_module.mlp.moe_num_experts, experts_module.mlp.ffn_hidden_size, experts_module.mlp.hidden_size
         )
         for idx in range(self.moe_num_experts):
             self.mlp[idx].w1.weight.data = w1_chunked[idx].contiguous()
@@ -75,10 +70,7 @@ class DbrxExperts_(nn.Module):
             token_list = token_idx
             topk_list = topk_idx
             expert_tokens = x[None, token_list].reshape(-1, hidden_size)
-            expert_out = (
-                self.mlp[expert_idx](expert_tokens)
-                * top_weights[token_list, topk_list, None]
-            )
+            expert_out = self.mlp[expert_idx](expert_tokens) * top_weights[token_list, topk_list, None]
             out.index_add_(0, token_idx, expert_out)
         out = out.reshape(bsz, q_len, hidden_size)
         return out

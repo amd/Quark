@@ -42,3 +42,8 @@ The results of the evaluation on the full ImageNet-1k validation dataset (50k im
 * `w_int8_a_int8_per_tensor_sym`: on top of the above weight quantization, the inputs of [supported layers](/quark/torch/extensions/brevitas/api.py#L190) are quantized, with per tensor symmetric quantization, no narrow range.
 
 Note that in these evaluations we use torchvision checkpoints for resnet rather than Transformers' [microsoft/resnet-50](https://huggingface.co/microsoft/resnet-50) which proved to be more sensitive to quantization.
+
+<!--
+## License
+Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

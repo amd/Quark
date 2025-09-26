@@ -10,25 +10,26 @@
 # Modifications copyright(c) 2025 Advanced Micro Devices,Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-import torch
-import os
-import itertools
 import argparse
-import time
 import datetime
-import shutil
+import itertools
 import logging
 import math
+import os
+import shutil
+import time
 from copy import deepcopy
+
+import torch
 from data import DataPrefetcher
 from utils import MeterBuffer, adjust_status, gpu_mem_usage, mem_usage
-from quark.torch import ModelQuantizer, ModelExporter
-from quark.torch.quantization.graph.torch_utils import _enable_observer, _enable_fake_quant, _active_bn
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-from quark.torch.quantization.observer.observer import PerTensorPowOf2MinMSEObserver
-from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
 from yolo_x_tiny_exp import Exp
+
+from quark.torch import ModelQuantizer, export_onnx
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.graph.torch_utils import _active_bn, _enable_fake_quant, _enable_observer
+from quark.torch.quantization.observer.observer import PerTensorPowOf2MinMSEObserver
 
 
 class ModelEMA:
@@ -70,7 +71,6 @@ class ModelEMA:
 
 
 class Trainer:
-
     def __init__(self, exp: Exp, args: argparse.Namespace):
         self.exp = exp
         self.exp.eval_interval = 1
@@ -80,7 +80,7 @@ class Trainer:
         self.amp_training = False
         self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         self.local_rank = 0
-        self.device = "cuda:{}".format(self.local_rank)
+        self.device = f"cuda:{self.local_rank}"
         self.use_model_ema = exp.ema
         self.save_history_ckpt = exp.save_history_ckpt
         # data/dataloader related attr
@@ -95,8 +95,8 @@ class Trainer:
         self.quantizer = None
 
     def quant_prepare(self):
-        logging.info("args: {}".format(self.args))
-        logging.info("exp value:\n{}".format(self.exp))
+        logging.info(f"args: {self.args}")
+        logging.info(f"exp value:\n{self.exp}")
         torch.cuda.set_device(self.local_rank)
         model = self.exp.get_model()
         model.to(self.device)
@@ -114,36 +114,44 @@ class Trainer:
 
         # step 1 get the traced model that in torch.fx.GraphModule format
         # We only trace part of the model, code for loss computation, detection head decode are not need to trace.
-        graph_model = torch.export.export_for_training(self.model.base_model, (dummy_input, )).module()
+        graph_model = torch.export.export_for_training(self.model.base_model, (dummy_input,)).module()
         graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
         self.model.base_model = graph_model
 
         # step 2 config the quant config
-        INT8_PER_WEIGHT_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                                       qscheme=QSchemeType.per_tensor,
-                                                       observer_cls=PerTensorPowOf2MinMSEObserver,
-                                                       symmetric=True,
-                                                       scale_type=ScaleType.float,
-                                                       round_method=RoundType.half_even,
-                                                       is_dynamic=False)
+        INT8_PER_WEIGHT_TENSOR_SPEC = QuantizationSpec(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorPowOf2MinMSEObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+        )
 
-        INT8_PER_ACTIVTION_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.uint8,
-                                                          qscheme=QSchemeType.per_tensor,
-                                                          observer_cls=PerTensorPowOf2MinMSEObserver,
-                                                          symmetric=True,
-                                                          scale_type=ScaleType.float,
-                                                          round_method=RoundType.half_even,
-                                                          is_dynamic=False)
+        INT8_PER_ACTIVTION_TENSOR_SPEC = QuantizationSpec(
+            dtype=Dtype.uint8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorPowOf2MinMSEObserver,
+            symmetric=True,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+        )
 
         # quant config
-        quant_config_0 = QuantizationConfig(weight=INT8_PER_WEIGHT_TENSOR_SPEC,
-                                            input_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
-                                            output_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
-                                            bias=INT8_PER_WEIGHT_TENSOR_SPEC)
-        quant_config_1 = QuantizationConfig(weight=INT8_PER_WEIGHT_TENSOR_SPEC,
-                                            input_tensors=INT8_PER_WEIGHT_TENSOR_SPEC,
-                                            output_tensors=INT8_PER_WEIGHT_TENSOR_SPEC,
-                                            bias=INT8_PER_WEIGHT_TENSOR_SPEC)
+        quant_config_0 = QuantizationConfig(
+            weight=INT8_PER_WEIGHT_TENSOR_SPEC,
+            input_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
+            output_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
+            bias=INT8_PER_WEIGHT_TENSOR_SPEC,
+        )
+        quant_config_1 = QuantizationConfig(
+            weight=INT8_PER_WEIGHT_TENSOR_SPEC,
+            input_tensors=INT8_PER_WEIGHT_TENSOR_SPEC,
+            output_tensors=INT8_PER_WEIGHT_TENSOR_SPEC,
+            bias=INT8_PER_WEIGHT_TENSOR_SPEC,
+        )
         quant_config = Config(global_quant_config=quant_config_1, quant_mode=QuantizationMode.fx_graph_mode)
         self.quantizer = ModelQuantizer(quant_config)
         quantized_model = self.quantizer.quantize_model(graph_model, calib_data)
@@ -155,9 +163,9 @@ class Trainer:
     def qat(self):
         #  ------------ prepare the training data, lr scheduler, optimizer--------
         self.no_aug = self.start_epoch >= self.max_epoch - self.exp.no_aug_epochs
-        self.train_loader = self.exp.get_data_loader(batch_size=self.args.batch_size,
-                                                     no_aug=self.no_aug,
-                                                     cache_img=None)
+        self.train_loader = self.exp.get_data_loader(
+            batch_size=self.args.batch_size, no_aug=self.no_aug, cache_img=None
+        )
         logging.info("init prefetcher, this might take one minute or less...")
         self.prefetcher = DataPrefetcher(self.train_loader)
 
@@ -171,10 +179,10 @@ class Trainer:
 
         #  ----------- train the model -----------
         logging.info("Training start...")
-        logging.info("\n{}".format(self.model))
+        logging.info(f"\n{self.model}")
         for self.epoch in range(self.start_epoch, self.max_epoch):
             #  ------ before training
-            logging.info("---> start train epoch{}".format(self.epoch + 1))
+            logging.info(f"---> start train epoch{self.epoch + 1}")
             if self.epoch + 1 == self.max_epoch - self.exp.no_aug_epochs or self.no_aug:
                 logging.info("--->No mosaic aug now!")
                 self.train_loader.close_mosaic()
@@ -185,7 +193,7 @@ class Trainer:
             #  ----- post training
             if (self.epoch + 1) % self.exp.eval_interval == 0:
                 self.evaluate_and_save_model()
-        logging.info("Training of experiment is done and the best AP is {:.2f}".format(self.best_ap * 100))
+        logging.info(f"Training of experiment is done and the best AP is {self.best_ap * 100:.2f}")
         return
 
     def _quant_train_mode_adjust(self, training=True):
@@ -226,34 +234,35 @@ class Trainer:
                 param_group["lr"] = lr
 
             iter_end_time = time.time()
-            self.meter.update(iter_time=iter_end_time - iter_start_time,
-                              data_time=data_end_time - iter_start_time,
-                              lr=lr,
-                              **outputs)
+            self.meter.update(
+                iter_time=iter_end_time - iter_start_time, data_time=data_end_time - iter_start_time, lr=lr, **outputs
+            )
 
             #  1.log information 2 reset setting of resize
             if (self.iter + 1) % self.exp.print_interval == 0:
                 left_iters = self.max_iter * self.max_epoch - (self.progress_in_iter + 1)
                 eta_seconds = self.meter["iter_time"].global_avg * left_iters
-                eta_str = "ETA: {}".format(datetime.timedelta(seconds=int(eta_seconds)))
+                eta_str = f"ETA: {datetime.timedelta(seconds=int(eta_seconds))}"
 
-                progress_str = "epoch: {}/{}, iter: {}/{}".format(self.epoch + 1, self.max_epoch, self.iter + 1,
-                                                                  self.max_iter)
+                progress_str = f"epoch: {self.epoch + 1}/{self.max_epoch}, iter: {self.iter + 1}/{self.max_iter}"
                 loss_meter = self.meter.get_filtered_meter("loss")
-                loss_str = ", ".join(["{}: {:.1f}".format(k, v.latest) for k, v in loss_meter.items()])
+                loss_str = ", ".join([f"{k}: {v.latest:.1f}" for k, v in loss_meter.items()])
 
                 time_meter = self.meter.get_filtered_meter("time")
-                time_str = ", ".join(["{}: {:.3f}s".format(k, v.avg) for k, v in time_meter.items()])
+                time_str = ", ".join([f"{k}: {v.avg:.3f}s" for k, v in time_meter.items()])
 
-                mem_str = "gpu mem: {:.0f}Mb, mem: {:.1f}Gb".format(gpu_mem_usage(), mem_usage())
+                mem_str = f"gpu mem: {gpu_mem_usage():.0f}Mb, mem: {mem_usage():.1f}Gb"
 
-                logging.info("{}, {}, {}, {}, lr: {:.3e}".format(
-                    progress_str,
-                    mem_str,
-                    time_str,
-                    loss_str,
-                    self.meter["lr"].latest,
-                ) + (", size: {:d}, {}".format(self.input_size[0], eta_str)))
+                logging.info(
+                    "{}, {}, {}, {}, lr: {:.3e}".format(
+                        progress_str,
+                        mem_str,
+                        time_str,
+                        loss_str,
+                        self.meter["lr"].latest,
+                    )
+                    + (f", size: {self.input_size[0]:d}, {eta_str}")
+                )
                 self.meter.clear_meters()
 
             if (self.progress_in_iter + 1) % 10 == 0:
@@ -278,7 +287,7 @@ class Trainer:
         with adjust_status(evalmodel, training=False):
             (ap50_95, ap50, summary), predictions = self.exp.eval(evalmodel, self.evaluator, return_outputs=True)
 
-        print("Epoch: {} eval ap50_95: {}".format(self.epoch, ap50_95))
+        print(f"Epoch: {self.epoch} eval ap50_95: {ap50_95}")
         update_best_ckpt = ap50_95 > self.best_ap
         self.best_ap = max(self.best_ap, ap50_95)
         logging.info("\n" + summary)
@@ -289,7 +298,7 @@ class Trainer:
 
     def save_ckpt(self, ckpt_name, update_best_ckpt=False, ap=None):
         save_model = self.ema_model.ema if self.use_model_ema else self.model
-        logging.info("Save weights to {}".format(self.file_name))
+        logging.info(f"Save weights to {self.file_name}")
         ckpt_state = {
             "start_epoch": self.epoch + 1,
             "model": save_model.state_dict(),
@@ -308,13 +317,11 @@ class Trainer:
 
     def export_2_onnx_model(self):
         # Freeze model and do post-quant optimization to meet hardware(NPU) compile requirements
-        freezeded_model = self.quantizer.freeze(self.model.base_model.eval())
-        self.model.base_model = freezeded_model
-        config = ExporterConfig(json_export_config=JsonExporterConfig())
-        exporter = ModelExporter(config=config, export_dir=self.file_name)
+        frozen_model = self.quantizer.freeze(self.model.base_model.eval())
+        self.model.base_model = frozen_model
         # NOTE for NPU compile, it is better using batch-size = 1 for better compliance
-        example_inputs = (torch.rand(1, 3, 416, 416).to(self.device), )
-        exporter.export_onnx_model(self.model, example_inputs[0])
+        example_inputs = (torch.rand(1, 3, 416, 416).to(self.device),)
+        export_onnx(model=self.model, output_dir=self.file_name, input_args=example_inputs[0])
         # For better visualization, user can use simplify tool
         # from onnxsim import simplify
         # import onnx

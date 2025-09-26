@@ -4,14 +4,11 @@
 #
 """Convert Quark extended custom ops to deprecated Vitis custom ops, or vice versa."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import argparse
+import os
+from typing import Any, Dict
 
 import onnx
-import os
-import argparse
-from typing import Any, Dict
 
 NEW_DOMAIN = "com.amd.quark"
 OLD_DOMAIN = "com.vai.quantize"
@@ -22,11 +19,11 @@ NAME_MAPPING = {
     "ExtendedInstanceNormalization": "VitisInstanceNormalization",
     "ExtendedLSTM": "VitisLSTM",
     "BFPQuantizeDequantize": "BFPFixNeuron",
-    "MXQuantizeDequantize": "MXFixNeuron"
+    "MXQuantizeDequantize": "MXFixNeuron",
 }
 
 
-def convert_custom_ops(model: onnx.ModelProto, domain: str, mapping: Dict[str, str]) -> Any:
+def convert_custom_ops(model: onnx.ModelProto, domain: str, mapping: dict[str, str]) -> Any:
     from onnxruntime.quantization.onnx_model import ONNXModel
 
     onnx_model = ONNXModel(model)
@@ -56,7 +53,7 @@ def run_main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.convert_custom_ops --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
         )
@@ -73,9 +70,9 @@ def run_main() -> None:
     converted_model = convert_custom_ops(model, domain, mapping)
     onnx.save_model(converted_model, FLAGS.output_model, save_as_external_data=FLAGS.external_data)
 
-    print('Conversion Finished!')
-    print('Converted model saved in: {}'.format(FLAGS.output_model))
+    print("Conversion Finished!")
+    print(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_main()

@@ -15,7 +15,13 @@ from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ZeroPointType, ScaleType
 from quark.torch.quantization.utils import calculate_qmin_qmax, get_num_bits
-from quark.torch.quantization.constants import INT_QUANT_DTYPES
+from quark.torch.quantization.constants import (
+    INT_QUANT_DTYPES,
+    ALL_QUANT_DTYPES,
+    USING_NON_SCALED_QUANT,
+    ONLY_DTYPE_CHANGE,
+)
+from quark.torch.quantization.utils import assert_no_nan
 
 
 class FakeQuantizeBase(ABC, nn.Module):
@@ -31,24 +37,18 @@ class FakeQuantizeBase(ABC, nn.Module):
 
     """
 
-    fake_quant_enabled: torch.Tensor
-    observer_enabled: torch.Tensor
-    is_dynamic: Optional[bool] = None
+    fake_quant_enabled: bool
+    observer_enabled: bool
+    is_dynamic: bool | None = None
 
-    def __init__(self, quant_spec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, quant_spec: QuantizationSpec, device: torch.device | None = None) -> None:
         """Set fake_quant_enabled and observer_enabled."""
         super().__init__()
 
         self.quant_spec = quant_spec
         self.is_dynamic = quant_spec.is_dynamic
-
-        # fake_quant_enabled and observer_enabled are buffers to support their
-        # replication in DDP. Data type is uint8 because Multi-GPU does not support
-        # bool tensors.
-        self.register_buffer('fake_quant_enabled',
-                             torch.tensor([1], dtype=torch.uint8, device=device),
-                             persistent=False)
-        self.register_buffer('observer_enabled', torch.tensor([1], dtype=torch.uint8, device=device), persistent=False)
+        self.fake_quant_enabled = True
+        self.observer_enabled = True
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -58,31 +58,32 @@ class FakeQuantizeBase(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def to_freezed_module(self) -> nn.Module:
+    def to_frozen_module(self) -> nn.Module:
         pass
 
     def enable_fake_quant(self, enabled: bool = True) -> None:
-        self.fake_quant_enabled[0] = 1 if enabled else 0
+        self.fake_quant_enabled = enabled
 
     def disable_fake_quant(self) -> None:
         self.enable_fake_quant(False)
 
     def enable_observer(self, enabled: bool = True) -> None:
-        self.observer_enabled[0] = 1 if enabled else 0
+        self.observer_enabled = enabled
 
     def disable_observer(self) -> None:
         self.enable_observer(False)
 
     @property
     def is_observer_enabled(self) -> bool:
-        return self.observer_enabled[0].item() == 1
+        return self.observer_enabled
 
     @property
     def is_fake_quant_enabled(self) -> bool:
-        return self.fake_quant_enabled[0].item() == 1
+        return self.fake_quant_enabled
 
-    def update_buffer(self, buffer_name: str, new_value: Union[torch.Tensor, None],
-                      input_tensor_device: torch.device) -> None:
+    def update_buffer(
+        self, buffer_name: str, new_value: Union[torch.Tensor, None], input_tensor_device: torch.device
+    ) -> None:
         """
         Update the value of a registered buffer while ensuring that its shape,
         device, and data type match the input tensor.
@@ -105,9 +106,9 @@ class FakeQuantizeBase(ABC, nn.Module):
         setattr(self, buffer_name, buffer)
 
     @staticmethod  # type: ignore
-    def get_fake_quantize(quant_spec: Union[QuantizationSpec, List[QuantizationSpec]],
-                          device: Optional[torch.device] = None,
-                          **kwargs) -> Union['FakeQuantizeBase', 'SequentialQuantize']:
+    def get_fake_quantize(
+        quant_spec: Union[QuantizationSpec, list[QuantizationSpec]], device: torch.device | None = None, **kwargs: Any
+    ) -> Union["FakeQuantizeBase", "SequentialQuantize"]:
         # Handle list of specs for sequential quantization
         if isinstance(quant_spec, list):
             return SequentialQuantize(quant_specs=quant_spec, device=device)
@@ -120,7 +121,7 @@ class FakeQuantizeBase(ABC, nn.Module):
             # return SequentialQuantize(*quantizers)
 
         # Handle single spec case
-        if quant_spec.dtype in [Dtype.mx, Dtype.mx6, Dtype.mx9, Dtype.bfp16]:
+        if quant_spec.dtype in USING_NON_SCALED_QUANT:
             return NonScaledFakeQuantize(quant_spec=quant_spec, device=device)
         else:
             return ScaledFakeQuantize(quant_spec=quant_spec, device=device, **kwargs)
@@ -131,10 +132,10 @@ class ScaledFakeQuantize(FakeQuantizeBase):
     zero_point: torch.Tensor
 
     def __init__(
-            self,
-            quant_spec: QuantizationSpec,
-            device: Optional[torch.device] = None,
-            **kwargs: Any,  # TODO: Delete kwargs here
+        self,
+        quant_spec: QuantizationSpec,
+        device: torch.device | None = None,
+        **kwargs: Any,  # TODO: Delete kwargs here
     ) -> None:
         super().__init__(quant_spec, device)
 
@@ -155,34 +156,26 @@ class ScaledFakeQuantize(FakeQuantizeBase):
         self.scale_torch_dtype = None
         if self.scale_type in [ScaleType.float32, ScaleType.float16, ScaleType.bfloat16]:
             self.scale_torch_dtype = self.scale_type.to_torch_dtype()
-
         self.zero_point_type = quant_spec.zero_point_type
-
-        if self.dtype is Dtype.mx:
-            assert self.mx_element_dtype is not None
-            self.quant_min, self.quant_max = calculate_qmin_qmax(self.mx_element_dtype)
-        elif self.dtype in [Dtype.mx6, Dtype.mx9]:
-            self.quant_min = self.quant_max = 0.0
-        else:
-            self.quant_min, self.quant_max = calculate_qmin_qmax(self.dtype)
+        self.quant_min, self.quant_max = calculate_qmin_qmax(self.dtype)
         self.observer = self.create_observer(quant_spec, device)
         self.verify_observer(quant_spec, self.observer)
 
         persistent = (not self.is_dynamic) or (self.is_scale_quant and self.qscheme == QSchemeType.per_tensor)
-        self.register_buffer('scale',
-                             torch.tensor(1.0, dtype=self.scale_torch_dtype, device=device),
-                             persistent=persistent)
+        self.register_buffer(
+            "scale", torch.tensor(1.0, dtype=self.scale_torch_dtype, device=device), persistent=persistent
+        )
 
         persistent = persistent and self.dtype in INT_QUANT_DTYPES
         if self.zero_point_type == ZeroPointType.float32:
-            self.register_buffer('zero_point',
-                                 torch.tensor(0.0, dtype=torch.float, device=device),
-                                 persistent=persistent)
+            self.register_buffer(
+                "zero_point", torch.tensor(0.0, dtype=torch.float, device=device), persistent=persistent
+            )
         else:
-            self.register_buffer('zero_point', torch.tensor(0, dtype=torch.int, device=device), persistent=persistent)
+            self.register_buffer("zero_point", torch.tensor(0, dtype=torch.int, device=device), persistent=persistent)
 
     @staticmethod
-    def create_observer(quant_spec: QuantizationSpec, device: Optional[torch.device] = None) -> ObserverBase:
+    def create_observer(quant_spec: QuantizationSpec, device: torch.device | None = None) -> ObserverBase:
         if quant_spec.observer_cls is not None:
             return quant_spec.observer_cls(quant_spec, device)
         else:
@@ -191,107 +184,130 @@ class ScaledFakeQuantize(FakeQuantizeBase):
     # TODO: Add verify_observer to init.
     @staticmethod
     def verify_observer(quant_spec: QuantizationSpec, observer: ObserverBase) -> None:
-        if quant_spec.dtype in [Dtype.bfloat16, Dtype.float16]:
-            assert isinstance(observer, PlaceholderObserver), f"{quant_spec.dtype} only suuport for PlaceholderObserver"
-        # elif quant_spec.dtype in [Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8]:
-        #     assert isinstance(observer, UniformScalingObserver)
-        # elif quant_spec.dtype in [Dtype.fp8_e4m3]:
-        #     assert isinstance(
-        #         observer,
-        #         (PerTensorMinMaxObserver, PerTensorMSEObserver, PerTensorPercentileObserver, PerChannelMinMaxObserver))
+        if quant_spec.dtype in ONLY_DTYPE_CHANGE:
+            assert isinstance(observer, PlaceholderObserver), f"{quant_spec.dtype} only support for PlaceholderObserver"
 
     def calculate_qparams(self, X: torch.Tensor) -> None:
-        assert not torch.isnan(X).any().item(), "tensor contains NaN!"
+        assert_no_nan(X, message="tensor contains NaN!")
         qparams = self.observer._calculate_qparams()
         if qparams is not None:
             _scale, _zero_point = qparams
-            assert not torch.isnan(_scale).any().item(), "scale contains NaN!"
-            assert not torch.isnan(_zero_point).any().item(), "zero_point contains NaN!"
-            self.update_buffer('scale', _scale, X.device)
-            self.update_buffer('zero_point', _zero_point, X.device)
+            assert_no_nan(_scale, message="scale contains NaN!")
+            assert_no_nan(_zero_point, message="zero_point contains NaN!")
+
+            self.update_buffer("scale", _scale, X.device)
+            self.update_buffer("zero_point", _zero_point, X.device)
+
+    def fake_quantize_with_qparams(
+        self, X: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor
+    ) -> torch.Tensor:
+        if isinstance(self.observer, TQTObserver):
+            X = quark.torch.kernel.tqt_quantize(  # type: ignore[attr-defined]
+                X, self.observer.log_threshold, zero_point, self.observer.domain, self.round_method
+            )
+        elif isinstance(self.observer, LSQObserver):
+            grad_factor = 1.0 / math.sqrt(X.numel() * self.observer.quant_max)
+            X = quark.torch.kernel.lsq_quantize(  # type: ignore[attr-defined]
+                X,
+                scale + self.observer.eps,
+                zero_point,
+                grad_factor,
+                self.observer.quant_min,
+                self.observer.quant_max,
+                self.ch_axis,
+                self.round_method,
+            )
+        else:
+            mx_element_dtype_value = "None" if self.mx_element_dtype is None else self.mx_element_dtype.value
+            X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
+                self.dtype.value,
+                X,
+                scale,
+                zero_point.to(torch.float)
+                if self.zero_point_type == ZeroPointType.float32
+                else zero_point.to(torch.int),
+                self.ch_axis,
+                self.group_size,
+                self.quant_min,
+                self.quant_max,
+                self.round_method,
+                self.qscheme_str_name,
+                mx_element_dtype_value,
+            )
+
+        return X
+
+    def observe(self, X: torch.Tensor) -> None:
+        self.observer.record_observed_tokens(X)
+        self.observer(X.detach())
+        self.calculate_qparams(X)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # Do observation
         if self.is_observer_enabled:
-            self.observer.record_observed_tokens(X)
-            self.observer(X.detach())
-            self.calculate_qparams(X)
+            self.observe(X)
 
-        # Do fake quantize
         if self.is_fake_quant_enabled:
-            if isinstance(self.observer, TQTObserver):
-                X = quark.torch.kernel.tqt_quantize(  # type: ignore[attr-defined]
-                    X, self.observer.log_threshold, self.zero_point, self.observer.domain, self.round_method)
-            elif isinstance(self.observer, LSQObserver):
-                grad_factor = 1.0 / math.sqrt(X.numel() * self.observer.quant_max)
-                X = quark.torch.kernel.lsq_quantize(  # type: ignore[attr-defined]
-                    X, self.observer.scale + self.observer.eps, self.observer.zero_point, grad_factor,
-                    self.observer.quant_min, self.observer.quant_max, self.ch_axis, self.round_method)
+            # TODO: There should not be this mismatch for `LSQObserver` as to where
+            # scales and zero_points are held.
+            if isinstance(self.observer, LSQObserver):
+                scale = self.observer.scale
+                zero_point = self.observer.zero_point
             else:
-                mx_element_dtype_value = 'None' if self.mx_element_dtype is None else self.mx_element_dtype.value
+                scale = self.scale  # type: ignore[assignment]
+                zero_point = self.zero_point
 
-                if self.zero_point_type == ZeroPointType.float32:
-                    X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                        self.dtype.value,
-                        X,
-                        self.scale.to(X.device),
-                        self.zero_point.to(torch.float).to(X.device),
-                        self.ch_axis,
-                        self.group_size,
-                        self.quant_min,
-                        self.quant_max,
-                        self.round_method,
-                        self.qscheme_str_name,
-                        mx_element_dtype_value,
-                    )
-                else:
-                    X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                        self.dtype.value,
-                        X,
-                        self.scale.to(X.device),
-                        self.zero_point.to(torch.int).to(X.device),
-                        self.ch_axis,
-                        self.group_size,
-                        self.quant_min,
-                        self.quant_max,
-                        self.round_method,
-                        self.qscheme_str_name,
-                        mx_element_dtype_value,
-                    )
-        assert not torch.isnan(X).any().item(), "output tensor X contains NaN!"
+            # TODO: do we really need the `.to(X.device)` here? Should we not expect
+            # correct device in the first place?
+            X = self.fake_quantize_with_qparams(X, scale=scale.to(X.device), zero_point=zero_point.to(X.device))
+
+        assert_no_nan(X, message="output tensor X contains NaN!")
         return X
 
     def extra_repr(self) -> str:
-        return 'fake_quant_enabled={}, observer_enabled={}, ' \
-                   'quant_min={}, quant_max={}, dtype={}, qscheme={}, mx_element_dtype={}, ch_axis={}, ' \
-                   'scale={}, zero_point={}'.format(
-                       self.fake_quant_enabled, self.observer_enabled,
-                       self.quant_min, self.quant_max,
-                       self.dtype, self.qscheme, self.mx_element_dtype, self.ch_axis, self.scale, self.zero_point)
+        return (
+            f"fake_quant_enabled={self.fake_quant_enabled}, observer_enabled={self.observer_enabled}, "
+            f"quant_min={self.quant_min}, quant_max={self.quant_max}, dtype={self.dtype}, qscheme={self.qscheme}, mx_element_dtype={self.mx_element_dtype}, ch_axis={self.ch_axis}, "
+            f"scale={self.scale}, zero_point={self.zero_point}"
+        )
 
-    def _save_to_state_dict(self, destination: Dict[str, Union[torch.nn.Parameter, torch.Tensor]], prefix: str,
-                            keep_vars: bool) -> None:
+    def _save_to_state_dict(
+        self, destination: dict[str, Union[torch.nn.Parameter, torch.Tensor]], prefix: str, keep_vars: bool
+    ) -> None:
         # TODO: do we really need this? state_dict() already contains persistent buffers!
 
         # We cannot currently register scalar values as buffers, so need to manually
         # specify serialization here.
         super()._save_to_state_dict(destination, prefix, keep_vars)  # type: ignore
         if self.dtype in [
-                Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8, Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.mx, Dtype.mx6,
-                Dtype.mx9
+            Dtype.int4,
+            Dtype.uint4,
+            Dtype.int8,
+            Dtype.uint8,
+            Dtype.fp8_e4m3,
+            Dtype.fp8_e5m2,
+            Dtype.mx,
+            Dtype.mx6,
+            Dtype.mx9,
         ]:
             if not self.is_dynamic:
-                destination[prefix + 'scale'] = self.scale
+                destination[prefix + "scale"] = self.scale
 
                 if self.dtype in INT_QUANT_DTYPES:
-                    destination[prefix + 'zero_point'] = self.zero_point
+                    destination[prefix + "zero_point"] = self.zero_point
 
-    def _load_from_state_dict(self, state_dict: Dict[str, Union[torch.nn.Parameter, torch.Tensor]], prefix: str,
-                              local_metadata: Dict[str, Any], strict: bool, missing_keys: List[str],
-                              unexpected_keys: List[str], error_msgs: List[str]) -> None:
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, Union[torch.nn.Parameter, torch.Tensor]],
+        prefix: str,
+        local_metadata: dict[str, Any],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
         # Removing this function throws an error that the the size of the loaded tensor does not match the original size
         # i.e., These buffers start out with numel 0 and become numel 1 once they have their first forward pass.
-        local_state = ['scale', 'zero_point']
+        local_state = ["scale", "zero_point"]
         for name in local_state:
             key = prefix + name
             if key in state_dict:
@@ -300,143 +316,164 @@ class ScaledFakeQuantize(FakeQuantizeBase):
                 # of size N into uninitialized buffers of size 0. The
                 # buffers are resized here, and the values are copied in
                 # the default state_dict loading code of the parent.
-                if name == 'scale':
+                if name == "scale":
                     self.scale.resize_(val.shape)
                 else:
-                    assert name == 'zero_point'
+                    assert name == "zero_point"
                     self.zero_point.resize_(val.shape)
                 # For torchscript module we need to update the attributes here since we do not
                 # call the `_load_from_state_dict` function defined module.py
                 if torch.jit.is_scripting():  # type: ignore[attr-defined]
-                    if name == 'scale':
+                    if name == "scale":
                         self.scale.copy_(val)
                     else:
-                        assert name == 'zero_point'
+                        assert name == "zero_point"
                         self.zero_point.copy_(val)
 
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
-                                      error_msgs)  # type: ignore
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )  # type: ignore
 
-    def to_freezed_module(self) -> nn.Module:
-        freezed_fake_quantize_model = FreezedScaledFakeQuantize(self.dtype, self.quant_spec)
-        if self.dtype in [
-                Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.int16, Dtype.uint16, Dtype.uint8, Dtype.int32,
-                Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.mx, Dtype.mx6, Dtype.mx9, Dtype.fp4, Dtype.fp6_e2m3,
-                Dtype.fp6_e3m2, Dtype.int2
-        ]:
+    def to_frozen_module(self) -> nn.Module:
+        frozen_fake_quantize_model = FrozenScaledFakeQuantize(self.dtype, self.quant_spec)
+        if self.dtype in ALL_QUANT_DTYPES:
             persistent = (not self.is_dynamic) or (self.is_scale_quant and self.qscheme == QSchemeType.per_tensor)
-            freezed_fake_quantize_model.register_buffer('scale', self.scale, persistent=persistent)
+            frozen_fake_quantize_model.register_buffer("scale", self.scale, persistent=persistent)
 
             persistent = persistent and self.dtype in INT_QUANT_DTYPES
-            freezed_fake_quantize_model.register_buffer('zero_point', self.zero_point, persistent=persistent)
+            frozen_fake_quantize_model.register_buffer("zero_point", self.zero_point, persistent=persistent)
 
-        freezed_fake_quantize_model.qscheme = self.qscheme
-        freezed_fake_quantize_model.qscheme_str_name = self.qscheme_str_name
-        freezed_fake_quantize_model.ch_axis = self.ch_axis
-        freezed_fake_quantize_model.group_size = self.group_size
-        freezed_fake_quantize_model.round_method = self.round_method
-        freezed_fake_quantize_model.quant_min = getattr(self, 'quant_min', None)
-        freezed_fake_quantize_model.quant_max = getattr(self, 'quant_max', None)
-        freezed_fake_quantize_model.mx_element_dtype = self.mx_element_dtype
-        freezed_fake_quantize_model.zero_point_type = self.zero_point_type
-        freezed_fake_quantize_model.is_scale_quant = self.is_scale_quant
-        freezed_fake_quantize_model.quant_spec = self.quant_spec
-        return freezed_fake_quantize_model
+        frozen_fake_quantize_model.qscheme = self.qscheme
+        frozen_fake_quantize_model.qscheme_str_name = self.qscheme_str_name
+        frozen_fake_quantize_model.ch_axis = self.ch_axis
+        frozen_fake_quantize_model.group_size = self.group_size
+        frozen_fake_quantize_model.round_method = self.round_method
+        frozen_fake_quantize_model.quant_min = getattr(self, "quant_min", None)
+        frozen_fake_quantize_model.quant_max = getattr(self, "quant_max", None)
+        frozen_fake_quantize_model.mx_element_dtype = self.mx_element_dtype
+        frozen_fake_quantize_model.zero_point_type = self.zero_point_type
+        frozen_fake_quantize_model.is_scale_quant = self.is_scale_quant
+        frozen_fake_quantize_model.quant_spec = self.quant_spec
+        return frozen_fake_quantize_model
 
 
-class FreezedScaledFakeQuantize(nn.Module):
+class FrozenScaledFakeQuantize(nn.Module):
     scale: torch.Tensor
     zero_point: torch.Tensor
 
     def __init__(self, dtype: Dtype, quant_spec: QuantizationSpec) -> None:
-        super(FreezedScaledFakeQuantize, self).__init__()
-        self.zero_point_type: Optional[ZeroPointType] = quant_spec.zero_point_type
+        super(FrozenScaledFakeQuantize, self).__init__()
+        self.zero_point_type: ZeroPointType | None = quant_spec.zero_point_type
 
-        persistent = (not quant_spec.is_dynamic) or (quant_spec.is_scale_quant
-                                                     and quant_spec.qscheme == QSchemeType.per_tensor)
-        self.register_buffer('scale', torch.tensor([1.0], dtype=torch.float), persistent=persistent)
+        persistent = (not quant_spec.is_dynamic) or (
+            quant_spec.is_scale_quant and quant_spec.qscheme == QSchemeType.per_tensor
+        )
+        self.register_buffer("scale", torch.tensor([1.0], dtype=torch.float), persistent=persistent)
 
         persistent = persistent and quant_spec.dtype in INT_QUANT_DTYPES
         if self.zero_point_type == ZeroPointType.float32:
-            self.register_buffer('zero_point', torch.tensor([0.0], dtype=torch.float), persistent=persistent)
+            self.register_buffer("zero_point", torch.tensor([0.0], dtype=torch.float), persistent=persistent)
         else:
-            self.register_buffer('zero_point', torch.tensor([0], dtype=torch.int), persistent=persistent)
+            self.register_buffer("zero_point", torch.tensor([0], dtype=torch.int), persistent=persistent)
 
         self.dtype: Dtype = dtype
         self.quant_spec = quant_spec
-        self.quant_min: Optional[int] = None
-        self.quant_max: Optional[int] = None
-        self.qscheme: Optional[QSchemeType] = None
-        self.qscheme_str_name: Optional[str] = None
-        self.ch_axis: Optional[int] = None
-        self.group_size: Optional[int] = None
-        self.round_method: Optional[int] = None
-        self.mx_element_dtype: Optional[Dtype] = None
+        self.quant_min: int | None = None
+        self.quant_max: int | None = None
+        self.qscheme: QSchemeType | None = None
+        self.qscheme_str_name: str | None = None
+        self.ch_axis: int | None = None
+        self.group_size: int | None = None
+        self.round_method: int | None = None
+        self.mx_element_dtype: Dtype | None = None
         self.is_scale_quant: bool = False
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        mx_element_dtype_value = 'None' if self.mx_element_dtype is None else self.mx_element_dtype.value
+        mx_element_dtype_value = "None" if self.mx_element_dtype is None else self.mx_element_dtype.value
 
         if self.zero_point_type == ZeroPointType.float32:
             X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                self.dtype.value, X, self.scale, self.zero_point.to(torch.float), self.ch_axis, self.group_size,
-                self.quant_min, self.quant_max, self.round_method, self.qscheme_str_name, mx_element_dtype_value)
+                self.dtype.value,
+                X,
+                self.scale,
+                self.zero_point.to(torch.float),
+                self.ch_axis,
+                self.group_size,
+                self.quant_min,
+                self.quant_max,
+                self.round_method,
+                self.qscheme_str_name,
+                mx_element_dtype_value,
+            )
         else:
             X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                self.dtype.value, X, self.scale, self.zero_point.to(torch.int), self.ch_axis, self.group_size,
-                self.quant_min, self.quant_max, self.round_method, self.qscheme_str_name, mx_element_dtype_value)
+                self.dtype.value,
+                X,
+                self.scale,
+                self.zero_point.to(torch.int),
+                self.ch_axis,
+                self.group_size,
+                self.quant_min,
+                self.quant_max,
+                self.round_method,
+                self.qscheme_str_name,
+                mx_element_dtype_value,
+            )
         assert isinstance(X, torch.Tensor)
 
         return X
 
     def _load_from_state_dict(
         self,
-        state_dict: Dict[str, Any],
+        state_dict: dict[str, Any],
         prefix: str,
-        local_metadata: Dict[str, Any],
+        local_metadata: dict[str, Any],
         strict: bool,
-        missing_keys: List[str],
-        unexpected_keys: List[str],
-        error_msgs: List[str],
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
     ) -> None:
-
         for name, value in state_dict.items():
             if "scale" in name:
                 self.scale.resize_(value.shape)
+
             if "zero_point" in name:
                 self.zero_point.resize_(value.shape)
 
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
-                                      error_msgs)  # type: ignore
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )  # type: ignore
 
 
 class NonScaledFakeQuantize(FakeQuantizeBase):
-
-    def __init__(self, quant_spec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, quant_spec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(quant_spec, device)
 
         self.dtype = quant_spec.dtype
         self.mx_element_dtype = quant_spec.mx_element_dtype
         self.axis = quant_spec.ch_axis
         self.group_size = quant_spec.group_size
-        self.is_dynamic = quant_spec.is_dynamic
         self.scale_calculation_mode = quant_spec.scale_calculation_mode
-        self.is_scale_quant = quant_spec.is_scale_quant
         self.observer = self.create_observer(quant_spec, device)
 
     @staticmethod
-    def create_observer(quant_spec: QuantizationSpec, device: Optional[torch.device] = None) -> ObserverBase:
+    def create_observer(quant_spec: QuantizationSpec, device: torch.device | None = None) -> ObserverBase:
         return PlaceholderObserver(quant_spec)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         if self.is_fake_quant_enabled:
             X = quark.torch.kernel.non_scaled_fake_quantize(  # type: ignore[attr-defined]
-                X, self.dtype.value, self.mx_element_dtype.value if self.mx_element_dtype is not None else "",
-                self.axis, self.group_size, self.scale_calculation_mode)
+                X,
+                self.dtype.value,
+                self.mx_element_dtype.value if self.mx_element_dtype is not None else "",
+                self.axis,
+                self.group_size,
+                self.scale_calculation_mode,
+            )
         assert isinstance(X, torch.Tensor)
         return X
 
-    def to_freezed_module(self) -> nn.Module:
+    def to_frozen_module(self) -> nn.Module:
         return self
 
 
@@ -451,65 +488,70 @@ class SequentialQuantize(nn.Sequential):
         device (Optional[torch.device]): Device to run the quantization on.
 
     """
-    is_dynamic: Optional[bool] = None
 
-    def __init__(self, quant_specs: List[QuantizationSpec], device: Optional[torch.device] = None) -> None:
+    is_dynamic: bool | None = None
+
+    def __init__(self, quant_specs: list[QuantizationSpec], device: torch.device | None = None) -> None:
         """Initialize SequentialQuantize module."""
         quantizers = [FakeQuantizeBase.get_fake_quantize(spec, device) for spec in quant_specs]
-        assert not any(not isinstance(q, FakeQuantizeBase)
-                       for q in quantizers), ("All quantizers must be a FakeQuantizeBase.")
+        assert not any(not isinstance(q, FakeQuantizeBase) for q in quantizers), (
+            "All quantizers must be a FakeQuantizeBase."
+        )
         super().__init__(*quantizers)
 
         # the is_dynamic configuration of all quantizers should be the same
-        assert all(quantizer.is_dynamic == quantizers[0].is_dynamic for quantizer in quantizers), \
+        assert all(quantizer.is_dynamic == quantizers[0].is_dynamic for quantizer in quantizers), (
             "The is_dynamic configuration of all quantizers should be the same"
-        assert all(not isinstance(quantizer, NonScaledFakeQuantize) for quantizer in quantizers), \
+        )
+        assert all(not isinstance(quantizer, NonScaledFakeQuantize) for quantizer in quantizers), (
             "NonScaledFakeQuantize is not supported in SequentialQuantize currently"
-        assert all(not isinstance(quantizer.observer, (TQTObserver, LSQObserver)) for quantizer in quantizers), \
+        )
+        assert all(not isinstance(quantizer.observer, (TQTObserver, LSQObserver)) for quantizer in quantizers), (
             "TQTObserver and LSQObserver are not supported in SequentialQuantize currently"
-        assert all((not quantizer.zero_point_type == ZeroPointType.float32) for quantizer in quantizers), \
+        )
+        assert all((not quantizer.zero_point_type == ZeroPointType.float32) for quantizer in quantizers), (
             "Float32 zero point is not supported in SequentialQuantize currently"
+        )
 
         self.is_dynamic = quantizers[0].is_dynamic
 
     def disable_fake_quant(self) -> None:
         for module in self:
-            if isinstance(module, FreezedScaledFakeQuantize):
+            if isinstance(module, FrozenScaledFakeQuantize):
                 continue
             module.disable_fake_quant()
 
     def enable_observer(self, enabled: bool = True) -> None:
         for module in self:
-            if isinstance(module, FreezedScaledFakeQuantize):
+            if isinstance(module, FrozenScaledFakeQuantize):
                 continue
             module.enable_observer(enabled)
 
     @property
     def is_observer_enabled(self) -> bool:
-        return any(
-            (not isinstance(module, FreezedScaledFakeQuantize)) and module.is_observer_enabled for module in self)
+        return any((not isinstance(module, FrozenScaledFakeQuantize)) and module.is_observer_enabled for module in self)
 
     @property
     def is_fake_quant_enabled(self) -> bool:
-        return any(isinstance(module, FreezedScaledFakeQuantize) or module.is_fake_quant_enabled for module in self)
+        return any(isinstance(module, FrozenScaledFakeQuantize) or module.is_fake_quant_enabled for module in self)
 
     # store the config of the is_observer_enabled status of each module
-    def get_observer_enabled_config(self) -> List[Optional[bool]]:
+    def get_observer_enabled_config(self) -> list[bool | None]:
         return [
-            module.is_observer_enabled if not isinstance(module, FreezedScaledFakeQuantize) else None for module in self
+            module.is_observer_enabled if not isinstance(module, FrozenScaledFakeQuantize) else None for module in self
         ]
 
     # store the config of the is_fake_quant_enabled status of each module
-    def get_fake_quant_enabled_config(self) -> List[Optional[bool]]:
+    def get_fake_quant_enabled_config(self) -> list[bool | None]:
         return [
-            module.is_fake_quant_enabled if not isinstance(module, FreezedScaledFakeQuantize) else None
+            module.is_fake_quant_enabled if not isinstance(module, FrozenScaledFakeQuantize) else None
             for module in self
         ]
 
     # restore the config of the is_fake_quant_enabled status of each module
-    def restore_fake_quant_enabled_config(self, config: List[Optional[bool]]) -> None:
-        for module, enabled in zip(self, config):
-            if isinstance(module, FreezedScaledFakeQuantize):
+    def restore_fake_quant_enabled_config(self, config: list[bool | None]) -> None:
+        for module, enabled in zip(self, config, strict=False):
+            if isinstance(module, FrozenScaledFakeQuantize):
                 continue
             module.enable_fake_quant(enabled)
 
@@ -533,8 +575,9 @@ class SequentialQuantize(nn.Sequential):
                     self._validate_scale_quantizer(module_index)
                     module(self[module_index - 1].scale)
                 else:
-                    quant_x = self._process_tensor_quantizer(module_index, module, previous_tensor_quantizer, quant_x,
-                                                             X.dtype)
+                    quant_x = self._process_tensor_quantizer(
+                        module_index, module, previous_tensor_quantizer, quant_x, X.dtype
+                    )
                     previous_tensor_quantizer = module
 
             if self.contains_at_least_two_tensor_quantizers():
@@ -554,13 +597,14 @@ class SequentialQuantize(nn.Sequential):
         """Validate scale quantizer configuration."""
         assert module_index > 0, "Scale quantizer could not be the first one"
         previous_module = self[module_index - 1]
-        assert hasattr(previous_module, 'scale'), "Previous module must have scale attribute"
+        assert hasattr(previous_module, "scale"), "Previous module must have scale attribute"
         assert isinstance(previous_module, ScaledFakeQuantize), "Previous module must be ScaledFakeQuantize"
         assert previous_module.qscheme_str_name == "per_group", "Only per_group scheme supported"
         assert not previous_module.is_scale_quant, "Previous module cannot be scale quantizer"
 
-    def _process_tensor_quantizer(self, module_index: int, module: Any, previous_quantizer: Any, x: torch.Tensor,
-                                  target_dtype: torch.dtype) -> torch.Tensor:
+    def _process_tensor_quantizer(
+        self, module_index: int, module: Any, previous_quantizer: Any, x: torch.Tensor, target_dtype: torch.dtype
+    ) -> torch.Tensor:
         """Process tensor quantizer and apply quantization."""
         if previous_quantizer is None:
             module(x)
@@ -591,33 +635,55 @@ class SequentialQuantize(nn.Sequential):
         for module in reversed(self):
             if not module.is_scale_quant:
                 X = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
-                    module.dtype.value, X, module.scale,
-                    module.zero_point.to(torch.int) if module.zero_point is not None else None, module.ch_axis,
-                    module.group_size, module.qscheme_str_name)
+                    module.dtype.value,
+                    X,
+                    module.scale,
+                    module.zero_point.to(torch.int) if module.zero_point is not None else None,
+                    module.ch_axis,
+                    module.group_size,
+                    module.qscheme_str_name,
+                )
         return X.to(x_dtype)
 
     def _apply_scale_quantization(self, source_module: Any, scale_module: Any) -> torch.Tensor:
         """Apply scale quantization between modules."""
         result = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-            scale_module.dtype.value, source_module.scale, scale_module.scale,
+            scale_module.dtype.value,
+            source_module.scale,
+            scale_module.scale,
             scale_module.zero_point.to(torch.int) if scale_module.zero_point is not None else None,
-            scale_module.ch_axis, scale_module.group_size, scale_module.quant_min, scale_module.quant_max,
-            scale_module.round_method, scale_module.qscheme_str_name, None)
+            scale_module.ch_axis,
+            scale_module.group_size,
+            scale_module.quant_min,
+            scale_module.quant_max,
+            scale_module.round_method,
+            scale_module.qscheme_str_name,
+            None,
+        )
         assert isinstance(result, torch.Tensor)  # Runtime check to ensure correct type
         return result
 
     def _apply_tensor_quantization(self, module: Any, x: torch.Tensor, target_dtype: torch.dtype) -> torch.Tensor:
         """Apply tensor quantization using module parameters."""
         x = quark.torch.kernel.scaled_real_quantize(  # type: ignore[attr-defined]
-            module.dtype.value, x, module.scale,
-            module.zero_point.to(torch.int) if module.zero_point is not None else None, module.ch_axis,
-            module.group_size, module.quant_min, module.quant_max, module.round_method, module.qscheme_str_name)
+            module.dtype.value,
+            x,
+            module.scale,
+            module.zero_point.to(torch.int) if module.zero_point is not None else None,
+            module.ch_axis,
+            module.group_size,
+            module.quant_min,
+            module.quant_max,
+            module.round_method,
+            module.qscheme_str_name,
+        )
         assert isinstance(x, torch.Tensor)  # Runtime check to ensure correct type
         return x.to(target_dtype)
 
 
-def enable_or_disable_quantizer(quantizer: Union[FakeQuantizeBase, SequentialQuantize],
-                                enable: Optional[bool] = False) -> None:
+def enable_or_disable_quantizer(
+    quantizer: Union[FakeQuantizeBase, SequentialQuantize], enable: bool | None = False
+) -> None:
     quantizers = [quantizer] if isinstance(quantizer, ScaledFakeQuantize) else quantizer
     assert isinstance(quantizers, list)
     for _quantizer in quantizers:

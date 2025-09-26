@@ -1,4 +1,10 @@
 #!/bin/bash
+
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+
 set -e
 set -x
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,11 +38,15 @@ build_docs() {
         export PATH=~/bin:${PATH}
 
         find "./_docs/tutorials/" -type f -name "*.ipynb" -print0 | while IFS= read -r -d $'\0' notebook_file; do
-            echo "Processing: $notebook_file"
+            echo "Converting Jupyter Notebook into ReStructuredText file: $notebook_file"
             jupyter nbconvert --to rst "${notebook_file}"
             rm -v ${notebook_file}
         done
     else
+        find "./_docs/tutorials/" -type f -name "*.ipynb" -print0 | while IFS= read -r -d $'\0' notebook_file; do
+            echo "Clearing outputs from Jupyter Notebook cells: ${notebook_file}"
+            jupyter nbconvert --clear-output --inplace "${notebook_file}"
+        done
         unset QUARK_SPHINX_BUILD_SKIP_TUTORIALS
         install_jupyter_notebooks_dependencies
     fi
@@ -58,6 +68,8 @@ build_docs() {
 
     echo "[QUARK-INFO] Building Quark documentation..."
 
+    mkdir -p ./_docs/output/
+
     if [[ -n "${QUARK_DOC_FAIL_ON_WARNING}" && ( "${QUARK_DOC_FAIL_ON_WARNING}" == "1" || "${QUARK_DOC_FAIL_ON_WARNING,,}" == "true" || "${QUARK_DOC_FAIL_ON_WARNING,,}" == "yes" ) ]]; then
         echo "[QUARK-INFO] Quark documentation build will fail on warnings..."
         sphinx_build_fail_on_warning_args=" --keep-going --fail-on-warning --nitpicky"
@@ -67,9 +79,17 @@ build_docs() {
     fi
 
     # Using LC_ALL=C to avoid https://stackoverflow.com/questions/14547631/python-locale-error-unsupported-locale-setting
-    SPHINX_BUILD_CMD="LC_ALL=C sphinx-build -M html ./_docs/ ../_docs_build/ --show-traceback ${sphinx_build_fail_on_warning_args}"
+    SPHINX_BUILD_CMD="LC_ALL=C sphinx-build -M html ./_docs/ ../_docs_build/ -v --show-traceback ${sphinx_build_fail_on_warning_args}"
     echo "${SPHINX_BUILD_CMD}"
     bash -c "${SPHINX_BUILD_CMD}"
+
+    echo "[QUARK-INFO] Uploading results to dashboard"
+    for file in ./_docs/output/*; do
+        if [[ "$file" == *.json ]]; then
+            echo "$file"
+            python -m quark_dashboard.api --path "$file" --api_url "http://xcomx250-1.xilinx.com:8000/"
+        fi
+    done
 }
 
 cd ${THIS_DIR}

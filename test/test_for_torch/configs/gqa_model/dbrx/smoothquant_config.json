@@ -1,0 +1,23 @@
+{
+  "name": "smooth",
+  "alpha": 1,
+  "scale_clamp_min": 0.001,
+  "scaling_layers": [
+    {
+      "prev_op": "norm_attn_norm.norm_1",
+      "layers": [
+        "norm_attn_norm.attn.Wqkv"
+      ],
+      "inp": "norm_attn_norm.attn.Wqkv",
+      "module2inspect": "norm_attn_norm.attn"
+    },
+    {
+      "prev_op": "norm_attn_norm.attn.Wqkv",
+      "layers": [
+        "norm_attn_norm.attn.out_proj"
+      ],
+      "inp": "norm_attn_norm.attn.out_proj"
+    }
+  ],
+  "model_decoder_layers": "transformer.blocks"
+}

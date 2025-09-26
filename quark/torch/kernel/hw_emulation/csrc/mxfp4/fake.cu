@@ -132,12 +132,23 @@ __global__ void qdq_mxfp4_kernel(float_type* inp, float_type* out) {
 }
 
 void qdq_mxfp4_(torch::Tensor a, int group_size) {
+    int block_size;
+
+    at::DeviceGuard device_guard(a.device());
     int numel = a.numel();
 
-    dim3 dimGrid(numel / 128, 1, 1);
-    dim3 dimBlock(128, 1, 1); // < 1024: we are good!
+    if (numel % 128 == 0) {
+        block_size = 128;
+    } else if (numel % 64 == 0) {
+        block_size = 64;
+    } else {
+        TORCH_CHECK(1 == 0, "Expected qdq_mxfp4 input number of elements to be a multiple of 64, but it is not!");
+    }
 
-    TORCH_CHECK(numel % 128 == 0, "Expected qdq_mxfp4_ input number of elements to be a multiple of 128, but it is not!");
+
+    dim3 dimGrid(numel / block_size, 1, 1);
+    dim3 dimBlock(block_size, 1, 1); // < 1024: we are good!
+
     TORCH_CHECK(group_size == 32, "Expected group_size=32 in qdq_mxfp4_!");
     TORCH_CHECK(a.is_contiguous(), "Expected qdq_mxfp4_ input to be contiguous!");
 
@@ -147,7 +158,11 @@ void qdq_mxfp4_(torch::Tensor a, int group_size) {
         qdq_mxfp4_kernel<__half, FLOAT16_EXP_BITS, FLOAT16_MANTISSA_BITS, FLOAT16_EXP_BIAS, FLOAT16_VAL_TO_ADD, FLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__half*) a.data_ptr(), (__half*) a.data_ptr());
     }
     else if (a.scalar_type() == at::ScalarType::BFloat16) {
+#if BFLOAT16_SUPPORTED
         qdq_mxfp4_kernel<__nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS, BFLOAT16_VAL_TO_ADD, BFLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__nv_bfloat16*) a.data_ptr(), (__nv_bfloat16*) a.data_ptr());
+#else
+        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
+#endif
     }
     else {
         TORCH_CHECK(false, "Wrong input dtype in qdq_mxfp4!");
@@ -155,12 +170,22 @@ void qdq_mxfp4_(torch::Tensor a, int group_size) {
 }
 
 torch::Tensor qdq_mxfp4(torch::Tensor a, int group_size) {
+    int block_size;
+
+    at::DeviceGuard device_guard(a.device());
     int numel = a.numel();
 
-    dim3 dimGrid(numel / 128, 1, 1);
-    dim3 dimBlock(128, 1, 1); // < 1024: we are good!
+    if (numel % 128 == 0) {
+        block_size = 128;
+    } else if (numel % 64 == 0) {
+        block_size = 64;
+    } else {
+        TORCH_CHECK(1 == 0, "Expected qdq_mxfp4 input number of elements to be a multiple of 64, but it is not!");
+    }
 
-    TORCH_CHECK(numel % 128 == 0, "Expected qdq_mxfp4 input number of elements to be a multiple of 128, but it is not!");
+    dim3 dimGrid(numel / block_size, 1, 1);
+    dim3 dimBlock(block_size, 1, 1); // < 1024: we are good!
+
     TORCH_CHECK(group_size == 32, "Expected group_size=32 in qdq_mxfp4!");
     TORCH_CHECK(a.is_contiguous(), "Expected qdq_mxfp4 input to be contiguous!");
 
@@ -172,7 +197,11 @@ torch::Tensor qdq_mxfp4(torch::Tensor a, int group_size) {
         qdq_mxfp4_kernel<__half, FLOAT16_EXP_BITS, FLOAT16_MANTISSA_BITS, FLOAT16_EXP_BIAS, FLOAT16_VAL_TO_ADD, FLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__half*) a.data_ptr(), (__half*) out.data_ptr());
     }
     else if (a.scalar_type() == at::ScalarType::BFloat16) {
+#if BFLOAT16_SUPPORTED
         qdq_mxfp4_kernel<__nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS, BFLOAT16_VAL_TO_ADD, BFLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__nv_bfloat16*) a.data_ptr(), (__nv_bfloat16*) out.data_ptr());
+#else
+        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
+#endif
     }
     else {
         TORCH_CHECK(false, "Wrong input dtype in qdq_mxfp4!");

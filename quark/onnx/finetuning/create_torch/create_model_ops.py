@@ -3,26 +3,36 @@
 # SPDX-License-Identifier: MIT
 #
 
-import numpy as np
-import torch
-from torch import nn
-import onnx
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .create_model_utils import (ComputeOperations, NormalizationOperations, ActivationMapping, QuantizeLinearOps,
-                                 DequantizeLinearOps, FixNeuronOps, ONNXModelParser, extract_attr_values)
+import numpy as np
+import onnx
+import torch
+from numpy.typing import NDArray
+from torch import nn
+
+from quark.shares.utils.log import ScreenLogger, log_errors
+
+from .create_model_utils import (
+    ActivationMapping,
+    ComputeOperations,
+    DequantizeLinearOps,
+    FixNeuronOps,
+    NormalizationOperations,
+    ONNXModelParser,
+    QuantizeLinearOps,
+    extract_attr_values,
+)
 from .quant_base_ops import QuantizationModule, QuantizeWrapper
-from .quant_conv_ops import (QConv1d, QConv2d, QConv3d, QConvTranspose1d, QConvTranspose2d, QConvTranspose3d)
+from .quant_conv_ops import QConv1d, QConv2d, QConv3d, QConvTranspose1d, QConvTranspose2d, QConvTranspose3d
 from .quant_gemm_ops import QGemm
 from .quant_matmul_ops import QMatMul
 from .quant_norm_ops import QInstanceNorm2d, QLayerNorm
-from typing import Any, Tuple, Dict, List, Union, Optional
-from numpy.typing import NDArray
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
 
-def param_is_symmetric(params: List[Any]) -> bool:
+def param_is_symmetric(params: list[Any]) -> bool:
     """
     Check if parameters are symmetric, all values [2,2,2,2].
     Then we can use only [2,2].
@@ -35,7 +45,7 @@ def param_is_symmetric(params: List[Any]) -> bool:
     return True
 
 
-def extract_padding_params(params: List[Any]) -> Any:
+def extract_padding_params(params: list[Any]) -> Any:
     """Extract padding parameters for Pad layers."""
     pad_dim = len(params) // 2
     if pad_dim == 0:
@@ -59,21 +69,21 @@ def extract_padding_params(params: List[Any]) -> Any:
     return pads
 
 
-def extract_padding_params_for_conv(params: List[Any]) -> Any:
+def extract_padding_params_for_conv(params: list[Any]) -> Any:
     """
     Padding params in onnx are different than in pytorch. That is why we need to
     check if they are symmetric and cut half or return a padding layer.
     """
     if param_is_symmetric(params):
-        return params[:len(params) // 2]
+        return params[: len(params) // 2]
     else:
         pad_dim = len(params) // 2
-        pad_layer = getattr(torch.nn, "ConstantPad{}d".format(pad_dim))
+        pad_layer = getattr(torch.nn, f"ConstantPad{pad_dim}d")
         pads = extract_padding_params(params)
         return pad_layer(pads, value=0)
 
 
-def extract_weight_and_bias(params: List[Any]) -> Tuple[NDArray[Any], Union[NDArray[Any], None]]:
+def extract_weight_and_bias(params: list[Any]) -> tuple[NDArray[Any], Union[NDArray[Any], None]]:
     """Extract weights and biases."""
     param_length = len(params)
     if param_length == 1:
@@ -83,7 +93,7 @@ def extract_weight_and_bias(params: List[Any]) -> Tuple[NDArray[Any], Union[NDAr
         weight = params[0]
         bias = params[1]
     else:
-        raise ValueError("Unexpected number of parameters: {}".format(param_length))
+        raise ValueError(f"Unexpected number of parameters: {param_length}")
     return weight, bias
 
 
@@ -96,8 +106,9 @@ def load_weight_and_bias(layer: nn.Module, weight: NDArray[Any], bias: Union[NDA
         layer.bias.data = torch.tensor(bias, dtype=torch.float)
 
 
-def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
-                 layer_qinfos: List[Any]) -> Tuple[QuantizeWrapper, Union[QuantizeWrapper, None]]:
+def convert_conv(
+    node: onnx.NodeProto, layer_params: list[Any], layer_qinfos: list[Any]
+) -> tuple[QuantizeWrapper, Union[QuantizeWrapper, None]]:
     """Use to convert Conv ONNX node to Torch module (or called layer).
        This function supports onnx's Conv and ConvTranspose from 1 to 11.
 
@@ -107,7 +118,7 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
     :return: Converted conv layer, perhaps it has a pad layer.
     """
 
-    def _extract_attributes(node: onnx.NodeProto) -> Dict[str, Any]:
+    def _extract_attributes(node: onnx.NodeProto) -> dict[str, Any]:
         kwargs = {}
 
         for attr in node.attribute:
@@ -127,7 +138,7 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
                     pass
                 else:
                     # This feature is not implemented yet
-                    raise NotImplementedError("auto_pad={} functionality not implemented.".format(value))
+                    raise NotImplementedError(f"auto_pad={value} functionality not implemented.")
 
             # This two attributes are for ConvTranspose
             elif attr.name == "output_shape" and node.op_type == "ConvTranspose":
@@ -140,19 +151,19 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
     assert node.op_type in [
         "Conv",
         "ConvTranspose",
-    ], "Incorrect layer type: {}".format(node.op_type)
+    ], f"Incorrect layer type: {node.op_type}"
 
     kwargs = _extract_attributes(node)
     kernel_size_length = len(kwargs["kernel_size"])
     layer: Union[QuantizeWrapper, type[QuantizeWrapper]] = QConv2d
     if kernel_size_length == 1:
-        layer = QConv1d if node.op_type == 'Conv' else QConvTranspose1d
+        layer = QConv1d if node.op_type == "Conv" else QConvTranspose1d
     elif kernel_size_length == 2:
-        layer = QConv2d if node.op_type == 'Conv' else QConvTranspose2d
+        layer = QConv2d if node.op_type == "Conv" else QConvTranspose2d
     elif kernel_size_length == 3:
-        layer = QConv3d if node.op_type == 'Conv' else QConvTranspose3d
+        layer = QConv3d if node.op_type == "Conv" else QConvTranspose3d
     else:
-        raise ValueError("Unexpected length of kernel_size dimension: {}".format(kernel_size_length))
+        raise ValueError(f"Unexpected length of kernel_size dimension: {kernel_size_length}")
 
     weight, bias = extract_weight_and_bias(layer_params)
     kwargs["bias"] = bias is not None
@@ -181,7 +192,7 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
     weight_quant_info = layer_qinfos[1]
     if weight_quant_info is not None:
         layer.create_weight_quantizer(weight_quant_info)
-        assert (layer.weight_quantizer is not None), "Layer Weight Quantizer is None"
+        assert layer.weight_quantizer is not None, "Layer Weight Quantizer is None"
         if layer.weight_quantizer.q_folded:  # Restore weight
             weight = layer.weight_quantizer.dequantize(torch.tensor(weight)).numpy()
 
@@ -189,7 +200,7 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
         bias_quant_info = layer_qinfos[2]
         if bias_quant_info is not None:
             layer.create_bias_quantizer(bias_quant_info)
-            assert (layer.bias_quantizer is not None), "Layer Bias Quantizer is None"
+            assert layer.bias_quantizer is not None, "Layer Bias Quantizer is None"
             if layer.bias_quantizer.q_folded:  # Restore bias
                 bias = layer.bias_quantizer.dequantize(torch.tensor(bias)).numpy()
 
@@ -198,19 +209,19 @@ def convert_conv(node: onnx.NodeProto, layer_params: List[Any],
     return layer, pad_layer
 
 
-def convert_matmul(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: List[Any]) -> Tuple[QMatMul, None]:
+def convert_matmul(node: onnx.NodeProto, layer_params: list[Any], layer_qinfos: list[Any]) -> tuple[QMatMul, None]:
     """Use to convert MatMul ONNX node to Torch module.
 
-       This function supports onnx's MatMul from 6.
+    This function supports onnx's MatMul from 6.
 
-       :param node : ONNX node.
-       :param layer_params : Layer weight parameters.
-       :param layer_qinfos : Layer quantization informations.
-       :return: Converted MatMul layer.
+    :param node : ONNX node.
+    :param layer_params : Layer weight parameters.
+    :param layer_qinfos : Layer quantization informations.
+    :return: Converted MatMul layer.
     """
 
-    def _extract_attributes(node: onnx.NodeProto) -> Dict[str, Any]:
-        kwargs: Dict[str, Any] = {}
+    def _extract_attributes(node: onnx.NodeProto) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
         return kwargs
 
     kwargs = _extract_attributes(node)
@@ -234,7 +245,7 @@ def convert_matmul(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: 
     weight_quant_info = layer_qinfos[1]
     if weight_quant_info is not None:
         layer.create_weight_quantizer(weight_quant_info)
-        assert (layer.weight_quantizer is not None), "Layer Weight Quantizer is None"
+        assert layer.weight_quantizer is not None, "Layer Weight Quantizer is None"
         if layer.weight_quantizer.q_folded:  # Restore weight
             weight = layer.weight_quantizer.dequantize(torch.tensor(weight)).numpy()
     bias = None
@@ -243,7 +254,7 @@ def convert_matmul(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: 
     return layer, None
 
 
-def convert_gemm(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: List[Any]) -> Tuple[QGemm, None]:
+def convert_gemm(node: onnx.NodeProto, layer_params: list[Any], layer_qinfos: list[Any]) -> tuple[QGemm, None]:
     """Use to convert Gemm ONNX node to Torch module.
        This function supports onnx's Instance Norm from 6.
 
@@ -253,7 +264,7 @@ def convert_gemm(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: Li
     :return: Converted Gemm layer.
     """
 
-    def _extract_attributes(node: onnx.NodeProto) -> Dict[str, Any]:
+    def _extract_attributes(node: onnx.NodeProto) -> dict[str, Any]:
         kwargs = {}
 
         for attr in node.attribute:
@@ -293,7 +304,7 @@ def convert_gemm(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: Li
     weight_quant_info = layer_qinfos[1]
     if weight_quant_info is not None:
         layer.create_weight_quantizer(weight_quant_info)
-        assert (layer.weight_quantizer is not None), "Layer Weight Quantizer is None"
+        assert layer.weight_quantizer is not None, "Layer Weight Quantizer is None"
         if layer.weight_quantizer.q_folded:  # Restore weight
             weight = layer.weight_quantizer.dequantize(torch.tensor(weight)).numpy()
 
@@ -301,7 +312,7 @@ def convert_gemm(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: Li
         bias_quant_info = layer_qinfos[2]
         if bias_quant_info is not None:
             layer.create_bias_quantizer(bias_quant_info)
-            assert (layer.bias_quantizer is not None), "Layer Bias Quantizer is None"
+            assert layer.bias_quantizer is not None, "Layer Bias Quantizer is None"
             if layer.bias_quantizer.q_folded:  # Restore bias
                 bias = layer.bias_quantizer.dequantize(torch.tensor(bias)).numpy()
 
@@ -310,8 +321,9 @@ def convert_gemm(node: onnx.NodeProto, layer_params: List[Any], layer_qinfos: Li
     return layer, None
 
 
-def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
-                 layer_qinfos: List[Any]) -> Tuple[Union[QInstanceNorm2d, QLayerNorm], None]:
+def convert_norm(
+    node: onnx.NodeProto, layer_params: list[Any], layer_qinfos: list[Any]
+) -> tuple[Union[QInstanceNorm2d, QLayerNorm], None]:
     """Use to convert norm (Instance/Layer Norm) ONNX node to Torch module.
        This function supports onnx's Instance Norm from 6.
 
@@ -321,7 +333,7 @@ def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
     :return: Converted norm (Instance/Layer Norm) layer.
     """
 
-    def _extract_attributes(node: onnx.NodeProto) -> Dict[str, Any]:
+    def _extract_attributes(node: onnx.NodeProto) -> dict[str, Any]:
         kwargs = {}
 
         for attr in node.attribute:
@@ -352,13 +364,13 @@ def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
     elif node.op_type == "LayerNormalization":
         # Support normalization at the last dimension
         if "axis" in kwargs and kwargs.pop("axis") != -1:
-            raise NotImplementedError("Unsupported LayerNorm {} whose axis is not -1.".format(node.name))
+            raise NotImplementedError(f"Unsupported LayerNorm {node.name} whose axis is not -1.")
         kwargs["normalized_shape"] = weight.shape[0] if bias is None else bias.shape[0]
         kwargs["elementwise_affine"] = True
 
         layer = QLayerNorm
     else:
-        raise NotImplementedError("Unsupported op type {}.".format(node.op_type))
+        raise NotImplementedError(f"Unsupported op type {node.op_type}.")
 
     # Initialize layer and load weights
     layer = layer(**kwargs)
@@ -371,7 +383,7 @@ def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
     weight_quant_info = layer_qinfos[1]
     if weight_quant_info is not None:
         layer.create_weight_quantizer(weight_quant_info)
-        assert (layer.weight_quantizer is not None), "Layer Weight Quantizer is None"
+        assert layer.weight_quantizer is not None, "Layer Weight Quantizer is None"
         if layer.weight_quantizer.q_folded:  # Restore weight
             weight = layer.weight_quantizer.dequantize(torch.tensor(weight)).numpy()
 
@@ -379,7 +391,7 @@ def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
         bias_quant_info = layer_qinfos[2]
         if bias_quant_info is not None:
             layer.create_bias_quantizer(bias_quant_info)
-            assert (layer.bias_quantizer is not None), "Layer Bias Quantizer is None"
+            assert layer.bias_quantizer is not None, "Layer Bias Quantizer is None"
             if layer.bias_quantizer.q_folded:  # Restore bias
                 bias = layer.bias_quantizer.dequantize(torch.tensor(bias)).numpy()
 
@@ -388,9 +400,8 @@ def convert_norm(node: onnx.NodeProto, layer_params: List[Any],
     return layer, None
 
 
-class Clip(nn.Module):
-
-    def __init__(self, min: Optional[float] = None, max: Optional[float] = None) -> None:
+class Clip(nn.Module):  # type: ignore
+    def __init__(self, min: float | None = None, max: float | None = None) -> None:
         super().__init__()
         self.min = min
         self.max = max
@@ -409,7 +420,7 @@ def convert_act(node: onnx.NodeProto) -> Union[nn.Module, None]:
     :return: Converted act layer.
     """
 
-    def _extract_attributes(node: onnx.NodeProto) -> Dict[str, Any]:
+    def _extract_attributes(node: onnx.NodeProto) -> dict[str, Any]:
         """This function supports LeakyRelu from 1 to 16 and Softmax from 1 to 13"""
         kwargs = {}
 
@@ -418,27 +429,27 @@ def convert_act(node: onnx.NodeProto) -> Union[nn.Module, None]:
                 if node.op_type == "LeakyRelu":
                     kwargs["negative_slope"] = extract_attr_values(attr)
                 else:
-                    raise NotImplementedError("node {}'s alpha is not implemented.".format(node.name))
+                    raise NotImplementedError(f"node {node.name}'s alpha is not implemented.")
             elif attr.name == "axis":
                 if node.op_type == "Softmax":
                     kwargs["dim"] = extract_attr_values(attr)
                 else:
-                    raise NotImplementedError("node {}'s axis is not implemented.".format(node.name))
+                    raise NotImplementedError(f"node {node.name}'s axis is not implemented.")
             elif attr.name == "approximate":
                 if node.op_type == "Gelu":
                     kwargs["approximate"] = extract_attr_values(attr)
                 else:
-                    raise NotImplementedError("node {}'s approximate is not implemented.".format(node.name))
+                    raise NotImplementedError(f"node {node.name}'s approximate is not implemented.")
             elif attr.name == "min":
                 if node.op_type == "Clip":
                     kwargs["min"] = extract_attr_values(attr)
                 else:
-                    raise NotImplementedError("node {}'s min is not implemented.".format(node.name))
+                    raise NotImplementedError(f"node {node.name}'s min is not implemented.")
             elif attr.name == "max":
                 if node.op_type == "Clip":
                     kwargs["max"] = extract_attr_values(attr)
                 else:
-                    raise NotImplementedError("node {}'s min is not implemented.".format(node.name))
+                    raise NotImplementedError(f"node {node.name}'s min is not implemented.")
 
         return kwargs
 
@@ -449,11 +460,11 @@ def convert_act(node: onnx.NodeProto) -> Union[nn.Module, None]:
         logger.warning(f"Not supported activation node {node.name} for conversion")
         return None
     else:
-        if node.op_type == 'Clip' and len(node.input) == 1:
+        if node.op_type == "Clip" and len(node.input) == 1:
             return Clip(**_extract_attributes(node))
-        elif node.op_type == 'LeakyRelu':
+        elif node.op_type == "LeakyRelu":
             return nn.LeakyReLU(**_extract_attributes(node), inplace=True)
-        elif node.op_type == 'Softmax':
+        elif node.op_type == "Softmax":
             kwargs = dict(dim=-1)
             kwargs.update(_extract_attributes(node))
             return nn.Softmax(**kwargs)
@@ -461,7 +472,7 @@ def convert_act(node: onnx.NodeProto) -> Union[nn.Module, None]:
             return ActivationMapping[node.op_type]
 
 
-def convert_output_nodes_to_module(onnx_parser: ONNXModelParser, node: onnx.NodeProto) -> Optional[QuantizationModule]:
+def convert_output_nodes_to_module(onnx_parser: ONNXModelParser, node: onnx.NodeProto) -> QuantizationModule | None:
     if node is None:
         logger.warning(f"Could not convert output QDQ for {node}")
         return None
@@ -477,15 +488,15 @@ def convert_output_nodes_to_module(onnx_parser: ONNXModelParser, node: onnx.Node
 
 @log_errors
 def convert_ops_to_modules(
-    onnx_model: onnx.ModelProto
-) -> Tuple[Optional[nn.Module], Optional[nn.Module], Optional[nn.Module], Optional[QuantizationModule]]:
+    onnx_model: onnx.ModelProto,
+) -> tuple[nn.Module | None, nn.Module | None, nn.Module | None, QuantizationModule | None]:
     """Convert ONNX operations to Torch modules."""
 
     opset_version = onnx_model.opset_import[0].version
     onnx_parser = ONNXModelParser(onnx_model)
     target_ops = ComputeOperations + NormalizationOperations
-    module: Optional[nn.Module] = None
-    module_pad: Optional[nn.Module] = None
+    module: nn.Module | None = None
+    module_pad: nn.Module | None = None
     for node in onnx_model.graph.node:
         if node.op_type not in target_ops:
             continue
@@ -526,12 +537,14 @@ def convert_ops_to_modules(
                     break
 
             if min_value is not None and max_value is not None:
-                act_node_new = onnx.helper.make_node(act_node.op_type,
-                                                     name=act_node.name,
-                                                     min=min_value,
-                                                     max=max_value,
-                                                     inputs=[act_node.input[0]],
-                                                     outputs=act_node.output)
+                act_node_new = onnx.helper.make_node(
+                    act_node.op_type,
+                    name=act_node.name,
+                    min=min_value,
+                    max=max_value,
+                    inputs=[act_node.input[0]],
+                    outputs=act_node.output,
+                )
 
                 module_act = convert_act(act_node_new)
 
@@ -544,13 +557,13 @@ def convert_ops_to_modules(
 
 
 def set_modules_original_weight(module: nn.Module, weight: NDArray[Any]) -> None:
-    """ For setting original float weight """
-    if hasattr(module, 'weight') and module.weight is not None:
+    """For setting original float weight"""
+    if hasattr(module, "weight") and module.weight is not None:
         module.weight.data = torch.tensor(weight).to(device=module.weight.device)
 
 
 def get_modules_optimized_weight(module: nn.Module) -> Any:
-    """ For getting optimized quantized weight """
+    """For getting optimized quantized weight"""
     if hasattr(module, "opt_gained") and module.opt_gained is False:
         return None
 
@@ -559,7 +572,7 @@ def get_modules_optimized_weight(module: nn.Module) -> Any:
         logger.warning("Not found quantizer for weight")
         return None
 
-    if hasattr(quantizer, 'alpha'):
+    if hasattr(quantizer, "alpha"):
         # This is for adaround
         # It requires folding the QuantizeLinear, quantize the weight by adaround
         # and simulate the QuantizeLinear behaviour
@@ -576,13 +589,13 @@ def get_modules_optimized_weight(module: nn.Module) -> Any:
 
 
 def set_modules_original_bias(module: nn.Module, bias: NDArray[Any]) -> None:
-    """ For setting original float bias """
-    if hasattr(module, 'bias') and module.bias is not None:
+    """For setting original float bias"""
+    if hasattr(module, "bias") and module.bias is not None:
         module.bias.data = torch.tensor(bias).to(device=module.bias.device)
 
 
 def get_modules_optimized_bias(module: nn.Module) -> Any:
-    """ For getting optimized quantized bias """
+    """For getting optimized quantized bias"""
     if hasattr(module, "opt_gained") and module.opt_gained is False:
         return None
 

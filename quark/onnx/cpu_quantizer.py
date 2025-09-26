@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: MIT
 #
 
+from typing import Any, Dict, List, Optional
+
 from onnx import ModelProto
 from onnxruntime.quantization.quant_utils import QuantizationMode
-from typing import Any, List, Dict, Optional
 
 from .qdq_quantizer import VitisQDQQuantizer
 
@@ -27,12 +28,12 @@ class VitisQDQCPUQuantizer(VitisQDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any] = {},
-        extra_options: Optional[Dict[str, Any]] = None,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         VitisQDQQuantizer.__init__(

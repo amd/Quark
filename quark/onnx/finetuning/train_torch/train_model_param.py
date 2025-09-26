@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Union, Tuple, Any
+from typing import Any, Tuple, Union
 
 from torch.utils.data import DataLoader
 
@@ -38,11 +38,11 @@ class TrainParameters:
         log_period: Union[float, int] = 100,
         update_bias: bool = True,
         reg_param: float = 0.01,
-        beta_range: Tuple[int, int] = (20, 2),
+        beta_range: tuple[int, int] = (20, 2),
         warm_start: float = 0.2,
         drop_ratio: float = 1.0,
         block_recon: bool = False,
-        dummy_path: str = '',
+        dummy_path: str = "",
     ) -> None:
         """
         :param data_loader: Data loader for torch.

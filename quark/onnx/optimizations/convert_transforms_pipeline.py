@@ -4,14 +4,11 @@
 #
 """Transformations pipeline for onnx model conversion."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from typing import Any, Tuple
+
 import onnx
-from quark.onnx.graph_transformations import transforms_pipeline
-from quark.onnx.graph_transformations import model_transformer
+
+from quark.onnx.graph_transformations import model_transformer, transforms_pipeline
 from quark.onnx.optimizations import convert_transforms as convert_transforms_mod
 
 TransformsPipeline = transforms_pipeline.TransformsPipeline
@@ -20,7 +17,7 @@ TransformsPipeline = transforms_pipeline.TransformsPipeline
 class ConvertQDQToQOPTransformsPipeline(TransformsPipeline):
     """Convert QDQ to QOperator transformations pipeline."""
 
-    def apply(self, model: onnx.ModelProto, candidate_nodes: Any, node_metadata: Any) -> Tuple[onnx.ModelProto, Any]:
+    def apply(self, model: onnx.ModelProto, candidate_nodes: Any, node_metadata: Any) -> tuple[onnx.ModelProto, Any]:
         """Implement the transforms.
 
         Args:
@@ -38,15 +35,16 @@ class ConvertQDQToQOPTransformsPipeline(TransformsPipeline):
             convert_transforms_mod.MulQDQToQOPTransform(),
             convert_transforms_mod.SigmoidQDQToQOPTransform(),
         ]
-        converted_model, metadata = model_transformer.ModelTransformer(model, convert_transforms, candidate_nodes,
-                                                                       node_metadata).transform()
+        converted_model, metadata = model_transformer.ModelTransformer(
+            model, convert_transforms, candidate_nodes, node_metadata
+        ).transform()
         return converted_model, metadata
 
 
 class RemoveQDQTransformsPipeline(TransformsPipeline):
     """Remove QDQ pairs transformations pipeline."""
 
-    def apply(self, model: onnx.ModelProto, candidate_nodes: Any, node_metadata: Any) -> Tuple[onnx.ModelProto, Any]:
+    def apply(self, model: onnx.ModelProto, candidate_nodes: Any, node_metadata: Any) -> tuple[onnx.ModelProto, Any]:
         """Implement the transforms.
 
         Args:
@@ -60,6 +58,7 @@ class RemoveQDQTransformsPipeline(TransformsPipeline):
         convert_transforms = [
             convert_transforms_mod.RemoveQDQTransform(),
         ]
-        converted_model, metadata = model_transformer.ModelTransformer(model, convert_transforms, candidate_nodes,
-                                                                       node_metadata).transform()
+        converted_model, metadata = model_transformer.ModelTransformer(
+            model, convert_transforms, candidate_nodes, node_metadata
+        ).transform()
         return converted_model, metadata

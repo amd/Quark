@@ -4,8 +4,10 @@
 #
 
 import argparse
-from quark.onnx.quantization.config import (Config, get_default_config)
+
 from quark.onnx import ModelQuantizer
+from quark.onnx.quantization.config import Config, get_default_config
+
 
 def main(args: argparse.Namespace) -> None:
     # `input_model_path` is the path to the original, unquantized ONNX model.
@@ -16,6 +18,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Get quantization configuration
     quant_config = get_default_config(args.config)
+    quant_config.include_cle = False
     config = Config(global_quant_config=quant_config)
     print(f"The configuration for quantization is {config}")
 
@@ -29,12 +32,12 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_model_path", help="Specify the input model to be quantized", required=True)
-    parser.add_argument("--output_model_path",
-                        help="Specify the path to save the quantized model",
-                        type=str,
-                        default='',
-                        required=False)
-    parser.add_argument("--config", help="The configuration for quantization", type=str, default="INT8_TRANSFORMER_DEFAULT")
+    parser.add_argument(
+        "--output_model_path", help="Specify the path to save the quantized model", type=str, default="", required=False
+    )
+    parser.add_argument(
+        "--config", help="The configuration for quantization", type=str, default="INT8_TRANSFORMER_DEFAULT"
+    )
 
     args = parser.parse_args()
 

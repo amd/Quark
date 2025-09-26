@@ -2,27 +2,31 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 A tool for replace `inf` and `-inf` values in ONNX model weights with specified replacement values.'
 
     Example : python -m quark.onnx.tools.replace_inf_weights --input_model [INPUT_MODEL_PATH] --output_model [OUTPUT_MODEL_PATH] --replace_inf_value [REPLACE_INF_VALUE]
 
-'''
+"""
 
 import argparse
-import onnx
-import numpy as np
-from onnx import numpy_helper
-from quark.shares.utils.log import ScreenLogger
 from pathlib import Path
-from typing import Union, Any, Optional
+from typing import Any, Optional, Union
+
+import numpy as np
+import onnx
+from onnx import numpy_helper
+
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 
-def replace_inf_in_onnx_weights(input_model: Union[str, Path, onnx.ModelProto],
-                                output_model: Optional[Union[str, Path]] = None,
-                                replace_inf_value: float = 10000.0) -> Any:
+def replace_inf_in_onnx_weights(
+    input_model: Union[str, Path, onnx.ModelProto],
+    output_model: Union[str, Path] | None = None,
+    replace_inf_value: float = 10000.0,
+) -> Any:
     """
     Replaces `inf` and `-inf` values in the weights of an ONNX model with specified default values.
 
@@ -70,13 +74,16 @@ def replace_inf_in_onnx_weights(input_model: Union[str, Path, onnx.ModelProto],
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Replace `inf` and `-inf` values in ONNX model weights with specified replacement values.')
-    parser.add_argument('--input_model', type=str, required=True, help='Path to the input ONNX model file')
-    parser.add_argument('--output_model', type=str, required=True, help='Path to save the modified ONNX model file')
-    parser.add_argument('--replace_inf_value',
-                        type=float,
-                        default=10000.0,
-                        help='Value used to replace `inf` and `-inf`: '
-                        '`inf` is replaced with this value, and `-inf` is replaced with its negative.')
+        description="Replace `inf` and `-inf` values in ONNX model weights with specified replacement values."
+    )
+    parser.add_argument("--input_model", type=str, required=True, help="Path to the input ONNX model file")
+    parser.add_argument("--output_model", type=str, required=True, help="Path to save the modified ONNX model file")
+    parser.add_argument(
+        "--replace_inf_value",
+        type=float,
+        default=10000.0,
+        help="Value used to replace `inf` and `-inf`: "
+        "`inf` is replaced with this value, and `-inf` is replaced with its negative.",
+    )
     args = parser.parse_args()
     replace_inf_in_onnx_weights(args.input_model, args.output_model, args.replace_inf_value)

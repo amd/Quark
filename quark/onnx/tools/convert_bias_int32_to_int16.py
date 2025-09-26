@@ -2,20 +2,22 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert the quantized model with int32 bias to one with int16 bias.
 
     Example : python -m quark.onnx.tools.convert_bias_int32_to_int16 --input_model_path [INPUT_MODEL_PATH] --output_model_path [OUTPUT_MODEL_PATH]
 
-'''
+"""
 
+from argparse import ArgumentParser, Namespace
+from typing import Tuple
+
+import numpy as np
 import onnx
 import onnxruntime
-import numpy as np
-from typing import Tuple
-from argparse import ArgumentParser, Namespace
 from onnx import numpy_helper
 from onnxruntime.quantization.onnx_model import ONNXModel
+
 from quark.onnx.tools.convert_opset_version import convert_opset_version
 from quark.shares.utils.log import ScreenLogger
 
@@ -27,12 +29,12 @@ def parse_args() -> Namespace:
     parser = ArgumentParser("convert_bias_int32_to_int16", usage=usage_str)
     parser.add_argument("--input_model_path", type=str, help="input onnx model path")
     parser.add_argument("--output_model_path", type=str, help="output onnx model path")
-    parser.add_argument('--save_as_external_data', action='store_true')
+    parser.add_argument("--save_as_external_data", action="store_true")
     args, _ = parser.parse_known_args()
     return args
 
 
-def convert_bias_int32_to_int16(model: onnx.ModelProto) -> Tuple[onnx.ModelProto, bool]:
+def convert_bias_int32_to_int16(model: onnx.ModelProto) -> tuple[onnx.ModelProto, bool]:
     opset_version = model.opset_import[0].version
     if opset_version < 21:
         model = convert_opset_version(model, 21)
@@ -55,9 +57,11 @@ def convert_bias_int32_to_int16(model: onnx.ModelProto) -> Tuple[onnx.ModelProto
 
     onnx_model = ONNXModel(model)
     for node in onnx_model.model.graph.node:
-        if node.op_type in [
-                "Conv", "ConvTranspose", "Gemm", "LayerNormalization", "InstanceNormalization", "BatchNormalization"
-        ] and len(node.input) > 2:
+        if (
+            node.op_type
+            in ["Conv", "ConvTranspose", "Gemm", "LayerNormalization", "InstanceNormalization", "BatchNormalization"]
+            and len(node.input) > 2
+        ):
             if node.input[2] in tensor_to_producer_dict:
                 bias_dq_node = tensor_to_producer_dict[node.input[2]]
                 if len(bias_dq_node.input) == 3:
@@ -74,10 +78,10 @@ def convert_bias_int32_to_int16(model: onnx.ModelProto) -> Tuple[onnx.ModelProto
     return onnx_model.model, flag
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     try:
-        ort_session = onnxruntime.InferenceSession(args.input_model_path, providers=['CPUExecutionProvider'])
+        ort_session = onnxruntime.InferenceSession(args.input_model_path, providers=["CPUExecutionProvider"])
     except Exception as e:
         raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}")
     input_model = onnx.load(args.input_model_path)

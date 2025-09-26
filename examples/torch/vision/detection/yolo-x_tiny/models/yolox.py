@@ -10,11 +10,14 @@
 # Modifications copyright(c) 2025 Advanced Micro Devices,Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-import torch.nn as nn
-import torch
 import logging
+
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from quark.torch.quantization.graph.ops.quant_stubs import QuantStub, DeQuantStub
+
+from quark.torch.quantization.graph.ops.quant_stubs import DeQuantStub, QuantStub
+
 from .boxes import bboxes_iou
 from .losses import IOUloss
 
@@ -50,7 +53,6 @@ class YOLOX(nn.Module):
 
 
 class Quark_YOLOX(nn.Module):
-
     def __init__(self, yolo_base) -> None:
         super().__init__()
         self.base_model = yolo_base
@@ -78,8 +80,9 @@ class Quark_YOLOX(nn.Module):
                 output = x_traing[k]
                 stride_this_level = self.strides[k]
                 reg_output = l1_loss_reg_output[k]
-                output, grid = self.get_output_and_grid(output, k, stride_this_level,
-                                                        x[0].type())  # output [64, 2704, 85] torch.Size([1, 2704, 2])
+                output, grid = self.get_output_and_grid(
+                    output, k, stride_this_level, x[0].type()
+                )  # output [64, 2704, 85] torch.Size([1, 2704, 2])
                 x_shifts.append(grid[:, :, 0])
                 y_shifts.append(grid[:, :, 1])
                 expanded_strides.append(torch.zeros(1, grid.shape[1]).fill_(stride_this_level).type_as(x[0]))
@@ -90,13 +93,9 @@ class Quark_YOLOX(nn.Module):
                     reg_output = reg_output.permute(0, 1, 3, 4, 2).reshape(batch_size, -1, 4)
                     origin_preds.append(reg_output.clone())
                 outputs.append(output)
-            loss, iou_loss, conf_loss, cls_loss, l1_loss, num_fg = self.get_losses(x_shifts,
-                                                                                   y_shifts,
-                                                                                   expanded_strides,
-                                                                                   labels,
-                                                                                   torch.cat(outputs, 1),
-                                                                                   origin_preds,
-                                                                                   dtype=x[0].dtype)
+            loss, iou_loss, conf_loss, cls_loss, l1_loss, num_fg = self.get_losses(
+                x_shifts, y_shifts, expanded_strides, labels, torch.cat(outputs, 1), origin_preds, dtype=x[0].dtype
+            )
 
             outputs = {
                 "total_loss": loss,
@@ -104,7 +103,7 @@ class Quark_YOLOX(nn.Module):
                 "l1_loss": l1_loss,
                 "conf_loss": conf_loss,
                 "cls_loss": cls_loss,
-                "num_fg": num_fg
+                "num_fg": num_fg,
             }
         else:
             outputs = self.decode_outputs(x_eval, dtype=x.type())
@@ -114,7 +113,7 @@ class Quark_YOLOX(nn.Module):
         grids = []
         strides = []
         HW = [[52, 52], [26, 26], [13, 13]]
-        for (hsize, wsize), stride in zip(HW, self.strides):
+        for (hsize, wsize), stride in zip(HW, self.strides, strict=False):
             yv, xv = meshgrid([torch.arange(hsize), torch.arange(wsize)])
             grid = torch.stack((xv, yv), 2).view(1, -1, 2)
             grids.append(grid)
@@ -124,9 +123,9 @@ class Quark_YOLOX(nn.Module):
         grids = torch.cat(grids, dim=1).type(dtype)
         strides = torch.cat(strides, dim=1).type(dtype)
 
-        outputs = torch.cat([(outputs[..., 0:2] + grids) * strides,
-                             torch.exp(outputs[..., 2:4]) * strides, outputs[..., 4:]],
-                            dim=-1)
+        outputs = torch.cat(
+            [(outputs[..., 0:2] + grids) * strides, torch.exp(outputs[..., 2:4]) * strides, outputs[..., 4:]], dim=-1
+        )
         return outputs
 
     def get_output_and_grid(self, output, k, stride, dtype):
@@ -209,9 +208,11 @@ class Quark_YOLOX(nn.Module):
                     if "CUDA out of memory. " not in str(e):
                         raise  # RuntimeError might not caused by CUDA OOM
 
-                    logging.error("OOM RuntimeError is raised due to the huge memory cost during label assignment. \
+                    logging.error(
+                        "OOM RuntimeError is raised due to the huge memory cost during label assignment. \
                            CPU mode is applied in this batch. If you want to avoid this issue, \
-                           try to reduce the batch size or image size.")
+                           try to reduce the batch size or image size."
+                    )
                     torch.cuda.empty_cache()
                     (
                         gt_matched_classes,
@@ -236,8 +237,9 @@ class Quark_YOLOX(nn.Module):
                 torch.cuda.empty_cache()
                 num_fg += num_fg_img
 
-                cls_target = F.one_hot(gt_matched_classes.to(torch.int64),
-                                       self.num_classes) * pred_ious_this_matching.unsqueeze(-1)
+                cls_target = F.one_hot(
+                    gt_matched_classes.to(torch.int64), self.num_classes
+                ) * pred_ious_this_matching.unsqueeze(-1)
                 obj_target = fg_mask.unsqueeze(-1)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
                 if self.use_l1:
@@ -299,7 +301,6 @@ class Quark_YOLOX(nn.Module):
         obj_preds,
         mode="gpu",
     ):
-
         if mode == "cpu":
             print("-----------Using CPU for the Current Batch-------------")
             gt_bboxes_per_image = gt_bboxes_per_image.cpu().float()
@@ -327,7 +328,7 @@ class Quark_YOLOX(nn.Module):
 
         pair_wise_ious = bboxes_iou(gt_bboxes_per_image, bboxes_preds_per_image, False)
 
-        gt_cls_per_image = (F.one_hot(gt_classes.to(torch.int64), self.num_classes).float())
+        gt_cls_per_image = F.one_hot(gt_classes.to(torch.int64), self.num_classes).float()
         pair_wise_ious_loss = -torch.log(pair_wise_ious + 1e-8)
 
         if mode == "cpu":
@@ -335,12 +336,14 @@ class Quark_YOLOX(nn.Module):
 
         with torch.cuda.amp.autocast(enabled=False):
             cls_preds_ = (cls_preds_.float().sigmoid_() * obj_preds_.float().sigmoid_()).sqrt()
-            pair_wise_cls_loss = F.binary_cross_entropy(cls_preds_.unsqueeze(0).repeat(num_gt, 1, 1),
-                                                        gt_cls_per_image.unsqueeze(1).repeat(1, num_in_boxes_anchor, 1),
-                                                        reduction="none").sum(-1)
+            pair_wise_cls_loss = F.binary_cross_entropy(
+                cls_preds_.unsqueeze(0).repeat(num_gt, 1, 1),
+                gt_cls_per_image.unsqueeze(1).repeat(1, num_in_boxes_anchor, 1),
+                reduction="none",
+            ).sum(-1)
         del cls_preds_
 
-        cost = (pair_wise_cls_loss + 3.0 * pair_wise_ious_loss + float(1e6) * (~geometry_relation))
+        cost = pair_wise_cls_loss + 3.0 * pair_wise_ious_loss + 1e6 * (~geometry_relation)
 
         (
             num_fg,

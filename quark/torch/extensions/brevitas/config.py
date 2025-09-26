@@ -3,13 +3,15 @@
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for Brevitas."""
-from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Optional, List
-from enum import Enum, auto
 
-import quark.torch.quantization.config.type as quark_config_type
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import List, Optional
+
 import quark.torch.extensions.brevitas.algos as brevitas_algos
+import quark.torch.quantization.config.type as quark_config_type
 
 
 class Backend(Enum):
@@ -36,11 +38,12 @@ class Config:
     global_quant_config: QuantizationConfig
 
     # Optional pre-processing optimization - these will be applied in the same order as their position in the list.
-    pre_quant_opt_config: List[brevitas_algos.PreQuantOptConfig] = field(
-        default_factory=lambda: [brevitas_algos.Preprocess()])
+    pre_quant_opt_config: list[brevitas_algos.PreQuantOptConfig] = field(
+        default_factory=lambda: [brevitas_algos.Preprocess()]
+    )
 
     # Optional configuration for the quantization algorithm  - these will be applied in the same order as their position in the list.
-    algo_config: List[brevitas_algos.AlgoConfig] = field(default_factory=list)
+    algo_config: list[brevitas_algos.AlgoConfig] = field(default_factory=list)
 
     backend: Backend = Backend.layerwise
 
@@ -56,10 +59,10 @@ class QuantizationConfig:
     - `bias`: The quantization parameters (if any) to apply to the model biases.
     """
 
-    input_tensors: Optional[QuantizationSpec] = None
-    output_tensors: Optional[QuantizationSpec] = None
-    weight: Optional[QuantizationSpec] = None
-    bias: Optional[QuantizationSpec] = None
+    input_tensors: QuantizationSpec | None = None
+    output_tensors: QuantizationSpec | None = None
+    weight: QuantizationSpec | None = None
+    bias: QuantizationSpec | None = None
 
 
 class QuantType(Enum):
@@ -70,6 +73,7 @@ class QuantType(Enum):
     - `float_quant`: Values quantized to floating point.
 
     """
+
     int_quant = auto()
     float_quant = auto()
 
@@ -81,6 +85,7 @@ class ParamType(Enum):
     - `stats`: Statistics
     - `mse`: Mean Squared Error
     """
+
     stats = auto()
     mse = auto()
 
@@ -108,5 +113,5 @@ class QuantizationSpec:
     param_type: ParamType = ParamType.stats
 
     bit_width: int = 8
-    exponent_bit_width: Optional[int] = None
-    mantissa_bit_width: Optional[int] = None
+    exponent_bit_width: int | None = None
+    mantissa_bit_width: int | None = None

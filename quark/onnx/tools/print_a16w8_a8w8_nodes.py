@@ -2,13 +2,15 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Print names and quantity of A16W8 and A8W8 Conv ConvTranspose and Gemm.
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
+from typing import List, Tuple
+
 import onnx
 from onnxruntime.quantization.onnx_model import ONNXModel
-from argparse import ArgumentParser, Namespace
-from typing import Tuple, List
 
 
 def parse_args() -> Namespace:
@@ -18,13 +20,12 @@ def parse_args() -> Namespace:
     return args
 
 
-def a16w8_a8w8_nodes(input_model_path: str) -> Tuple[List[str], List[str]]:
-
+def a16w8_a8w8_nodes(input_model_path: str) -> tuple[list[str], list[str]]:
     def _has_input_and_output(node: onnx.NodeProto) -> bool:
         return bool(node.input) and bool(node.output)
 
     try:
-        ComputeOperations = ('Conv', 'ConvTranspose', 'Gemm')
+        ComputeOperations = ("Conv", "ConvTranspose", "Gemm")
         quantized_nodes_dict = {}
         int8_count = 0
         int16_count = 0
@@ -58,8 +59,11 @@ def a16w8_a8w8_nodes(input_model_path: str) -> Tuple[List[str], List[str]]:
                     quantized_nodes_dict[node.op_type] = 0
                 quantized_nodes_dict[node.op_type] += 1
                 for node_tmp in onnx_model.model.graph.node:
-                    if node_tmp.op_type == "DequantizeLinear" and len(
-                            node_tmp.output) == 1 and node_tmp.output[0] == inp:
+                    if (
+                        node_tmp.op_type == "DequantizeLinear"
+                        and len(node_tmp.output) == 1
+                        and node_tmp.output[0] == inp
+                    ):
                         for init in onnx_model.model.graph.initializer:
                             if init.name == node_tmp.input[2]:
                                 if init.data_type == 3:
@@ -90,6 +94,6 @@ def print_a16w8_a8w8_nodes(args: Namespace) -> None:
     print("int16 activation node count: ", len(int16_node_name_list))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     print_a16w8_a8w8_nodes(args)

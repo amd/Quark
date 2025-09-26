@@ -3,15 +3,17 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, Optional, List
+import math
+from typing import Any, List, Optional
+
 import torch
 from torch import nn
-import math
-from torch.nn.common_types import _size_2_t
-from .mixin import QuantMixin
-from torch.nn.common_types import _size_any_opt_t
-from quark.torch.quantization.config.config import QuantizationConfig
+from torch.nn.common_types import _size_2_t, _size_any_opt_t
+
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.config.config import QuantizationConfig
+
+from .mixin import QuantMixin
 
 logger = ScreenLogger(__name__)
 
@@ -19,32 +21,32 @@ __all__ = ["QuantAvgPool2d", "QuantAdaptiveAvgPool2d"]
 
 
 class QuantAvgPool2d(nn.AvgPool2d, QuantMixin):
-    """Quantized version of nn.AvgPool2d
-    """
+    """Quantized version of nn.AvgPool2d"""
 
     def __init__(
-            self,
-            kernel_size: _size_2_t,
-            stride: Optional[_size_2_t] = None,
-            padding: _size_2_t = 0,
-            ceil_mode: bool = False,
-            count_include_pad: bool = True,
-            divisor_override: Optional[int] = None,
-            # args about quantization
-            quant_config: QuantizationConfig = QuantizationConfig(),
-            device: torch.device = torch.device("cpu"),
-            **kwargs: Any) -> None:
+        self,
+        kernel_size: _size_2_t,
+        stride: _size_2_t | None = None,
+        padding: _size_2_t = 0,
+        ceil_mode: bool = False,
+        count_include_pad: bool = True,
+        divisor_override: int | None = None,
+        # args about quantization
+        quant_config: QuantizationConfig = QuantizationConfig(),
+        device: torch.device = torch.device("cpu"),
+        **kwargs: Any,
+    ) -> None:
         super().__init__(kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override)
         self.init_quantizer(quant_config, device, **kwargs)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         quant_input = self.get_quant_input(input)
         output = super().forward(quant_input)
-        '''
+        """
         Align NPU etc. hw constrain
-        '''
+        """
         scale = 1.0
-        assert isinstance(self.kernel_size, List)
+        assert isinstance(self.kernel_size, list)
         if self.kernel_size == [3, 3]:
             scale = 9.0 * 7.0 / 64.0
         elif self.kernel_size == [5, 5]:
@@ -76,26 +78,27 @@ class QuantAvgPool2d(nn.AvgPool2d, QuantMixin):
 
 
 class QuantAdaptiveAvgPool2d(nn.AdaptiveAvgPool2d, QuantMixin):
-
     def __init__(
-            self,
-            output_size: _size_any_opt_t,
-            # args about quantization
-            quant_config: QuantizationConfig = QuantizationConfig(),
-            device: torch.device = torch.device("cpu"),
-            **kwargs: Any) -> None:
+        self,
+        output_size: _size_any_opt_t,
+        # args about quantization
+        quant_config: QuantizationConfig = QuantizationConfig(),
+        device: torch.device = torch.device("cpu"),
+        **kwargs: Any,
+    ) -> None:
         super(nn.AdaptiveAvgPool2d, self).__init__(output_size)
         self.init_quantizer(quant_config, device, **kwargs)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         quant_input = self.get_quant_input(input)
         output = super().forward(quant_input)
-        '''
+        """
         Align NPU etc. hw constrain
-        '''
+        """
 
-        if (isinstance(self.output_size, (tuple, list))
-                and tuple(self.output_size) != (1, 1)) or (isinstance(self.output_size, int) and self.output_size != 1):
+        if (isinstance(self.output_size, (tuple, list)) and tuple(self.output_size) != (1, 1)) or (
+            isinstance(self.output_size, int) and self.output_size != 1
+        ):
             print("[WARNING] For AdaptiveAvgPooling, NPU only supports output_size=1")
 
         scale = 1.0
@@ -103,9 +106,11 @@ class QuantAdaptiveAvgPool2d(nn.AdaptiveAvgPool2d, QuantMixin):
             scale = 9.0 * 7.0 / 64.0
         elif input.shape[2] == 5 and input.shape[3] == 5:
             scale = 25.0 * 10.0 / 256.0
-        elif (input.shape[2] == 6 and input.shape[3] == 6) or (input.shape[2] == 3
-                                                               and input.shape[3] == 6) or (input.shape[2] == 6
-                                                                                            and input.shape[3] == 3):
+        elif (
+            (input.shape[2] == 6 and input.shape[3] == 6)
+            or (input.shape[2] == 3 and input.shape[3] == 6)
+            or (input.shape[2] == 6 and input.shape[3] == 3)
+        ):
             scale = 36.0 * 7.0 / 256.0
         elif input.shape[2] == 7 and input.shape[3] == 7:
             scale = 49.0 * 21.0 / 1024.0

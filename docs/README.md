@@ -1,19 +1,27 @@
-# Quark documentation
+# AMD Quark Documentation
 
-Quark (new quantizer) documentation.
+Quark quantizer documentation.
 
-## How to build document
+Included in documentation:
 
-.. code-block:: sh
+* Introductory articles.
+* Code API documentation.
+* Notebook tutorials.
+* Guides accompanying Quark examples package.
+* Release notes.
 
-    sh install_requirements.sh
-    sh build_docs.sh
+## How to build documentation
 
-Access the HTML documentation at ``quark/_docs_build/html/index.html``.
+```sh
+sh install_requirements.sh
+sh build_docs.sh
+```
 
-.. raw:: html
+Then access the generated HTML documentation at `quark/_docs_build/html/index.html`.
 
-   <!--
-   ## License
-   Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
-   -->
+See `CONTRIBUTING.md` for information on how the tutorial documentation is built, run for tests, and converted to HTML.
+
+<!--
+## License
+Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

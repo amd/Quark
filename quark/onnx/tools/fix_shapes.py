@@ -2,7 +2,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 If the model has tensors without a shape, this tool will assign shapes to them.
 
 Use the fix_shapes.py to assign shapes for a model:
@@ -11,26 +11,29 @@ Use the fix_shapes.py to assign shapes for a model:
 python fix_shapes.py --input_model_path $INPUT_MODEL_PATH --output_model_path $OUTPUT_MODEL_PATH
 ```
 
-'''
+"""
 
-import tempfile
-import onnx
 import copy
-import numpy as np
-import onnxruntime as ort
-from pathlib import Path
-from onnx import helper, ModelProto
 from argparse import ArgumentParser, Namespace
-from typing import Dict, Tuple, Any, List, Union, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import onnx
+import onnxruntime as ort
+from onnx import ModelProto, helper
+
+from quark.onnx.quant_utils import create_tmp_dir
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 
-def create_infer_session_for_onnx_model(model_input: Union[str, Path, ModelProto],
-                                        sess_options: Optional[ort.SessionOptions] = None) -> ort.InferenceSession:
+def create_infer_session_for_onnx_model(
+    model_input: Union[str, Path, ModelProto], sess_options: ort.SessionOptions | None = None
+) -> ort.InferenceSession:
     if isinstance(model_input, onnx.ModelProto) and model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
-        temp_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.tools.")
+        temp_dir = create_tmp_dir(prefix="quark_onnx.tools.")
         temp_path = Path(temp_dir.name).joinpath("infer_model.onnx").as_posix()
         model_to_save = copy.deepcopy(model_input)
         onnx.save(model_to_save, temp_path, save_as_external_data=True)
@@ -40,7 +43,7 @@ def create_infer_session_for_onnx_model(model_input: Union[str, Path, ModelProto
         return ort.InferenceSession(model, sess_options)
 
 
-def parse_input_and_output_shapes(fix_shapes: str) -> Dict[str, List[int]]:
+def parse_input_and_output_shapes(fix_shapes: str) -> dict[str, list[int]]:
     shapes_dict = {}
     name_shape_list = [item.strip() for item in fix_shapes.split(";")]
     names = []
@@ -48,8 +51,8 @@ def parse_input_and_output_shapes(fix_shapes: str) -> Dict[str, List[int]]:
     for name_shape_item in name_shape_list:
         name_shape = [item.strip() for item in name_shape_item.rsplit(":", 1)]
         names.append(name_shape[0])
-        if name_shape[1].startswith('[') and name_shape[1].endswith(']'):
-            shapes.append([int(dim) for dim in name_shape[1][1:-1].split(',')])
+        if name_shape[1].startswith("[") and name_shape[1].endswith("]"):
+            shapes.append([int(dim) for dim in name_shape[1][1:-1].split(",")])
         else:
             logger.info(
                 "Has Error: Plase Check the input shape format. like: 'input_1:[1,224,224,3];input_2:[1,96,96,3];output_1:[1, 1000];output_2:[1,10]'"
@@ -79,7 +82,7 @@ def fix_input_and_output_shapes(model_input: Union[str, Path, ModelProto], fix_s
     return model
 
 
-def generate_random_data(model_input: Union[str, Path, ModelProto]) -> Dict[str, np.ndarray[Any, Any]]:
+def generate_random_data(model_input: Union[str, Path, ModelProto]) -> dict[str, np.ndarray[Any, Any]]:
     np.random.seed(42)
     sess = create_infer_session_for_onnx_model(model_input)
     input_info = sess.get_inputs()
@@ -90,29 +93,29 @@ def generate_random_data(model_input: Union[str, Path, ModelProto]) -> Dict[str,
         input_shape = inp.shape
         input_dtype = inp.type
 
-        if input_dtype == 'tensor(int8)':
+        if input_dtype == "tensor(int8)":
             dtype = np.int8
-        elif input_dtype == 'tensor(uint8)':
+        elif input_dtype == "tensor(uint8)":
             dtype = np.uint8  # type: ignore
-        elif input_dtype == 'tensor(int16)':
+        elif input_dtype == "tensor(int16)":
             dtype = np.int16  # type: ignore
-        elif input_dtype == 'tensor(uint16)':
+        elif input_dtype == "tensor(uint16)":
             dtype = np.uint16  # type: ignore
-        elif input_dtype == 'tensor(int32)':
+        elif input_dtype == "tensor(int32)":
             dtype = np.int32  # type: ignore
-        elif input_dtype == 'tensor(uint32)':
+        elif input_dtype == "tensor(uint32)":
             dtype = np.uint32  # type: ignore
-        elif input_dtype == 'tensor(int64)':
+        elif input_dtype == "tensor(int64)":
             dtype = np.int64  # type: ignore
-        elif input_dtype == 'tensor(uint64)':
+        elif input_dtype == "tensor(uint64)":
             dtype = np.uint64  # type: ignore
-        elif input_dtype == 'tensor(float16)':
+        elif input_dtype == "tensor(float16)":
             dtype = np.float16  # type: ignore
-        elif input_dtype == 'tensor(float)':
+        elif input_dtype == "tensor(float)":
             dtype = np.float32  # type: ignore
-        elif input_dtype == 'tensor(double)':
+        elif input_dtype == "tensor(double)":
             dtype = np.float64  # type: ignore
-        elif input_dtype == 'tensor(bool)':
+        elif input_dtype == "tensor(bool)":
             dtype = np.bool_  # type: ignore
         else:
             raise ValueError(f"Unsupported dtype: {input_dtype}")
@@ -123,8 +126,9 @@ def generate_random_data(model_input: Union[str, Path, ModelProto]) -> Dict[str,
     return input_data
 
 
-def infer_all_tensors_shape(model_input: Union[str, Path, ModelProto],
-                            save_as_external_data: bool = False) -> Dict[str, Tuple[int]]:
+def infer_all_tensors_shape(
+    model_input: Union[str, Path, ModelProto], save_as_external_data: bool = False
+) -> dict[str, tuple[int]]:
     model = copy.deepcopy(model_input) if isinstance(model_input, ModelProto) else onnx.load(model_input)
     output_list = []
     for node in model.graph.node:
@@ -145,8 +149,9 @@ def infer_all_tensors_shape(model_input: Union[str, Path, ModelProto],
     return tensor_name_shape_dict
 
 
-def save_all_tensors_shape(model_input: Union[str, Path, ModelProto],
-                           tensor_name_shape_dict: Dict[str, Tuple[int]]) -> ModelProto:
+def save_all_tensors_shape(
+    model_input: Union[str, Path, ModelProto], tensor_name_shape_dict: dict[str, tuple[int]]
+) -> ModelProto:
     model = model_input if isinstance(model_input, ModelProto) else onnx.load(model_input)
     for tensor_name, new_shape in tensor_name_shape_dict.items():
         if len(new_shape) > 0:
@@ -158,7 +163,7 @@ def save_all_tensors_shape(model_input: Union[str, Path, ModelProto],
     return model
 
 
-def find_nms(model: ModelProto) -> List[str]:
+def find_nms(model: ModelProto) -> list[str]:
     nms_node_names = []
     for node in model.graph.node:
         if node.op_type == "NonMaxSuppression":
@@ -174,17 +179,16 @@ def parse_args() -> Namespace:
         "--fix_shapes",
         type=str,
         required=False,
-        help=
-        "Model input/output name & input/output shape to replace shape of. Provide fix_shapes if name specified. like: 'input_1:[1,224,224,3];input_2:[1.96.96.3];output_1:[1, 1000];output_2:[1,10]'",
+        help="Model input/output name & input/output shape to replace shape of. Provide fix_shapes if name specified. like: 'input_1:[1,224,224,3];input_2:[1.96.96.3];output_1:[1, 1000];output_2:[1,10]'",
     )
-    parser.add_argument('--save_as_external_data', action='store_true')
+    parser.add_argument("--save_as_external_data", action="store_true")
     args, _ = parser.parse_known_args()
     return args
 
 
 def fix_shapes(args: Namespace) -> None:
     try:
-        tmp_path = tempfile.TemporaryDirectory(prefix="quark_onnx.tools.")
+        tmp_path = create_tmp_dir(prefix="quark_onnx.tools.")
         tmp_model_path = Path(tmp_path.name).joinpath("fixed_shapes.onnx").as_posix()
         if args.fix_shapes:
             temp_model = fix_input_and_output_shapes(args.input_model_path, args.fix_shapes)
@@ -199,11 +203,12 @@ def fix_shapes(args: Namespace) -> None:
         logger.info(f"Shapes fixed model is saved at {args.output_model_path}")
         for nms_node_name in nms_node_names:
             logger.warning(
-                f"The shapes of the nodes following NMS {nms_node_name} should remain dynamic and should not be fixed.")
+                f"The shapes of the nodes following NMS {nms_node_name} should remain dynamic and should not be fixed."
+            )
     except Exception as e:
         logger.warning(f"Fail to fix shapes of the input model {args.input_model_path} beacuse {e}, ")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     fix_shapes(args)

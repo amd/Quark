@@ -3,31 +3,36 @@
 # SPDX-License-Identifier: MIT
 #
 from typing import List
-from torch.fx import GraphModule, Node
+
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.graph.optimization.utils import replace_ops_module_name_suffix, _copy_node_meta_info
-from quark.torch.quantization.config.config import QuantizationConfig
-from quark.torch.quantization.graph.torch_utils import is_linear_node
-from quark.torch.quantization.graph.optimization.utils import is_all_nodes_save_parameters
+from torch.fx import GraphModule, Node
+
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.graph.optimization.utils import (
+    _copy_node_meta_info,
+    is_all_nodes_save_parameters,
+    replace_ops_module_name_suffix,
+)
+from quark.torch.quantization.graph.torch_utils import is_linear_node
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 
 logger = ScreenLogger(__name__)
 
 
 def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
-    '''
+    """
     replace [ops.aten.linear] to QuantLinear
     ops.aten.linear:
         args: (Tensor input, Tensor weight, Tensor? bias=None) -> Tensor
         required: [input, weight]
         optional: [bias=None]
-    '''
+    """
     count_replace_num = 0  # used for debug and trace
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
     device = [module for module in m.parameters()][0].device  # cpu/gpu
-    need_to_delete_node: List[Node] = []
+    need_to_delete_node: list[Node] = []
     for n in m.graph.nodes:
         if not is_linear_node(n):
             continue
@@ -38,16 +43,15 @@ def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
 
         # pre check if linear's weight/bias is not parameters, we skip replace
         need_check_node = [weight_node] if bias_node is None else [weight_node, bias_node]
-        if (not all(isinstance(item, Node)
-                    for item in need_check_node)) or (not is_all_nodes_save_parameters(m, need_check_node)):
-            logger.warning(
-                "Not all Nodes: {} save Parameters, skip replace to QuantLinear model".format(need_check_node))
+        if (not all(isinstance(item, Node) for item in need_check_node)) or (
+            not is_all_nodes_save_parameters(m, need_check_node)
+        ):
+            logger.warning(f"Not all Nodes: {need_check_node} save Parameters, skip replace to QuantLinear model")
             recognized_but_not_optimized += 1
             continue
 
         linear_weight = _get_tensor_constant_from_node(weight_node, m)  # type: ignore [no-untyped-call]
-        linear_bias = _get_tensor_constant_from_node(
-            bias_node, m) if bias_node is not None else None  # type: ignore [no-untyped-call]
+        linear_bias = _get_tensor_constant_from_node(bias_node, m) if bias_node is not None else None  # type: ignore [no-untyped-call]
 
         used_param_id = weight_node.target + "_" + bias_node.target if bias_node is not None else weight_node.target
         input_activation_node = linear_node.args[0]
@@ -79,14 +83,15 @@ def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
             count_replace_num += 1
             need_to_delete_node += to_delete_node
         with m.graph.inserting_after(input_activation_node):
-            quant_linear_node = m.graph.create_node('call_module', quant_linear_name, (input_activation_node, ), {})
+            quant_linear_node = m.graph.create_node("call_module", quant_linear_name, (input_activation_node,), {})
             # NOTE modify the node's meta info
             _copy_node_meta_info(org_node=linear_node, target_node=quant_linear_node)
             linear_node.replace_all_uses_with(quant_linear_node)
 
     if count_replace_num != 0 or recognized_but_not_optimized != 0:
-        logger.info("Totally replace ops.aten.linear to {} count:\t{}, found but skip: {}".format(
-            QuantLinear.__name__, count_replace_num, recognized_but_not_optimized))
+        logger.info(
+            f"Totally replace ops.aten.linear to {QuantLinear.__name__} count:\t{count_replace_num}, found but skip: {recognized_but_not_optimized}"
+        )
     [m.graph.erase_node(node) for node in need_to_delete_node]
     m.graph.eliminate_dead_code()
     m.recompile()

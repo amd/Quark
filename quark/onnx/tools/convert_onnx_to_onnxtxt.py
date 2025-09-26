@@ -4,10 +4,10 @@
 #
 """Tools for converting onnx format to onnxtxt."""
 
-import os
 import argparse
-import onnx
+import os
 
+import onnx
 from google.protobuf import text_format  # type : ignore
 
 
@@ -20,17 +20,19 @@ def run_main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
-        print("Usage: python -m quark.onnx.tools.convert_onnx_to_onnxtxt "
-              "--input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH.")
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
+        print(
+            "Usage: python -m quark.onnx.tools.convert_onnx_to_onnxtxt "
+            "--input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
+        )
         exit()
 
     model = onnx.load_model(FLAGS.input_model)
-    with open(FLAGS.output_model, 'w') as f:
+    with open(FLAGS.output_model, "w") as f:
         f.write(text_format.MessageToString(model))
-    print('Conversion Finished!')
-    print('Converted model saved in: {}'.format(FLAGS.output_model))
+    print("Conversion Finished!")
+    print(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_main()

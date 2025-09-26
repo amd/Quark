@@ -5,26 +5,32 @@
 
 import torch
 import torch.nn as nn
-from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-from quark.torch import ModelQuantizer
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
+
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig
+from quark.torch import ModelQuantizer
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
 logger = ScreenLogger(__name__)
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                                             weight=INT8_PER_TENSOR_SPEC,
-                                                             bias=INT8_PER_TENSOR_SPEC,
-                                                             output_tensors=INT8_PER_TENSOR_SPEC)
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+)
+
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=10):
@@ -37,12 +43,12 @@ class SimpleCNN(nn.Module):
         x = self.fc(x)
         return x
 
+
 input_tensor = torch.randn(1, 64, 64)
 
 
 def test_net():
     class MyDataset(Dataset):
-
         def __init__(self):
             return
 
@@ -75,16 +81,16 @@ def test_net():
     # check log error
     try:
         logger.error("Checking Logger Error...", allow_duplicate=True)
-        print('Falied to check Logger Error.')
+        print("Falied to check Logger Error.")
     except SystemExit:
-        print('Successfully checked Logger Error.')
+        print("Successfully checked Logger Error.")
 
     # check log critical
     try:
         logger.critical("Checking Logger Critical...")
-        print('Falied to check Logger Critical.')
+        print("Falied to check Logger Critical.")
     except SystemExit:
-        print('Successfully checked Logger Critical.')
+        print("Successfully checked Logger Critical.")
         pass
 
     # check log exception
@@ -92,7 +98,7 @@ def test_net():
         x = 1 / 0
     except Exception as e:
         logger.exception("Checking Logger Exception: " + str(e))
-    print('Successfully checked Logger Exception.')
+    print("Successfully checked Logger Exception.")
 
     # check debug
     quantizer.config.log_severity_level = 0
@@ -110,7 +116,7 @@ def test_net():
     try:
         logger.error("Checking Log Error.")
     except SystemExit:
-        print('Successfully checked Logger Error.')
+        print("Successfully checked Logger Error.")
 
     # check critical
     quantizer.config.log_severity_level = 4
@@ -118,7 +124,7 @@ def test_net():
     try:
         logger.critical("Checking Log Critical.")
     except SystemExit:
-        print('Successfully checked Logger Critical.')
+        print("Successfully checked Logger Critical.")
 
 
 if __name__ == "__main__":

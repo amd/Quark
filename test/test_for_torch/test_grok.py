@@ -5,9 +5,10 @@
 
 import torch
 import torch.nn as nn
+
+from quark.shares.utils.testing_utils import torch_device
 from quark.torch.algorithm.awq.scale import scale_ln_fcs
 from quark.torch.algorithm.utils.prepare import get_layers_for_scaling
-from quark.shares.utils.testing_utils import torch_device
 
 
 def test_grok():
@@ -42,9 +43,16 @@ def test_grok():
             "layers": ["w"],
             "inp": "w",
             "module2inspect": "",
-        }]
+        },
+    ]
 
-    get_layers_for_scaling(fake_layer, input_feat={"w": torch.tensor(1.0).to(device=torch_device)}, module_kwargs=None, scaling_layers=scaling_layers)
+    get_layers_for_scaling(
+        fake_layer,
+        input_feat={"w": torch.tensor(1.0).to(device=torch_device)},
+        module_kwargs=None,
+        scaling_layers=scaling_layers,
+    )
+
 
 if __name__ == "__main__":
     test_grok()

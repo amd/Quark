@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -152,9 +154,9 @@ Test the accuracy of the quantized model with CLE on the ImageNet val dataset:
      - 59 MB
    * - Prec@1
      - 83.456 %
-     - 70.042 %
-     - 79.664 %
+     - 70.194 %
+     - 79.610 %
    * - Prec@5
      - 96.580 %
-     - 88.502 %
-     - 94.854 %
+     - 88.456 %
+     - 94.894 %

@@ -8,22 +8,28 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from quark.shares.utils.log import ScreenLogger
-from typing import Any, List, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from onnx import ModelProto
 from onnxruntime.quantization.quant_utils import QuantizationMode, ms_domain
 
-from .qdq_quantizer import QDQQuantizer
-from ..quant_utils import (__producer__, __version__, get_annotate_tensors, get_qdq_to_remove, remove_nodes,
-                           modified_annotate_input)
+from quark.shares.utils.log import ScreenLogger
+
+from ..quant_utils import (
+    __producer__,
+    __version__,
+    get_annotate_tensors,
+    get_qdq_to_remove,
+    modified_annotate_input,
+    remove_nodes,
+)
 from ..registry import CreateNPUTransformerQDQQuantizer
+from .qdq_quantizer import QDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
 class QDQNPUTransformerQuantizer(QDQQuantizer):
-
     def __init__(
         self,
         model: ModelProto,
@@ -34,10 +40,10 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
-        extra_options: Optional[Dict[str, Any]] = None,
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
+        extra_options: dict[str, Any] | None = None,
     ):
         super().__init__(
             model,
@@ -53,10 +59,12 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
             op_types_to_quantize=op_types_to_quantize,
             extra_options=extra_options,
         )
-        self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
-            "Int32Bias"]
-        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
-            "Int16Bias"]
+        self.int32_bias = (
+            True if extra_options is None or "Int32Bias" not in extra_options else extra_options["Int32Bias"]
+        )
+        self.int16_bias = (
+            False if extra_options is None or "Int16Bias" not in extra_options else extra_options["Int16Bias"]
+        )
         if self.int16_bias:
             self.int32_bias = True
 
@@ -81,7 +89,8 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
             self._quantize_bias_tensors()
 
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)

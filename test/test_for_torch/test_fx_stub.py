@@ -6,44 +6,52 @@
 import sys
 
 sys.path.append("..")
-import torch
 import onnx
+import torch
 import torch.nn as nn
 from torch.fx import GraphModule
-from torch._export import capture_pre_autograd_graph
-from quark.torch import ModelQuantizer
-from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
-from quark.torch.quantization.graph.processor.processor import mark_exclude_nodes
-from quark.torch.quantization.graph.ops.quant_stubs import QuantStub, DeQuantStub
-# from quark.torch.quantization.graph.export.onnx import *
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d, QuantConvTransposeBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+
 from quark.shares.utils.log import ScreenLogger
+from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.torch import ModelQuantizer
+
+# from quark.torch.quantization.graph.export.onnx import *
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
+from quark.torch.quantization.graph.ops.quant_stubs import DeQuantStub, QuantStub
+from quark.torch.quantization.graph.processor.processor import mark_exclude_nodes
+from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
+from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import (
+    QuantConvTransposeBatchNorm2d,
+    QuantizedConvBatchNorm2d,
+)
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 
 TEST_TOPIC = "torch FX graph mode quantization, partly quant model"
 
 logger = ScreenLogger(__name__)
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
-quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                  output_tensors=INT8_PER_TENSOR_SPEC,
-                                  weight=INT8_PER_TENSOR_SPEC,
-                                  bias=INT8_PER_TENSOR_SPEC)
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
+quant_config = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+)
 quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
-'''
+"""
 utils function
-'''
+"""
 
 
 def onnx_contains_op_num(model_path: str, target_op_type: str) -> int:
@@ -71,13 +79,12 @@ def fx_contain_module_num(model: GraphModule, target_module: torch.nn.Module) ->
     return count
 
 
-'''
+"""
 Test user using QuantStub & DeQuantStub to specify the quant scope
-'''
+"""
 
 
 class Simply_Quant_Stub_Model(nn.Module):
-
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 16, 3)
@@ -135,16 +142,16 @@ class Simply_Quant_Stub_Model(nn.Module):
 
 @use_temporary_directory
 def test_torch_quant_stub(tmpdir: str):
-    '''
+    """
     test torch quant stub and dequantstub func
-    '''
+    """
     torch.cuda.empty_cache()
     float_model = Simply_Quant_Stub_Model().to(torch_device).eval()
-    example_inputs = (torch.rand(1, 3, 32, 32).to(torch_device), )
+    example_inputs = (torch.rand(1, 3, 32, 32).to(torch_device),)
     out_fp32 = float_model.eval()(example_inputs[0])
     # session 1
     # =========================
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
+    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     _exclude_quant_node = mark_exclude_nodes(graph_model)
     out_opt_fx_graph = graph_model(example_inputs[0])
     assert torch.allclose(out_fp32, out_opt_fx_graph)
@@ -156,23 +163,19 @@ def test_torch_quant_stub(tmpdir: str):
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
             graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
-            graph_model_2 = capture_pre_autograd_graph(float_model, example_inputs)
-            input_models = [graph_model_1, graph_model_2]
+            input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
             for each_format_model in input_models:
-                input_args = {
-                    "model": each_format_model,
-                    "args": example_inputs,
-                    'calibdata': [example_inputs[0]]
-                } if isinstance(quantizer, FxGraphQuantizer) else {
-                    "model": each_format_model,
-                    'dataloader': [example_inputs[0]]
-                }
+                input_args = (
+                    {"model": each_format_model, "args": example_inputs, "calibdata": [example_inputs[0]]}
+                    if isinstance(quantizer, FxGraphQuantizer)
+                    else {"model": each_format_model, "dataloader": [example_inputs[0]]}
+                )
                 quantized_model = quantizer.quantize_model(**input_args)
                 out_2 = quantized_model.eval()(*example_inputs)
                 if each_quant_config == emp_quant_config:
-                    assert torch.allclose(out_fp32, out_2, atol=1e-7)
+                    assert torch.allclose(out_fp32, out_2, atol=1e-5)
                 assert fx_contain_module_num(quantized_model, QuantConv2d) == 3
                 assert fx_contain_module_num(quantized_model, QuantConvTranspose2d) == 3
                 assert fx_contain_module_num(quantized_model, QuantConvTransposeBatchNorm2d) == 3

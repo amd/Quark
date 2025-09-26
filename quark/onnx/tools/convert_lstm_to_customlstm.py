@@ -4,17 +4,20 @@
 #
 """Convert Custom QDQ to QDQ."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import argparse
+import os
+from typing import Any
 
 import onnx
-import os
-import argparse
 
-from quark.onnx.quant_utils import (ONNXQuantizedModel, COP_DOMAIN, COP_QUANT_OP_NAME, COP_DEQUANT_OP_NAME,
-                                    COP_IN_OP_NAME, COP_LSTM_OP_NAME)
-from typing import Any
+from quark.onnx.quant_utils import (
+    COP_DEQUANT_OP_NAME,
+    COP_DOMAIN,
+    COP_IN_OP_NAME,
+    COP_LSTM_OP_NAME,
+    COP_QUANT_OP_NAME,
+    ONNXQuantizedModel,
+)
 
 
 def convert_lstm_to_customlstm(model: onnx.ModelProto) -> Any:
@@ -52,8 +55,7 @@ def convert_lstm_to_customlstm(model: onnx.ModelProto) -> Any:
             outputs_q[tensor_index] = q
 
         if len(inputs_dq) < 4 or len(outputs_q) < 1:
-            print(f"Node {node.name} wasn't quantized fully,"
-                  f"{len(inputs_dq)} inputs and {len(outputs_q)} outputs")
+            print(f"Node {node.name} wasn't quantized fully,{len(inputs_dq)} inputs and {len(outputs_q)} outputs")
 
         # Get inputs and outputs scale and zero_point
         assert 0 in inputs_dq
@@ -87,9 +89,9 @@ def convert_lstm_to_customlstm(model: onnx.ModelProto) -> Any:
         y_zero_point = onnx.numpy_helper.to_array(y_zero_point_init).item()
 
         # Get stantard attributes
-        direction = next((attr.s.decode() for attr in node.attribute if attr.name == 'direction'), 'bidirectional')
-        hidden_size = next((attr.i for attr in node.attribute if attr.name == 'hidden_size'), 128)
-        layout = next((attr.i for attr in node.attribute if attr.name == 'layout'), 0)
+        direction = next((attr.s.decode() for attr in node.attribute if attr.name == "direction"), "bidirectional")
+        hidden_size = next((attr.i for attr in node.attribute if attr.name == "hidden_size"), 128)
+        layout = next((attr.i for attr in node.attribute if attr.name == "layout"), 0)
 
         new_node = onnx.helper.make_node(
             OpMapping[node.op_type],
@@ -143,6 +145,7 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
 
     if has_customop:
         from quark.onnx.quant_utils import infer_custom_op_shape as infer_shape
+
         print("Infer tensor's shape to generate value info for custom ops")
         return infer_shape(model)
 
@@ -156,7 +159,7 @@ def run_main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.convert_lstm_to_customlstm --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
         )
@@ -165,9 +168,9 @@ def run_main() -> None:
     model = onnx.load_model(FLAGS.input_model)
     converted_model = convert_lstm_to_customlstm(model)
     onnx.save(converted_model, FLAGS.output_model)
-    print('Conversion Finished!')
-    print('Converted model saved in: {}'.format(FLAGS.output_model))
+    print("Conversion Finished!")
+    print(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_main()

@@ -2,12 +2,14 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Remove initializers from input and upgrdte ir_version if it is blow 4.
-'''
-import onnx
+"""
+
 import argparse
 from argparse import Namespace
+
+import onnx
 
 
 def parse_args() -> Namespace:
@@ -21,7 +23,7 @@ def parse_args() -> Namespace:
 def remove_initializer_from_input(args: Namespace) -> None:
     model = onnx.load(args.input)
     if model.ir_version < 4:
-        print("Model with ir_version below 4 requires to include initilizer in graph input, change ir_version to 7")
+        print("Model with ir_version below 4 requires to include initializer in graph input, change ir_version to 7")
         model.ir_version = 7
 
     inputs = model.graph.input

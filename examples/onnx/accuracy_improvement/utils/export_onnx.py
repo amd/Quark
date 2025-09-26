@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 import sys
+
 import timm
 import torch
 
@@ -19,23 +20,18 @@ data_config = timm.data.resolve_model_data_config(
 
 batch_size = 1
 torch.manual_seed(42)
-dummy_input = torch.randn((batch_size, ) + tuple(data_config['input_size'])).to(device)
+dummy_input = torch.randn((batch_size,) + tuple(data_config["input_size"])).to(device)
 
-torch.onnx.export(model,
-                  dummy_input,
-                  "models/" + model_name + ".onnx",
-                  export_params=True,
-                  do_constant_folding=True,
-                  opset_version=17,
-                  input_names=['input'],
-                  output_names=['output'],
-                  dynamic_axes={
-                      'input': {
-                          0: 'batch_size'
-                      },
-                      'output': {
-                          0: 'batch_size'
-                      }
-                  },
-                  verbose=True)
+torch.onnx.export(
+    model,
+    dummy_input,
+    "models/" + model_name + ".onnx",
+    export_params=True,
+    do_constant_folding=True,
+    opset_version=17,
+    input_names=["input"],
+    output_names=["output"],
+    dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+    verbose=True,
+)
 print("Onnx model is saved at models/" + model_name + ".onnx")

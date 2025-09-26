@@ -1,5 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+//
+// Modifications Copyright (C) 2025, Advanced Micro Devices, Inc. All rights
+// reserved.
+//
 
 #pragma once
 
@@ -34,11 +38,14 @@ struct Float8E4M3FN {
 #endif
   struct FromBitsT {};
   static constexpr ORT_HOST_DEVICE FromBitsT FromBits() { return FromBitsT(); }
-  constexpr ORT_HOST_DEVICE Float8E4M3FN(unsigned char bits, FromBitsT) : val(bits) {}
+  constexpr ORT_HOST_DEVICE Float8E4M3FN(unsigned char bits, FromBitsT)
+    : val(bits) {}
 
   inline explicit ORT_HOST_DEVICE Float8E4M3FN(float v, bool saturate = true) {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-    val = __nv_cvt_float_to_fp8(v, saturate ? __NV_SATFINITE : __NV_NOSAT, __NV_E4M3);
+    val = __nv_cvt_float_to_fp8(
+      v, saturate ? __NV_SATFINITE : __NV_NOSAT, __NV_E4M3
+    );
 #else
     uint32_t b;
     std::memcpy(&b, &v, sizeof(b));
@@ -67,7 +74,9 @@ struct Float8E4M3FN {
             val |= 1;
           }
           auto mask = 1 << (20 + d);
-          if ((m & mask) && ((val & 1) || ((m & (mask - 1)) > 0) || ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
+          if ((m & mask) &&
+              ((val & 1) || ((m & (mask - 1)) > 0) ||
+               ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
             // rounding
             val += 1;
           }
@@ -148,14 +157,30 @@ struct Float8E4M3FN {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-  explicit ORT_HOST_DEVICE Float8E4M3FN(const __nv_fp8_e4m3& value) { val = *reinterpret_cast<const unsigned char*>(&value); }
-  explicit ORT_HOST_DEVICE operator __nv_fp8_e4m3() const { return *reinterpret_cast<const __nv_fp8_e4m3*>(&val); }
+  explicit ORT_HOST_DEVICE Float8E4M3FN(const __nv_fp8_e4m3 &value) {
+    val = *reinterpret_cast<const unsigned char *>(&value);
+  }
+  explicit ORT_HOST_DEVICE operator __nv_fp8_e4m3() const {
+    return *reinterpret_cast<const __nv_fp8_e4m3 *>(&val);
+  }
 #endif
 };
 
-inline ORT_HOST_DEVICE bool operator==(const Float8E4M3FN& left, const Float8E4M3FN& right) { return left.val == right.val; }
-inline ORT_HOST_DEVICE bool operator!=(const Float8E4M3FN& left, const Float8E4M3FN& right) { return left.val != right.val; }
-inline ORT_HOST_DEVICE bool operator<(const Float8E4M3FN& left, const Float8E4M3FN& right) { return left.val < right.val; }
+inline ORT_HOST_DEVICE bool operator==(
+  const Float8E4M3FN &left, const Float8E4M3FN &right
+) {
+  return left.val == right.val;
+}
+inline ORT_HOST_DEVICE bool operator!=(
+  const Float8E4M3FN &left, const Float8E4M3FN &right
+) {
+  return left.val != right.val;
+}
+inline ORT_HOST_DEVICE bool operator<(
+  const Float8E4M3FN &left, const Float8E4M3FN &right
+) {
+  return left.val < right.val;
+}
 
 // User defined suffixes to make it easier to declare
 // initializers with MLFloat8E4M3FN and Float8E4M3FN from unsigned char
@@ -171,7 +196,9 @@ inline Float8E4M3FN operator"" _f8e4m3fnp8(long double v) {
 
 #endif
 
-inline void Float8E4M3FNToFloat(const Float8E4M3FN* blf, float* flt, size_t size) {
+inline void Float8E4M3FNToFloat(
+  const Float8E4M3FN *blf, float *flt, size_t size
+) {
   auto src = blf;
   auto d = flt;
   for (; size != 0; ++src, ++d, --size) {
@@ -179,7 +206,9 @@ inline void Float8E4M3FNToFloat(const Float8E4M3FN* blf, float* flt, size_t size
   }
 }
 
-inline void FloatToFloat8E4M3FN(const float* flt, Float8E4M3FN* blf, size_t size, bool saturate) {
+inline void FloatToFloat8E4M3FN(
+  const float *flt, Float8E4M3FN *blf, size_t size, bool saturate
+) {
   auto src = flt;
   auto d = blf;
   for (; size != 0; ++src, ++d, --size) {
@@ -198,9 +227,12 @@ struct Float8E4M3FNUZ {
 
   struct FromBitsT {};
   static constexpr ORT_HOST_DEVICE FromBitsT FromBits() { return FromBitsT(); }
-  constexpr ORT_HOST_DEVICE Float8E4M3FNUZ(unsigned char bits, FromBitsT) : val(bits) {}
+  constexpr ORT_HOST_DEVICE Float8E4M3FNUZ(unsigned char bits, FromBitsT)
+    : val(bits) {}
 
-  inline explicit ORT_HOST_DEVICE Float8E4M3FNUZ(float v, bool saturate = true) {
+  inline explicit ORT_HOST_DEVICE Float8E4M3FNUZ(
+    float v, bool saturate = true
+  ) {
     // This type does not exist on CUDA.
     uint32_t b;
     std::memcpy(&b, &v, sizeof(b));
@@ -231,7 +263,9 @@ struct Float8E4M3FNUZ {
             val |= 1;
           }
           auto mask = 1 << (20 + d);
-          if ((m & mask) && ((val & 1) || ((m & (mask - 1)) > 0) || ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
+          if ((m & mask) &&
+              ((val & 1) || ((m & (mask - 1)) > 0) ||
+               ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
             // rounding
             val += 1;
           }
@@ -306,9 +340,21 @@ struct Float8E4M3FNUZ {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 };
 
-inline ORT_HOST_DEVICE bool operator==(const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right) { return left.val == right.val; }
-inline ORT_HOST_DEVICE bool operator!=(const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right) { return left.val != right.val; }
-inline ORT_HOST_DEVICE bool operator<(const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right) { return left.val < right.val; }
+inline ORT_HOST_DEVICE bool operator==(
+  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+) {
+  return left.val == right.val;
+}
+inline ORT_HOST_DEVICE bool operator!=(
+  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+) {
+  return left.val != right.val;
+}
+inline ORT_HOST_DEVICE bool operator<(
+  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+) {
+  return left.val < right.val;
+}
 
 // User defined suffixes to make it easier to declare
 // initializers with MLFloat8E4M3FN and Float8E4M3FN from unsigned char
@@ -324,7 +370,9 @@ inline Float8E4M3FNUZ operator"" _f8e4m3fnuzp8(long double v) {
 
 #endif
 
-inline void Float8E4M3FNUZToFloat(const Float8E4M3FNUZ* blf, float* flt, size_t size) {
+inline void Float8E4M3FNUZToFloat(
+  const Float8E4M3FNUZ *blf, float *flt, size_t size
+) {
   auto src = blf;
   auto d = flt;
   for (; size != 0; ++src, ++d, --size) {
@@ -332,7 +380,9 @@ inline void Float8E4M3FNUZToFloat(const Float8E4M3FNUZ* blf, float* flt, size_t 
   }
 }
 
-inline void FloatToFloat8E4M3FNUZ(const float* flt, Float8E4M3FNUZ* blf, size_t size, bool saturate) {
+inline void FloatToFloat8E4M3FNUZ(
+  const float *flt, Float8E4M3FNUZ *blf, size_t size, bool saturate
+) {
   auto src = flt;
   auto d = blf;
   for (; size != 0; ++src, ++d, --size) {
@@ -351,11 +401,14 @@ struct Float8E5M2 {
 
   struct FromBitsT {};
   static constexpr ORT_HOST_DEVICE FromBitsT FromBits() { return FromBitsT(); }
-  constexpr ORT_HOST_DEVICE Float8E5M2(unsigned char bits, FromBitsT) : val(bits) {}
+  constexpr ORT_HOST_DEVICE Float8E5M2(unsigned char bits, FromBitsT)
+    : val(bits) {}
 
   inline explicit ORT_HOST_DEVICE Float8E5M2(float v, bool saturate = true) {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-    val = __nv_cvt_float_to_fp8(v, saturate ? __NV_SATFINITE : __NV_NOSAT, __NV_E5M2);
+    val = __nv_cvt_float_to_fp8(
+      v, saturate ? __NV_SATFINITE : __NV_NOSAT, __NV_E5M2
+    );
 #else
     uint32_t b;
     std::memcpy(&b, &v, sizeof(b));
@@ -387,7 +440,9 @@ struct Float8E5M2 {
             val |= 1;
           }
           auto mask = 1 << (21 + d);
-          if ((m & mask) && ((val & 1) || ((m & (mask - 1)) > 0) || ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
+          if ((m & mask) &&
+              ((val & 1) || ((m & (mask - 1)) > 0) ||
+               ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
             // rounding
             val += 1;
           }
@@ -461,14 +516,30 @@ struct Float8E5M2 {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-  ORT_HOST_DEVICE Float8E5M2(const __nv_fp8_e5m2& value) { val = *reinterpret_cast<const unsigned char*>(&value); }
-  explicit ORT_HOST_DEVICE operator __nv_fp8_e5m2() const { return *reinterpret_cast<const __nv_fp8_e5m2*>(&val); }
+  ORT_HOST_DEVICE Float8E5M2(const __nv_fp8_e5m2 &value) {
+    val = *reinterpret_cast<const unsigned char *>(&value);
+  }
+  explicit ORT_HOST_DEVICE operator __nv_fp8_e5m2() const {
+    return *reinterpret_cast<const __nv_fp8_e5m2 *>(&val);
+  }
 #endif
 };
 
-inline ORT_HOST_DEVICE bool operator==(const Float8E5M2& left, const Float8E5M2& right) { return left.val == right.val; }
-inline ORT_HOST_DEVICE bool operator!=(const Float8E5M2& left, const Float8E5M2& right) { return left.val != right.val; }
-inline ORT_HOST_DEVICE bool operator<(const Float8E5M2& left, const Float8E5M2& right) { return left.val < right.val; }
+inline ORT_HOST_DEVICE bool operator==(
+  const Float8E5M2 &left, const Float8E5M2 &right
+) {
+  return left.val == right.val;
+}
+inline ORT_HOST_DEVICE bool operator!=(
+  const Float8E5M2 &left, const Float8E5M2 &right
+) {
+  return left.val != right.val;
+}
+inline ORT_HOST_DEVICE bool operator<(
+  const Float8E5M2 &left, const Float8E5M2 &right
+) {
+  return left.val < right.val;
+}
 
 // User defined suffixes to make it easier to declare
 // initializers with MLFloat8E5M2 and Float8E5M2 from unsigned char
@@ -484,7 +555,7 @@ inline Float8E5M2 operator"" _f8e5m2fnp8(long double v) {
 
 #endif
 
-inline void Float8E5M2ToFloat(const Float8E5M2* blf, float* flt, size_t size) {
+inline void Float8E5M2ToFloat(const Float8E5M2 *blf, float *flt, size_t size) {
   auto src = blf;
   auto d = flt;
   for (; size != 0; ++src, ++d, --size) {
@@ -492,7 +563,9 @@ inline void Float8E5M2ToFloat(const Float8E5M2* blf, float* flt, size_t size) {
   }
 }
 
-inline void FloatToFloat8E5M2(const float* flt, Float8E5M2* blf, size_t size, bool saturate) {
+inline void FloatToFloat8E5M2(
+  const float *flt, Float8E5M2 *blf, size_t size, bool saturate
+) {
   auto src = flt;
   auto d = blf;
   for (; size != 0; ++src, ++d, --size) {
@@ -511,9 +584,12 @@ struct Float8E5M2FNUZ {
 
   struct FromBitsT {};
   static constexpr ORT_HOST_DEVICE FromBitsT FromBits() { return FromBitsT(); }
-  constexpr ORT_HOST_DEVICE Float8E5M2FNUZ(unsigned char bits, FromBitsT) : val(bits) {}
+  constexpr ORT_HOST_DEVICE Float8E5M2FNUZ(unsigned char bits, FromBitsT)
+    : val(bits) {}
 
-  inline explicit ORT_HOST_DEVICE Float8E5M2FNUZ(float v, bool saturate = true) {
+  inline explicit ORT_HOST_DEVICE Float8E5M2FNUZ(
+    float v, bool saturate = true
+  ) {
     // This type does not exist on CUDA.
     uint32_t b;
     std::memcpy(&b, &v, sizeof(b));
@@ -543,7 +619,9 @@ struct Float8E5M2FNUZ {
             val |= 1;
           }
           auto mask = 1 << (21 + d);
-          if ((m & mask) && ((val & 1) || ((m & (mask - 1)) > 0) || ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
+          if ((m & mask) &&
+              ((val & 1) || ((m & (mask - 1)) > 0) ||
+               ((m & mask) && (m & (mask << 1)) && ((m & (mask - 1)) == 0)))) {
             // rounding
             val += 1;
           }
@@ -611,9 +689,21 @@ struct Float8E5M2FNUZ {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 };
 
-inline ORT_HOST_DEVICE bool operator==(const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right) { return left.val == right.val; }
-inline ORT_HOST_DEVICE bool operator!=(const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right) { return left.val != right.val; }
-inline ORT_HOST_DEVICE bool operator<(const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right) { return left.val < right.val; }
+inline ORT_HOST_DEVICE bool operator==(
+  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+) {
+  return left.val == right.val;
+}
+inline ORT_HOST_DEVICE bool operator!=(
+  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+) {
+  return left.val != right.val;
+}
+inline ORT_HOST_DEVICE bool operator<(
+  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+) {
+  return left.val < right.val;
+}
 
 // User defined suffixes to make it easier to declare
 // initializers with MLFloat8E5M2 and Float8E5M2 from unsigned char
@@ -629,7 +719,9 @@ inline Float8E5M2FNUZ operator"" _f8e5m2fnuzp8(long double v) {
 
 #endif
 
-inline void Float8E5M2FNUZToFloat(const Float8E5M2FNUZ* blf, float* flt, size_t size) {
+inline void Float8E5M2FNUZToFloat(
+  const Float8E5M2FNUZ *blf, float *flt, size_t size
+) {
   auto src = blf;
   auto d = flt;
   for (; size != 0; ++src, ++d, --size) {
@@ -637,7 +729,9 @@ inline void Float8E5M2FNUZToFloat(const Float8E5M2FNUZ* blf, float* flt, size_t 
   }
 }
 
-inline void FloatToFloat8E5M2FNUZ(const float* flt, Float8E5M2FNUZ* blf, size_t size, bool saturate) {
+inline void FloatToFloat8E5M2FNUZ(
+  const float *flt, Float8E5M2FNUZ *blf, size_t size, bool saturate
+) {
   auto src = flt;
   auto d = blf;
   for (; size != 0; ++src, ++d, --size) {

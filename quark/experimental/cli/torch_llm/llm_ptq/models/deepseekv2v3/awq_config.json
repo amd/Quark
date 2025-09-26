@@ -1,0 +1,22 @@
+{
+  "model_decoder_layers": "model.layers",
+  "name": "awq",
+  "scaling_layers": [
+    {
+      "inp": "mlp.gate_proj",
+      "layers": [
+        "mlp.gate_proj",
+        "mlp.up_proj"
+      ],
+      "module2inspect": "mlp",
+      "prev_op": "post_attention_layernorm"
+    },
+    {
+      "inp": "mlp.down_proj",
+      "layers": [
+        "mlp.down_proj"
+      ],
+      "prev_op": "mlp.up_proj"
+    }
+  ]
+}

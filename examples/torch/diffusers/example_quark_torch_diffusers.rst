@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Diffusion Model Quantization using Quark
 ========================================
 
@@ -44,7 +46,7 @@ Run Diffusion Model Without Quantization
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {your input image for guidence in controlnet} --skip_quantization
+   python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {your input image for guidance in controlnet} --skip_quantization
 
 Calibration and Export
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -56,7 +58,7 @@ Quantize Controlnet and Export SafeTensors (unet-only)
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidence image if controlnet is used} --quant_config_file_path {your quant config file path} --calib_prompts {your calibration dataset file path} --calib_size {number of calibration prompts, default 500} --dump_data_folder {file path to dump data folder} --export safetensor --saved_path {output path for your quantized model}
+   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --quant_config_file_path {your quant config file path} --calib_prompts {your calibration dataset file path} --calib_size {number of calibration prompts, default 500} --dump_data_folder {file path to dump data folder} --export safetensor --saved_path {output path for your quantized model}
 
 
 Quantize Diffusion and Export ONNX (entire pipeline)
@@ -74,7 +76,7 @@ Load and Test
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidence image if controlnet is used} --load --saved_path {the path for your quantized model} --test --test_prompts {your test dataset file path} --test_size {number of test prompts, default 5000}
+   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --load --saved_path {the path for your quantized model} --test --test_prompts {your test dataset file path} --test_size {number of test prompts, default 5000}
 
 Load SafeTensor and Run with a prompt
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -84,7 +86,7 @@ Load and Run
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidence image if controlnet is used} --load --saved_path {the path for your quantized model} --prompt "A city at night with people walking around."
+   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --load --saved_path {the path for your quantized model} --prompt "A city at night with people walking around."
 
 Benchmark
 ---------

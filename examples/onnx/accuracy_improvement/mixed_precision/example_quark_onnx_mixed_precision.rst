@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Quantization using Mixed Precision
 ==================================
 
@@ -152,9 +154,9 @@ Test the accuracy of the quantized model with Mixed_Precision on ImageNet val da
      - 17 MB
    * - Prec@1
      - 76.602 %
-     - 0.486 %
-     - 74.938 %
+     - 2.642 %
+     - 75.216 %
    * - Prec@5
      - 93.440 %
-     - 1.536 %
-     - 92.618 %
+     - 7.932 %
+     - 92.768 %

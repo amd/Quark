@@ -16,12 +16,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import math
+from typing import Iterable, List, Optional
 
-import torch.nn as nn
-from typing import Iterable, List
 import torch
+import torch.nn as nn
+from scipy.linalg import hadamard
 
-from quark.torch.algorithm.rotation.hadamard import random_hadamard_matrix, get_hadamard_matrices
+from quark.torch.algorithm.rotation.hadamard import get_hadamard_matrices, random_hadamard_matrix
 
 
 class RMSNorm(nn.Module):
@@ -42,21 +44,78 @@ class RMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-def rotate_in_channels(module: nn.Module, rotation: torch.Tensor) -> None:
-    """Rotate the input channels of a weight matrix."""
-    weight = module.weight
-    dtype = weight.dtype
-    weight.data = torch.matmul(weight.data.to(dtype=torch.float64), rotation.to(weight.device)).to(dtype=dtype)
+def multiply_with_reshape(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    if A.ndim > 2:
+        raise ValueError(f"multiply_with_reshape only support A.ndim = 1 or 2, got {A.ndim}.")
+
+    if A.shape[-1] % B.shape[0] != 0:
+        raise ValueError(
+            f"Expected A.shape[-1] % B.shape[0] == 0 in multiply_with_reshape, but got: incompatible A.shape[-1]={A.shape[-1]}, B.shape[0]={B.shape[0]}."
+        )
+
+    needs_reshape = False
+    if A.shape[-1] != B.shape[0]:
+        needs_reshape = True
+
+    dtype = A.dtype
+    device = A.device
+
+    # The `needs_reshape` case comes down to applying the smaller B as a block diagonal matrix.
+    if needs_reshape:
+        A = A.reshape(*A.shape[:-1], -1, B.shape[0])
+
+    A = A.to(torch.float64) @ B.to(device=device)
+
+    if needs_reshape:
+        A = A.reshape(*A.shape[:-2], -1)
+
+    return A.to(device=device, dtype=dtype)
 
 
-def rotate_out_channels(module: nn.Module, rotation: torch.Tensor) -> None:
-    """Rotate the output channels of a weight matrix."""
-    dtype = module.weight.dtype
-    module.weight.data = torch.matmul(rotation.T.to(module.weight.device),
-                                      module.weight.data.to(dtype=torch.float64)).to(dtype=dtype)
+def rotate_with_size(x: torch.Tensor, rotation_size: int, rotation_matrix: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Rotates the input tensor `x` on its last dimension, per group of `rotation_size`.
+
+    Denoting `k = rotation_size` and R_k the rotation of shape (k, k), and applying this rotation on x of shape (..., num_groups * k), the inverse transform is the block diagonal:
+
+    [  R_k 0_k  ...  0_k ]
+    [  0_k R_k           ]
+    [     .    .         ]
+    [     .      .       ]
+    [     .              ]
+    [     0_k   ...  R_k ]
+
+    of shape (num_groups * k, num_groups * k).
+    """
+    if rotation_matrix is None:
+        rotation_matrix = torch.tensor(
+            hadamard(rotation_size, dtype=float), dtype=x.dtype, device=x.device
+        ) / math.sqrt(rotation_size)
+    elif rotation_matrix is not None and rotation_matrix.shape[0] != rotation_size:
+        raise ValueError(
+            f"The function rotate_with_size got the input rotation_size={rotation_size} and rotation_matrix of shape {rotation_matrix.shape}, which are incompatible."
+        )
+
+    x = x.reshape(*x.shape[:-1], -1, rotation_size) @ rotation_matrix
+
+    return x.reshape(*x.shape[:-2], -1).to(x.dtype)
+
+
+def rotate_in_channels_(module: nn.Module, rotation: torch.Tensor) -> None:
+    """Rotate the input channels of a linear layer.
+    If weight and rotation's sizes don't match, it reshapes weight in order to multiply them."""
+    module.weight.data = multiply_with_reshape(module.weight.data, rotation)
+
+
+def rotate_out_channels_(module: nn.Module, rotation: torch.Tensor) -> None:
+    """Rotate the output channels of a linear layer.
+    If weight/bias and rotation's sizes don't match
+    it reshapes weight/bias in order to multiply them."""
+    module.weight.data = multiply_with_reshape(module.weight.data.T, rotation)
+    module.weight.data = module.weight.data.T
+
     if module.bias is not None:
-        module.bias.data = torch.matmul(rotation.T.to(module.bias.device),
-                                        module.bias.data.to(dtype=torch.float64)).to(dtype=dtype)
+        module.bias.data = multiply_with_reshape(module.bias.data, rotation)
 
 
 def get_rotation_matrix(num_channels: int, random: bool = True) -> torch.Tensor:
@@ -79,7 +138,7 @@ def transform_norm_and_linear(
     prev_modules: Iterable[nn.Module],
     norm_module: nn.Module,
     next_modules: Iterable[nn.Module],
-    prev_out_channels_dims: List[int],
+    prev_out_channels_dims: list[int],
 ) -> None:
     transform_rms_norm_and_linear(norm_module, next_modules)
     if isinstance(norm_module, nn.LayerNorm):
@@ -110,7 +169,7 @@ def transform_rms_norm_and_linear(norm: nn.Module, next_modules: Iterable[nn.Mod
 def transform_layer_norm_to_rms_norm(
     norm: nn.Module,
     prev_modules: Iterable[nn.Linear],
-    prev_out_channels_dims: List[int],
+    prev_out_channels_dims: list[int],
 ) -> None:
     assert isinstance(norm, nn.LayerNorm)
     assert len(norm.normalized_shape) == 1, f"LayerNorm's #dims must be 1, got {len(norm.normalized_shape)}"
@@ -119,7 +178,7 @@ def transform_layer_norm_to_rms_norm(
     assert len(prev_modules) > 0, "No previous modules found"
     if isinstance(prev_out_channels_dims, int):
         prev_out_channels_dims = [prev_out_channels_dims] * len(prev_modules)
-    for module, dim in zip(prev_modules, prev_out_channels_dims):
+    for module, dim in zip(prev_modules, prev_out_channels_dims, strict=False):
         if isinstance(module, nn.LayerNorm):
             module.bias = None
         else:

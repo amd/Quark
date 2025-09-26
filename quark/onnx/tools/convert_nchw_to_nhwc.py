@@ -2,19 +2,20 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert the input NCHW model to the NHWC model.
 
     Example : python -m quark.onnx.tools.convert_nchw_to_nhwc --input [INPUT_PATH] --output [OUTPUT_PATH]
 
-'''
+"""
 
-import onnx
-from quark.shares.utils.log import ScreenLogger
-import onnxruntime
 from argparse import ArgumentParser, Namespace
 
+import onnx
+import onnxruntime
+
 from quark.onnx.utils.model_utils import convert_nchw_to_nhwc
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -28,10 +29,10 @@ def parse_args() -> Namespace:
     return args
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     try:
-        ort_session = onnxruntime.InferenceSession(args.input, providers=['CPUExecutionProvider'])
+        ort_session = onnxruntime.InferenceSession(args.input, providers=["CPUExecutionProvider"])
     except Exception as e:
         raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime error: \n{e}")
     input_model = onnx.load(args.input)

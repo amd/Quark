@@ -141,7 +141,7 @@ python -m quark.onnx.tools.print_a16w8_a8w8_nodes --input [INPUT_PATH]
 
 ## Remove initializers from input and upgrade ir versions if it is below 4
 
-Models with ir_version below 4 requires to include initilizer in graph input that may prevent some of the graph optimizations, like const folding and conv-bn folding.
+Models with ir_version below 4 requires to include initializer in graph input that may prevent some of the graph optimizations, like const folding and conv-bn folding.
 
 Use the remove_initializer_from_input tool to upgrade ir versions if it is below 4 and remove initializers from input.
 

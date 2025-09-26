@@ -3,17 +3,23 @@
 # SPDX-License-Identifier: MIT
 #
 
-import onnx
-import numpy as np
-import torch
-
-from .create_model_ops import (convert_ops_to_modules, set_modules_original_weight, get_modules_optimized_weight,
-                               set_modules_original_bias, get_modules_optimized_bias)
-from numpy.typing import NDArray
 from typing import Any
 
+import numpy as np
+import onnx
+import torch
+from numpy.typing import NDArray
 
-class TorchModel(torch.nn.Module):
+from .create_model_ops import (
+    convert_ops_to_modules,
+    get_modules_optimized_bias,
+    get_modules_optimized_weight,
+    set_modules_original_bias,
+    set_modules_original_weight,
+)
+
+
+class TorchModel(torch.nn.Module):  # type: ignore
     """
     A torch model converted from a onnx model.
     """
@@ -33,13 +39,13 @@ class TorchModel(torch.nn.Module):
         self._output_name = self._onnx_model.graph.output[0].name
 
     def forward(self, inputs: torch.Tensor) -> Any:
-        """ Support the models with single input and single output """
+        """Support the models with single input and single output"""
         if self._module_pad is not None:
             tensor = self._module_pad(inputs)
         else:
             tensor = inputs
 
-        assert (self._module is not None), "self _module is None"
+        assert self._module is not None, "self _module is None"
         outputs = self._module(tensor)
 
         if self._module_act is not None:
@@ -51,21 +57,21 @@ class TorchModel(torch.nn.Module):
         return outputs
 
     def set_weight(self, weight: NDArray[np.float32]) -> None:
-        """ Set the original float weight for the compute module """
-        assert (self._module is not None), "self._module is None"
+        """Set the original float weight for the compute module"""
+        assert self._module is not None, "self._module is None"
         set_modules_original_weight(self._module, weight)
 
     def get_weight(self) -> Any:
-        """ Get the optimized quantized weight of the compute module """
-        assert (self._module is not None), "self._module is None"
+        """Get the optimized quantized weight of the compute module"""
+        assert self._module is not None, "self._module is None"
         return get_modules_optimized_weight(self._module)
 
     def set_bias(self, bias: NDArray[np.float32]) -> None:
-        """ Set the original float bias for the compute module """
-        assert (self._module is not None), "self._module is None"
+        """Set the original float bias for the compute module"""
+        assert self._module is not None, "self._module is None"
         set_modules_original_bias(self._module, bias)
 
     def get_bias(self) -> Any:
-        """ Get the optimized quantized bias of the compute module """
-        assert (self._module is not None), "self._module is None"
+        """Get the optimized quantized bias of the compute module"""
+        assert self._module is not None, "self._module is None"
         return get_modules_optimized_bias(self._module)

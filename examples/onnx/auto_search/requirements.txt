@@ -1,0 +1,16 @@
+datasets
+huggingface-hub~=0.24.5
+onnx==1.17.0
+onnxruntime~=1.21.1
+onnxruntime-genai==0.4.0
+onnxruntime_extensions>=0.4.2
+opencv-python
+optimum~=1.21.3
+Pillow
+pycocotools
+timm
+torch==2.5.1
+torchvision==0.20.1
+transformers~=4.43.4
+Ultralytics
+zstd

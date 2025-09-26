@@ -3,14 +3,19 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Optional, Dict, Any, Union, Tuple, List
 import gc
+import os
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import torch
-import torch.nn as nn
-from quark.shares.utils.import_utils import is_transformers_available
 from torch.utils.data import DataLoader
-from quark.torch.quantization.config.type import Dtype
+
+from quark.shares.utils.import_utils import is_transformers_available
 from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.torch.quantization.config.type import Dtype
+
+QUARK_DEBUG = os.environ.get("QUARK_DEBUG", "0") == "1"
+DEBUG_NAN = os.environ.get("QUARK_DEBUG_NAN", None) or QUARK_DEBUG
 
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
@@ -18,7 +23,21 @@ if is_transformers_available():
 logger = ScreenLogger(__name__)
 
 
-def clear_memory(weight: Optional[torch.Tensor] = None) -> None:
+def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
+    """
+    Asserts that the tensor does not contain any NaN value. If it does, it will raise a `AssertionError` with the given message.
+
+    Only does the assertion if the environment variable `QUARK_DEBUG_NAN` is set to `1`. This is useful to avoid the overhead of checking for NaNs in production code.
+
+    Args:
+        tensor (torch.Tensor): The tensor to check for NaNs.
+        message (str): The message to display in the `AssertionError` if the tensor contains NaNs.
+    """
+    if DEBUG_NAN:
+        torch._assert_async(~torch.isnan(tensor).any(), message)
+
+
+def clear_memory(weight: torch.Tensor | None = None) -> None:
     if weight is not None:
         del weight
     gc.collect()
@@ -26,24 +45,25 @@ def clear_memory(weight: Optional[torch.Tensor] = None) -> None:
 
 
 def validate_qmin_qmax(quant_min: int, quant_max: int) -> None:
-    assert (quant_min < quant_max), "qmin must be less than qmax."
+    assert quant_min < quant_max, "qmin must be less than qmax."
 
 
 def calculate_qmin_qmax(dtype: Dtype) -> tuple[Union[int, float], Union[int, float]]:
-
     # Fallback onto default 8-bit qmin and qmax calculation if dynamic range is not used.
     if dtype == Dtype.int8:
         return -128, 127
     elif dtype == Dtype.uint8:
         return 0, 255
     elif dtype == Dtype.int16:
-        return -2**15, 2**15 - 1
+        return -(2**15), 2**15 - 1
     elif dtype == Dtype.int32:
-        return -2**31, 2**31 - 1
+        return -(2**31), 2**31 - 1
     elif dtype == Dtype.int4:
         return -8, 7
     elif dtype == Dtype.uint4:
         return 0, 15
+    elif dtype == Dtype.int3:
+        return -4, 3
     elif dtype == Dtype.int2:
         return -2, 1
     elif dtype == Dtype.fp8_e4m3:
@@ -64,7 +84,7 @@ def calculate_qmin_qmax(dtype: Dtype) -> tuple[Union[int, float], Union[int, flo
         raise ValueError("The qmin and qmax of {dtype} are not defined")
 
 
-def get_num_bits(dtype: Dtype) -> Optional[Union[int, Tuple[int, int]]]:
+def get_num_bits(dtype: Dtype) -> Union[int, tuple[int, int]] | None:
     if dtype in [Dtype.int4, Dtype.uint4]:
         return 4
     elif dtype in [Dtype.int8, Dtype.uint8]:
@@ -79,44 +99,7 @@ def get_num_bits(dtype: Dtype) -> Optional[Union[int, Tuple[int, int]]]:
         return None
 
 
-def set_op_by_name(layer: Union[nn.Module, nn.ModuleList], name: str, new_module: nn.Module) -> None:
-    """
-    Replaces a submodule in a given neural network layer with a new module(e.g. quantized module). The submodule to be
-    replaced is identified by the 'name' parameter, which specifies the name of the submodule
-    using dot notation. If the name includes dots, it navigates through nested submodules
-    to find the specific layer to replace. Otherwise, it directly replaces the submodule in the
-    provided layer.
-
-    Parameters:
-    - layer: The top-level module containing the submodule.
-    - name: name of the submodule, split by dots.
-    - new_module: The new module to replace the existing one, for example the quantized module.
-    """
-    levels = name.split('.')
-    if len(levels) > 1:
-        mod_ = layer
-        for l_idx in range(len(levels) - 1):
-            if levels[l_idx].isdigit() and isinstance(mod_, nn.ModuleList):
-                mod_ = mod_[int(levels[l_idx])]
-            else:
-                mod_ = getattr(mod_, levels[l_idx])
-        setattr(mod_, levels[-1], new_module)
-    else:
-        setattr(layer, name, new_module)
-
-
-def get_op_by_name(layer: Union[nn.Module, nn.ModuleList], name: str) -> Union[nn.Module, nn.ModuleList]:
-    levels = name.split('.')
-    mod_ = layer
-    for l_idx in range(len(levels)):
-        if levels[l_idx].isdigit() and isinstance(mod_, nn.ModuleList):
-            mod_ = mod_[int(levels[l_idx])]
-        else:
-            mod_ = getattr(mod_, levels[l_idx])
-    return mod_
-
-
-def deep_compare(dict1: Dict[str, Any], dict2: Dict[str, Any]) -> bool:
+def deep_compare(dict1: dict[str, Any], dict2: dict[str, Any]) -> bool:
     if type(dict1) != type(dict2):
         return False
     if isinstance(dict1, dict):
@@ -129,7 +112,7 @@ def deep_compare(dict1: Dict[str, Any], dict2: Dict[str, Any]) -> bool:
         return dict1 == dict2
 
 
-_FORMAT_CACHE: Dict[Dtype, tuple[int, int, int]] = {}
+_FORMAT_CACHE: dict[Dtype, tuple[int, int, int]] = {}
 
 
 def get_dtype_params(dtype: Union[str, Dtype]) -> tuple[int, int, int]:
@@ -145,30 +128,33 @@ def get_dtype_params(dtype: Union[str, Dtype]) -> tuple[int, int, int]:
     elif dtype == Dtype.int4:
         ebits, mbits = 0, 4
         emax = 0
+    elif dtype == Dtype.int3:
+        ebits, mbits = 0, 3
+        emax = 0
     elif dtype == Dtype.int2:
         ebits, mbits = 0, 2
         emax = 0
     elif dtype == Dtype.fp8_e5m2:
         ebits, mbits = 5, 2
-        emax = 2**(ebits - 1) - 1
+        emax = 2 ** (ebits - 1) - 1
     elif dtype == Dtype.fp8_e4m3:
         ebits, mbits = 4, 3
-        emax = 2**(ebits - 1)
+        emax = 2 ** (ebits - 1)
     elif dtype == Dtype.fp6_e3m2:
         ebits, mbits = 3, 2
-        emax = 2**(ebits - 1)
+        emax = 2 ** (ebits - 1)
     elif dtype == Dtype.fp6_e2m3:
         ebits, mbits = 2, 3
-        emax = 2**(ebits - 1)
+        emax = 2 ** (ebits - 1)
     elif dtype == Dtype.fp4:
         ebits, mbits = 2, 1
-        emax = 2**(ebits - 1)
+        emax = 2 ** (ebits - 1)
     elif dtype == Dtype.float16:
         ebits, mbits = 5, 10
-        emax = 2**(ebits - 1) - 1
+        emax = 2 ** (ebits - 1) - 1
     elif dtype == Dtype.bfloat16:
         ebits, mbits = 8, 7
-        emax = 2**(ebits - 1) - 1
+        emax = 2 ** (ebits - 1) - 1
     else:
         raise Exception("Unknown element format %s" % dtype)
 
@@ -186,7 +172,7 @@ def pad_to_blocks(x: torch.Tensor, block_size: int) -> tuple[torch.Tensor, int]:
 
 def reshape_to_blocks(x: torch.Tensor, block_size: int, axis: int) -> torch.Tensor:
     if axis > x.dim() - 1:
-        raise IndexError('Axis is larger than number of tensor dimensions')
+        raise IndexError("Axis is larger than number of tensor dimensions")
 
     x = x.transpose(axis, -1)
     x = x.reshape(-1, x.size(-1))
@@ -236,7 +222,7 @@ def t_exponent(t: torch.Tensor) -> torch.Tensor:
 
 
 def even_round(max_abs: torch.Tensor, dtype: Union[Dtype, str]) -> torch.Tensor:
-    f32_min_normal = 2**(-127 + 1)
+    f32_min_normal = 2 ** (-127 + 1)
     eps = f32_min_normal * (max_abs == 0).type(max_abs.dtype)
 
     nan_mask = torch.isnan(max_abs)
@@ -267,24 +253,29 @@ def even_round(max_abs: torch.Tensor, dtype: Union[Dtype, str]) -> torch.Tensor:
 
 
 def count_calibration_tokens(
-    dataloader: Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                      DataLoader[Dict[str, torch.Tensor]], DataLoader[List["BatchFeature"]]]
+    dataloader: Union[
+        DataLoader[torch.Tensor],
+        DataLoader[list[dict[str, torch.Tensor]]],
+        DataLoader[dict[str, torch.Tensor]],
+        DataLoader[list["BatchFeature"]],
+    ],
 ) -> int:
     total_tokens = 0
     for data in dataloader:
         if isinstance(data, dict) or (is_transformers_available() and isinstance(data, BatchFeature)):
             if "input_ids" in data.keys():
-                if isinstance(data['input_ids'], torch.Tensor):
-                    total_tokens += data['input_ids'].numel()
+                if isinstance(data["input_ids"], torch.Tensor):
+                    total_tokens += data["input_ids"].numel()
                 else:
-                    logger.warning("Counting calibration tokens, "
-                                   f"unsupported calibration data type {type(data['input_ids'])}, returning 0.")
+                    logger.warning(
+                        "Counting calibration tokens, "
+                        f"unsupported calibration data type {type(data['input_ids'])}, returning 0."
+                    )
                     return 0
         elif isinstance(data, torch.Tensor):
             total_tokens += data.numel()
         else:
-            logger.warning("Counting calibration tokens, "
-                           f"unsupported calibration data type {type(data)}, returning 0.")
+            logger.warning(f"Counting calibration tokens, unsupported calibration data type {type(data)}, returning 0.")
             return 0
 
     return total_tokens

@@ -6,20 +6,19 @@ import argparse
 import logging
 import os
 import random
-from datasets import load_dataset
 import sys
-sys.path.append(os.path.realpath('../../'))
-import onnxruntime_genai as oga
 
+from datasets import load_dataset
+
+sys.path.append(os.path.realpath("../../"))
 import numpy as np
+import onnxruntime_genai as oga
 import torch
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
-WEIGHTS_NAME = 'pytorch_model.bin'
-from transformers import (
-    AutoTokenizer
-)
+WEIGHTS_NAME = "pytorch_model.bin"
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 class TextDataset(Dataset):
-
     def __init__(self, tokenizer, args, block_size=512):
-
-        testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
-        text = ''
+        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        text = ""
         for i in testdata:
-            text += i['text']
+            text += i["text"]
         self.examples = []
-        tokenized_text = tokenizer.convert_tokens_to_ids(
-            tokenizer.tokenize(text))
-        for i in range(0,
-                       len(tokenized_text) - block_size + 1,
-                       block_size):  # Truncate in block of block_size
-            self.examples.append(
-                    tokenizer.build_inputs_with_special_tokens(
-                        tokenized_text[i:i + block_size]))
+        tokenized_text = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(text))
+        for i in range(0, len(tokenized_text) - block_size + 1, block_size):  # Truncate in block of block_size
+            self.examples.append(tokenizer.build_inputs_with_special_tokens(tokenized_text[i : i + block_size]))
 
     def __len__(self):
         return len(self.examples)
@@ -70,31 +62,28 @@ def set_seed(args):
 
 def evaluate_onnx(args, model, tokenizer, prefix=""):
     from torch.nn import CrossEntropyLoss
+
     # Loop to handle MNLI double evaluation (matched, mis-matched)
-    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
-    test_data = ''
+    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    test_data = ""
     for i in testdata:
-        test_data += i['text']
+        test_data += i["text"]
 
     eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
 
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(eval_dataset)
-    eval_dataloader = DataLoader(eval_dataset,
-                                 sampler=eval_sampler,
-                                 batch_size=args.per_gpu_eval_batch_size)
+    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
     sampler = eval_dataloader.sampler
 
-
     search_options = {
-        'min_length': 1,
-        'max_length': args.block_size + 1,
+        "min_length": 1,
+        "max_length": args.block_size + 1,
     }
     params = oga.GeneratorParams(model)
     params.set_search_options(**search_options)
 
-
-    logger.info("***** Running evaluation {} *****".format(prefix))
+    logger.info(f"***** Running evaluation {prefix} *****")
     eval_loss = 0.0
     nb_eval_steps = 0
 
@@ -113,9 +102,7 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            lm_loss = loss_fct(
-                shift_logits.float().view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1))
+            lm_loss = loss_fct(shift_logits.float().view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
@@ -151,26 +138,15 @@ def main():
         "Default to the model max input length for single sentence inputs (take into account special tokens).",
     )
 
-    parser.add_argument("--per_gpu_eval_batch_size",
-                        default=1,
-                        type=int,
-                        help="Batch size per GPU/CPU for evaluation.")
-    parser.add_argument("--no_cuda",
-                        action="store_true",
-                        help="Avoid using CUDA when available")
-    parser.add_argument("--seed",
-                        type=int,
-                        default=42,
-                        help="random seed for initialization")
-    parser.add_argument("--do_onnx_eval",
-                        action="store_true",
-                        help="evaluate onnx model")
+    parser.add_argument("--per_gpu_eval_batch_size", default=1, type=int, help="Batch size per GPU/CPU for evaluation.")
+    parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
+    parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
+    parser.add_argument("--do_onnx_eval", action="store_true", help="evaluate onnx model")
 
     args = parser.parse_args()
 
     # Setup CUDA, GPU & distributed training
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
 
     # Setup logging
     logging.basicConfig(
@@ -205,16 +181,14 @@ def main():
     results = {}
 
     if args.do_onnx_eval:
-        logger.info("Evaluate the following onnx model: %s",
-                    args.model_name_or_path)
+        logger.info("Evaluate the following onnx model: %s", args.model_name_or_path)
         global_step = ""
         # Load model
-        prefix = 'onnx'
+        prefix = "onnx"
         model = oga.Model(args.model_name_or_path)
 
         result = evaluate_onnx(args, model, tokenizer, prefix=prefix)
-        result = dict(
-            (k + "_{}".format(global_step), v) for k, v in result.items())
+        result = dict((k + f"_{global_step}", v) for k, v in result.items())
         results.update(result)
 
 

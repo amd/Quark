@@ -2,17 +2,18 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert the A8W8_NPU model to A8W8_CPU model.
 
     Example : python -m quark.onnx.tools.convert_a8w8_npu_to_a8w8_cpu --input [INPUT_PATH] --output [OUTPUT_PATH]
 
-'''
+"""
 
+from argparse import ArgumentParser, Namespace
+
+import numpy as np
 import onnx
 import onnxruntime
-import numpy as np
-from argparse import ArgumentParser, Namespace
 
 from quark.shares.utils.log import ScreenLogger
 
@@ -90,10 +91,10 @@ def convert_a8w8_npu_to_a8w8_cpu(model: onnx.ModelProto) -> onnx.ModelProto:
     return model
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     try:
-        ort_session = onnxruntime.InferenceSession(args.input, providers=['CPUExecutionProvider'])
+        ort_session = onnxruntime.InferenceSession(args.input, providers=["CPUExecutionProvider"])
     except Exception as e:
         raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}")
     input_model = onnx.load(args.input)

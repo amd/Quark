@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -171,11 +173,11 @@ Test the accuracy of the quantized model with Layerwise Percentile on the ImageN
      - 23 MB
    * - Prec@1
      - 74.842 %
-     - 45.978 %
-     - 55.898 %
-     - 71.004 %
+     - 44.028 %
+     - 61.142 %
+     - 70.972 %
    * - Prec@5
      - 92.206 %
-     - 69.508 %
-     - 78.946 %
-     - 89.932 %
+     - 67.252 %
+     - 83.342 %
+     - 89.988 %

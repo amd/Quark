@@ -13,18 +13,29 @@
 import argparse
 import pprint
 import random
-from tabulate import tabulate
+
 import torch
-from utils import LRScheduler
-from evaluators import COCOEvaluator
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d
-from models import YOLOPAFPN, YOLOXHead, Quark_YOLOX, YOLOX
-from data import COCODataset, TrainTransform, ValTransform, YoloBatchSampler, DataLoader, InfiniteSampler, MosaicDetection, worker_init_reset_seed
 import torch.nn as nn
+from data import (
+    COCODataset,
+    DataLoader,
+    InfiniteSampler,
+    MosaicDetection,
+    TrainTransform,
+    ValTransform,
+    YoloBatchSampler,
+    worker_init_reset_seed,
+)
+from evaluators import COCOEvaluator
+from models import YOLOPAFPN, YOLOX, Quark_YOLOX, YOLOXHead
+from tabulate import tabulate
+from utils import LRScheduler
+
+from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d
+from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
 
 
-class Exp():
+class Exp:
     """Basic class for yolo-x experiment."""
 
     def __init__(self, args: argparse.Namespace = None):
@@ -51,8 +62,9 @@ class Exp():
         # To disable multiscale training, set the value to 0.
         self.multiscale_range = 5
         # You can uncomment this line to specify a multiscale range
-        self.random_size = (10, 20) if args.random_size_range is None else (13 - args.random_size_range,
-                                                                            13 + args.random_size_range)
+        self.random_size = (
+            (10, 20) if args.random_size_range is None else (13 - args.random_size_range, 13 + args.random_size_range)
+        )
         # dir of dataset images, if data_dir is None, this project will use `datasets` dir
         self.data_dir = args.data_dir
         # name of annotation file for training
@@ -105,7 +117,7 @@ class Exp():
         # If set to False, yolox will only save latest and best ckpt.
         self.save_history_ckpt = True
         # name of experiment
-        self.exp_name = 'yolo_x_tiny_' + args.experiment_name
+        self.exp_name = "yolo_x_tiny_" + args.experiment_name
         # -----------------  testing config ------------------
         # output image size during evaluation/test
         self.test_size = (416, 416)
@@ -143,12 +155,14 @@ class Exp():
                 "disk": Caching imgs to disk for fast training.
         """
 
-        return COCODataset(data_dir=self.data_dir,
-                           json_file=self.train_ann,
-                           img_size=self.input_size,
-                           preproc=TrainTransform(max_labels=50, flip_prob=self.flip_prob, hsv_prob=self.hsv_prob),
-                           cache=cache,
-                           cache_type=cache_type)
+        return COCODataset(
+            data_dir=self.data_dir,
+            json_file=self.train_ann,
+            img_size=self.input_size,
+            preproc=TrainTransform(max_labels=50, flip_prob=self.flip_prob, hsv_prob=self.hsv_prob),
+            cache=cache,
+            cache_type=cache_type,
+        )
 
     def get_data_loader(self, batch_size, no_aug=False, cache_img: str = None):
         """
@@ -198,7 +212,7 @@ class Exp():
     def random_resize(self):
         tensor = torch.LongTensor(2).cuda()
         size_factor = self.input_size[1] * 1.0 / self.input_size[0]
-        if not hasattr(self, 'random_size'):
+        if not hasattr(self, "random_size"):
             min_size = int(self.input_size[0] / 32) - self.multiscale_range
             max_size = int(self.input_size[0] / 32) + self.multiscale_range
             self.random_size = (min_size, max_size)
@@ -269,11 +283,13 @@ class Exp():
 
     def get_eval_dataset(self, **kwargs):
         legacy = kwargs.get("legacy", False)
-        return COCODataset(data_dir=self.data_dir,
-                           json_file=self.val_ann,
-                           name="val2017",
-                           img_size=self.test_size,
-                           preproc=ValTransform(legacy=legacy))
+        return COCODataset(
+            data_dir=self.data_dir,
+            json_file=self.val_ann,
+            name="val2017",
+            img_size=self.test_size,
+            preproc=ValTransform(legacy=legacy),
+        )
 
     def get_eval_loader(self, batch_size, **kwargs):
         valdataset = self.get_eval_dataset(**kwargs)

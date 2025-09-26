@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -36,7 +38,7 @@ Install the necessary python packages:
 
 .. code-block:: bash
 
-   python -m pip install -r requirements.txt
+   python -m pip install -r ../utils/requirements.txt
 
 Prepare model
 -------------

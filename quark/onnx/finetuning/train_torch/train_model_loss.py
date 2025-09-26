@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Tuple, Any
+from typing import Any, Tuple
+
+import numpy as np
 import torch
 
-from .train_model_param import TrainParameters
-
 from quark.onnx.finetuning.create_torch.base_qdq_quantizers import AdaroundConstants
-import numpy as np
+
+from .train_model_param import TrainParameters
 
 
 class TrainLoss:
@@ -28,7 +29,7 @@ class TrainLoss:
         :param float_output: Activation output from original float module
         :return: Reconstruction loss
         """
-        recon_loss = (torch.norm(quant_output - float_output, p="fro", dim=1)**2).mean()
+        recon_loss = (torch.norm(quant_output - float_output, p="fro", dim=1) ** 2).mean()
 
         return recon_loss
 
@@ -45,8 +46,10 @@ class TrainLoss:
             round_loss = torch.tensor(0.0)
         else:
             h_alpha = torch.clamp(
-                torch.sigmoid(alpha) * (AdaroundConstants.ZETA - AdaroundConstants.GAMMA) + AdaroundConstants.GAMMA, 0,
-                1)
+                torch.sigmoid(alpha) * (AdaroundConstants.ZETA - AdaroundConstants.GAMMA) + AdaroundConstants.GAMMA,
+                0,
+                1,
+            )
 
             beta = cls._calculate_beta(params.num_iterations, cur_iter, params.beta_range, params.warm_start)
 
@@ -57,7 +60,7 @@ class TrainLoss:
         return round_loss
 
     @staticmethod
-    def _calculate_beta(max_iter: int, cur_iter: int, beta_range: Tuple[float, float], warm_start: float) -> Any:
+    def _calculate_beta(max_iter: int, cur_iter: int, beta_range: tuple[float, float], warm_start: float) -> Any:
         """
         Calculate beta parameter used in regularization function using cosine decay
         :param max_iter: Total maximum number of iterations
@@ -66,7 +69,7 @@ class TrainLoss:
         :param warm_start: Warm up period, during which rounding loss has zero effect
         :return: Parameter beta
         """
-        assert cur_iter < max_iter, 'Current iteration should be less than total maximum number of iterations.'
+        assert cur_iter < max_iter, "Current iteration should be less than total maximum number of iterations."
 
         start_beta, end_beta = beta_range
 

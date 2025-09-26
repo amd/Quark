@@ -12,6 +12,7 @@
 
 import itertools
 from typing import Optional
+
 import torch
 import torch.distributed as dist
 from torch.utils.data.sampler import BatchSampler as torchBatchSampler
@@ -49,7 +50,7 @@ class InfiniteSampler(Sampler):
         self,
         size: int,
         shuffle: bool = True,
-        seed: Optional[int] = 0,
+        seed: int | None = 0,
         rank=0,
         world_size=1,
     ):
@@ -75,9 +76,7 @@ class InfiniteSampler(Sampler):
 
     def __iter__(self):
         start = self._rank
-        yield from itertools.islice(
-            self._infinite_indices(), start, None, self._world_size
-        )
+        yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
 
     def _infinite_indices(self):
         g = torch.Generator()

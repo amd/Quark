@@ -3,30 +3,30 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Union, Tuple, List, Dict, Any
-import numpy as np
-from numpy.typing import NDArray
-import onnx
-from onnx import onnx_pb as onnx_proto
-from onnx.onnx_ml_pb2 import AttributeProto, TensorProto, NodeProto
+from typing import Any, Dict, List, Tuple, Union
 
+import numpy as np
+import onnx
 import torch
+from numpy.typing import NDArray
+from onnx import onnx_pb as onnx_proto
+from onnx.onnx_ml_pb2 import AttributeProto, NodeProto, TensorProto
 
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
-ComputeOperations = ('Conv', 'ConvTranspose', 'Gemm', 'MatMul')
+ComputeOperations = ("Conv", "ConvTranspose", "Gemm", "MatMul")
 NormalizationOperations = ("InstanceNormalization", "ExtendedInstanceNormalization", "LayerNormalization")
 ActivationMapping = {
-    'Relu': torch.nn.ReLU(inplace=True),
-    'PRelu': torch.nn.PReLU(),
-    'LeakyRelu': torch.nn.LeakyReLU(),
-    'Tanh': torch.nn.Tanh(),
-    'Clip': torch.nn.ReLU6(inplace=True),
-    'Sigmoid': torch.nn.Sigmoid(),
-    'Softmax': torch.nn.Softmax(),
-    'Gelu': torch.nn.GELU(),
+    "Relu": torch.nn.ReLU(inplace=True),
+    "PRelu": torch.nn.PReLU(),
+    "LeakyRelu": torch.nn.LeakyReLU(),
+    "Tanh": torch.nn.Tanh(),
+    "Clip": torch.nn.ReLU6(inplace=True),
+    "Sigmoid": torch.nn.Sigmoid(),
+    "Softmax": torch.nn.Softmax(),
+    "Gelu": torch.nn.GELU(),
 }
 
 QuantizeLinearOps = ("QuantizeLinear", "ExtendedQuantizeLinear")
@@ -68,14 +68,12 @@ def extract_attr_values(attr: AttributeProto) -> Any:
     elif attr.type == AttributeType["GRAPH"]:
         value = attr.g
     else:
-        raise NotImplementedError("Extraction of attribute type {} not implemented.".format(attr.type))
+        raise NotImplementedError(f"Extraction of attribute type {attr.type} not implemented.")
     return value
 
 
-class ONNXModelParser(object):
-
+class ONNXModelParser:
     def __init__(self, onnx_model: onnx.ModelProto) -> None:
-
         self.model = onnx_model
 
         self.dtype_to_qrange = self._dtype_to_qrange()
@@ -83,8 +81,8 @@ class ONNXModelParser(object):
         self.in_name_to_nodes = self._input_name_to_nodes()
         self.out_name_to_node = self._output_name_to_node()
 
-    def _dtype_to_qrange(self) -> Dict[Any, Tuple[Union[int, float], Union[int, float]]]:
-        """ Range of different integer data types quantization """
+    def _dtype_to_qrange(self) -> dict[Any, tuple[Union[int, float], Union[int, float]]]:
+        """Range of different integer data types quantization"""
         dtype_to_qrange = {
             onnx_proto.TensorProto.UINT4: (0, 15),
             onnx_proto.TensorProto.INT4: (-8, 7),
@@ -93,22 +91,22 @@ class ONNXModelParser(object):
             onnx_proto.TensorProto.UINT16: (0, 65535),
             onnx_proto.TensorProto.INT16: (-32768, 32767),
             onnx_proto.TensorProto.UINT32: (0, 2**32 - 1),
-            onnx_proto.TensorProto.INT32: (-2**31, 2**31 - 1),
+            onnx_proto.TensorProto.INT32: (-(2**31), 2**31 - 1),
             onnx_proto.TensorProto.FLOAT16: (-65504.0, 65504.0),
             onnx_proto.TensorProto.BFLOAT16: (-3.38953139e38, 3.38953139e38),
         }
         return dtype_to_qrange
 
-    def _name_to_initializer(self) -> Dict[str, TensorProto]:
-        """ The initializer who provides the tensor, one to one """
-        name_to_init: Dict[str, TensorProto] = {}
+    def _name_to_initializer(self) -> dict[str, TensorProto]:
+        """The initializer who provides the tensor, one to one"""
+        name_to_init: dict[str, TensorProto] = {}
         for init in self.model.graph.initializer:
             name_to_init[init.name] = init
         return name_to_init
 
-    def _input_name_to_nodes(self) -> Dict[str, List[NodeProto]]:
-        """ The nodes whose inputs include the tensor, one to many """
-        in_name_to_nodes: Dict[str, List[NodeProto]] = {}
+    def _input_name_to_nodes(self) -> dict[str, list[NodeProto]]:
+        """The nodes whose inputs include the tensor, one to many"""
+        in_name_to_nodes: dict[str, list[NodeProto]] = {}
         for node in self.model.graph.node:
             for in_name in node.input:
                 if in_name not in in_name_to_nodes:
@@ -117,27 +115,26 @@ class ONNXModelParser(object):
                     in_name_to_nodes[in_name].append(node)
         return in_name_to_nodes
 
-    def _output_name_to_node(self) -> Dict[str, NodeProto]:
-        """ The node who outputs the tensor, one to one """
-        out_name_to_node: Dict[str, NodeProto] = {}
+    def _output_name_to_node(self) -> dict[str, NodeProto]:
+        """The node who outputs the tensor, one to one"""
+        out_name_to_node: dict[str, NodeProto] = {}
         for node in self.model.graph.node:
             for out_name in node.output:
                 out_name_to_node[out_name] = node
         return out_name_to_node
 
     def _find_node_input_init(self, node: NodeProto, index: int) -> Union[TensorProto, None]:
-        """ Find the initializer who provides the node's input tensor """
-        if index < 0 or index >= len(node.input):
-            return None
-        elif node.input[index] not in self.name_to_init:
+        """Find the initializer who provides the node's input tensor"""
+        if index < 0 or index >= len(node.input) or node.input[index] not in self.name_to_init:
             return None
 
         return self.name_to_init[node.input[index]]
 
     @log_errors
-    def _find_node_input_qdq(self, node: NodeProto,
-                             index: int) -> Tuple[Union[NodeProto, None], Union[NodeProto, None]]:
-        """ Find node's input qdq nodes, dq always exits but q may be folded """
+    def _find_node_input_qdq(
+        self, node: NodeProto, index: int
+    ) -> tuple[Union[NodeProto, None], Union[NodeProto, None]]:
+        """Find node's input qdq nodes, dq always exits but q may be folded"""
         if index < 0 or index >= len(node.input):
             raise ValueError(f"index {index} exceeded the number of inputs for {node.name}")
             return None, None
@@ -164,7 +161,7 @@ class ONNXModelParser(object):
 
     @log_errors
     def _find_node_input_fn(self, node: NodeProto, index: int) -> Union[NodeProto, None]:
-        """ Find node's input fixneuron"""
+        """Find node's input fixneuron"""
         if index < 0 or index >= len(node.input):
             raise ValueError(f"index {index} exceeded the number of inputs for {node.name}")
             return None
@@ -184,8 +181,8 @@ class ONNXModelParser(object):
     @log_errors
     def _parse_qdq_quant_info(
         self, dq: Union[NodeProto, None], q: Union[NodeProto, None]
-    ) -> Union[Tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], None]:
-        """ Parse quantization info from the QantizeLinear or DeqantizeLinear.
+    ) -> Union[tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], None]:
+        """Parse quantization info from the QantizeLinear or DeqantizeLinear.
         The quantization info contains scale, zero_point, max value of the quantized data type,
         min value of the quantized data type, the flag of whether QantizeLinear was folded or not.
         """
@@ -230,33 +227,40 @@ class ONNXModelParser(object):
 
         return (scale, zero_point, min_q, max_q, ch_axis, q_folded, quant_type)
 
-    def _parse_fn_quant_info(self, fn: NodeProto) -> Union[Dict[str, Any], None]:
-        """ Parse quantization info from the FixNeuron and return its attributes.
-        """
+    def _parse_fn_quant_info(self, fn: NodeProto) -> Union[dict[str, Any], None]:
+        """Parse quantization info from the FixNeuron and return its attributes."""
         qnode = fn
 
         if qnode is None:
             logger.warning("no fixneuron for parsing quantizaion information")
             return None
 
-        quant_info: Dict[str, Any] = {}
+        quant_info: dict[str, Any] = {}
 
         attrs = {}
         for attr in qnode.attribute:
             attrs[attr.name] = extract_attr_values(attr)
-        quant_info['op_attrs'] = attrs
+        quant_info["op_attrs"] = attrs
 
-        quant_info['op_type'] = qnode.op_type  # To distinguish different fix neurons
+        quant_info["op_type"] = qnode.op_type  # To distinguish different fix neurons
 
         return quant_info
 
     def get_inputs_qinfo(
         self, node: NodeProto
-    ) -> List[Union[Tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], Dict[
-            str, Any], None]]:
-        """ Get the quantization info of each input for the node """
-        qinfos: List[Union[Tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any],
-                           Dict[str, Any], None]] = [None] * len(node.input)
+    ) -> list[
+        Union[
+            tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], dict[str, Any], None
+        ]
+    ]:
+        """Get the quantization info of each input for the node"""
+        qinfos: list[
+            Union[
+                tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any],
+                dict[str, Any],
+                None,
+            ]
+        ] = [None] * len(node.input)
 
         for index, name in enumerate(node.input):
             dq, q = self._find_node_input_qdq(node, index)
@@ -270,9 +274,10 @@ class ONNXModelParser(object):
         return qinfos
 
     @log_errors
-    def _find_node_output_qdq(self, node: NodeProto,
-                              index: int) -> Tuple[Union[NodeProto, None], Union[NodeProto, None]]:
-        """ Find node's output qdq nodes, dq and q may not have either """
+    def _find_node_output_qdq(
+        self, node: NodeProto, index: int
+    ) -> tuple[Union[NodeProto, None], Union[NodeProto, None]]:
+        """Find node's output qdq nodes, dq and q may not have either"""
         if index < 0 or index >= len(node.output):
             raise ValueError(f"index {index} exceeded the number of outputs for {node.name}")
 
@@ -296,7 +301,7 @@ class ONNXModelParser(object):
         return q_candidate, dq_candidate
 
     def _find_node_output_fn(self, node: NodeProto, index: int) -> Union[NodeProto, None]:
-        """ Find node's output fixneuron """
+        """Find node's output fixneuron"""
         if index < 0 or index >= len(node.output):
             raise ValueError(f"index {index} exceeded the number of outputs for {node.name}")
 
@@ -314,11 +319,19 @@ class ONNXModelParser(object):
 
     def get_outputs_qinfo(
         self, node: NodeProto
-    ) -> List[Union[Tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], Dict[
-            str, Any], None]]:
-        """ Get the quantization info of each output for the node """
-        qinfos: List[Union[Tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any],
-                           Dict[str, Any], None]] = [None] * len(node.output)
+    ) -> list[
+        Union[
+            tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any], dict[str, Any], None
+        ]
+    ]:
+        """Get the quantization info of each output for the node"""
+        qinfos: list[
+            Union[
+                tuple[NDArray[np.float32], NDArray[Any], NDArray[Any], NDArray[Any], int, bool, Any],
+                dict[str, Any],
+                None,
+            ]
+        ] = [None] * len(node.output)
 
         for index, name in enumerate(node.output):
             q, dq = self._find_node_output_qdq(node, index)
@@ -331,8 +344,8 @@ class ONNXModelParser(object):
 
         return qinfos
 
-    def get_inputs_param(self, node: NodeProto) -> List[NDArray[Any]]:
-        """ Get the weight and bias of the node in numpy array format """
+    def get_inputs_param(self, node: NodeProto) -> list[NDArray[Any]]:
+        """Get the weight and bias of the node in numpy array format"""
         params = []
 
         for index, name in enumerate(node.input):
@@ -363,7 +376,7 @@ class ONNXModelParser(object):
         return params
 
     def get_output_node(self, node: NodeProto) -> Union[NodeProto, None]:
-        """ Get the target whose input is from the node's output """
+        """Get the target whose input is from the node's output"""
         if node.output[0] not in self.in_name_to_nodes:
             return None
 

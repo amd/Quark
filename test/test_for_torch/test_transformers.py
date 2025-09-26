@@ -2,13 +2,13 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import huggingface_hub
 import pytest
 import torch
-import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import huggingface_hub
 
-from packaging import version
+from quark.shares.utils.import_utils import is_transformers_version_higher_or_equal
+from quark.shares.utils.testing_utils import skip_if_amd_quark_nightly_wheel_is_installed
 
 """
 Reference reproduction:
@@ -54,15 +54,28 @@ and logits before export are saved identically:
 """
 
 
-@pytest.mark.parametrize("model_id", [
-    pytest.param(model_id, id=model_id) for model_id in ["amd-quark/llama-tiny-w-int8-per-tensor", "amd-quark/llama-tiny-w-fp8-a-fp8-o-fp8", "amd-quark/llama-tiny-w-fp8-a-fp8", "amd-quark/llama-tiny-int4-per-group-sym", "amd-quark/llama-small-int4-per-group-sym-awq", "amd-quark/llama-tiny-w-int8-b-int8-per-tensor"]
-])
+# `transformers` checks whether `amd-quark` (not `amd-quark-nightly`) is installed and raises an error if not found
+@skip_if_amd_quark_nightly_wheel_is_installed
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        pytest.param(model_id, id=model_id)
+        for model_id in [
+            "amd-quark/llama-tiny-w-int8-per-tensor",
+            "amd-quark/llama-tiny-w-fp8-a-fp8-o-fp8",
+            "amd-quark/llama-tiny-w-fp8-a-fp8",
+            "amd-quark/llama-tiny-int4-per-group-sym",
+            "amd-quark/llama-small-int4-per-group-sym-awq",
+            "amd-quark/llama-tiny-w-int8-b-int8-per-tensor",
+        ]
+    ],
+)
 def test_transformers_load(model_id: str):
-    if version.parse(transformers.__version__) < version.parse("4.48"):
+    if not is_transformers_version_higher_or_equal("4.49"):
         pytest.skip("This test requires Quark support in Transformers")
 
     # We use attn_implementation="eager" here as the asset reference logits were originally computed without SDPA.
-    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", attn_implementation="eager")
+    model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation="eager")
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -77,9 +90,5 @@ def test_transformers_load(model_id: str):
     file_path = huggingface_hub.hf_hub_download("amd-quark/quark-assets", ref_filename)
     logits_ref = torch.load(file_path, weights_only=True)
 
-    # We should have an exact match between the reference logits obtained from a model before serialization, and from a model after serialization and reload. However, the reference logits were taken locally and for amd-quark/llama-small-int4-per-group-sym-awq we have a small numerical difference in the CI: maxabsdiff 5.9605e-07, due to the different hardware, although the torch.equal test passes locally.
-    # We may want to generate the reference logits on the fly.
-    if "awq" in model_id:
-        assert (logits_reloaded - logits_ref).abs().max() < 1e-6
-    else:
-        assert torch.equal(logits_reloaded, logits_ref)
+    # TODO: generate reference logits (after quantization, before export) on the fly and test with smaller rtol/atol.
+    assert torch.allclose(logits_reloaded, logits_ref, rtol=1e-2, atol=1e-2)

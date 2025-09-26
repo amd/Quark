@@ -5,27 +5,25 @@
 
 import logging
 import os
-from typing import Any, Set, TypeVar, Callable, cast, List
-from logging import LogRecord
-
 from functools import wraps
+from logging import LogRecord
+from typing import Any, Callable, List, Set, TypeVar, cast
 
 _C = TypeVar("_C", bound=Callable[..., Any])  # pragma: no cover
 
 
 class DebugLogger:
-
-    def __init__(self, name: str, debug_file_dir: str = 'quark_logs') -> None:
-        self.logger = logging.getLogger(f'{name}_debug')
+    def __init__(self, name: str, debug_file_dir: str = "quark_logs") -> None:
+        self.logger = logging.getLogger(f"{name}_debug")
         self.logger.setLevel(logging.DEBUG)
 
         if not os.path.exists(debug_file_dir):
             os.makedirs(debug_file_dir)
 
-        file_handler = logging.FileHandler(os.path.join(debug_file_dir, f'{name}_debug.log'), mode="w")
+        file_handler = logging.FileHandler(os.path.join(debug_file_dir, f"{name}_debug.log"), mode="w")
         file_handler.setLevel(logging.DEBUG)
         self.logger.propagate = False
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(formatter)
 
         self.logger.addHandler(file_handler)
@@ -57,13 +55,12 @@ class CustomFormatter(logging.Formatter):
 
 
 class DuplicateFilter(logging.Filter):
-
     def __init__(self) -> None:
         super().__init__()
-        self.msgs: Set[str] = set()
+        self.msgs: set[str] = set()
 
     def filter(self, record: LogRecord) -> bool:
-        allow_duplicate = getattr(record, 'allow_duplicate', False)
+        allow_duplicate = getattr(record, "allow_duplicate", False)
         if allow_duplicate or record.msg not in self.msgs:
             self.msgs.add(record.msg)
             return True
@@ -79,10 +76,10 @@ class ScreenLogger:
         for instance in cls._instances:
             instance.logger.setLevel(level)
 
-    _instances: List[Any] = []  # type List[ScreenLogger]: recored all ScreenLogger instances
+    _instances: list[Any] = []  # type List[ScreenLogger]: recored all ScreenLogger instances
 
     def __init__(self, name: str) -> None:
-        self.logger = logging.getLogger(f'{name}_screen')
+        self.logger = logging.getLogger(f"{name}_screen")
         console_handler = logging.StreamHandler()
         self.logger.propagate = False
         console_formatter = CustomFormatter()
@@ -93,33 +90,33 @@ class ScreenLogger:
 
     def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
         allow_duplicate = True
-        if 'allow_duplicate' in kwargs:
-            allow_duplicate = kwargs['allow_duplicate']
-            kwargs.pop('allow_duplicate')
+        if "allow_duplicate" in kwargs:
+            allow_duplicate = kwargs["allow_duplicate"]
+            kwargs.pop("allow_duplicate")
 
-        self.logger.info(msg, extra={'allow_duplicate': allow_duplicate}, *args, **kwargs)
+        self.logger.info(msg, extra={"allow_duplicate": allow_duplicate}, *args, **kwargs)
 
     def warning(self, msg: str, *args: Any, **kwargs: Any) -> None:
         allow_duplicate = True
-        if 'allow_duplicate' in kwargs:
-            allow_duplicate = kwargs['allow_duplicate']
-            kwargs.pop('allow_duplicate')
+        if "allow_duplicate" in kwargs:
+            allow_duplicate = kwargs["allow_duplicate"]
+            kwargs.pop("allow_duplicate")
 
-        self.logger.warning(msg, extra={'allow_duplicate': allow_duplicate}, *args, **kwargs)
+        self.logger.warning(msg, extra={"allow_duplicate": allow_duplicate}, *args, **kwargs)
 
     def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
         allow_duplicate = True
-        if 'allow_duplicate' in kwargs:
-            allow_duplicate = kwargs['allow_duplicate']
-            kwargs.pop('allow_duplicate')
+        if "allow_duplicate" in kwargs:
+            allow_duplicate = kwargs["allow_duplicate"]
+            kwargs.pop("allow_duplicate")
 
         error_code = None
-        if 'error_code' in kwargs:
-            error_code = kwargs['error_code']
-            kwargs.pop('error_code')
+        if "error_code" in kwargs:
+            error_code = kwargs["error_code"]
+            kwargs.pop("error_code")
         if error_code is not None:
             msg = f"[Error Code: {error_code}] {msg}"
-        self.logger.error(msg, extra={'allow_duplicate': allow_duplicate}, *args, **kwargs)
+        self.logger.error(msg, extra={"allow_duplicate": allow_duplicate}, *args, **kwargs)
 
     def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
         self.logger.debug(msg, *args, **kwargs)
@@ -135,7 +132,6 @@ logger = ScreenLogger(__name__)
 
 
 def log_errors(func: _C) -> _C:  # pragma: no cover
-
     @wraps(func)
     def wrapper(*args, **kwargs):  # type: ignore
         try:

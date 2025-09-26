@@ -8,23 +8,22 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
+from typing import Any, Dict, List, Optional
+
 import numpy as np
-
-from quark.shares.utils.log import ScreenLogger, log_errors
-
 import onnx
 import onnx.numpy_helper
-from onnx import TensorProto, ModelProto, NodeProto
+from onnx import ModelProto, NodeProto, TensorProto
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.qdq_quantizer import QDQQuantizer as OrtQDQQuantizer
-from onnxruntime.quantization.qdq_quantizer import (QDQQuantTensorType, QDQTensorQuantInfo)
+from onnxruntime.quantization.qdq_quantizer import QDQQuantTensorType, QDQTensorQuantInfo
 from onnxruntime.quantization.quant_utils import (
-    QuantType,
-    QuantizationMode,
     DEQUANT_OP_NAME,
     QUANT_OP_NAME,
+    QuantizationMode,
     QuantizedValue,
     QuantizedValueType,
+    QuantType,
     add_dequant_output_suffix,
     add_dequant_suffix,
     add_quant_input_suffix,
@@ -33,35 +32,31 @@ from onnxruntime.quantization.quant_utils import (
     find_by_name,
 )
 
+from quark.shares.utils.log import ScreenLogger, log_errors
+
+from .onnx_quantizer import VitisONNXQuantizer
 from .quant_utils import (
+    BFP_OP_DEFAULT_ATTRS,
+    COP_BFP_OP_NAME,
+    COP_DEQUANT_OP_NAME,
+    COP_DOMAIN,
+    COP_MX_OP_NAME,
+    COP_QUANT_OP_NAME,
+    MX_OP_DEFAULT_ATTRS,
+    ONNX_BFP_QTYPES_LIST,
+    ONNX_FP_QTYPES_LIST,
+    ExtendedQuantType,
     __producer__,
     __version__,
-    ExtendedQuantType,
-    FIX_OP_NAME,
-    FIX_OP_DEFAULT_ATTRS,
-    COP_BFP_OP_NAME,
-    BFP_OP_DEFAULT_ATTRS,
-    COP_MX_OP_NAME,
-    MX_OP_DEFAULT_ATTRS,
-    VAI_DOMAIN,
-    COP_DOMAIN,
-    COP_QUANT_OP_NAME,
-    COP_DEQUANT_OP_NAME,
-    ONNX_WBIT_QTYPES_LIST,
-    ONNX_FP_QTYPES_LIST,
-    ONNX_BFP_QTYPES_LIST,
     get_annotate_tensors,
     get_qdq_to_remove,
-    remove_nodes,
-    modified_annotate_input,
     get_tensor_type_from_qType,
+    modified_annotate_input,
+    remove_nodes,
 )
-from .registry import (CreateQDQQuantizer, CreateNPUCnnQDQQuantizer, CreateNPUTransformerQDQQuantizer)
 from .refine import adjust_quantize_info, align_quantize_info
+from .registry import CreateNPUCnnQDQQuantizer, CreateNPUTransformerQDQQuantizer, CreateQDQQuantizer
 from .simulate_dpu import simulate_transforms
-from .onnx_quantizer import VitisONNXQuantizer
-
-from typing import Any, List, Dict, Optional
 
 logger = ScreenLogger(__name__)
 
@@ -97,9 +92,9 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         extra_options: Any = None,
     ):
         super().__init__(
@@ -116,11 +111,13 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
             op_types_to_quantize=op_types_to_quantize,
             extra_options=extra_options,
         )
-        self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
-            "Int32Bias"]
+        self.int32_bias = (
+            True if extra_options is None or "Int32Bias" not in extra_options else extra_options["Int32Bias"]
+        )
 
-        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
-            "Int16Bias"]
+        self.int16_bias = (
+            False if extra_options is None or "Int16Bias" not in extra_options else extra_options["Int16Bias"]
+        )
 
         if self.int16_bias:
             self.int32_bias = True
@@ -144,8 +141,8 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         elif tensor_name in self.value_infos:
             vi = self.value_infos[tensor_name]
             if vi.type.HasField("tensor_type") and vi.type.tensor_type.elem_type in (
-                    TensorProto.FLOAT,
-                    TensorProto.FLOAT16,
+                TensorProto.FLOAT,
+                TensorProto.FLOAT16,
             ):
                 return True
         else:
@@ -191,7 +188,8 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         self.remove_nodes()
 
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -296,10 +294,10 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
-        extra_options: Optional[Dict[str, Any]] = None,
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
+        extra_options: dict[str, Any] | None = None,
     ):
         super().__init__(
             model,
@@ -315,10 +313,12 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
             op_types_to_quantize=op_types_to_quantize,
             extra_options=extra_options,
         )
-        self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
-            "Int32Bias"]
-        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
-            "Int16Bias"]
+        self.int32_bias = (
+            True if extra_options is None or "Int32Bias" not in extra_options else extra_options["Int32Bias"]
+        )
+        self.int16_bias = (
+            False if extra_options is None or "Int16Bias" not in extra_options else extra_options["Int16Bias"]
+        )
         if self.int16_bias:
             self.int32_bias = True
 
@@ -338,7 +338,6 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
             logger.warning(f"Expected {bias_name} to be a weight")
 
     def quantize_model(self) -> Any:
-
         annotate_tensors = get_annotate_tensors(self.model.model)
 
         for node in self.model.nodes():
@@ -359,7 +358,8 @@ class QDQNPUTransformerQuantizer(QDQQuantizer):
             self._quantize_bias_tensors()
 
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -415,11 +415,11 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any] = {},
+        quantized_tensor_type: dict[Any, Any] = {},
         extra_options: Any = None,
     ):
         self.calibrate_method = calibrate_method
@@ -440,46 +440,57 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
             quantized_tensor_type,
             extra_options,
         )
-        self.tensors_to_quantize: Dict[Any, Any] = {}
-        self.bias_to_quantize: List[Any] = []
+        self.tensors_to_quantize: dict[Any, Any] = {}
+        self.bias_to_quantize: list[Any] = []
 
-        self.nodes_to_remove: List[Any] = []
+        self.nodes_to_remove: list[Any] = []
 
         # Specific op types to exclude qdq quantization for their outputs.
         # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, Matmul, Gemm
         # because those ops may be followed by nodes that require high resolution inputs.
         # Adding QDQ for those ops' output may end up with worse accuracy.
         # So, we don't recommend to add QDQ to node's output under such condition.
-        self.op_types_to_exclude_output_quantization = ([] if extra_options is None
-                                                        or "OpTypesToExcludeOutputQuantization" not in extra_options
-                                                        else extra_options["OpTypesToExcludeOutputQuantization"])
+        self.op_types_to_exclude_output_quantization = (
+            []
+            if extra_options is None or "OpTypesToExcludeOutputQuantization" not in extra_options
+            else extra_options["OpTypesToExcludeOutputQuantization"]
+        )
 
         # Some scenarios do not need the bias quantized. For example, in the case of Quantization Aware Training,
         # quantizing the bias is not needed. This is because in QAT, all model parameters are expected to be in
         # floating point format. To that end, we can use the FakeQuant operator for weights and activations that
         # can always have QDQ pairs (by using AddQDQPairToWeight). But for biases in a quantized model, we can't use
         # FakeQuant because it only ever appears before a DQ (since it is quantized as int32).
-        self.quantize_bias = True if extra_options is None or "QuantizeBias" not in extra_options else extra_options[
-            "QuantizeBias"]
+        self.quantize_bias = (
+            True if extra_options is None or "QuantizeBias" not in extra_options else extra_options["QuantizeBias"]
+        )
 
         # We do quantization on Dequantizelinear's input to remove Quantizelinear for weight as an optimization.
         # In some cases, for example QDQ BERT model for TensorRT, QDQ should always appear as a pair.
         # Therefore, we need to disable this optimization and add qdq pair to weight.
-        self.add_qdq_pair_to_weight = (False if extra_options is None or "AddQDQPairToWeight" not in extra_options else
-                                       extra_options["AddQDQPairToWeight"])
+        self.add_qdq_pair_to_weight = (
+            False
+            if extra_options is None or "AddQDQPairToWeight" not in extra_options
+            else extra_options["AddQDQPairToWeight"]
+        )
 
         # Whether to create dedicated QDQ pairs for each node.
         # The default behavior is that multiple nodes can share a QDQ pair as their inputs.
         # In TRT, QDQ pair can't be shared between nodes, so it will create dedicated QDQ pairs for each node.
-        self.dedicated_qdq_pair = (False if extra_options is None or "DedicatedQDQPair" not in extra_options else
-                                   extra_options["DedicatedQDQPair"])
+        self.dedicated_qdq_pair = (
+            False
+            if extra_options is None or "DedicatedQDQPair" not in extra_options
+            else extra_options["DedicatedQDQPair"]
+        )
         if self.dedicated_qdq_pair:
-            self.tensor_to_its_receiving_nodes: Dict[Any, Any] = {}
+            self.tensor_to_its_receiving_nodes: dict[Any, Any] = {}
 
         # Let user set channel axis for specific op type and it's effective only when per channel quantization is supported and per_channel is True.
-        self.qdq_op_type_per_channel_support_to_axis = ({} if extra_options is None
-                                                        or "QDQOpTypePerChannelSupportToAxis" not in extra_options else
-                                                        extra_options["QDQOpTypePerChannelSupportToAxis"])
+        self.qdq_op_type_per_channel_support_to_axis = (
+            {}
+            if extra_options is None or "QDQOpTypePerChannelSupportToAxis" not in extra_options
+            else extra_options["QDQOpTypePerChannelSupportToAxis"]
+        )
 
         # We quantize Bias using Int32 by default except floating point type quantization
         if self.weight_qType in ONNX_FP_QTYPES_LIST + ONNX_BFP_QTYPES_LIST:
@@ -492,8 +503,9 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
             self.int16_bias = extra_options["Int16Bias"]
             if self.int16_bias:
                 self.int32_bias = True
-        if self.int32_bias and (self.weight_qType in ONNX_BFP_QTYPES_LIST
-                                or self.activation_qType in ONNX_BFP_QTYPES_LIST):
+        if self.int32_bias and (
+            self.weight_qType in ONNX_BFP_QTYPES_LIST or self.activation_qType in ONNX_BFP_QTYPES_LIST
+        ):
             self.int32_bias = False  # Cannot meet the requirement of bias_scale = input_scale * weight_scale
             logger.warning("Disabled Int32 Bias, because the quant type of activaion is BFP or MX")
 
@@ -528,21 +540,20 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
                 return True
         else:
             logger.warning(
-                "failed to infer the type of tensor: {}. Skip to quantize it. Please check if it is expected.".format(
-                    tensor_name))
+                f"failed to infer the type of tensor: {tensor_name}. Skip to quantize it. Please check if it is expected."
+            )
 
         return False
 
-    def __quantize_tensor(self,
-                          tensor_name: str,
-                          quant_sharing_param: Any = None,
-                          tensor_type: Any = QDQQuantTensorType.ACTIVATION) -> None:
+    def __quantize_tensor(
+        self, tensor_name: str, quant_sharing_param: Any = None, tensor_type: Any = QDQQuantTensorType.ACTIVATION
+    ) -> None:
         if self._is_tensor_quantizable(tensor_name):
             if quant_sharing_param:
                 data_type = self._get_tensor_type(tensor_name)
-                self.tensors_to_quantize[tensor_name] = QDQTensorQuantInfo(tensor_type=tensor_type,
-                                                                           quant_para_provider=quant_sharing_param,
-                                                                           data_type=data_type)
+                self.tensors_to_quantize[tensor_name] = QDQTensorQuantInfo(
+                    tensor_type=tensor_type, quant_para_provider=quant_sharing_param, data_type=data_type
+                )
             elif tensor_name not in self.tensors_to_quantize:
                 data_type = self._get_tensor_type(tensor_name)
                 self.tensors_to_quantize[tensor_name] = QDQTensorQuantInfo(tensor_type=tensor_type, data_type=data_type)
@@ -554,16 +565,14 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         return self.__quantize_tensor(tensor_name, quant_sharing_param, QDQQuantTensorType.WEIGHT)
 
     def quantize_weight_tensor_per_channel(self, tensor_name: str, axis: Any) -> None:
-
         weight = find_by_name(tensor_name, self.model.initializer())
         if weight:
             if weight.data_type == onnx_proto.TensorProto.FLOAT:
-                self.tensors_to_quantize[tensor_name] = QDQTensorQuantInfo(tensor_type=QDQQuantTensorType.WEIGHT,
-                                                                           axis=axis,
-                                                                           data_type=weight.data_type)
+                self.tensors_to_quantize[tensor_name] = QDQTensorQuantInfo(
+                    tensor_type=QDQQuantTensorType.WEIGHT, axis=axis, data_type=weight.data_type
+                )
         else:
-            logger.warning(
-                "only support per-channel quantization on weight. Tensor: {} is not quantized.".format(tensor_name))
+            logger.warning(f"only support per-channel quantization on weight. Tensor: {tensor_name} is not quantized.")
 
     def quantize_bias_tensor(self, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0) -> None:
         weight = find_by_name(bias_name, self.model.initializer())
@@ -607,7 +616,8 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
 
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -630,26 +640,30 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
         return self.model.model
 
     def try_replacing_upstream_output(self, upstream_output_name: str, output_name: str) -> bool:
-        if (output_name in self.quantization_params.keys()
-                and len(self.model.input_name_to_nodes()[upstream_output_name]) == 1
-                and not self.model.is_graph_output(upstream_output_name)
-                and not self.model.is_graph_input(upstream_output_name)):
+        if (
+            output_name in self.quantization_params.keys()
+            and len(self.model.input_name_to_nodes()[upstream_output_name]) == 1
+            and not self.model.is_graph_output(upstream_output_name)
+            and not self.model.is_graph_input(upstream_output_name)
+        ):
             self.model.replace_output_of_all_nodes(upstream_output_name, output_name)
             if upstream_output_name in self.tensors_to_quantize:
                 del self.tensors_to_quantize[upstream_output_name]
             return True
         return False
 
-    def _create_qdq_nodes(self,
-                          q_input: Any,
-                          q_output: Any,
-                          quant_node_name: str,
-                          dq_input: Any,
-                          dq_output: Any,
-                          dequant_node_name: str,
-                          scale_name: str,
-                          zp_name: str,
-                          axis: Any = None) -> None:
+    def _create_qdq_nodes(
+        self,
+        q_input: Any,
+        q_output: Any,
+        quant_node_name: str,
+        dq_input: Any,
+        dq_output: Any,
+        dequant_node_name: str,
+        scale_name: str,
+        zp_name: str,
+        axis: Any = None,
+    ) -> None:
         qlinear_node = onnx.helper.make_node(
             QUANT_OP_NAME,
             [q_input, scale_name, zp_name],
@@ -676,7 +690,8 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
                 onnx_proto.TensorProto.INT8,
                 axis,
                 self.calibrate_method,
-                keep_float_weight=self.add_qdq_pair_to_weight)
+                keep_float_weight=self.add_qdq_pair_to_weight,
+            )
         else:
             q_weight_name, zp_name, scale_name = self.quantize_initializer(
                 weight_proto,
@@ -712,8 +727,11 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
             self.model.add_node(dequant_node)
 
     def _add_qdq_pair_for_activation(self, tensor_name: str, scale_name: str, zp_name: str) -> None:
-        if (self.dedicated_qdq_pair and tensor_name in self.tensor_to_its_receiving_nodes
-                and len(self.tensor_to_its_receiving_nodes[tensor_name]) > 1):
+        if (
+            self.dedicated_qdq_pair
+            and tensor_name in self.tensor_to_its_receiving_nodes
+            and len(self.tensor_to_its_receiving_nodes[tensor_name]) > 1
+        ):
             num_dedicated_qdq_pair = len(self.tensor_to_its_receiving_nodes[tensor_name])
             for i in range(num_dedicated_qdq_pair):
                 postfix = f"_{i + 1}"
@@ -786,7 +804,8 @@ class VitisQDQQuantizer(VitisONNXQuantizer):
                 else:
                     used_scale, used_zp = self.find_quant_scale_zp(tensor_name)
                     data_found, scale_name, zp_name, _, _ = self._get_quantization_params(
-                        tensor_name, used_scale, used_zp)
+                        tensor_name, used_scale, used_zp
+                    )
 
                     if not data_found:
                         raise ValueError(
@@ -877,12 +896,12 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any] = {},
-        extra_options: Optional[Dict[str, Any]] = None,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         VitisQDQQuantizer.__init__(
@@ -906,22 +925,25 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
 
         if per_channel:
             raise ValueError(
-                "Only per-tensor quantization is supported when enable_dpu=True, `per_channel` must be set to False.")
+                "Only per-tensor quantization is supported when enable_npu_cnn=True, `per_channel` must be set to False."
+            )
 
         if reduce_range:
-            raise ValueError("reduce_range is not supported when enable_dpu=True, `reduce_range` must be set to False.")
+            raise ValueError(
+                "reduce_range is not supported when enable_npu_cnn=True, `reduce_range` must be set to False."
+            )
 
         if weight_qType != QuantType.QInt8:
-            raise ValueError("Only QuantType.QInt8 weight_type is supported when enable_dpu=True.")
+            raise ValueError("Only QuantType.QInt8 weight_type is supported when enable_npu_cnn=True.")
 
-        # If using nable_dpu, QDQ should always set WeightSymmetric as True.
+        # If using enable_npu_cnn, QDQ should always set WeightSymmetric as True.
         if "WeightSymmetric" in self.extra_options and not self.extra_options["WeightSymmetric"]:
-            raise ValueError("When enable_dpu=True, WeightSymmetric must be set to true.")
+            raise ValueError("When enable_npu_cnn=True, WeightSymmetric must be set to true.")
         self.is_weight_symmetric = True
 
-        # If using enable_dpu, QDQ should always always set ActivationSymmetric as True.
+        # If using enable_npu_cnn, QDQ should always always set ActivationSymmetric as True.
         if "ActivationSymmetric" in self.extra_options and not self.extra_options["ActivationSymmetric"]:
-            raise ValueError("When enable_dpu=True, ActivationSymmetric must be set to true.")
+            raise ValueError("When enable_npu_cnn=True, ActivationSymmetric must be set to true.")
         self.is_activation_symmetric = True
 
     def quantize_model(self) -> Any:
@@ -943,7 +965,8 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         self._quantize_sharing_param_tensors()
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -1011,7 +1034,7 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
                 # Use int8 quantization for bias as well as weights.
                 self.quantize_weight_tensor(bias_name)
         else:
-            logger.warning("Expected {} to be a weight".format(bias_name))
+            logger.warning(f"Expected {bias_name} to be a weight")
 
     def _quantize_refine(self) -> None:
         max_loop_num = 5
@@ -1138,12 +1161,12 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any],
-        extra_options: Optional[Dict[str, Any]] = None,
+        quantized_tensor_type: dict[Any, Any],
+        extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         VitisQDQQuantizer.__init__(
@@ -1201,7 +1224,8 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
 
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -1231,69 +1255,44 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         # TODO : Understand the principle here and fix the issue caused by QDQRemovableActivation.
         # As showed at onnxruntime/quantization/operators/activation.py, if activation uses asymmetric,
         # the QDQRemovableActivation remove nodes, which caused the graph broken.
-        if (self.fold_relu and output_name in self.quantization_params
-                and len(self.model.input_name_to_nodes()[upstream_output_name]) == 1
-                and not self.model.is_graph_output(upstream_output_name)
-                and not self.model.is_graph_input(upstream_output_name)):
+        if (
+            self.fold_relu
+            and output_name in self.quantization_params
+            and len(self.model.input_name_to_nodes()[upstream_output_name]) == 1
+            and not self.model.is_graph_output(upstream_output_name)
+            and not self.model.is_graph_input(upstream_output_name)
+        ):
             self.model.replace_output_of_all_nodes(upstream_output_name, output_name)
             if upstream_output_name in self.tensors_to_quantize:
                 del self.tensors_to_quantize[upstream_output_name]
             return True
         return False
 
-    '''
-    def _create_fn_nodes(self,
-                         q_input: Any,
-                         dq_output: Any,
-                         dequant_node_name: str,
-                         scale_name: str,
-                         zp_name: str,
-                         axis: Any = None) -> None:
-        """
-        create fix_neuron node
-        """
-        fix_neuron_node = onnx.helper.make_node(
-            FIX_OP_NAME,
-            [q_input, scale_name, zp_name],
-            [dq_output],
-            dequant_node_name,
-            axis=axis,
-            domain=VAI_DOMAIN,
-        )
-        bit_width = onnx.helper.make_attribute("bit_width", "8")
-        fix_neuron_node.attribute.append(bit_width)
-
-        scale = find_by_name(scale_name, self.model.initializer())
-        scale = scale.float_data[0]
-        pos = int(np.rint(-np.log2(scale)))
-        pos_attr = onnx.helper.make_attribute("pos", str(pos))
-        fix_neuron_node.attribute.append(pos_attr)
-
-        self.model.add_nodes([fix_neuron_node])
-    '''
-
-    def _fn_name_and_attrs(self, qType: Any) -> tuple[str, Dict[str, Any]]:
+    def _fn_name_and_attrs(self, qType: Any) -> tuple[str, dict[str, Any]]:
         if qType == ExtendedQuantType.QBFP:
             fn_name = COP_BFP_OP_NAME
             fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
             # Get attributes for custom BFP ops
             if self.extra_options is not None and "BFPAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["BFPAttributes"])
-        elif qType == ExtendedQuantType.QMX:
+        else:
             fn_name = COP_MX_OP_NAME
             fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
             # Get attributes for custom MX ops
             if self.extra_options is not None and "MXAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["MXAttributes"])
-        else:
-            fn_name = FIX_OP_NAME
-            fn_attrs = {
-                **FIX_OP_DEFAULT_ATTRS,
-            }
         return fn_name, fn_attrs
 
-    def _create_fn_nodes(self, q_input: Any, dq_output: Any, dequant_node_name: str, scale_name: str, zp_name: str,
-                         fn_name: str, fn_attrs: Any) -> None:
+    def _create_fn_nodes(
+        self,
+        q_input: Any,
+        dq_output: Any,
+        dequant_node_name: str,
+        scale_name: str,
+        zp_name: str,
+        fn_name: str,
+        fn_attrs: Any,
+    ) -> None:
         """
         create fix_neuron node
         """
@@ -1310,55 +1309,18 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
 
         self.model.add_nodes([fix_neuron_node])
 
-    def _create_pof2qdq_nodes(self,
-                              q_input: Any,
-                              q_output: Any,
-                              quant_node_name: str,
-                              dq_input: Any,
-                              dq_output: Any,
-                              dequant_node_name: str,
-                              scale_name: str,
-                              zp_name: str,
-                              axis: Any = None) -> None:
-        qlinear_node = onnx.helper.make_node(
-            QUANT_OP_NAME,
-            [q_input, scale_name, zp_name],
-            [q_output],
-            quant_node_name,
-            axis=axis,
-            domain=VAI_DOMAIN,
-        )
-        dequant_node = onnx.helper.make_node(
-            DEQUANT_OP_NAME,
-            [dq_input, scale_name, zp_name],
-            [dq_output],
-            dequant_node_name,
-            axis=axis,
-            domain=VAI_DOMAIN,
-        )
-        bit_width = onnx.helper.make_attribute("bit_width", "8")
-
-        scale = find_by_name(scale_name, self.model.initializer())
-        scale = scale.float_data[0]
-        pos = int(np.rint(-np.log2(scale)))
-        pos_attr = onnx.helper.make_attribute("pos", str(pos))
-
-        qlinear_node.attribute.append(bit_width)
-        qlinear_node.attribute.append(pos_attr)
-        dequant_node.attribute.append(bit_width)
-        dequant_node.attribute.append(pos_attr)
-        self.model.add_nodes([qlinear_node, dequant_node])
-
-    def _create_customqdq_nodes(self,
-                                q_input: Any,
-                                q_output: Any,
-                                quant_node_name: str,
-                                dq_input: Any,
-                                dq_output: Any,
-                                dequant_node_name: str,
-                                scale_name: str,
-                                zp_name: str,
-                                axis: Any = None) -> None:
+    def _create_customqdq_nodes(
+        self,
+        q_input: Any,
+        q_output: Any,
+        quant_node_name: str,
+        dq_input: Any,
+        dq_output: Any,
+        dequant_node_name: str,
+        scale_name: str,
+        zp_name: str,
+        axis: Any = None,
+    ) -> None:
         qlinear_node = onnx.helper.make_node(
             COP_QUANT_OP_NAME,
             [q_input, scale_name, zp_name],
@@ -1397,7 +1359,8 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             if self.opset_version < 13:
                 raise ValueError("Per-Channel support with QDQ format requires onnx opset version 13 or above.")
             q_weight_name, zp_name, scale_name = self.quantize_weight_per_channel(
-                weight_name, zp_type, axis, self.calibrate_method, keep_float_weight=self.add_qdq_pair_to_weight)
+                weight_name, zp_type, axis, self.calibrate_method, keep_float_weight=self.add_qdq_pair_to_weight
+            )
         else:
             q_weight_name, zp_name, scale_name = self.quantize_initializer(
                 weight_proto,
@@ -1420,53 +1383,27 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             )
         elif self.add_qdq_pair_to_weight:
             weight_quant_output = add_quant_output_suffix(weight_name)
-            if zp_type in ONNX_WBIT_QTYPES_LIST or self.use_qdq_vitis_custom_ops:
-                self._create_customqdq_nodes(
-                    weight_name,
-                    weight_quant_output,
-                    add_quant_suffix(weight_name),
-                    weight_quant_output,
-                    weight_dequant_output,
-                    add_dequant_suffix(weight_name),
-                    scale_name,
-                    zp_name,
-                    axis,
-                )
-            else:
-                self._create_pof2qdq_nodes(
-                    weight_name,
-                    weight_quant_output,
-                    add_quant_suffix(weight_name),
-                    weight_quant_output,
-                    weight_dequant_output,
-                    add_dequant_suffix(weight_name),
-                    scale_name,
-                    zp_name,
-                    axis,
-                )
+            self._create_customqdq_nodes(
+                weight_name,
+                weight_quant_output,
+                add_quant_suffix(weight_name),
+                weight_quant_output,
+                weight_dequant_output,
+                add_dequant_suffix(weight_name),
+                scale_name,
+                zp_name,
+                axis,
+            )
         else:
-            if zp_type in ONNX_WBIT_QTYPES_LIST or self.use_qdq_vitis_custom_ops:
-                dequant_node = onnx.helper.make_node(
-                    COP_DEQUANT_OP_NAME,
-                    [q_weight_name, scale_name, zp_name],
-                    [weight_dequant_output],
-                    add_dequant_suffix(weight_name),
-                    axis=axis,
-                    domain=COP_DOMAIN,
-                )
-                self.model.add_node(dequant_node)
-            else:
-                dequant_node = onnx.helper.make_node(
-                    DEQUANT_OP_NAME,
-                    [q_weight_name, scale_name, zp_name],
-                    [weight_dequant_output],
-                    add_dequant_suffix(weight_name),
-                    axis=axis,
-                    domain=VAI_DOMAIN,
-                )
-                bit_width = onnx.helper.make_attribute("bit_width", "8")
-                dequant_node.attribute.append(bit_width)
-                self.model.add_node(dequant_node)
+            dequant_node = onnx.helper.make_node(
+                COP_DEQUANT_OP_NAME,
+                [q_weight_name, scale_name, zp_name],
+                [weight_dequant_output],
+                add_dequant_suffix(weight_name),
+                axis=axis,
+                domain=COP_DOMAIN,
+            )
+            self.model.add_node(dequant_node)
 
     def _add_fn_pair_for_activation(self, tensor_name: str, scale_name: str, zp_name: str, zp_type: Any = None) -> Any:
         if zp_type is not None:
@@ -1475,8 +1412,11 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         else:
             fn_name, fn_attrs = self.fn_name_a, self.fn_attrs_a
             zp_type = self.activation_qType
-        if (self.dedicated_qdq_pair and tensor_name in self.tensor_to_its_receiving_nodes
-                and len(self.tensor_to_its_receiving_nodes[tensor_name]) > 1):
+        if (
+            self.dedicated_qdq_pair
+            and tensor_name in self.tensor_to_its_receiving_nodes
+            and len(self.tensor_to_its_receiving_nodes[tensor_name]) > 1
+        ):
             num_dedicated_qdq_pair = len(self.tensor_to_its_receiving_nodes[tensor_name])
             for i in range(num_dedicated_qdq_pair):
                 postfix = f"_{i + 1}"
@@ -1486,31 +1426,26 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                 dequant_node_name_postfix = add_dequant_suffix(tensor_name) + postfix
 
                 if zp_type in ONNX_BFP_QTYPES_LIST:
-                    self._create_fn_nodes(tensor_name, tensor_name_dequant_output_postfix, dequant_node_name_postfix,
-                                          scale_name, zp_name, fn_name, fn_attrs)
+                    self._create_fn_nodes(
+                        tensor_name,
+                        tensor_name_dequant_output_postfix,
+                        dequant_node_name_postfix,
+                        scale_name,
+                        zp_name,
+                        fn_name,
+                        fn_attrs,
+                    )
                 else:
-                    if zp_type in ONNX_WBIT_QTYPES_LIST or self.use_qdq_vitis_custom_ops:
-                        self._create_customqdq_nodes(
-                            tensor_name,
-                            tensor_name_quant_output_postfix,
-                            quant_node_name_postfix,
-                            tensor_name_quant_output_postfix,
-                            tensor_name_dequant_output_postfix,
-                            dequant_node_name_postfix,
-                            scale_name,
-                            zp_name,
-                        )
-                    else:
-                        self._create_pof2qdq_nodes(
-                            tensor_name,
-                            tensor_name_quant_output_postfix,
-                            quant_node_name_postfix,
-                            tensor_name_quant_output_postfix,
-                            tensor_name_dequant_output_postfix,
-                            dequant_node_name_postfix,
-                            scale_name,
-                            zp_name,
-                        )
+                    self._create_customqdq_nodes(
+                        tensor_name,
+                        tensor_name_quant_output_postfix,
+                        quant_node_name_postfix,
+                        tensor_name_quant_output_postfix,
+                        tensor_name_dequant_output_postfix,
+                        dequant_node_name_postfix,
+                        scale_name,
+                        zp_name,
+                    )
 
                 node = self.tensor_to_its_receiving_nodes[tensor_name][i]
                 self.model.replace_node_input(node, tensor_name, tensor_name_dequant_output_postfix)
@@ -1534,31 +1469,20 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                 self.model.replace_input_of_all_nodes(tensor_name, dq_output)
 
             if zp_type in ONNX_BFP_QTYPES_LIST:
-                self._create_fn_nodes(q_input, dq_output, add_dequant_suffix(tensor_name), scale_name, zp_name, fn_name,
-                                      fn_attrs)
+                self._create_fn_nodes(
+                    q_input, dq_output, add_dequant_suffix(tensor_name), scale_name, zp_name, fn_name, fn_attrs
+                )
             else:
-                if zp_type in ONNX_WBIT_QTYPES_LIST or self.use_qdq_vitis_custom_ops:
-                    self._create_customqdq_nodes(
-                        q_input,
-                        add_quant_output_suffix(tensor_name),
-                        add_quant_suffix(tensor_name),
-                        add_quant_output_suffix(tensor_name),
-                        dq_output,
-                        add_dequant_suffix(tensor_name),
-                        scale_name,
-                        zp_name,
-                    )
-                else:
-                    self._create_pof2qdq_nodes(
-                        q_input,
-                        add_quant_output_suffix(tensor_name),
-                        add_quant_suffix(tensor_name),
-                        add_quant_output_suffix(tensor_name),
-                        dq_output,
-                        add_dequant_suffix(tensor_name),
-                        scale_name,
-                        zp_name,
-                    )
+                self._create_customqdq_nodes(
+                    q_input,
+                    add_quant_output_suffix(tensor_name),
+                    add_quant_suffix(tensor_name),
+                    add_quant_output_suffix(tensor_name),
+                    dq_output,
+                    add_dequant_suffix(tensor_name),
+                    scale_name,
+                    zp_name,
+                )
 
             quantized_value = QuantizedValue(
                 tensor_name,
@@ -1571,7 +1495,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
 
     def _quantize_normal_tensors(self) -> None:
         for tensor_name, tensor_info in self.tensors_to_quantize.copy().items():
-
             if tensor_name in self.quantized_value_map.keys():
                 continue
 
@@ -1588,9 +1511,10 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                         # clip weight to the range of BFLOAT16 [1.17549435e-38, 3.38953139e38]
                         if np.max(np.abs(weight)) > 3.38953139e38 or np.min(np.abs(weight)) < 1.17549435e-38:
                             original_weight = weight
-                            weight = (np.sign(original_weight) *
-                                      np.clip(np.abs(original_weight), 1.17549435e-38, 3.38953139e38)).astype(
-                                          original_weight.dtype)
+                            weight = (
+                                np.sign(original_weight)
+                                * np.clip(np.abs(original_weight), 1.17549435e-38, 3.38953139e38)
+                            ).astype(original_weight.dtype)
                             logger.info(
                                 f"The original weight of {tensor_name}: {original_weight} has been clipped to new weight: {weight} because it is out of BFLOAT16 boundary."
                             )
@@ -1599,14 +1523,17 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                     self._add_fn_pair_for_weight(initializer, tensor_info.axis, zp_type)
                 else:
                     if (zp_type is None and self.activation_qType in ONNX_BFP_QTYPES_LIST) or (
-                            zp_type is not None and zp_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]):
-                        self._add_fn_pair_for_activation(tensor_name, '', '',
-                                                         zp_type)  # BFP doesn't need scale and zero point
+                        zp_type is not None and zp_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]
+                    ):
+                        self._add_fn_pair_for_activation(
+                            tensor_name, "", "", zp_type
+                        )  # BFP doesn't need scale and zero point
                         del self.tensors_to_quantize[tensor_name]
                         continue
                     used_scale, used_zp = self.find_quant_scale_zp(tensor_name)
                     data_found, scale_name, zp_name, _, _ = self._get_quantization_params(
-                        tensor_name, used_scale, used_zp, zp_type)
+                        tensor_name, used_scale, used_zp, zp_type
+                    )
 
                     if not data_found:
                         raise ValueError(
@@ -1644,46 +1571,23 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             node_name = add_dequant_suffix(bias_name)
 
             # Keep the QDQ type of bias consistent with the weights
-            if self.weight_qType in ONNX_WBIT_QTYPES_LIST or self.use_qdq_vitis_custom_ops:
-                if quant_value.axis is not None:
-                    dequant_node = onnx.helper.make_node(
-                        COP_DEQUANT_OP_NAME,
-                        inputs,
-                        [bias_name],
-                        node_name,
-                        axis=quant_value.axis,
-                        domain=COP_DOMAIN,
-                    )
-                else:
-                    dequant_node = onnx.helper.make_node(
-                        COP_DEQUANT_OP_NAME,
-                        inputs,
-                        [bias_name],
-                        node_name,
-                        domain=COP_DOMAIN,
-                    )
-                self.model.add_node(dequant_node)
-                continue
-
             if quant_value.axis is not None:
                 dequant_node = onnx.helper.make_node(
-                    DEQUANT_OP_NAME,
+                    COP_DEQUANT_OP_NAME,
                     inputs,
                     [bias_name],
                     node_name,
                     axis=quant_value.axis,
-                    domain=VAI_DOMAIN,
+                    domain=COP_DOMAIN,
                 )
             else:
                 dequant_node = onnx.helper.make_node(
-                    DEQUANT_OP_NAME,
+                    COP_DEQUANT_OP_NAME,
                     inputs,
                     [bias_name],
                     node_name,
-                    domain=VAI_DOMAIN,
+                    domain=COP_DOMAIN,
                 )
-            bit_width = onnx.helper.make_attribute("bit_width", "8")
-            dequant_node.attribute.append(bit_width)
             self.model.add_node(dequant_node)
 
     def quantize_bias_tensor(self, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0) -> None:
@@ -1700,21 +1604,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                             self.quantize_weight_tensor(bias_name)
         else:
             logger.warning(f"Expected {bias_name} to be a weight")
-
-    def _adjust_model_scale(self) -> None:
-        for node in self.model.model.graph.node:
-            if node.op_type == "DequantizeLinear" or node.op_type == "QuantizeLinear":
-                pos = None
-                for attr in node.attribute:
-                    if attr.name == "pos":
-                        pos = int(attr.s)
-                if pos is None:
-                    continue
-                new_scale = float(np.power(2., -pos))
-                for i in self.model.model.graph.initializer:
-                    if i.name == node.input[1]:
-                        if i.float_data[0] != new_scale:
-                            i.float_data[0] = new_scale
 
     def _quantize_refine(self) -> None:
         max_loop_num = 5
@@ -1754,11 +1643,6 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             align_reshape=align_reshape,
             adjust_bias_scale=adjust_bias_scale,
         )
-
-        if self.weight_qType in [TensorProto.INT8, TensorProto.UINT8] and self.activation_qType in [
-                TensorProto.INT8, TensorProto.UINT8
-        ] and self.use_qdq_vitis_custom_ops:
-            self._adjust_model_scale()
 
     def _simulate_transforms(self) -> None:
         convert_leaky_relu_to_dpu_version = False
@@ -1824,24 +1708,39 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
         VitisQDQQuantizer: Base class for Vitis-specific QDQ quantization.
     """
 
-    def __init__(self,
-                 model: ModelProto,
-                 per_channel: bool,
-                 reduce_range: bool,
-                 mode: QuantizationMode.QLinearOps,
-                 static: bool,
-                 weight_qType: Any,
-                 activation_qType: Any,
-                 tensors_range: Any,
-                 nodes_to_quantize: List[str],
-                 nodes_to_exclude: List[str],
-                 op_types_to_quantize: List[str],
-                 calibrate_method: Any,
-                 quantized_tensor_type: Dict[Any, Any] = {},
-                 extra_options: Optional[Dict[str, Any]] = None):
-        super().__init__(model, per_channel, reduce_range, mode, static, weight_qType, activation_qType, tensors_range,
-                         nodes_to_quantize, nodes_to_exclude, op_types_to_quantize, calibrate_method,
-                         quantized_tensor_type, extra_options)
+    def __init__(
+        self,
+        model: ModelProto,
+        per_channel: bool,
+        reduce_range: bool,
+        mode: QuantizationMode.QLinearOps,
+        static: bool,
+        weight_qType: Any,
+        activation_qType: Any,
+        tensors_range: Any,
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
+        calibrate_method: Any,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            model,
+            per_channel,
+            reduce_range,
+            mode,
+            static,
+            weight_qType,
+            activation_qType,
+            tensors_range,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            calibrate_method,
+            quantized_tensor_type,
+            extra_options,
+        )
 
         self.int32_bias = False
         if extra_options is not None and "Int32Bias" in extra_options and extra_options["Int32Bias"]:
@@ -1855,8 +1754,11 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             logger.warning("Will not quantize Bias since do not support Int16Bias in BFP/MX mode")
 
         self.is_activation_symmetric = True
-        if self.extra_options is not None and "ActivationSymmetric" in self.extra_options and not self.extra_options[
-                "ActivationSymmetric"]:
+        if (
+            self.extra_options is not None
+            and "ActivationSymmetric" in self.extra_options
+            and not self.extra_options["ActivationSymmetric"]
+        ):
             self.is_activation_symmetric = self.extra_options["ActivationSymmetric"]
             logger.warning("Setting ActivationSymmetric to False has no effect on BFP/MX mode")
 
@@ -1875,12 +1777,9 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             if extra_options is not None and "MXAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["MXAttributes"])
 
-    def _create_fn_nodes(self,
-                         q_input: Any,
-                         dq_output: Any,
-                         dequant_node_name: str,
-                         axis: Any = None,
-                         convert_to: Any = None) -> None:
+    def _create_fn_nodes(
+        self, q_input: Any, dq_output: Any, dequant_node_name: str, axis: Any = None, convert_to: Any = None
+    ) -> None:
         """
         create fix_neuron node
         """
@@ -1923,7 +1822,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
 
     def _quantize_normal_tensors(self) -> None:
         for tensor_name, tensor_info in self.tensors_to_quantize.copy().items():
-
             if tensor_name in self.quantized_value_map.keys():
                 continue
 
@@ -1952,7 +1850,8 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
 
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)

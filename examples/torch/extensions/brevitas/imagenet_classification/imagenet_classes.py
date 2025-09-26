@@ -4,6 +4,7 @@
 #
 
 import json
+
 import huggingface_hub
 
 imagenet_classes_path = huggingface_hub.hf_hub_download("fxmarty/imagenet-classes", filename="imagenet_classes.json")

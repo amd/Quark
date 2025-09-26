@@ -2,15 +2,16 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert u16s8 to s16s8.
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
 
 import numpy as np
 import onnx
-from onnx import numpy_helper, ModelProto
+from onnx import ModelProto, numpy_helper
 from onnxruntime.quantization.onnx_model import ONNXModel
-from argparse import ArgumentParser, Namespace
 
 
 def parse_args() -> Namespace:
@@ -28,7 +29,7 @@ def convert_u16s8_to_s16s8(model: ModelProto) -> ModelProto:
         tensor_to_init_dict[init.name] = init
 
     int16_zp0_init = onnx.TensorProto()
-    int16_zp0_init.name = 'int16_zp0'
+    int16_zp0_init.name = "int16_zp0"
     int16_zp0_init.data_type = onnx.TensorProto.INT16
     int16_zp0_init.raw_data = np.array(0, dtype=np.int16).tobytes()
     onnx_model.add_initializer(int16_zp0_init)
@@ -41,19 +42,27 @@ def convert_u16s8_to_s16s8(model: ModelProto) -> ModelProto:
             else:
                 is_weight = False
                 for n in onnx_model.model.graph.node:
-                    if len(n.output) > 0 and n.output[0] == dq_input and n.op_type == "QuantizeLinear" and n.input[
-                            0] in tensor_to_init_dict:
+                    if (
+                        len(n.output) > 0
+                        and n.output[0] == dq_input
+                        and n.op_type == "QuantizeLinear"
+                        and n.input[0] in tensor_to_init_dict
+                    ):
                         is_weight = True
-                if not is_weight and tensor_to_init_dict[
-                        node.input[2]].data_type == onnx.TensorProto.UINT16 and numpy_helper.to_array(
-                            tensor_to_init_dict[node.input[2]]).tolist() in [32767, 32768]:
-                    node.input[2] = 'int16_zp0'
+                if (
+                    not is_weight
+                    and tensor_to_init_dict[node.input[2]].data_type == onnx.TensorProto.UINT16
+                    and numpy_helper.to_array(tensor_to_init_dict[node.input[2]]).tolist() in [32767, 32768]
+                ):
+                    node.input[2] = "int16_zp0"
 
         elif node.op_type == "QuantizeLinear":
-            if node.input[0] not in tensor_to_init_dict and tensor_to_init_dict[
-                    node.input[2]].data_type == onnx.TensorProto.UINT16 and numpy_helper.to_array(
-                        tensor_to_init_dict[node.input[2]]).tolist() in [32767, 32768]:
-                node.input[2] = 'int16_zp0'
+            if (
+                node.input[0] not in tensor_to_init_dict
+                and tensor_to_init_dict[node.input[2]].data_type == onnx.TensorProto.UINT16
+                and numpy_helper.to_array(tensor_to_init_dict[node.input[2]]).tolist() in [32767, 32768]
+            ):
+                node.input[2] = "int16_zp0"
 
     onnx_model.clean_initializers()
     assert isinstance(onnx_model.model, ModelProto), "The converted model is not of type ModelProto"
@@ -61,7 +70,6 @@ def convert_u16s8_to_s16s8(model: ModelProto) -> ModelProto:
 
 
 def convert(args: Namespace) -> None:
-
     model_u16s8 = onnx.load(args.input)
     model_s16s8 = convert_u16s8_to_s16s8(model_u16s8)
 
@@ -69,6 +77,6 @@ def convert(args: Namespace) -> None:
     print(f"Convert the u16s8 model {args.input} to the s16s8 model {args.output}.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     convert(args)

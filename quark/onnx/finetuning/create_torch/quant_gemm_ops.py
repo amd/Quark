@@ -3,19 +3,19 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
-
-from .quant_base_ops import QuantizeWrapper
-from torch.nn import Linear
 from typing import Any
 
+import torch
+from torch.nn import Linear
 
-class QGemm(QuantizeWrapper, Linear):
+from .quant_base_ops import QuantizeWrapper
 
+
+class QGemm(QuantizeWrapper, Linear):  # type: ignore
     def __init__(self, transA: int = 0, transB: int = 0, **kwargs: Any) -> None:
         # These parameters are defined by ourself
-        w_alpha = kwargs.pop('w_alpha', 1.0)
-        b_beta = kwargs.pop('b_beta', 1.0)
+        w_alpha = kwargs.pop("w_alpha", 1.0)
+        b_beta = kwargs.pop("b_beta", 1.0)
 
         # The alpha and beta's implement is in this
         QuantizeWrapper.__init__(self, w_alpha=w_alpha, b_beta=b_beta, **kwargs)
@@ -25,7 +25,6 @@ class QGemm(QuantizeWrapper, Linear):
         self.transB = transB
 
     def forward_impl(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-
         if self.transA != 0:
             A = input.transpose(-1, -2)
         else:

@@ -2,29 +2,36 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from quark.torch.quantization.observer.observer import UniformScalingObserver
-from quark.torch.quantization.config.config import QuantizationSpec, TQTSpec
-from quark.torch.quantization.config.type import TQTThresholdInitMeth
-from quark.torch.quantization.utils import get_num_bits
+
+if TYPE_CHECKING:
+    from quark.torch.quantization.config.config import QuantizationSpec
+from typing import Any, List, Optional, Tuple
+
 import numpy as np
 import torch
-from typing import Tuple, Any, List, Optional
+
+import quark.torch.quantization.config.config as quantconfig
+from quark.torch.quantization.config.type import TQTThresholdInitMeth
+from quark.torch.quantization.utils import get_num_bits
 
 
 # TODO: @Ruiying Add TQTObserver here
 class TQTObserver(UniformScalingObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec)
         _num_bits = get_num_bits(qspec.dtype)
         assert isinstance(_num_bits, int)
         self.register_buffer("_bitwidth", torch.tensor([_num_bits], dtype=torch.uint8))
-        self.register_buffer("_domain", torch.tensor([2**(_num_bits - 1)]).float())
+        self.register_buffer("_domain", torch.tensor([2 ** (_num_bits - 1)]).float())
         self.register_buffer("_warmup_enable", torch.tensor([1], dtype=torch.uint8))
         self._zero_point = torch.tensor([0], dtype=torch.int)
         self._log_threshold = torch.nn.Parameter(torch.tensor([0.0]))
-        assert isinstance(qspec.qat_spec, TQTSpec)
+        assert isinstance(qspec.qat_spec, quantconfig.TQTSpec)
         self.threshold_init_meth = qspec.qat_spec.threshold_init_meth
 
     def forward(self, x_orig: torch.Tensor) -> None:
@@ -32,10 +39,12 @@ class TQTObserver(UniformScalingObserver):
             data = x_orig.cpu().numpy()
             if self.threshold_init_meth == TQTThresholdInitMeth._3SD:
                 self._log_threshold.data[0] = torch.log2(
-                    torch.tensor(self._3SD(data), dtype=x_orig.dtype, device=x_orig.device))
+                    torch.tensor(self._3SD(data), dtype=x_orig.dtype, device=x_orig.device)
+                )
             elif self.threshold_init_meth == TQTThresholdInitMeth._KL_J:
                 self._log_threshold.data[0] = torch.log2(
-                    torch.tensor(self._KL_J(data, self._bitwidth), dtype=x_orig.dtype, device=x_orig.device))
+                    torch.tensor(self._KL_J(data, self._bitwidth), dtype=x_orig.dtype, device=x_orig.device)
+                )
             self._log_threshold.data = self._log_threshold.to(x_orig.device)
             self._domain.data = self._domain.to(x_orig.device)
             self._warmup_enable[0] = 0
@@ -58,14 +67,14 @@ class TQTObserver(UniformScalingObserver):
         mn = 0
         mx = np.max(np.abs(x))
         y = x.astype(np.float32) if x.dtype == np.float16 else x
-        hist, bin_edges = np.histogram((np.abs(y)), 'sqrt', range=(mn, mx), density=True)
+        hist, bin_edges = np.histogram((np.abs(y)), "sqrt", range=(mn, mx), density=True)
         hist = hist.astype(x.dtype)
         bin_edges = bin_edges.astype(x.dtype)
         pdf = hist / np.sum(hist)
         cdf = np.cumsum(pdf)
         n = pow(2, bitwidth.item() - 1)
-        threshold: List[Any] = []
-        d: List[Any] = []
+        threshold: list[Any] = []
+        d: list[Any] = []
         if n + 1 > len(bin_edges) - 1:
             return bin_edges[(-1)]
         else:
@@ -73,7 +82,7 @@ class TQTObserver(UniformScalingObserver):
                 threshold_tmp = (i + 0.5) * (bin_edges[1] - bin_edges[0])
                 threshold = np.concatenate((threshold, [threshold_tmp]))
                 p = np.copy(cdf)
-                p[i - 1:] = 1
+                p[i - 1 :] = 1
                 x = np.linspace(0.0, 1.0, int(n))
                 xp = np.linspace(0.0, 1.0, i)
                 fp = p[:i]
@@ -103,9 +112,9 @@ class TQTObserver(UniformScalingObserver):
         ceil_log2t = torch.ceil(self._log_threshold).item()
         return int(bitwidth - 1 - ceil_log2t)
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         fp = self.get_fix_position()
-        scale = torch.tensor([2**(-fp)], dtype=torch.float)
+        scale = torch.tensor([2 ** (-fp)], dtype=torch.float)
         return scale, self._zero_point
 
     @property

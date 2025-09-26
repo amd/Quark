@@ -15,18 +15,18 @@ import contextlib
 import io
 import itertools
 import json
+import logging
 import tempfile
 import time
 from collections import defaultdict
-from pycocotools.cocoeval import COCOeval
-import logging
-from tabulate import tabulate
-from tqdm import tqdm
+
 import numpy as np
 import torch
-
 from data.datasets import COCO_CLASSES
 from models import postprocess, xyxy2xywh
+from pycocotools.cocoeval import COCOeval
+from tabulate import tabulate
+from tqdm import tqdm
 
 
 def per_class_AR_table(coco_eval, class_names=COCO_CLASSES, headers=["class", "AR"], colums=6):
@@ -47,22 +47,26 @@ def per_class_AR_table(coco_eval, class_names=COCO_CLASSES, headers=["class", "A
     row_pair = itertools.zip_longest(*[result_pair[i::num_cols] for i in range(num_cols)])
     table_headers = headers * (num_cols // len(headers))
     table = tabulate(
-        row_pair, tablefmt="pipe", floatfmt=".3f", headers=table_headers, numalign="left",
+        row_pair,
+        tablefmt="pipe",
+        floatfmt=".3f",
+        headers=table_headers,
+        numalign="left",
     )
     return table
 
 
 def per_class_AP_table(coco_eval, class_names=COCO_CLASSES, headers=["class", "AP"], colums=6):
     per_class_AP = {}
-    precisions = coco_eval.eval["precision"]
-    # dimension of precisions: [TxRxKxAxM]
+    precision_levels = coco_eval.eval["precision"]
+    # dimension of precision_levels: [TxRxKxAxM]
     # precision has dims (iou, recall, cls, area range, max dets)
-    assert len(class_names) == precisions.shape[2]
+    assert len(class_names) == precision_levels.shape[2]
 
     for idx, name in enumerate(class_names):
         # area range index 0: all area ranges
         # max dets index -1: typically 100 per image
-        precision = precisions[:, :, idx, 0, -1]
+        precision = precision_levels[:, :, idx, 0, -1]
         precision = precision[precision > -1]
         ap = np.mean(precision) if precision.size else float("nan")
         per_class_AP[name] = float(ap * 100)
@@ -72,7 +76,11 @@ def per_class_AP_table(coco_eval, class_names=COCO_CLASSES, headers=["class", "A
     row_pair = itertools.zip_longest(*[result_pair[i::num_cols] for i in range(num_cols)])
     table_headers = headers * (num_cols // len(headers))
     table = tabulate(
-        row_pair, tablefmt="pipe", floatfmt=".3f", headers=table_headers, numalign="left",
+        row_pair,
+        tablefmt="pipe",
+        floatfmt=".3f",
+        headers=table_headers,
+        numalign="left",
     )
     return table
 
@@ -114,9 +122,7 @@ class COCOEvaluator:
         self.per_class_AP = per_class_AP
         self.per_class_AR = per_class_AR
 
-    def evaluate(
-        self, model, return_outputs=False
-    ):
+    def evaluate(self, model, return_outputs=False):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
         and the results are evaluated by COCO API.
@@ -141,9 +147,7 @@ class COCOEvaluator:
         inference_time, nms_time = 0, 0
         n_samples = max(len(self.dataloader) - 1, 1)
 
-        for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
-            progress_bar(self.dataloader)
-        ):
+        for cur_iter, (imgs, _, info_imgs, ids) in enumerate(progress_bar(self.dataloader)):
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
                 # skip the last iters since batchsize might be not enough for batch inference
@@ -156,14 +160,12 @@ class COCOEvaluator:
                     infer_end = time.time()
                     inference_time += infer_end - start
 
-                outputs = postprocess(
-                    outputs, self.num_classes, self.confthre, self.nmsthre)
+                outputs = postprocess(outputs, self.num_classes, self.confthre, self.nmsthre)
                 if is_time_record:
                     nms_end = time.time()
                     nms_time += nms_end - infer_end
 
-            data_list_elem, image_wise_data = self.convert_to_coco_format(
-                outputs, info_imgs, ids, return_outputs=True)
+            data_list_elem, image_wise_data = self.convert_to_coco_format(outputs, info_imgs, ids, return_outputs=True)
             data_list.extend(data_list_elem)
             output_data.update(image_wise_data)
 
@@ -177,9 +179,7 @@ class COCOEvaluator:
     def convert_to_coco_format(self, outputs, info_imgs, ids, return_outputs=False):
         data_list = []
         image_wise_data = defaultdict(dict)
-        for (output, img_h, img_w, img_id) in zip(
-            outputs, info_imgs[0], info_imgs[1], ids
-        ):
+        for output, img_h, img_w, img_id in zip(outputs, info_imgs[0], info_imgs[1], ids, strict=False):
             if output is None:
                 continue
             output = output.cpu()
@@ -187,23 +187,22 @@ class COCOEvaluator:
             bboxes = output[:, 0:4]
 
             # preprocessing: resize
-            scale = min(
-                self.img_size[0] / float(img_h), self.img_size[1] / float(img_w)
-            )
+            scale = min(self.img_size[0] / float(img_h), self.img_size[1] / float(img_w))
             bboxes /= scale
             cls = output[:, 6]
             scores = output[:, 4] * output[:, 5]
 
-            image_wise_data.update({
-                int(img_id): {
-                    "bboxes": [box.numpy().tolist() for box in bboxes],
-                    "scores": [score.numpy().item() for score in scores],
-                    "categories": [
-                        self.dataloader.dataset.class_ids[int(cls[ind])]
-                        for ind in range(bboxes.shape[0])
-                    ],
+            image_wise_data.update(
+                {
+                    int(img_id): {
+                        "bboxes": [box.numpy().tolist() for box in bboxes],
+                        "scores": [score.numpy().item() for score in scores],
+                        "categories": [
+                            self.dataloader.dataset.class_ids[int(cls[ind])] for ind in range(bboxes.shape[0])
+                        ],
+                    }
                 }
-            })
+            )
 
             bboxes = xyxy2xywh(bboxes)
 
@@ -236,10 +235,11 @@ class COCOEvaluator:
 
         time_info = ", ".join(
             [
-                "Average {} time: {:.2f} ms".format(k, v)
+                f"Average {k} time: {v:.2f} ms"
                 for k, v in zip(
                     ["forward", "NMS", "inference"],
                     [a_infer_time, a_nms_time, (a_infer_time + a_nms_time)],
+                    strict=False,
                 )
             ]
         )
@@ -253,7 +253,6 @@ class COCOEvaluator:
             json.dump(data_dict, open(tmp, "w"))
             cocoDt = cocoGt.loadRes(tmp)
 
-
             cocoEval = COCOeval(cocoGt, cocoDt, annType[1])
             cocoEval.evaluate()
             cocoEval.accumulate()
@@ -262,7 +261,7 @@ class COCOEvaluator:
                 cocoEval.summarize()
             info += redirect_string.getvalue()
             cat_ids = list(cocoGt.cats.keys())
-            cat_names = [cocoGt.cats[catId]['name'] for catId in sorted(cat_ids)]
+            cat_names = [cocoGt.cats[catId]["name"] for catId in sorted(cat_ids)]
             if self.per_class_AP:
                 AP_table = per_class_AP_table(cocoEval, class_names=cat_names)
                 info += "per class AP:\n" + AP_table + "\n"

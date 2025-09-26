@@ -7,29 +7,28 @@ This file should live outside of Quark codebase.
 """
 
 import dataclasses
-import torch
 import enum
-from tqdm import tqdm
+from typing import Any, Dict, List, Optional, Union
+
+import torch
+from brevitas.core.stats.stats_op import NegativeMinOrZero
+from brevitas.graph import base, calibrate, equalize, gptq, quantize
+from brevitas.inject.enum import StatsOp
+from brevitas.utils.torch_utils import KwargsForwardHook
+from brevitas_examples.common.generative.quantize import (
+    generate_quant_maps,
+    generate_quantizers,
+)
+from brevitas_examples.imagenet_classification.ptq import ptq_common
+from brevitas_examples.stable_diffusion.sd_quant import nn as sd_qnn
+from dependencies import value
+from diffusers.models import attention_processor
 from torch import nn
 from torch.utils.data import DataLoader
-from diffusers.models import attention_processor
+from tqdm import tqdm
+
 from quark import torch as quark_torch
 from quark.shares.utils import log
-
-from brevitas.graph import calibrate, equalize, quantize, base, gptq
-from brevitas.utils.torch_utils import KwargsForwardHook
-from brevitas.core.stats.stats_op import NegativeMinOrZero
-from brevitas.inject.enum import StatsOp
-from brevitas_examples.common.generative.quantize import (
-    generate_quantizers,
-    generate_quant_maps,
-)
-from brevitas_examples.stable_diffusion.sd_quant import nn as sd_qnn
-from brevitas_examples.imagenet_classification.ptq import ptq_common
-from dependencies import value
-
-from typing import List, Union, Dict, Optional, Any
-
 
 logger = log.ScreenLogger(__name__)
 
@@ -42,7 +41,7 @@ class BrevitasQuantizationMode(enum.Enum):
 @dataclasses.dataclass
 class BrevitasGraphModeQuantizationConfig:
     scale_factor_type: str
-    bias_bit_width: Optional[int]
+    bias_bit_width: int | None
     weight_bit_width: int
     weight_narrow_range: bool
     weight_param_method: str
@@ -83,7 +82,7 @@ class BrevitasImageClassificationQuantizationConfig:
 
     # activation_equalization
     activation_equalization: bool
-    activation_equalization_alpha: Optional[float] = None
+    activation_equalization_alpha: float | None = None
     activation_equalization_exclude_blacklist: bool = False
 
     mode: BrevitasQuantizationMode = BrevitasQuantizationMode.FX
@@ -128,18 +127,16 @@ class BrevitasSDXLQuantizationConfig:
     gptq: bool
 
     activation_equalization: bool
-    activation_equalization_alpha: Optional[float] = None
+    activation_equalization_alpha: float | None = None
     activation_equalization_exclude_blacklist: bool = False
 
-    blacklist: Optional[List[str]] = None
+    blacklist: list[str] | None = None
 
     mode: BrevitasQuantizationMode = BrevitasQuantizationMode.LAYERWISE
 
 
 class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
-    config: Union[
-        BrevitasSDXLQuantizationConfig, BrevitasImageClassificationQuantizationConfig
-    ]
+    config: Union[BrevitasSDXLQuantizationConfig, BrevitasImageClassificationQuantizationConfig]
 
     def init_config(self) -> None:
         # TODO: brevitas config validation
@@ -148,13 +145,10 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
     def quantize_model(
         self,
         model: nn.Module,
-        dataloader: Optional[
-            Union[
-                DataLoader[torch.Tensor],
-                DataLoader[List[Dict[str, torch.Tensor]]],
-                DataLoader[Dict[str, torch.Tensor]],
-            ]
-        ] = None,
+        dataloader: Union[
+            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
+        ]
+        | None = None,
     ) -> nn.Module:
         # Step1[optional]: Pre quant optimization
         model = self._apply_pre_quantization_optimization(model, dataloader)
@@ -171,9 +165,7 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
 
         return model
 
-    def _apply_pre_quantization_optimization(
-        self, model: nn.Module, dataloader: Optional[Any] = None
-    ) -> nn.Module:
+    def _apply_pre_quantization_optimization(self, model: nn.Module, dataloader: Any | None = None) -> nn.Module:
         if self.config.mode == BrevitasQuantizationMode.FX:
             model = quantize.preprocess_for_quantize(
                 model,
@@ -193,17 +185,13 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
                 alpha=self.config.activation_equalization_alpha,
                 layerwise=self.config.mode == BrevitasQuantizationMode.LAYERWISE,
                 blacklist_layers=(
-                    self.config.blacklist
-                    if self.config.activation_equalization_exclude_blacklist
-                    else None
+                    self.config.blacklist if self.config.activation_equalization_exclude_blacklist else None
                 ),
                 add_mul_node=True,
             ):
                 # Workaround to expose `in_features` attribute from the Hook Wrapper
                 for m in model.modules():
-                    if isinstance(m, KwargsForwardHook) and hasattr(
-                        m.module, "in_features"
-                    ):
+                    if isinstance(m, KwargsForwardHook) and hasattr(m.module, "in_features"):
                         m.in_features = m.module.in_features
                 for data in tqdm(dataloader):
                     model.calibration_callable(data)
@@ -211,9 +199,7 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
 
             # Workaround to expose `in_features` attribute from the EqualizedModule Wrapper
             for m in model.modules():
-                if isinstance(m, equalize.EqualizedModule) and hasattr(
-                    m.layer, "in_features"
-                ):
+                if isinstance(m, equalize.EqualizedModule) and hasattr(m.layer, "in_features"):
                     m.in_features = m.layer.in_features
         return model
 
@@ -291,28 +277,16 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
 
         linear_qkwargs = layer_map[torch.nn.Linear][1]
         linear_qkwargs["input_quant"] = (
-            None
-            if self.config.linear_input_bit_width == 0
-            else linear_qkwargs["input_quant"]
+            None if self.config.linear_input_bit_width == 0 else linear_qkwargs["input_quant"]
         )
         linear_qkwargs["weight_quant"] = (
-            None
-            if self.config.linear_weight_bit_width == 0
-            else linear_qkwargs["weight_quant"]
+            None if self.config.linear_weight_bit_width == 0 else linear_qkwargs["weight_quant"]
         )
         layer_map[torch.nn.Linear] = (layer_map[torch.nn.Linear][0], linear_qkwargs)
 
         conv_qkwargs = layer_map[torch.nn.Conv2d][1]
-        conv_qkwargs["input_quant"] = (
-            None
-            if self.config.conv_input_bit_width == 0
-            else conv_qkwargs["input_quant"]
-        )
-        conv_qkwargs["weight_quant"] = (
-            None
-            if self.config.conv_weight_bit_width == 0
-            else conv_qkwargs["weight_quant"]
-        )
+        conv_qkwargs["input_quant"] = None if self.config.conv_input_bit_width == 0 else conv_qkwargs["input_quant"]
+        conv_qkwargs["weight_quant"] = None if self.config.conv_weight_bit_width == 0 else conv_qkwargs["weight_quant"]
         layer_map[torch.nn.Conv2d] = (layer_map[torch.nn.Conv2d][0], conv_qkwargs)
 
         if self.config.quantize_sdp_1 or self.config.quantize_sdp_2:
@@ -342,9 +316,7 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
             # We generate all quantizers, but we are only interested in activation quantization for
             # the output of softmax and the output of QKV
             input_quant = float_sdpa_quantizers[0]
-            input_quant = input_quant.let(
-                **{"bit_width": self.config.linear_output_bit_width}
-            )
+            input_quant = input_quant.let(**{"bit_width": self.config.linear_output_bit_width})
             if self.config.quantize_sdp_2:
                 rewriter = base.ModuleToModuleByClass(
                     attention_processor.Attention,
@@ -369,9 +341,7 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
             if self.config.quantize_sdp_2:
                 what_to_quantize.extend(["to_v"])
             quant_kwargs["output_quant"] = lambda module, name: (
-                input_quant
-                if any(ending in name for ending in what_to_quantize)
-                else None
+                input_quant if any(ending in name for ending in what_to_quantize) else None
             )
             layer_map[torch.nn.Linear] = (layer_map[torch.nn.Linear][0], quant_kwargs)
 
@@ -388,7 +358,7 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
     def _do_calibration(
         self,
         model: nn.Module,
-        dataloader: Optional[Any] = None,
+        dataloader: Any | None = None,
     ) -> nn.Module:
         if (
             isinstance(self.config, BrevitasImageClassificationQuantizationConfig)
@@ -403,23 +373,23 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
     def _apply_advanced_quant_algo(
         self,
         model: nn.Module,
-        dataloader: Optional[
-            Union[
-                DataLoader[torch.Tensor],
-                DataLoader[List[Dict[str, torch.Tensor]]],
-                DataLoader[Dict[str, torch.Tensor]],
-            ]
-        ] = None,
+        dataloader: Union[
+            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
+        ]
+        | None = None,
     ) -> nn.Module:
         if self.config.gptq:
             logger.info("Applying GPTQ. It can take several hours")
-            with torch.no_grad(), gptq.gptq_mode(
-                model,
-                create_weight_orig=False,
-                use_quant_activations=False,
-                return_forward_output=True,
-                act_order=True,
-            ) as gptq_ctx:
+            with (
+                torch.no_grad(),
+                gptq.gptq_mode(
+                    model,
+                    create_weight_orig=False,
+                    use_quant_activations=False,
+                    return_forward_output=True,
+                    act_order=True,
+                ) as gptq_ctx,
+            ):
                 for _ in tqdm(range(gptq_ctx.num_layers)):
                     for data in tqdm(dataloader):
                         model.calibration_callable(data)

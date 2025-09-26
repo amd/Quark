@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
@@ -141,10 +143,10 @@ As seen in the table, generally, the Top-1 accuracy of **A16W8** is higher than 
    * - Prec@1
      - 72.890 %
      - 66.640 %
-     - 70.504 %
-     - 70.556 %
+     - 70.486 %
+     - 70.562 %
    * - Prec@5
      - 90.996 %
      - 87.122 %
-     - 89.656 %
-     - 89.592 %
+     - 89.614 %
+     - 89.586 %

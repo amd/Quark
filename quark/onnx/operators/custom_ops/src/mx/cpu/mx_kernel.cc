@@ -3,30 +3,26 @@
 // SPDX-License-Identifier: MIT
 //
 
-#include "bfp/cpu/bfp_kernel.h"
 #include "mx/cpu/mx_kernel.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
 
+#include "bfp/cpu/bfp_kernel.h"
 #include "mx/funcs.cuh"  // Re-use the MX kernel of Quark-Torch
 
 #ifdef USE_ORT_FP8_KERNELS
 #include "core/framework/float8.h"  // Use the fp8 data type of ORT
 #endif
 
-void MXCPUKernel(const float* input,
-                 float* output,
-                 const int n,
-                 const int index,
-                 const int stride,
-                 const int ebits,
-	         const int mbits,
-		 const int emax,
-		 const float max_norm,
-		 const float min_norm,
-                 const rounding_mode_enum rounding_mode) {
+void MXCPUKernel(
+  const float *input, float *output, const int n, const int index,
+  const int stride, const int ebits, const int mbits, const int emax,
+  const float max_norm, const float min_norm,
+  const rounding_mode_enum rounding_mode
+) {
   uint32_t shared_exp = 0;
   // Loop over block to find shared exponent.
   for (int i = index; i < n; i += stride) {
@@ -53,45 +49,48 @@ void MXCPUKernel(const float* input,
       float element = input[i] / shared_scale;
 
       if (ebits > 0) {
-	// For MXFP8, MXFP6, MXFP4
+        // For MXFP8, MXFP6, MXFP4
 #ifdef USE_ORT_FP8_KERNELS
-	if (ebits == 5 && mbits == 2) {
-	    onnxruntime::Float8E5M2 blf = onnxruntime::Float8E5M2(element);
-	    element = blf.ToFloat();
-	} else if (ebits == 4 && mbits == 3) {
-	    onnxruntime::Float8E4M3FN blf = onnxruntime::Float8E4M3FN(element);
-	    element = blf.ToFloat();
-	} else {
-            element = fake_quantize_element(element, max_norm, ebits, mbits, ROUND_HALF_TO_EVEN);
-	}
+        if (ebits == 5 && mbits == 2) {
+          onnxruntime::Float8E5M2 blf = onnxruntime::Float8E5M2(element);
+          element = blf.ToFloat();
+        } else if (ebits == 4 && mbits == 3) {
+          onnxruntime::Float8E4M3FN blf = onnxruntime::Float8E4M3FN(element);
+          element = blf.ToFloat();
+        } else {
+          element = fake_quantize_element(
+            element, max_norm, ebits, mbits, ROUND_HALF_TO_EVEN
+          );
+        }
 #else
         // TODO: The kernel should support more rounding modes, currently it
         // supports rounding half to even (corresponding to PY3_ROUND) only
-        element = fake_quantize_element(element, max_norm, ebits, mbits, ROUND_HALF_TO_EVEN);
+        element = fake_quantize_element(
+          element, max_norm, ebits, mbits, ROUND_HALF_TO_EVEN
+        );
 #endif
       } else {
-	// For MXINT8
-	int implicit_scale_bits = 6;
-	float scale = std::pow(2.0, -implicit_scale_bits);
-        switch (rounding_mode)
-        {
-            case STD_ROUND:
-                element = std::round(element / scale);
-                break;
-            case DPU_ROUND:
-                element = dpu_round(element / scale);
-                break;
-            case PY3_ROUND:
-                element = py3_round(element / scale);
-                break;
-            default:
-                element = std::round(element / scale);
-                break;
+        // For MXINT8
+        int implicit_scale_bits = 6;
+        float scale = std::pow(2.0, -implicit_scale_bits);
+        switch (rounding_mode) {
+          case STD_ROUND:
+            element = std::round(element / scale);
+            break;
+          case DPU_ROUND:
+            element = dpu_round(element / scale);
+            break;
+          case PY3_ROUND:
+            element = py3_round(element / scale);
+            break;
+          default:
+            element = std::round(element / scale);
+            break;
         }
         // Clamping (saturating) the value to the maximum INT8 magnitude
-	element = std::max(min_norm, std::min(element, max_norm));
-	// Restore true value of the elements (similar to dequantizing)
-	element *= scale;
+        element = std::max(min_norm, std::min(element, max_norm));
+        // Restore true value of the elements (similar to dequantizing)
+        element *= scale;
       }
 
       output[i] = shared_scale * element;
@@ -99,20 +98,16 @@ void MXCPUKernel(const float* input,
   }
 }
 
-void LaunchMXCPUKernel(const float* input,
-                       float* output,
-                       const int n,
-                       const int block_size,
-                       const int ebits,
-                       const int mbits,
-		       const int emax,
-                       const float max_norm,
-                       const float min_norm,
-                       const int rounding_mode) {
+void LaunchMXCPUKernel(
+  const float *input, float *output, const int n, const int block_size,
+  const int ebits, const int mbits, const int emax, const float max_norm,
+  const float min_norm, const int rounding_mode
+) {
   int num_blocks = n / block_size;
   for (int index = 0; index < num_blocks; index++) {
-    MXCPUKernel(input, output, index * block_size + block_size,
-                index * block_size, 1, ebits, mbits, emax, max_norm, min_norm,
-		(rounding_mode_enum)rounding_mode);
+    MXCPUKernel(
+      input, output, index * block_size + block_size, index * block_size, 1,
+      ebits, mbits, emax, max_norm, min_norm, (rounding_mode_enum)rounding_mode
+    );
   }
 }

@@ -2,21 +2,24 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+from typing import Any, Union
+
+import onnxruntime
 from onnx import NodeProto
-from onnxruntime.quantization.operators.activation import (QDQRemovableActivation, QLinearActivation)
+from onnxruntime.quantization.operators.activation import QDQRemovableActivation, QLinearActivation
 from onnxruntime.quantization.operators.argmax import QArgMax
 from onnxruntime.quantization.operators.attention import AttentionQuant
 from onnxruntime.quantization.operators.base_operator import QuantOperatorBase
 from onnxruntime.quantization.operators.binary_op import QLinearBinaryOp
 from onnxruntime.quantization.operators.concat import QLinearConcat
-from onnxruntime.quantization.operators.conv import (ConvInteger, QDQConv, QLinearConv)
-from onnxruntime.quantization.operators.direct_q8 import (Direct8BitOp, QDQDirect8BitOp)
+from onnxruntime.quantization.operators.conv import ConvInteger, QDQConv, QLinearConv
+from onnxruntime.quantization.operators.direct_q8 import Direct8BitOp, QDQDirect8BitOp
 from onnxruntime.quantization.operators.embed_layernorm import EmbedLayerNormalizationQuant
 from onnxruntime.quantization.operators.gather import GatherQuant, QDQGather
 from onnxruntime.quantization.operators.gavgpool import QGlobalAveragePool
 from onnxruntime.quantization.operators.gemm import QDQGemm, QLinearGemm
 from onnxruntime.quantization.operators.lstm import LSTMQuant
-from onnxruntime.quantization.operators.matmul import (MatMulInteger, QDQMatMul, QLinearMatMul)
+from onnxruntime.quantization.operators.matmul import MatMulInteger, QDQMatMul, QLinearMatMul
 from onnxruntime.quantization.operators.maxpool import QDQMaxPool, QMaxPool
 from onnxruntime.quantization.operators.norm import QDQNormalization
 from onnxruntime.quantization.operators.pad import QPad
@@ -27,12 +30,11 @@ from onnxruntime.quantization.operators.softmax import QLinearSoftmax
 from onnxruntime.quantization.operators.split import QDQSplit, QSplit
 from onnxruntime.quantization.operators.where import QDQWhere, QLinearWhere
 from onnxruntime.quantization.quant_utils import QuantizationMode
-from typing import Union, Any
 
-from .operators.vai_ops.hardsigmoid import QDQHardSigmoid
-from .operators.vai_ops.layernorm import QDQLayerNorm
-from .operators.vai_ops.prelu import QDQPRelu
-from .quant_utils import is_ort_version_below
+from .operators.quant_ops.hardsigmoid import QDQHardSigmoid
+from .operators.quant_ops.layernorm import QDQLayerNorm
+from .operators.quant_ops.prelu import QDQPRelu
+from .quant_utils import is_version_below
 
 CommonOpsRegistry = {
     "Gather": GatherQuant,
@@ -98,8 +100,9 @@ QDQRegistry = {
 QDQRegistry["InstanceNormalization"] = QDQNormalization
 QDQRegistry["LayerNormalization"] = QDQLayerNorm
 
-if is_ort_version_below("1.18.0"):
-    from .operators.vai_ops.softmax import QDQSoftmax
+if is_version_below(onnxruntime, "1.18.0"):
+    from .operators.quant_ops.softmax import QDQSoftmax
+
     QDQRegistry["Softmax"] = QDQSoftmax
 
 NPUCnnRegistry = {

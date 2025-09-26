@@ -2,16 +2,18 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-import torch
 from typing import List
+
+import torch
 from torch.fx import GraphModule, Node
-from quark.torch.quantization.graph.ops import DeQuantStub, QuantStub
-from quark.torch.quantization.graph.export.onnx_export import register_custom_ops
+
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.graph.export.onnx_export import register_custom_ops
+from quark.torch.quantization.graph.ops import DeQuantStub, QuantStub
 
 logger = ScreenLogger(__name__)
 
-__all__ = ['tag_quant_nodes', 'mask_op_with_no_grad_no_quant']
+__all__ = ["tag_quant_nodes", "mask_op_with_no_grad_no_quant"]
 
 
 def _mark_node_skip_quant(node: Node, skip_quant: bool = True) -> None:
@@ -31,8 +33,10 @@ def tag_quant_nodes(m: GraphModule) -> None:
     # NOTE case 1
     # if user not specify the quant start and end point, all node set quantiable by dafault.
     if not any([node.target in [DeQuantStub.default, QuantStub.default] for node in m.graph.nodes]):
-        logger.debug("As user not specify Quant scpoe, all layers/operations will be quantize by default, \n" +
-                     "if want to partly quant the model, please use QuantStub & QuantStub to specify the quant scope.")
+        logger.debug(
+            "As user not specify Quant scpoe, all layers/operations will be quantize by default, \n"
+            + "if want to partly quant the model, please use QuantStub & QuantStub to specify the quant scope."
+        )
         for node in m.graph.nodes:
             _mark_node_skip_quant(node, False)
         return
@@ -45,7 +49,7 @@ def tag_quant_nodes(m: GraphModule) -> None:
     # tag the node that among the quantable scope
 
     # ------session 1, dfs from input to output, depth first
-    def depth_first_search(node: Node, visited: List[Node]) -> None:
+    def depth_first_search(node: Node, visited: list[Node]) -> None:
         if node.target == DeQuantStub.default:
             _mark_node_skip_quant(node)
             return
@@ -58,17 +62,17 @@ def tag_quant_nodes(m: GraphModule) -> None:
             if user_node not in visited:
                 depth_first_search(user_node, visited)
 
-    source: List[Node] = []
+    source: list[Node] = []
     for node in m.graph.nodes:
         if node.target == QuantStub.default:
             source.append(node)
 
-    visited: List[Node] = []
+    visited: list[Node] = []
     for source_node in source:
         depth_first_search(source_node, visited)
 
     # ------session2,expand scope from node, width first
-    def width_first_search(node: Node, visited: List[Node]) -> None:
+    def width_first_search(node: Node, visited: list[Node]) -> None:
         if node.target == DeQuantStub.default:
             _mark_node_skip_quant(node)
             return
@@ -84,13 +88,15 @@ def tag_quant_nodes(m: GraphModule) -> None:
     expand_source = []
     for node in visited:
         for input_node_or_args in node.args:
-            if (isinstance(input_node_or_args, Node)
-                    and input_node_or_args.target not in [QuantStub.default, DeQuantStub.default]
-                    and input_node_or_args not in visited
-                    and node.target not in [QuantStub.default, DeQuantStub.default]):
+            if (
+                isinstance(input_node_or_args, Node)
+                and input_node_or_args.target not in [QuantStub.default, DeQuantStub.default]
+                and input_node_or_args not in visited
+                and node.target not in [QuantStub.default, DeQuantStub.default]
+            ):
                 expand_source.append(input_node_or_args)
 
-    width_visited: List[Node] = []
+    width_visited: list[Node] = []
     for source_node in expand_source:
         width_first_search(source_node, width_visited)
 
@@ -106,10 +112,10 @@ def tag_quant_nodes(m: GraphModule) -> None:
     return
 
 
-def mask_op_with_no_grad_no_quant(model: torch.fx.GraphModule) -> List[str]:
+def mask_op_with_no_grad_no_quant(model: torch.fx.GraphModule) -> list[str]:
     # TODO haoliang this is a temponary func, hope to use QuantStub and DeQuantStub
     # NOTE this is tempory func and may be changed in the future.
-    '''
+    """
     For assuming that the operations that no need grad will not be quantized
     e.g:
         op0 = **
@@ -119,13 +125,13 @@ def mask_op_with_no_grad_no_quant(model: torch.fx.GraphModule) -> List[str]:
         _set_grad_enabled_1 = torch._C._set_grad_enabled(True)
         op3 = **
     Tha above eample we will not intend to quant op1 & op2, so we mark op1 & op2 not to quant.
-    '''
+    """
     skip_quant = False
     skip_quant_node_name = []
     for node in model.graph.nodes:
-        if node.op == 'call_function' and node.target == torch._C._set_grad_enabled:
+        if node.op == "call_function" and node.target == torch._C._set_grad_enabled:
             skip_quant = True if node.args[0] is False else False
-        node.meta['skip_quant'] = skip_quant if skip_quant else node.meta['skip_quant']
+        node.meta["skip_quant"] = skip_quant if skip_quant else node.meta["skip_quant"]
         if skip_quant:
             skip_quant_node_name.append(node.name)
     return skip_quant_node_name

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 import os
+
 import onnx
 from onnx import helper
 from onnxsim import simplify
+
 
 # facility code: used for counding target op in a onnx model
 def onnx_contains_op_num(model_path: str, target_op_type: str) -> int:
@@ -33,7 +35,7 @@ def mk_quant_de_quant_node(graph, quant_node_name, dequant_node_name, modify_nod
         inputs=quant_node.input,
         outputs=[new_quant_node_output],
         name=new_quant_node_name,
-        **{attr.name: helper.get_attribute_value(attr) for attr in quant_node.attribute}   # copy attribute
+        **{attr.name: helper.get_attribute_value(attr) for attr in quant_node.attribute},  # copy attribute
     )
 
     graph.node.append(new_quant_node2)
@@ -44,7 +46,7 @@ def mk_quant_de_quant_node(graph, quant_node_name, dequant_node_name, modify_nod
         inputs=new_dequant_input,  # dequant_node.input
         outputs=[new_dequant_node_output],  # use new output
         name=new_dequant_node_name,
-        **{attr.name: helper.get_attribute_value(attr) for attr in dequant_node.attribute}  # copy attribute
+        **{attr.name: helper.get_attribute_value(attr) for attr in dequant_node.attribute},  # copy attribute
     )
 
     graph.node.append(new_dequant_node2)
@@ -52,12 +54,11 @@ def mk_quant_de_quant_node(graph, quant_node_name, dequant_node_name, modify_nod
     return
 
 
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     # NOTE user need to modify the onnx model path
     exported_onnx_model = "./quant_result/quark_model.onnx"
     if not os.path.exists(exported_onnx_model):
-        raise FileNotFoundError("The file: {} not found".format(exported_onnx_model))
+        raise FileNotFoundError(f"The file: {exported_onnx_model} not found")
 
     # NOTE using this function to check the quantizer num
     onnx_contains_op_num(exported_onnx_model, "DequantizeLinear")
@@ -77,9 +78,9 @@ if __name__ == '__main__':
     conv1_name = "/original_model/Conv"
     conv2_name = "/original_model/Conv_1"
     conv3_name = "/original_model/Conv_2"
-    Quant_linear_2_name = '/original_model/fake_quantizer_211/QuantizeLinear'
-    DeQuant_linear_2_name = '/original_model/fake_quantizer_211/DequantizeLinear'
-    add_name = '/original_model/Add_20'
+    Quant_linear_2_name = "/original_model/fake_quantizer_211/QuantizeLinear"
+    DeQuant_linear_2_name = "/original_model/fake_quantizer_211/DequantizeLinear"
+    add_name = "/original_model/Add_20"
 
     # create a new node and copy the attribute of original node and give a new name
     mk_quant_de_quant_node(graph, Quant_linear_1_name, DeQuant_linear_1_name, conv2_name, 1)

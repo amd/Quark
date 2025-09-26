@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
-
-from .quant_base_ops import QuantizeWrapper
-from torch.nn import InstanceNorm1d, InstanceNorm2d, InstanceNorm3d, LayerNorm
 from typing import Any
 
+import torch
+from torch.nn import InstanceNorm1d, InstanceNorm2d, InstanceNorm3d, LayerNorm
 
-class QInstanceNorm1d(QuantizeWrapper, InstanceNorm1d):
+from .quant_base_ops import QuantizeWrapper
 
+
+class QInstanceNorm1d(QuantizeWrapper, InstanceNorm1d):  # type: ignore
     def __init__(self, **kwargs: Any) -> None:
         QuantizeWrapper.__init__(self, **kwargs)
         InstanceNorm1d.__init__(self, **kwargs)
@@ -25,11 +25,11 @@ class QInstanceNorm1d(QuantizeWrapper, InstanceNorm1d):
             bias=None,
             use_input_stats=True,
             momentum=self.momentum,  # type: ignore
-            eps=self.eps)
+            eps=self.eps,
+        )
 
 
-class QInstanceNorm2d(QuantizeWrapper, InstanceNorm2d):
-
+class QInstanceNorm2d(QuantizeWrapper, InstanceNorm2d):  # type: ignore
     def __init__(self, **kwargs: Any) -> None:
         QuantizeWrapper.__init__(self, **kwargs)
         InstanceNorm2d.__init__(self, **kwargs)
@@ -43,11 +43,11 @@ class QInstanceNorm2d(QuantizeWrapper, InstanceNorm2d):
             bias=None,
             use_input_stats=True,
             momentum=self.momentum,  # type: ignore
-            eps=self.eps)
+            eps=self.eps,
+        )
 
 
-class QInstanceNorm3d(QuantizeWrapper, InstanceNorm3d):
-
+class QInstanceNorm3d(QuantizeWrapper, InstanceNorm3d):  # type: ignore
     def __init__(self, **kwargs: Any) -> None:
         QuantizeWrapper.__init__(self, **kwargs)
         InstanceNorm3d.__init__(self, **kwargs)
@@ -61,11 +61,11 @@ class QInstanceNorm3d(QuantizeWrapper, InstanceNorm3d):
             bias=None,
             use_input_stats=True,
             momentum=self.momentum,  # type: ignore
-            eps=self.eps)
+            eps=self.eps,
+        )
 
 
-class QLayerNorm(QuantizeWrapper, LayerNorm):
-
+class QLayerNorm(QuantizeWrapper, LayerNorm):  # type: ignore
     def __init__(self, **kwargs: Any) -> None:
         QuantizeWrapper.__init__(self, **kwargs)
         LayerNorm.__init__(self, **kwargs)

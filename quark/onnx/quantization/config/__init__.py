@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: MIT
 #
 
-from .config import Config, QuantizationConfig
-from .custom_config import get_default_config_mapping, get_default_config
+from .config import QConfig, Config, QuantizationConfig
+from .custom_config import get_default_config_mapping, get_default_config, DefaultConfigMapping
 
-__all__ = ['Config', 'QuantizationConfig', 'get_default_config_mapping', 'get_default_config']
+__all__ = [
+    'QConfig', 'Config', 'QuantizationConfig', 'get_default_config_mapping', 'get_default_config',
+    'DefaultConfigMapping'
+]

@@ -18,7 +18,9 @@
 
 import importlib
 import importlib.metadata
+import importlib.util  # type: ignore[attr-defined]
 from typing import Tuple
+
 from packaging import version
 
 from quark.shares.utils.log import ScreenLogger
@@ -26,7 +28,7 @@ from quark.shares.utils.log import ScreenLogger
 logger = ScreenLogger(__name__)
 
 
-def _is_package_available(pkg_name: str) -> Tuple[bool, str]:  # pragma: no cover
+def _is_package_available(pkg_name: str) -> tuple[bool, str]:  # pragma: no cover
     # This function is licensed under Apache 2.0, Copyright 2022 The HuggingFace Team. All rights reserved.
     # It is unmodified and comes from https://github.com/huggingface/transformers/blob/93352e81f5019abaa52f7bdc2e3284779e864367/src/transformers/utils/import_utils.py#L42.
 
@@ -62,10 +64,11 @@ def _is_package_available(pkg_name: str) -> Tuple[bool, str]:  # pragma: no cove
 
 _torch_available, _torch_version = _is_package_available("torch")  # pragma: no cover
 _accelerate_available, _ = _is_package_available("accelerate")  # pragma: no cover
-_transformers_available, _ = _is_package_available("transformers")  # pragma: no cover
+_transformers_available, _transformers_version = _is_package_available("transformers")  # pragma: no cover
 _matplotlib_available, _ = _is_package_available("matplotlib")  # pragma: no cover
 _safetensors_available, _ = _is_package_available("safetensors")  # pragma: no cover
 _triton_available, _ = _is_package_available("triton")  # pragma: no cover
+_gguf_available, _gguf_version = _is_package_available("gguf")  # pragma: no cover
 
 
 def is_torch_available() -> bool:  # pragma: no cover
@@ -78,6 +81,10 @@ def is_torch_greater_or_equal_2_5() -> bool:
 
 def is_torch_greater_or_equal_2_7() -> bool:
     return version.parse(_torch_version) >= version.parse("2.7")
+
+
+def is_transformers_version_higher_or_equal(target_version: str) -> bool:
+    return version.parse(_transformers_version) >= version.parse(target_version)
 
 
 def is_accelerate_available() -> bool:  # pragma: no cover
@@ -98,3 +105,7 @@ def is_safetensors_available() -> bool:  # pragma: no cover
 
 def is_triton_available() -> bool:  # pragma: no cover
     return _triton_available
+
+
+def is_gguf_available_and_version_0_6_0() -> bool:  # pragma: no cover
+    return _gguf_available and version.parse(_gguf_version) == version.parse("0.6.0")

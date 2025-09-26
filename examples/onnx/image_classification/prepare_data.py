@@ -20,11 +20,10 @@ if not os.path.exists(source_folder):
 files = os.listdir(source_folder)
 
 for filename in files:
-    if not filename.startswith('ILSVRC2012_val_') or not filename.endswith(
-            '.JPEG'):
+    if not filename.startswith("ILSVRC2012_val_") or not filename.endswith(".JPEG"):
         continue
 
-    n_identifier = filename.split('_')[-1].split('.')[0]
+    n_identifier = filename.split("_")[-1].split(".")[0]
     folder_name = n_identifier
     folder_path = os.path.join(source_folder, folder_name)
     if not os.path.exists(folder_path):

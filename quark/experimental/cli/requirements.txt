@@ -1,0 +1,26 @@
+accelerate
+argparse
+evaluate
+gguf
+git+https://github.com/felipemaiapolo/tinyBenchmarks
+immutabledict
+langdetect
+lm-eval>=0.4.8
+nltk>= 3.9.1
+numpy==1.26.4
+onnx>=1.16.0
+onnx_ir
+onnxruntime>=1.20.1,<=1.22.1
+onnxruntime_extensions
+onnxruntime_genai
+opencv-python
+optimum
+Pillow
+protobuf
+psutil
+py7zr
+rich
+rouge_score
+timm
+transformers
+typing

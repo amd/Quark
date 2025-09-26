@@ -2,26 +2,40 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.shares.utils.log import ScreenLogger, log_errors
+import copy
+import time
+from pathlib import Path
+from typing import Any, Dict, Union
+
 import numpy as np
 import onnx
-import time
 import pandas as pd
-from pathlib import Path
+from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import find_by_name
-from quark.onnx.quant_utils import (ONNX_TYPE_TO_NP_TYPE, COP_BFP_OP_NAME, COP_MX_OP_NAME, BFP_OP_DEFAULT_ATTRS,
-                                    MX_OP_DEFAULT_ATTRS, get_tensor_type_from_qType, ExtendedQuantType, scale2pos,
-                                    pos2scale, ONNXQuantizedModel)
-from quark.onnx.finetuning.onnx_subgraph import Subgraph
-from quark.onnx.finetuning.create_torch.create_model_utils import (ComputeOperations, QuantizeLinearOps,
-                                                                   DequantizeLinearOps)
-from quark.onnx.finetuning.onnx_evaluate import inference_model, average_L2
-from quark.onnx.mprecision.mixing_fn import mixing_fn
-from onnx import onnx_pb as onnx_proto
 from tqdm import tqdm
-import copy
-from typing import Any, Dict, Union
+
+from quark.onnx.finetuning.create_torch.create_model_utils import (
+    ComputeOperations,
+    DequantizeLinearOps,
+    QuantizeLinearOps,
+)
+from quark.onnx.finetuning.onnx_evaluate import average_L2, inference_model
+from quark.onnx.finetuning.onnx_subgraph import Subgraph
+from quark.onnx.mprecision.mixing_fn import mixing_fn
+from quark.onnx.quant_utils import (
+    BFP_OP_DEFAULT_ATTRS,
+    COP_BFP_OP_NAME,
+    COP_MX_OP_NAME,
+    MX_OP_DEFAULT_ATTRS,
+    ONNX_TYPE_TO_NP_TYPE,
+    ExtendedQuantType,
+    ONNXQuantizedModel,
+    get_tensor_type_from_qType,
+    pos2scale,
+    scale2pos,
+)
+from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -31,15 +45,21 @@ ONNX_INT_TYPE_RANGE = {
     onnx_proto.TensorProto.UINT16: (0, 65535),
     onnx_proto.TensorProto.INT16: (-32768, 32767),
     onnx_proto.TensorProto.UINT32: (0, 2**32 - 1),
-    onnx_proto.TensorProto.INT32: (-2**31, 2**31 - 1),
+    onnx_proto.TensorProto.INT32: (-(2**31), 2**31 - 1),
 }
 
 
 @log_errors
-def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union[str, Path, onnx.ModelProto],
-                      use_external_data_format: bool, dr: Any, activation_type: Any, weight_type: Any,
-                      extra_options: Any) -> Any:
-    """ Automatic apply low precision quantization on Q/DQ."""
+def auto_mixprecision(
+    f_model: Union[str, Path, onnx.ModelProto],
+    q_model: Union[str, Path, onnx.ModelProto],
+    use_external_data_format: bool,
+    dr: Any,
+    activation_type: Any,
+    weight_type: Any,
+    extra_options: Any,
+) -> Any:
+    """Automatic apply low precision quantization on Q/DQ."""
 
     def _update_optimized_param(qmodel: onnx.ModelProto, param_name: str, opt_param: Any) -> Any:
         for init in qmodel.graph.initializer:
@@ -151,8 +171,9 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         quant_model.remove_initializer(zp_init)
         quant_model.add_initializer(ori_zp_init)
 
-    def _replace_tensor_type(quant_model: onnx.ModelProto, refer_model: onnx.ModelProto, tensor_name: str,
-                             quant_type: Any) -> None:
+    def _replace_tensor_type(
+        quant_model: onnx.ModelProto, refer_model: onnx.ModelProto, tensor_name: str, quant_type: Any
+    ) -> None:
         new_value_info_list = []
         for vi in quant_model.model.graph.value_info:
             if vi.name == tensor_name:
@@ -164,12 +185,13 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
             #    new_value_info_list.append(vi)
         quant_model.model.graph.value_info.extend(new_value_info_list)
 
-    def _restore_tensor_type(quant_model: onnx.ModelProto, refer_model: onnx.ModelProto, tensor_name: str,
-                             quant_type: Any) -> None:
+    def _restore_tensor_type(
+        quant_model: onnx.ModelProto, refer_model: onnx.ModelProto, tensor_name: str, quant_type: Any
+    ) -> None:
         origin_type = None
         for value_info in refer_model.model.graph.value_info:
             if value_info.name == tensor_name:
-                if value_info.type.HasField('tensor_type'):
+                if value_info.type.HasField("tensor_type"):
                     origin_type = value_info.type.tensor_type.elem_type
                 break
         if origin_type:
@@ -253,7 +275,7 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         child_nodes = in_name_to_nodes.get(tensor_name, None)
 
         count = 0
-        while (child_nodes is not None):
+        while child_nodes is not None:
             if child_nodes[0].op_type in QuantizeLinearOps + DequantizeLinearOps:
                 child_nodes = in_name_to_nodes.get(child_nodes[0].output[0], None)
             else:
@@ -266,7 +288,7 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         parent_node = out_name_to_node.get(tensor_name, None)
 
         count = 0
-        while (parent_node is not None):
+        while parent_node is not None:
             if parent_node.op_type in QuantizeLinearOps + DequantizeLinearOps:
                 parent_node = out_name_to_node.get(parent_node.input[0], None)
             else:
@@ -332,9 +354,15 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
                 break
 
     @log_errors
-    def _handling_target_qdqs(quant_model: Any, refer_model: Any, node_struct: Any, act_quant_type: Any,
-                              weight_quant_type: Any, bias_quant_type: Any, process_type: Any) -> None:
-
+    def _handling_target_qdqs(
+        quant_model: Any,
+        refer_model: Any,
+        node_struct: Any,
+        act_quant_type: Any,
+        weight_quant_type: Any,
+        bias_quant_type: Any,
+        process_type: Any,
+    ) -> None:
         def __replace(quant_model: Any, refer_model: Any, dq: Any, q: Any, quant_type: Any) -> None:
             _replace_quant_type(quant_model, refer_model, dq, quant_type)
             if q is not None and q.input[2] != dq.input[2]:  # If did not share the same inputs
@@ -348,10 +376,11 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         def __insert(quant_model: Any, refer_model: Any, dq: Any, q: Any, quant_type: Any, is_output: Any) -> None:
             tensor_name = q.input[0] if is_output else dq.output[0]
             qdq_num = _count_child_qdqs(quant_model, q.input[0])
-            if (qdq_num == 2):
-                _insert_new_qdq(quant_model, refer_model, q, dq, quant_type,
-                                tensor_name)  # This tensor should link to the new qdq
-            elif (qdq_num == 4):
+            if qdq_num == 2:
+                _insert_new_qdq(
+                    quant_model, refer_model, q, dq, quant_type, tensor_name
+                )  # This tensor should link to the new qdq
+            elif qdq_num == 4:
                 __replace(quant_model, refer_model, dq, q, quant_type)
             else:
                 raise ValueError("Unexpected QDQ numbers in insert process")
@@ -359,16 +388,17 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         def __delete(quant_model: Any, refer_model: Any, dq: Any, q: Any, quant_type: Any, is_output: Any) -> None:
             tensor_name = q.input[0] if is_output else dq.output[0]
             qdq_num = _count_child_qdqs(quant_model, q.input[0])
-            if (qdq_num == 4):
-                _delete_new_qdq(quant_model, refer_model, q, dq, quant_type,
-                                tensor_name)  # This tensor should link to the new qdq
-            elif (qdq_num == 2):
+            if qdq_num == 4:
+                _delete_new_qdq(
+                    quant_model, refer_model, q, dq, quant_type, tensor_name
+                )  # This tensor should link to the new qdq
+            elif qdq_num == 2:
                 __restore(quant_model, refer_model, dq, q, quant_type)
             else:
                 raise ValueError("Unexpected QDQ numbers in delete process")
 
-        if len(node_struct['input_qdqs']):
-            dq, q = node_struct['input_qdqs'][0]  # Just analyze input tensor's qdq
+        if len(node_struct["input_qdqs"]):
+            dq, q = node_struct["input_qdqs"][0]  # Just analyze input tensor's qdq
             if dq is not None and q is not None:
                 if process_type == "replace":
                     __replace(quant_model, refer_model, dq, q, act_quant_type)
@@ -381,8 +411,8 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
                 else:
                     raise ValueError("Unsupported process for auto mixprecision")
 
-            if len(node_struct['input_qdqs']) >= 2:
-                dq, q = node_struct['input_qdqs'][1]
+            if len(node_struct["input_qdqs"]) >= 2:
+                dq, q = node_struct["input_qdqs"][1]
                 if dq is not None:
                     if process_type == "replace":
                         __replace(quant_model, refer_model, dq, q, weight_quant_type)
@@ -395,8 +425,8 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
                     else:
                         raise ValueError("Unsupported process for auto mixprecision")
 
-            if len(node_struct['input_qdqs']) >= 3:
-                dq, q = node_struct['input_qdqs'][2]
+            if len(node_struct["input_qdqs"]) >= 3:
+                dq, q = node_struct["input_qdqs"][2]
                 if dq is not None:
                     if process_type == "replace":
                         __replace(quant_model, refer_model, dq, q, bias_quant_type)
@@ -410,35 +440,35 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
                         raise ValueError("Unsupported process for auto mixprecision")
 
         # Need to update bias scale to meet bias_scale=input_scale*weight_scale
-        if len(node_struct['input_qdqs']) == 3:
+        if len(node_struct["input_qdqs"]) == 3:
             # Considering simplicity, not doing this for "replace" and "restore"
-            if (process_type == "replace" or process_type == "restore"):
-                _update_bias_scale(quant_model, node_struct['node'].name)
+            if process_type == "replace" or process_type == "restore":
+                _update_bias_scale(quant_model, node_struct["node"].name)
 
         return None
 
     # Get the configurations of AutoMixprecision
-    data_size = extra_options.get('AutoMixprecision', {}).get('DataSize', None)
-    target_op_type = extra_options.get('AutoMixprecision', {}).get('TargetOpType', ComputeOperations)
-    target_quant_type = extra_options.get('AutoMixprecision', {}).get('TargetQuantType', None)
-    act_target_quant_type = extra_options.get('AutoMixprecision', {}).get('ActTargetQuantType', None)
-    weight_target_quant_type = extra_options.get('AutoMixprecision', {}).get('WeightTargetQuantType', None)
-    bias_target_quant_type = extra_options.get('AutoMixprecision', {}).get('BiasTargetQuantType', None)
-    target_tensors = extra_options.get('AutoMixprecision', {}).get('TargetTensors', [])
-    target_indices = extra_options.get('AutoMixprecision', {}).get('TargetIndices', [])
-    exclude_indices = extra_options.get('AutoMixprecision', {}).get('ExcludeIndices', [])
-    output_index = extra_options.get('AutoMixprecision', {}).get('OutputIndex', None)
-    l2_target = extra_options.get('AutoMixprecision', {}).get('L2Target', None)
-    top1_acc_target = extra_options.get('AutoMixprecision', {}).get('Top1AccTarget', None)
-    evaluate_function = extra_options.get('AutoMixprecision', {}).get('EvaluateFunction', None)
-    num_target = extra_options.get('AutoMixprecision', {}).get('NumTarget', 0)
-    no_shared = extra_options.get('AutoMixprecision', {}).get('NoInputQDQShared', True)
-    auto_mix_use_fast_ft = extra_options.get('AutoMixprecision', {}).get('AutoMixUseFastFT', False)
+    data_size = extra_options.get("AutoMixprecision", {}).get("DataSize", None)
+    target_op_type = extra_options.get("AutoMixprecision", {}).get("TargetOpType", ComputeOperations)
+    target_quant_type = extra_options.get("AutoMixprecision", {}).get("TargetQuantType", None)
+    act_target_quant_type = extra_options.get("AutoMixprecision", {}).get("ActTargetQuantType", None)
+    weight_target_quant_type = extra_options.get("AutoMixprecision", {}).get("WeightTargetQuantType", None)
+    bias_target_quant_type = extra_options.get("AutoMixprecision", {}).get("BiasTargetQuantType", None)
+    target_tensors = extra_options.get("AutoMixprecision", {}).get("TargetTensors", [])
+    target_indices = extra_options.get("AutoMixprecision", {}).get("TargetIndices", [])
+    exclude_indices = extra_options.get("AutoMixprecision", {}).get("ExcludeIndices", [])
+    output_index = extra_options.get("AutoMixprecision", {}).get("OutputIndex", None)
+    l2_target = extra_options.get("AutoMixprecision", {}).get("L2Target", None)
+    top1_acc_target = extra_options.get("AutoMixprecision", {}).get("Top1AccTarget", None)
+    evaluate_function = extra_options.get("AutoMixprecision", {}).get("EvaluateFunction", None)
+    num_target = extra_options.get("AutoMixprecision", {}).get("NumTarget", 0)
+    no_shared = extra_options.get("AutoMixprecision", {}).get("NoInputQDQShared", True)
+    auto_mix_use_fast_ft = extra_options.get("AutoMixprecision", {}).get("AutoMixUseFastFT", False)
     int32_bias = extra_options.get("Int32Bias", True)
     int16_bias = extra_options.get("Int16Bias", False)
     if int16_bias:
         int32_bias = True
-    dual_quant_nodes = extra_options.get('AutoMixprecision', {}).get('DualQuantNodes', False)
+    dual_quant_nodes = extra_options.get("AutoMixprecision", {}).get("DualQuantNodes", False)
 
     if dual_quant_nodes:
         forward_process = "insert"
@@ -449,7 +479,8 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
 
     if target_quant_type is None and act_target_quant_type is None and weight_target_quant_type is None:
         raise ValueError(
-            "include_auto_mp is True, so TargetQuantType or ActTargetQuantType or WeightTargetQuantType must be given!")
+            "include_auto_mp is True, so TargetQuantType or ActTargetQuantType or WeightTargetQuantType must be given!"
+        )
 
     if act_target_quant_type is None and weight_target_quant_type is None:
         act_target_quant_type = target_quant_type
@@ -489,17 +520,21 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
 
     # If configured BFP as the target quant type, to mix BFP directly
     quantized_model = q_model if isinstance(q_model, onnx.ModelProto) else onnx.load(q_model)
-    if target_quant_type == ExtendedQuantType.QBFP or (act_target_quant_type == ExtendedQuantType.QBFP
-                                                       and weight_target_quant_type == ExtendedQuantType.QBFP
-                                                       and bias_target_quant_type == ExtendedQuantType.QBFP):
+    if target_quant_type == ExtendedQuantType.QBFP or (
+        act_target_quant_type == ExtendedQuantType.QBFP
+        and weight_target_quant_type == ExtendedQuantType.QBFP
+        and bias_target_quant_type == ExtendedQuantType.QBFP
+    ):
         logger.info(f"Configured BFP as target quant type, start inserting {COP_BFP_OP_NAME} ...")
         bfp_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
         if "BFPAttributes" in extra_options:
             bfp_attrs.update(extra_options["BFPAttributes"])
         return mixing_fn(quantized_model, target_op_type, forward_process, COP_BFP_OP_NAME, bfp_attrs)
-    elif target_quant_type == ExtendedQuantType.QMX or (act_target_quant_type == ExtendedQuantType.QMX
-                                                        and weight_target_quant_type == ExtendedQuantType.QMX
-                                                        and bias_target_quant_type == ExtendedQuantType.QMX):
+    elif target_quant_type == ExtendedQuantType.QMX or (
+        act_target_quant_type == ExtendedQuantType.QMX
+        and weight_target_quant_type == ExtendedQuantType.QMX
+        and bias_target_quant_type == ExtendedQuantType.QMX
+    ):
         logger.info(f"Configured MX as target quant type, start inserting {COP_MX_OP_NAME} ...")
         mx_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
         if "MXAttributes" in extra_options:
@@ -507,7 +542,10 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         return mixing_fn(quantized_model, target_op_type, forward_process, COP_MX_OP_NAME, mx_attrs)
 
     if (l2_target is not None) and (top1_acc_target is not None):
-        raise ValueError("l2_target and top1_acc_target must one of the two!")
+        l2_target = None
+        logger.warning(
+            "l2_target and top1_acc_target must one of the two! Drop l2_target and use only top1_acc_target!"
+        )
 
     if top1_acc_target is not None and evaluate_function is None:
         raise ValueError("Evaluate_function must be given when top1_acc_target is given!")
@@ -515,11 +553,17 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
     # Extract sub-graph of modules
     sg = Subgraph(f_model, q_model, use_external_data_format, dr, extra_options)
 
-    assert len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(
-        sg.f_weight_list), "The quantized model or float model has an incorrect number of subgraphs"
+    assert len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(sg.f_weight_list), (
+        "The quantized model or float model has an incorrect number of subgraphs"
+    )
 
-    if len(target_tensors) == 0 and len(
-            target_indices) == 0 and l2_target is None and top1_acc_target is None and num_target <= 0:
+    if (
+        len(target_tensors) == 0
+        and len(target_indices) == 0
+        and l2_target is None
+        and top1_acc_target is None
+        and num_target <= 0
+    ):
         num_target = len(sg.subgraph_qmodel_list)
         logger.warning("No target was specified, all modules will be mixed.")
 
@@ -605,24 +649,14 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         # Get the target Q/DQ of the module
         parser = ONNXQuantizedModel(module)
         node_struct = parser.find_target_op_type_qdqs(target_op_type)
-        if node_struct['node'] is None or len(node_struct['input_qdqs']) == 0:
+        if node_struct["node"] is None or len(node_struct["input_qdqs"]) == 0:
             continue
 
-        _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              forward_process)
-        if auto_mix_use_fast_ft:
-            # for every subgraph to do adaround to replace
-            q_input_data = np.array(sg.get_q_input_data(i))
-            f_input_data = np.array(sg.f_input_data_list[i])
-            f_output_data = np.array(sg.f_output_data_list[i])
-            f_input_data = f_input_data.reshape((-1, *f_input_data.shape[2:]))
-            f_output_data = f_output_data.reshape((-1, *f_output_data.shape[2:]))
-            q_input_data = q_input_data.reshape((-1, *q_input_data.shape[2:]))
-            if not q_input_data.shape == f_input_data.shape:
-                logger.warning(f"Input shape for quantized module {q_input_data.shape} "
-                               f"is different with the float module {f_input_data.shape}."
-                               "Skip this module.")
-                continue
+        _handling_target_qdqs(
+            quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type, forward_process
+        )
+        if auto_mix_use_fast_ft and sg.mem_opt_level != 2 and not sg.parallel:
+            q_input_data, f_input_data, f_output_data = sg.get_training_data(i)
 
             # Optimize weight and bias for this module
             f_weight = np.array(sg.f_weight_list[i])
@@ -630,10 +664,12 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
 
             start_time = time.perf_counter()
             from quark.onnx.finetuning.torch_utils import optimize_module
-            opt_weight, opt_bias = optimize_module(module, f_weight, f_bias, q_input_data, f_input_data, f_output_data,
-                                                   extra_options)
+
+            opt_weight, opt_bias = optimize_module(
+                module, f_weight, f_bias, q_input_data, f_input_data, f_output_data, extra_options
+            )
             end_time = time.perf_counter()
-            torch_training_time += (end_time - start_time)
+            torch_training_time += end_time - start_time
             ori_weight = _update_optimized_param(quantized_model, sg.q_weight_name_list[i], opt_weight)
             ori_bias = _update_optimized_param(quantized_model, sg.q_bias_name_list[i], opt_bias)
             # Calculate the average
@@ -654,8 +690,9 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
             distance_new = round(float_top1_acc - quant_top1_acc, 4)
             logger.debug(f"The top1 accuracy loss is from {distance} to {distance_new}.")
 
-        _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              back_process)
+        _handling_target_qdqs(
+            quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type, back_process
+        )
 
         module_dict[i] = distance_new
 
@@ -667,7 +704,7 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         if l2_target is not None or num_target != 0:
             # Sort L2 distance in ascending order
             sorted_module = sorted(module_dict.items(), key=lambda x: x[1])
-            new_sorted_module: Dict[str, Any] = {"Index": [], "Node name": [], "L2 loss": []}
+            new_sorted_module: dict[str, Any] = {"Index": [], "Node name": [], "L2 loss": []}
             for index, loss in sorted_module:
                 new_sorted_module["Index"].append(index)
                 new_sorted_module["Node name"].append(module_index_name_dict[str(index)])
@@ -700,8 +737,8 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         parser = ONNXQuantizedModel(module)
         node_struct = parser.find_target_op_type_qdqs(target_op_type)
 
-        node = node_struct['node']  # The node will receive a new quant_type
-        if node is None or len(node_struct['input_qdqs']) == 0:
+        node = node_struct["node"]  # The node will receive a new quant_type
+        if node is None or len(node_struct["input_qdqs"]) == 0:
             logger.warning(f"Skipped #{module_index} module that can't be mixed.")
             continue  # Skip the node that is not supported or not quantized
         elif no_shared and len(input_name_to_nodes[node.input[0]]) != 1:
@@ -713,8 +750,9 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
                 f"#{module_index} {node.op_type} named {node.name} is converted from Activation: {activation_type}, Weight: {weight_type}, Bias: {bias_type} to Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type}"
             )
 
-        _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type,
-                              forward_process)
+        _handling_target_qdqs(
+            quant_model, refer_model, node_struct, act_quant_type, weight_quant_type, bias_quant_type, forward_process
+        )
 
         # Count the number of mixed modules
         mixed_num += 1
@@ -730,14 +768,23 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
             distance_new = average_L2(float_results, quant_results)
 
             if distance_new > l2_target:
-                _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type,
-                                      bias_quant_type, back_process)
+                _handling_target_qdqs(
+                    quant_model,
+                    refer_model,
+                    node_struct,
+                    act_quant_type,
+                    weight_quant_type,
+                    bias_quant_type,
+                    back_process,
+                )
                 if len(mixed_node_names) >= 1:
                     mixed_node_names.pop()
-                logger.info(f"The average L2 distance is {distance_new}, "
-                            f"which is greater than the L2 Target {l2_target}, "
-                            f"so go back to its original state and break."
-                            f"Mixed node names are: {mixed_node_names}.")
+                logger.info(
+                    f"The average L2 distance is {distance_new}, "
+                    f"which is greater than the L2 Target {l2_target}, "
+                    f"so go back to its original state and break."
+                    f"Mixed node names are: {mixed_node_names}."
+                )
                 break
 
             logger.info(f"The average L2 distance is from {distance} to {distance_new}.")
@@ -750,19 +797,29 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
             distance_new = round(float_top1_acc - quant_top1_acc, 4)
 
             if distance_new > top1_acc_target:
-                _handling_target_qdqs(quant_model, refer_model, node_struct, act_quant_type, weight_quant_type,
-                                      bias_quant_type, back_process)
+                _handling_target_qdqs(
+                    quant_model,
+                    refer_model,
+                    node_struct,
+                    act_quant_type,
+                    weight_quant_type,
+                    bias_quant_type,
+                    back_process,
+                )
                 if len(mixed_node_names) >= 1:
                     mixed_node_names.pop()
-                logger.info(f"The Top1 accuracy is {quant_top1_acc}, "
-                            f"The Top1 accuracy loss is {distance_new}, "
-                            f"which is greater than the Top1 Acc Target {top1_acc_target}, "
-                            f"so go back to its original state and break."
-                            f"Mixed node names are: {mixed_node_names}.")
+                logger.info(
+                    f"The Top1 accuracy is {quant_top1_acc}, "
+                    f"The Top1 accuracy loss is {distance_new}, "
+                    f"which is greater than the Top1 Acc Target {top1_acc_target}, "
+                    f"so go back to its original state and break."
+                    f"Mixed node names are: {mixed_node_names}."
+                )
                 break
 
-            logger.info(f"The Top1 accuracy is {quant_top1_acc}, "
-                        f"The Top1 accuracy loss is from {distance} to {distance_new}.")
+            logger.info(
+                f"The Top1 accuracy is {quant_top1_acc}, The Top1 accuracy loss is from {distance} to {distance_new}."
+            )
             distance = distance_new
 
     if l2_target is not None:
@@ -782,6 +839,9 @@ def auto_mixprecision(f_model: Union[str, Path, onnx.ModelProto], q_model: Union
         logger.info(
             f"Activation: {act_target_quant_type}, Weight: {weight_target_quant_type}, Bias: {bias_target_quant_type} node names are {mixed_node_names}."
         )
+
+    logger.info(f"Finished running auto mixed-precision for {len(sorted_module)} modules.")
+    sg.clean_up()
 
     quant_model.topological_sort()
     return quant_model.model

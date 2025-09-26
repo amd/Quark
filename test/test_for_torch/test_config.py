@@ -3,23 +3,26 @@
 # SPDX-License-Identifier: MIT
 #
 
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
-from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-import torch.nn as nn
 import pytest
+import torch.nn as nn
+
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+
 
 def test_reload_config():
-    quantization_spec = QuantizationSpec(dtype=Dtype.int8,
-                                         observer_cls=PerTensorMinMaxObserver,
-                                         is_dynamic=False,
-                                         qscheme=QSchemeType.per_tensor,
-                                         ch_axis=None,
-                                         group_size=None,
-                                         symmetric=False,
-                                         round_method=RoundType.round,
-                                         scale_type=ScaleType.float,
-                                         )
+    quantization_spec = QuantizationSpec(
+        dtype=Dtype.int8,
+        observer_cls=PerTensorMinMaxObserver,
+        is_dynamic=False,
+        qscheme=QSchemeType.per_tensor,
+        ch_axis=None,
+        group_size=None,
+        symmetric=False,
+        round_method=RoundType.round,
+        scale_type=ScaleType.float,
+    )
     quantization_config = QuantizationConfig(weight=quantization_spec)
     config = Config(global_quant_config=quantization_config, layer_type_quant_config={nn.Linear: quantization_config})
 
@@ -29,18 +32,21 @@ def test_reload_config():
 
     assert config == config_reloaded
 
-    quantization_spec = QuantizationSpec(dtype=Dtype.int8,
-                                         observer_cls=PerTensorMinMaxObserver,
-                                         is_dynamic=False,
-                                         qscheme=QSchemeType.per_tensor,
-                                         ch_axis=None,
-                                         group_size=None,
-                                         symmetric=False,
-                                         round_method=RoundType.round,
-                                         scale_type=ScaleType.float,
-                                         )
+    quantization_spec = QuantizationSpec(
+        dtype=Dtype.int8,
+        observer_cls=PerTensorMinMaxObserver,
+        is_dynamic=False,
+        qscheme=QSchemeType.per_tensor,
+        ch_axis=None,
+        group_size=None,
+        symmetric=False,
+        round_method=RoundType.round,
+        scale_type=ScaleType.float,
+    )
     quantization_config = QuantizationConfig(weight=quantization_spec)
-    config = Config(global_quant_config=quantization_config, layer_type_quant_config={nn.LayerNorm: quantization_config})
+    config = Config(
+        global_quant_config=quantization_config, layer_type_quant_config={nn.LayerNorm: quantization_config}
+    )
 
     config_dict = config.to_dict()
 

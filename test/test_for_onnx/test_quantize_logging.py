@@ -3,38 +3,52 @@
 # SPDX-License-Identifier: MIT
 #
 import unittest
-import torch
-import torch.nn as nn
+from pathlib import Path
+
 import numpy as np
 import onnxruntime
+import torch
+import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
+
 from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.onnx.quantization.config.config import Config
-from quark.shares.utils.testing_utils import use_temporary_directory
-from pathlib import Path
+from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.shares.utils.log import ScreenLogger
+from quark.shares.utils.testing_utils import use_temporary_directory
+
 logger = ScreenLogger(__name__)
 
-input_tensor = np.array([[[[0.26921557, 0.79500909, 0.6102178, 0.04375664],
-                           [0.06221361, 0.98258356, 0.38635129, 0.06492238],
-                           [0.49631707, 0.35442799, 0.51719146, 0.52100111],
-                           [0.04145599, 0.88960236, 0.50627326, 0.57204613]],
-                          [[0.99185097, 0.93582153, 0.13174529, 0.42896287],
-                           [0.14552133, 0.02538564, 0.0732355, 0.25725371],
-                           [0.09856916, 0.43015628, 0.55679755, 0.66560074],
-                           [0.9439425, 0.45701841, 0.86791293, 0.64728276]],
-                          [[0.29159685, 0.79021383, 0.3117182, 0.11342342],
-                           [0.16660495, 0.46426165, 0.31348552, 0.143383],
-                           [0.96454802, 0.63258874, 0.30295267, 0.96720039],
-                           [0.29879457, 0.79916527, 0.02905061, 0.20115725]]]]).astype(np.float32)
+input_tensor = np.array(
+    [
+        [
+            [
+                [0.26921557, 0.79500909, 0.6102178, 0.04375664],
+                [0.06221361, 0.98258356, 0.38635129, 0.06492238],
+                [0.49631707, 0.35442799, 0.51719146, 0.52100111],
+                [0.04145599, 0.88960236, 0.50627326, 0.57204613],
+            ],
+            [
+                [0.99185097, 0.93582153, 0.13174529, 0.42896287],
+                [0.14552133, 0.02538564, 0.0732355, 0.25725371],
+                [0.09856916, 0.43015628, 0.55679755, 0.66560074],
+                [0.9439425, 0.45701841, 0.86791293, 0.64728276],
+            ],
+            [
+                [0.29159685, 0.79021383, 0.3117182, 0.11342342],
+                [0.16660495, 0.46426165, 0.31348552, 0.143383],
+                [0.96454802, 0.63258874, 0.30295267, 0.96720039],
+                [0.29879457, 0.79916527, 0.02905061, 0.20115725],
+            ],
+        ]
+    ]
+).astype(np.float32)
 
 
 class DataReader(CalibrationDataReader):
-
     def __init__(self, input_tensor):
         self.data = [input_tensor]
-        self.input_name = 'input'
+        self.input_name = "input"
         self.index = 0
 
     def get_next(self):
@@ -50,7 +64,6 @@ class DataReader(CalibrationDataReader):
 
 
 class SimpleConvModel(nn.Module):
-
     def __init__(self):
         super(SimpleConvModel, self).__init__()
         self.conv = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, stride=1, padding=1)
@@ -71,16 +84,13 @@ def prepare_model(output_dir: str):
 
     dummy_input = torch.randn(1, 3, 4, 4)
 
-    onnx_model_path = Path(output_dir, 'simple_conv_model.onnx').as_posix()
+    onnx_model_path = Path(output_dir, "simple_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "simple_conv_model_quantized.onnx").as_posix()
-    torch.onnx.export(model,
-                      dummy_input,
-                      onnx_model_path,
-                      input_names=['input'],
-                      output_names=['output'],
-                      opset_version=17)
+    torch.onnx.export(
+        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+    )
 
-    print(f'Model has been saved to {onnx_model_path}')
+    print(f"Model has been saved to {onnx_model_path}")
     return onnx_model_path, onnx_quantized_model_path
 
 
@@ -116,7 +126,7 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     try:
         logger.error("Checking Log Error.")
     except SystemExit:
-        print('Successfully checked Logger Error.')
+        print("Successfully checked Logger Error.")
 
     # check critical
     quantizer.config.log_severity_level = 4
@@ -124,7 +134,7 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     try:
         logger.critical("Checking Log Critical.")
     except SystemExit:
-        print('Successfully checked Logger Critical.')
+        print("Successfully checked Logger Critical.")
 
     # check info
     quantizer.config.log_severity_level = 1
@@ -132,7 +142,7 @@ def quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     logger.info("Successfully checked Log Info.")
 
     quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-    print('Quantized the ONNX model and saved it at:', output_model_path)
+    print("Quantized the ONNX model and saved it at:", output_model_path)
     return output_model_path
 
 
@@ -142,7 +152,7 @@ def infer_quantized_model(quantized_model_path):
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor
     output = sess.run([output_name], {input_name: input_data})
-    print(f'Model output: {output}')
+    print(f"Model output: {output}")
     return output
 
 
@@ -171,16 +181,16 @@ class TestTensorQuantize(unittest.TestCase):
         # check log error
         try:
             logger.error("Checking Logger Error...", allow_duplicate=True)
-            print('Falied to check Logger Error.')
+            print("Falied to check Logger Error.")
         except SystemExit:
-            print('Successfully checked Logger Error.')
+            print("Successfully checked Logger Error.")
 
         # check log critical
         try:
             logger.critical("Checking Logger Critical...")
-            print('Falied to check Logger Critical.')
+            print("Falied to check Logger Critical.")
         except SystemExit:
-            print('Successfully checked Logger Critical.')
+            print("Successfully checked Logger Critical.")
             pass
 
         # check log exception
@@ -188,10 +198,10 @@ class TestTensorQuantize(unittest.TestCase):
             x = 1 / 0
         except Exception as e:
             logger.exception("Checking Logger Exception: " + str(e))
-            print('Successfully checked Logger Exception.')
+            print("Successfully checked Logger Exception.")
 
         self.assertEqual(tensor_quantize(tmpdir), np.array([[-0.9733977]], dtype=np.float32))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

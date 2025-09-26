@@ -13,6 +13,7 @@
 import torch
 import torch.nn as nn
 
+
 class SiLU(nn.Module):
     """export-friendly version of nn.SiLU()"""
 
@@ -29,16 +30,14 @@ def get_activation(name="silu", inplace=True):
     elif name == "lrelu":
         module = nn.LeakyReLU(0.1, inplace=inplace)
     else:
-        raise AttributeError("Unsupported act type: {}".format(name))
+        raise AttributeError(f"Unsupported act type: {name}")
     return module
 
 
 class BaseConv(nn.Module):
     """A Conv2d -> Batchnorm -> silu/leaky relu block"""
 
-    def __init__(
-        self, in_channels, out_channels, ksize, stride, groups=1, bias=False, act="silu"
-    ):
+    def __init__(self, in_channels, out_channels, ksize, stride, groups=1, bias=False, act="silu"):
         super().__init__()
         # same padding
         pad = (ksize - 1) // 2
@@ -74,9 +73,7 @@ class DWConv(nn.Module):
             groups=in_channels,
             act=act,
         )
-        self.pconv = BaseConv(
-            in_channels, out_channels, ksize=1, stride=1, groups=1, act=act
-        )
+        self.pconv = BaseConv(in_channels, out_channels, ksize=1, stride=1, groups=1, act=act)
 
     def forward(self, x):
         x = self.dconv(x)
@@ -114,12 +111,8 @@ class ResLayer(nn.Module):
     def __init__(self, in_channels: int):
         super().__init__()
         mid_channels = in_channels // 2
-        self.layer1 = BaseConv(
-            in_channels, mid_channels, ksize=1, stride=1, act="lrelu"
-        )
-        self.layer2 = BaseConv(
-            mid_channels, in_channels, ksize=3, stride=1, act="lrelu"
-        )
+        self.layer1 = BaseConv(in_channels, mid_channels, ksize=1, stride=1, act="lrelu")
+        self.layer2 = BaseConv(mid_channels, in_channels, ksize=3, stride=1, act="lrelu")
 
     def forward(self, x):
         out = self.layer2(self.layer1(x))
@@ -129,18 +122,11 @@ class ResLayer(nn.Module):
 class SPPBottleneck(nn.Module):
     """Spatial pyramid pooling layer used in YOLOv3-SPP"""
 
-    def __init__(
-        self, in_channels, out_channels, kernel_sizes=(5, 9, 13), activation="silu"
-    ):
+    def __init__(self, in_channels, out_channels, kernel_sizes=(5, 9, 13), activation="silu"):
         super().__init__()
         hidden_channels = in_channels // 2
         self.conv1 = BaseConv(in_channels, hidden_channels, 1, stride=1, act=activation)
-        self.m = nn.ModuleList(
-            [
-                nn.MaxPool2d(kernel_size=ks, stride=1, padding=ks // 2)
-                for ks in kernel_sizes
-            ]
-        )
+        self.m = nn.ModuleList([nn.MaxPool2d(kernel_size=ks, stride=1, padding=ks // 2) for ks in kernel_sizes])
         conv2_channels = hidden_channels * (len(kernel_sizes) + 1)
         self.conv2 = BaseConv(conv2_channels, out_channels, 1, stride=1, act=activation)
 
@@ -177,10 +163,7 @@ class CSPLayer(nn.Module):
         self.conv2 = BaseConv(in_channels, hidden_channels, 1, stride=1, act=act)
         self.conv3 = BaseConv(2 * hidden_channels, out_channels, 1, stride=1, act=act)
         module_list = [
-            Bottleneck(
-                hidden_channels, hidden_channels, shortcut, 1.0, depthwise, act=act
-            )
-            for _ in range(n)
+            Bottleneck(hidden_channels, hidden_channels, shortcut, 1.0, depthwise, act=act) for _ in range(n)
         ]
         self.m = nn.Sequential(*module_list)
 

@@ -81,7 +81,7 @@ namespace quark_onnx {
     vc.u = data;
     return vc.f;
   }
-  
+
   float __device__ float2bfloat_gpu(const float x) {
     uint32_t itmp = f_to_u_gpu(x);           // float32 bitwise to int32
     if ((itmp & 0x00008000) == 0x00008000) {  // half even
@@ -119,7 +119,7 @@ __global__ void BFPCUDAKernel(const float* input,
   const int axis_blocks = axis_size / block_size;
   const int block_index = index % axis_blocks;
   const int axis_index = index / axis_blocks;
-  
+
   int offset = axis_index * axis_size + block_index * block_size;
   // Loop over bounding box to find shared exponent
   uint32_t shared_exp = 0;
@@ -132,7 +132,7 @@ __global__ void BFPCUDAKernel(const float* input,
       shared_exp = exp;
     }
   }
-  
+
   // Minus 127 to get unbiased value.
   int shared_exp_value = static_cast<int>(shared_exp) - 127;
   // 1 sign bit, 8 exp bits.
@@ -182,7 +182,7 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
   const int axis_blocks = axis_size / block_size;
   const int block_index = index % axis_blocks;
   const int axis_index = index / axis_blocks;
-  
+
   int offset = axis_index * axis_size + block_index * block_size;
   // Loop over bounding box to find shared exponent
   uint32_t shared_exp = 0;
@@ -195,13 +195,13 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
       shared_exp = exp;
     }
   }
-  
+
   // Minus 127 to get unbiased value.
   int shared_exp_value = static_cast<int>(shared_exp) - 127;
   // 1 sign bit, 8 exp bits.
   int m_bits = bit_width - 9;
   auto scale = std::pow(2.0, shared_exp_value - (m_bits - 1));
-  
+
   for (int i = 0; i < block_size; i++) {
     // Output +-0/NaN/Inf as is.
     auto index = offset + i;
@@ -241,7 +241,7 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
     uint32_t exp = GetExponent(input[index]);
     if (exp == 0xff) {
       output[index] = input[index];
-    } 
+    }
     else {
       float x;
       switch (rounding_mode)
@@ -279,9 +279,9 @@ void LaunchBFPCUDAKernel(
     const int block_size,
     const int rounding_mode,
     int use_compiler_version_cpu_kernel) {
-  
+
   const int threads = n / block_size;
-  
+
   int threads_per_block = 256;
   int blocks = static_cast<int>(
       std::ceil(static_cast<float>(threads) / threads_per_block));

@@ -4,21 +4,15 @@
 #
 """Tests for Model Transformation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import unittest
+from typing import List
 
 import numpy as np
-from numpy.typing import NDArray
-import unittest
-
 import onnx
-from onnx import helper, ModelProto, TensorProto, numpy_helper
+from numpy.typing import NDArray
+from onnx import ModelProto, TensorProto, helper, numpy_helper
 
-from quark.onnx.graph_transformations import model_transformer
-from quark.onnx.graph_transformations import transforms
-
-from typing import List
+from quark.onnx.graph_transformations import model_transformer, transforms
 
 ModelTransformer = model_transformer.ModelTransformer
 Transform = transforms.Transform
@@ -26,7 +20,7 @@ OpTypePattern = transforms.OpTypePattern
 NodeTree = transforms.NodeTree
 
 
-def generate_input_initializer(tensor_shape: List[int], tensor_dtype: type, input_name: str) -> TensorProto:
+def generate_input_initializer(tensor_shape: list[int], tensor_dtype: type, input_name: str) -> TensorProto:
     """
     Helper function to generate initializers for test inputs
     """
@@ -36,7 +30,6 @@ def generate_input_initializer(tensor_shape: List[int], tensor_dtype: type, inpu
 
 
 class ModelTransformerTest(unittest.TestCase):
-
     def _build_model(self) -> ModelProto:
         #    (input)
         #       |
@@ -50,7 +43,7 @@ class ModelTransformerTest(unittest.TestCase):
         #       Add
         #        |
         #       (output)
-        initializers: List[TensorProto] = []
+        initializers: list[TensorProto] = []
         input = helper.make_tensor_value_info("input", TensorProto.FLOAT, [4, 8, 12])
         output = helper.make_tensor_value_info("output", TensorProto.FLOAT, [4, 2, 8, 8])
 
@@ -60,10 +53,14 @@ class ModelTransformerTest(unittest.TestCase):
         initializers.append(generate_input_initializer([2, 8, 8], np.float32, "H_GRU"))
         initializers.append(generate_input_initializer([8], np.float32, "B_GRU"))
         initializers.append(generate_input_initializer([1], np.float32, "S_LEN"))
-        gru_node = helper.make_node("GRU", ["input", "W_GRU", "R_GRU", "B_GRU", "S_LEN", "H_GRU"], ["GRU_O"],
-                                    hidden_size=8,
-                                    direction="bidirectional",
-                                    name='GRU1')
+        gru_node = helper.make_node(
+            "GRU",
+            ["input", "W_GRU", "R_GRU", "B_GRU", "S_LEN", "H_GRU"],
+            ["GRU_O"],
+            hidden_size=8,
+            direction="bidirectional",
+            name="GRU1",
+        )
 
         initializers.append(generate_input_initializer([2, 2, 1, 1], np.float32, "W1"))
         initializers.append(generate_input_initializer([2, 2, 1, 1], np.float32, "W2"))
@@ -84,64 +81,70 @@ class ModelTransformerTest(unittest.TestCase):
         return model
 
     class ReplaceWholeModel(transforms.Transform):
-
         def __init__(self) -> None:
             super().__init__()
             self.allow_multi_consumers = True
 
         def pattern(self) -> OpTypePattern:
             return OpTypePattern(
-                'Add',
+                "Add",
                 [
                     OpTypePattern(
-                        'Relu',
+                        "Relu",
                         [
                             OpTypePattern(
-                                'Conv',
+                                "Conv",
                                 [
                                     OpTypePattern(
-                                        'GRU',
+                                        "GRU",
                                         [
-                                            OpTypePattern('.*'),  # input
-                                            OpTypePattern('.*'),  # initializer
-                                            OpTypePattern('.*'),  # initializer
-                                            OpTypePattern('.*'),  # initializer
-                                            OpTypePattern('.*'),  # initializer
-                                            OpTypePattern('.*'),  # initializer
-                                        ]),
-                                    OpTypePattern('.*'),  # W initializer
-                                    OpTypePattern('.*'),  # B initializer
-                                ])
-                        ]),
+                                            OpTypePattern(".*"),  # input
+                                            OpTypePattern(".*"),  # initializer
+                                            OpTypePattern(".*"),  # initializer
+                                            OpTypePattern(".*"),  # initializer
+                                            OpTypePattern(".*"),  # initializer
+                                            OpTypePattern(".*"),  # initializer
+                                        ],
+                                    ),
+                                    OpTypePattern(".*"),  # W initializer
+                                    OpTypePattern(".*"),  # B initializer
+                                ],
+                            )
+                        ],
+                    ),
                     OpTypePattern(
-                        'Conv',
+                        "Conv",
                         [
-                            OpTypePattern('GRU'),
-                            OpTypePattern('.*'),  # W initializer
-                            OpTypePattern('.*'),  # B initializer
-                        ])
-                ])
+                            OpTypePattern("GRU"),
+                            OpTypePattern(".*"),  # W initializer
+                            OpTypePattern(".*"),  # B initializer
+                        ],
+                    ),
+                ],
+            )
 
         def replacement(self, match_node: NodeTree) -> NodeTree:
             return match_node
 
     def testReplaceWholeModel(self) -> None:
         model = self._build_model()
-        onnx.save(model, 'tmp.onnx')
+        onnx.save(model, "tmp.onnx")
 
         transformed_model, _ = ModelTransformer(model, [self.ReplaceWholeModel()]).transform()
 
-        onnx.save(transformed_model, 'tmp_transformed.onnx')
+        onnx.save(transformed_model, "tmp_transformed.onnx")
 
     class RemoveRelu(transforms.Transform):
-
         def __init__(self) -> None:
             super().__init__()
 
         def pattern(self) -> OpTypePattern:
-            return OpTypePattern('Relu', [
-                OpTypePattern('Conv'),
-            ])
+            return OpTypePattern(
+                "Relu",
+                [
+                    OpTypePattern("Conv"),
+                ],
+            )
 
         def replacement(self, match_node: NodeTree) -> NodeTree:
             return match_node.input_nodes[0]
@@ -151,8 +154,8 @@ class ModelTransformerTest(unittest.TestCase):
 
         transformed_model, _ = ModelTransformer(model, [self.RemoveRelu()]).transform()
 
-        onnx.save(transformed_model, 'tmp_transformed_1.onnx')
+        onnx.save(transformed_model, "tmp_transformed_1.onnx")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

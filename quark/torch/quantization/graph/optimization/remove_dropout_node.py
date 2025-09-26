@@ -2,39 +2,30 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from torch import ops  # type: ignore[attr-defined]
+from typing import List
+
 from torch.fx import GraphModule, Node
+
 from quark.torch.quantization.graph.fx.base import GraphTransform
+from quark.torch.quantization.graph.torch_utils import is_dropout_node
 
 
 class RemoveDropoutNode(GraphTransform):
-
     def __init__(self) -> None:
         super(RemoveDropoutNode, self).__init__()
 
     def apply(self, graph_model: GraphModule) -> GraphModule:
+        need_to_delete_node: list[Node] = []
+        # func: dropout(Tensor input, float p, bool train) -> Tensor
         for node in graph_model.graph.nodes:
-            if node.op != "call_function" or node.target != ops.aten.clone.default:
+            if not is_dropout_node(node):
                 continue
-            if node.meta["original_aten"]._name == ops.aten.dropout.default._name:
-                if self.node_has_single_io(node, graph_model):
-                    self.remove_single_io_nodes(graph_model, node)
+            dropout_node = node
+            need_to_delete_node.append(dropout_node)
+            input_node = dropout_node.args[0]
+            dropout_node.replace_all_uses_with(input_node)
 
+        [graph_model.graph.erase_node(node) for node in need_to_delete_node]
         graph_model.graph.eliminate_dead_code()
         graph_model.recompile()
         return graph_model
-
-    def remove_single_io_nodes(self, graph_model: GraphModule, node: Node) -> None:
-        for user in list(node.users):
-            user.replace_input_with(node, node.args[0])
-        graph_model.graph.erase_node(node)
-
-    def node_has_single_io(
-        self,
-        node: Node,
-        graph_model: GraphModule,
-    ) -> bool:
-        has_single_input = len(node.args) == 1
-        outputs_count = sum(1 for n in graph_model.graph.nodes if node in n.args)
-        has_single_output = outputs_count == 1
-        return has_single_input and has_single_output

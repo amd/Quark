@@ -2,7 +2,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert the opset version of input model.
 
 :param input: the path of input model
@@ -15,11 +15,13 @@ Use the convert_opset_version to convert a model's opset version:
 python convert_opset_version.py --input $INPUT_ONNX_MODEL_PATH --target_opset &TARGET_OPSET_VERSION --output $OUTPUT_ONNX_MODEL_PATH
 ```
 
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
 
 import onnx
 from onnx import version_converter
-from argparse import ArgumentParser, Namespace
+
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -46,7 +48,7 @@ def convert_opset_version(model: onnx.ModelProto, target_opset: int) -> onnx.Mod
     return converted_model
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     model = onnx.load(args.input)
     converted_model = convert_opset_version(model, args.target_opset)

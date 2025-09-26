@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional
+
+import torch
 
 CURRENT_VERSION = 0.1
 
@@ -26,9 +27,9 @@ class QuantInfo:
     name: str = ""
     dtype: str = ""
     qscheme: str = ""
-    ch_axis: Optional[int] = None
-    scale: Optional[torch.Tensor] = None
-    zero_point: Optional[torch.Tensor] = None
+    ch_axis: int | None = None
+    scale: torch.Tensor | None = None
+    zero_point: torch.Tensor | None = None
     group_size: int = 0
 
 
@@ -36,26 +37,26 @@ class QuantInfo:
 class EmbeddingInfo:
     name: str = ""
     type: str = EmbeddingType.default.value
-    weight: Optional[torch.Tensor] = None
+    weight: torch.Tensor | None = None
 
 
 @dataclass
 class LayerNormInfo:
     name: str = ""
     type: str = LayerNormType.default.value
-    weight: Optional[torch.Tensor] = None
-    bias: Optional[torch.Tensor] = None
+    weight: torch.Tensor | None = None
+    bias: torch.Tensor | None = None
     eps: float = 1e-5
 
 
 @dataclass
 class LinearInfo:
     name: str = ""
-    weight: Optional[torch.Tensor] = None
-    bias: Optional[torch.Tensor] = None
-    input_quant_info: Optional[QuantInfo] = None
-    weight_quant_info: Optional[QuantInfo] = None
-    output_quant_info: Optional[QuantInfo] = None
+    weight: torch.Tensor | None = None
+    bias: torch.Tensor | None = None
+    input_quant_info: QuantInfo | None = None
+    weight_quant_info: QuantInfo | None = None
+    output_quant_info: QuantInfo | None = None
 
 
 @dataclass
@@ -67,32 +68,32 @@ class ActInfo:
 @dataclass
 class AttentionInfo:
     name: str = ""
-    q_proj: Optional[LinearInfo] = None
-    k_proj: Optional[LinearInfo] = None
-    v_proj: Optional[LinearInfo] = None
-    o_proj: Optional[LinearInfo] = None
-    emb: Optional[EmbeddingInfo] = None
+    q_proj: LinearInfo | None = None
+    k_proj: LinearInfo | None = None
+    v_proj: LinearInfo | None = None
+    o_proj: LinearInfo | None = None
+    emb: EmbeddingInfo | None = None
 
 
 @dataclass
 class MLPInfo:
     name: str = ""
-    gate_proj: Optional[LinearInfo] = None
-    up_proj: Optional[LinearInfo] = None
-    down_proj: Optional[LinearInfo] = None
-    act_fn: Optional[ActInfo] = None
+    gate_proj: LinearInfo | None = None
+    up_proj: LinearInfo | None = None
+    down_proj: LinearInfo | None = None
+    act_fn: ActInfo | None = None
 
 
 @dataclass
 class DecoderInfo:
     name: str = ""
     decoder_type: str = ""
-    input_layernorm: Optional[LayerNormInfo] = None
-    self_attn: Optional[AttentionInfo] = None
-    post_attention_layernorm: Optional[LayerNormInfo] = None
-    mlp: Optional[MLPInfo] = None
+    input_layernorm: LayerNormInfo | None = None
+    self_attn: AttentionInfo | None = None
+    post_attention_layernorm: LayerNormInfo | None = None
+    mlp: MLPInfo | None = None
     num_attention_heads: int = 0
-    attention_head_size: Optional[int] = None
+    attention_head_size: int | None = None
     num_kv_heads: int = 0
     max_position_embeddings: int = 0
     rotary_pct: int = 0
@@ -108,9 +109,9 @@ class ModelInfo:
     version: float = CURRENT_VERSION
     dtype: str = "float16"
     vocab_size: int = 0
-    tokens_embed: Optional[EmbeddingInfo] = None
-    positional_embed: Optional[EmbeddingInfo] = None
-    layers: List[DecoderInfo] = field(default_factory=list)
-    final_norm: Optional[LayerNormInfo] = None
-    lm_head: Optional[LinearInfo] = None
+    tokens_embed: EmbeddingInfo | None = None
+    positional_embed: EmbeddingInfo | None = None
+    layers: list[DecoderInfo] = field(default_factory=list)
+    final_norm: LayerNormInfo | None = None
+    lm_head: LinearInfo | None = None
     embed_weight_share: bool = False

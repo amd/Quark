@@ -5,15 +5,17 @@
 # pylint: disable=g-explicit-length-test
 """Utility functions."""
 
-import onnx
-import enum
 import copy
-from quark.shares.utils.log import ScreenLogger
+import enum
+from typing import Any, Dict, List, Union
+
 import numpy as np
-from typing import Any, Union, Dict, List
-from onnx import (TensorProto, ModelProto, NodeProto, ValueInfoProto, TensorShapeProto)
+import onnx
 from google.protobuf import text_format
+from onnx import ModelProto, NodeProto, TensorProto, TensorShapeProto, ValueInfoProto
 from onnxruntime.quantization.onnx_model import ONNXModel
+
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -33,14 +35,13 @@ def generate_initializer(tensor_array: np.ndarray[Any, np.dtype[np.float32]], dt
 def save_model(model: ModelProto, path: str, as_text: bool = False) -> None:
     """Save onnx model to disk."""
     if as_text:
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             f.write(text_format.MessageToString(model))
     else:
         onnx.save(model, path)
 
 
-class SharedNodesHelper(object):
-
+class SharedNodesHelper:
     class NodeType(enum.Enum):
         NODE = 1
         INITIALIZER = 2
@@ -56,7 +57,7 @@ class SharedNodesHelper(object):
         elif isinstance(node, onnx.ValueInfoProto):
             return SharedNodesHelper.NodeType.INPUT
         else:
-            raise ValueError('Unknown node type for node: {}'.format(node))
+            raise ValueError(f"Unknown node type for node: {node}")
 
     @staticmethod
     def _add_node_init(model: ModelProto, node_init_to_add: Union[NodeProto, TensorProto, ValueInfoProto]) -> None:
@@ -64,21 +65,21 @@ class SharedNodesHelper(object):
         if SharedNodesHelper._node_type(node_init_to_add) == SharedNodesHelper.NodeType.NODE:
             for node in model.graph.node:
                 if node.name == node_init_to_add.name:
-                    logger.info('Node `{}` is already in model, skip adding it.'.format(node.name))
+                    logger.info(f"Node `{node.name}` is already in model, skip adding it.")
                     return
             new_node = model.graph.node.add()
             new_node.CopyFrom(node_init_to_add)
         elif SharedNodesHelper._node_type(node_init_to_add) == SharedNodesHelper.NodeType.INITIALIZER:
             for init in model.graph.initializer:
                 if init.name == node_init_to_add.name:
-                    logger.info('Initializer `{}` is already in model, skip adding it.'.format(init.name))
+                    logger.info(f"Initializer `{init.name}` is already in model, skip adding it.")
                     return
             new_init = model.graph.initializer.add()
             new_init.CopyFrom(node_init_to_add)
         elif SharedNodesHelper._node_type(node_init_to_add) == SharedNodesHelper.NodeType.INPUT:
             for inp in model.graph.input:
                 if inp.name == node_init_to_add.name:
-                    logger.info('Input `{}` is already in model, skip adding it.'.format(inp.name))
+                    logger.info(f"Input `{inp.name}` is already in model, skip adding it.")
                     return
             new_input = model.graph.input.add()
             new_input.CopyFrom(node_init_to_add)
@@ -139,7 +140,7 @@ class SharedNodesHelper(object):
         return tensor_to_producer_map
 
     @staticmethod
-    def _map_tensor_to_consumer(model: ModelProto) -> Dict[str, List[NodeProto]]:
+    def _map_tensor_to_consumer(model: ModelProto) -> dict[str, list[NodeProto]]:
         """Returns a dict of tensor to its consumer nodes.
 
         Returns:
@@ -167,17 +168,17 @@ def copy_shared_nodes(model: ModelProto) -> ModelProto:
     for node in model.graph.node:
         if node.op_type not in type_idx:
             type_idx[node.op_type] = 1
-        node.name = node.op_type + '_' + str(type_idx[node.op_type])
-        logger.info('Add node name: ', node.name)
+        node.name = node.op_type + "_" + str(type_idx[node.op_type])
+        logger.info("Add node name: ", node.name)
         type_idx[node.op_type] += 1
 
     modified_flag = True
     while modified_flag:
         modified_flag = False
-        name_to_node_map: Dict[str, onnx.NodeProto] = helper._map_name_to_node(model)
-        name_to_init_map: Dict[str, onnx.TensorProto] = helper._map_name_to_init(model)
-        name_to_input_map: Dict[str, onnx.ValueInfoProto] = helper._map_name_to_input(model)
-        tensor_to_producer_map: Dict[str, NodeProto] = helper._map_tensor_to_producer(model)
+        name_to_node_map: dict[str, onnx.NodeProto] = helper._map_name_to_node(model)
+        name_to_init_map: dict[str, onnx.TensorProto] = helper._map_name_to_init(model)
+        name_to_input_map: dict[str, onnx.ValueInfoProto] = helper._map_name_to_input(model)
+        tensor_to_producer_map: dict[str, NodeProto] = helper._map_tensor_to_producer(model)
 
         tensor_to_consumer_map = {}
         new_nodes = {}
@@ -190,18 +191,18 @@ def copy_shared_nodes(model: ModelProto) -> ModelProto:
                     producer = tensor_to_producer_map[input_tensor]
                     new_node = copy.deepcopy(producer)
                     idx = len(tensor_to_consumer_map[input_tensor])
-                    new_node.name = new_node.name + '_' + str(idx)
+                    new_node.name = new_node.name + "_" + str(idx)
 
                     if isinstance(producer, onnx.TensorProto):
                         new_nodes[new_node.name] = new_node
-                        logger.info('Need to update init: ', node.name, inp_id, new_node.name)
+                        logger.info("Need to update init: ", node.name, inp_id, new_node.name)
                         node_inputs_to_rename.append((node.name, inp_id, new_node.name))
                         tensor_to_consumer_map[input_tensor].append(node)
                     elif isinstance(producer, onnx.NodeProto):
                         if producer.op_type in ["DequantizeLinear"]:
-                            new_node.output[0] = new_node.name + '_out'
+                            new_node.output[0] = new_node.name + "_out"
                             new_nodes[new_node.name] = new_node
-                            logger.info('Need to update: ', node.name, inp_id, new_node.output[0])
+                            logger.info("Need to update: ", node.name, inp_id, new_node.output[0])
                             node_inputs_to_rename.append((node.name, inp_id, new_node.output[0]))
                             tensor_to_consumer_map[input_tensor].append(node)
                     else:
@@ -212,17 +213,16 @@ def copy_shared_nodes(model: ModelProto) -> ModelProto:
 
         name_to_node_map = helper._map_name_to_node(model)
 
-        for (node_name, inp_id, new_node_name) in node_inputs_to_rename:
+        for node_name, inp_id, new_node_name in node_inputs_to_rename:
             modified_flag = True
             node = name_to_node_map[node_name]
-            logger.info('Update node input', node_name, inp_id, new_node_name)
+            logger.info("Update node input", node_name, inp_id, new_node_name)
             node.input[inp_id] = new_node_name
 
     return model
 
 
 def clean_initializer_in_input(model: ModelProto) -> ModelProto:
-
     if model.ir_version < 4:
         logger.warning("Initilizer should be included in input domain if the model ir_version is below 4.")
         logger.warning("The mode ir_version will be set as 4")
@@ -240,7 +240,7 @@ def clean_initializer_in_input(model: ModelProto) -> ModelProto:
     return model
 
 
-def get_shape_list(shape: TensorShapeProto) -> List[Union[int, str]]:
+def get_shape_list(shape: TensorShapeProto) -> list[Union[int, str]]:
     shape_list = []
     for d in shape.dim:
         if d.HasField("dim_value"):
@@ -274,7 +274,8 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
 
         if not (int(H) > int(C) and int(W) > int(C)):
             logger.warning(
-                f"Expected H,W > C but got [{C}, {H}, {W}]. Please confirm whether the input model is in NCHW format")
+                f"Expected H,W > C but got [{C}, {H}, {W}]. Please confirm whether the input model is in NCHW format"
+            )
 
         inp.type.tensor_type.shape.dim[1].dim_value = H
         inp.type.tensor_type.shape.dim[2].dim_value = W
@@ -285,9 +286,9 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
         while transpose_name in node_name_list:
             transpose_name += "_" + str(count)
             count += 1
-        inp_transpose_node = onnx.helper.make_node("Transpose", [inp.name], [transpose_name],
-                                                   name=transpose_name,
-                                                   perm=[0, 3, 1, 2])
+        inp_transpose_node = onnx.helper.make_node(
+            "Transpose", [inp.name], [transpose_name], name=transpose_name, perm=[0, 3, 1, 2]
+        )
         onnx_model.replace_input_of_all_nodes(inp.name, transpose_name)
         onnx_model.add_node(inp_transpose_node)
 
@@ -309,7 +310,8 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
 
         if not (int(H) > int(C) and int(W) > int(C)):
             logger.warning(
-                f"Expected H,W > C but got [{C}, {H}, {W}], Please confirm whether the output {out} is in NCHW format")
+                f"Expected H,W > C but got [{C}, {H}, {W}], Please confirm whether the output {out} is in NCHW format"
+            )
 
         out.type.tensor_type.shape.dim[1].dim_value = H
         out.type.tensor_type.shape.dim[2].dim_value = W
@@ -320,28 +322,29 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
         while transpose_name in node_name_list:
             transpose_name += "_" + str(count)
             count += 1
-        out_transpose_node = onnx.helper.make_node("Transpose", [out.name], [transpose_name],
-                                                   name=transpose_name,
-                                                   perm=[0, 2, 3, 1])
+        out_transpose_node = onnx.helper.make_node(
+            "Transpose", [out.name], [transpose_name], name=transpose_name, perm=[0, 2, 3, 1]
+        )
         onnx_model.add_node(out_transpose_node)
         last_node: Union[NodeProto, Any] = None
         penultimate_node: Union[NodeProto, Any] = None
         for node in onnx_model.graph().node:
             if node.output[0] == out.name:
                 last_node = node
-                logger.debug('last_node name :`{}` .'.format(last_node.name))
+                logger.debug(f"last_node name :`{last_node.name}` .")
         for node in onnx_model.graph().node:
             if node.output[0] == last_node.input[0]:
                 penultimate_node = node
-                logger.debug('penultimate_node name :`{}` .'.format(penultimate_node.name))
-        if (last_node.op_type == "DequantizeLinear" and penultimate_node.op_type == "QuantizeLinear"):
+                logger.debug(f"penultimate_node name :`{penultimate_node.name}` .")
+        if last_node.op_type == "DequantizeLinear" and penultimate_node.op_type == "QuantizeLinear":
             quantize_linear_name = out_transpose_node.name + "_QuantizeLinear"
             transpose_QuantizeLinear = onnx.helper.make_node(
                 op_type=penultimate_node.op_type,
                 inputs=[out_transpose_node.output[0], penultimate_node.input[1], penultimate_node.input[2]],
                 outputs=[quantize_linear_name],
                 name=out_transpose_node.name + "_QuantizeLinear",
-                domain=penultimate_node.domain)
+                domain=penultimate_node.domain,
+            )
             out_transpose_node.output[0] = quantize_linear_name
             onnx_model.graph().node.extend([transpose_QuantizeLinear])
             dequantize_linear_name = out_transpose_node.name + "_DequantizeLinear"
@@ -350,7 +353,8 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
                 inputs=[transpose_QuantizeLinear.output[0], last_node.input[1], last_node.input[2]],
                 outputs=[dequantize_linear_name],
                 name=out_transpose_node.name + "_DequantizeLinear",
-                domain=last_node.domain)
+                domain=last_node.domain,
+            )
             onnx_model.graph().node.extend([transpose_DequantizeLinear])
             transpose_DequantizeLinear.output[0] = transpose_name
             out.name = dequantize_linear_name

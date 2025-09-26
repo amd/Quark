@@ -11,9 +11,11 @@
 # SPDX-License-Identifier: MIT
 
 import contextlib
+
 import torch.nn as nn
 
 __all__ = ["adjust_status"]
+
 
 @contextlib.contextmanager
 def adjust_status(module: nn.Module, training: bool = False) -> nn.Module:

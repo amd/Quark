@@ -5,55 +5,45 @@ SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-import torch
-import os
-import torch.nn as nn
 import argparse
-import numpy as np
 import json
+import os
 import time
-import pandas as pd
-
-from torch.utils.data import Dataset
 from datetime import datetime
-from dependencies import value
-from diffusers import DiffusionPipeline
-from diffusers import StableDiffusionXLPipeline
-from torchmetrics.image.fid import FrechetInceptionDistance
-from tqdm import tqdm
+from typing import List, Optional
 
+import adapter as quark_brevitas
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from brevitas.export.onnx.standard.qcdq.manager import StdQCDQONNXManager
+from brevitas.nn.quant_activation import QuantIdentity
+from brevitas_examples.common.parse_utils import add_bool_arg, quant_format_validator
 from brevitas_examples.stable_diffusion.sd_quant.constants import (
     SD_2_1_EMBEDDINGS_SHAPE,
+    SD_XL_EMBEDDINGS_SHAPE,
 )
-from brevitas_examples.stable_diffusion.sd_quant.constants import SD_XL_EMBEDDINGS_SHAPE
-from brevitas_examples.stable_diffusion.sd_quant.utils import generate_latents
-from brevitas_examples.stable_diffusion.sd_quant.utils import (
-    generate_unet_21_rand_inputs,
-)
-from brevitas_examples.stable_diffusion.sd_quant.utils import (
-    generate_unet_xl_rand_inputs,
-)
-from brevitas_examples.stable_diffusion.sd_quant.utils import unet_input_shape
-
-from brevitas_examples.common.parse_utils import add_bool_arg
-from brevitas_examples.common.parse_utils import quant_format_validator
-
-from brevitas.nn.quant_activation import QuantIdentity
-from brevitas.export.onnx.standard.qcdq.manager import StdQCDQONNXManager
 from brevitas_examples.stable_diffusion.sd_quant.export import (
     export_onnx as brevitas_export_onnx,
 )
 from brevitas_examples.stable_diffusion.sd_quant.export import export_quant_params
-import adapter as quark_brevitas
-
-from typing import List, Optional
+from brevitas_examples.stable_diffusion.sd_quant.utils import (
+    generate_latents,
+    generate_unet_21_rand_inputs,
+    generate_unet_xl_rand_inputs,
+    unet_input_shape,
+)
+from dependencies import value
+from diffusers import DiffusionPipeline, StableDiffusionXLPipeline
+from torch.utils.data import Dataset
+from torchmetrics.image.fid import FrechetInceptionDistance
+from tqdm import tqdm
 
 TEST_SEED = 123456
 torch.manual_seed(TEST_SEED)
 
-NEGATIVE_PROMPTS = [
-    "normal quality, low quality, worst quality, low res, blurry, nsfw, nude"
-]
+NEGATIVE_PROMPTS = ["normal quality, low quality, worst quality, low res, blurry, nsfw, nude"]
 
 CALIBRATION_PROMPTS = [
     "A man in a space suit playing a guitar, inspired by Cyril Rolando, highly detailed illustration, full color illustration, very detailed illustration, dan mumford and alex grey style",
@@ -76,9 +66,7 @@ def load_calib_prompts(calib_data_path, sep="\t"):
     return lst
 
 
-def export_onnx(
-    pipe, output_dir, trace_inputs, weight_quant_granularity, export_weight_q_node
-):
+def export_onnx(pipe, output_dir, trace_inputs, weight_quant_granularity, export_weight_q_node):
     export_manager = StdQCDQONNXManager
     export_manager.change_weight_export(export_weight_q_node=export_weight_q_node)
     brevitas_export_onnx(pipe, trace_inputs, output_dir, export_manager)
@@ -100,9 +88,7 @@ def run_test_inference(
     with torch.no_grad():
         if not os.path.exists(output_path):
             os.mkdir(output_path)
-        test_latents = generate_latents(
-            seeds, device, dtype, unet_input_shape(resolution)
-        )
+        test_latents = generate_latents(seeds, device, dtype, unet_input_shape(resolution))
         neg_prompts = NEGATIVE_PROMPTS * len(seeds) if use_negative_prompts else []
         for prompt in prompts:
             prompt_images = pipe(
@@ -136,11 +122,8 @@ def run_val_inference(
     test_latents=None,
 ):
     with torch.no_grad():
-
         if test_latents is None:
-            test_latents = generate_latents(
-                seeds[0], device, dtype, unet_input_shape(resolution)
-            )
+            test_latents = generate_latents(seeds[0], device, dtype, unet_input_shape(resolution))
 
         neg_prompts = NEGATIVE_PROMPTS if use_negative_prompts else []
         for prompt in tqdm(prompts):
@@ -158,21 +141,19 @@ def run_val_inference(
 class SDXLPipeCalibrationDataset(Dataset):
     def __init__(
         self,
-        prompts: List[str],
-        seeds: List[int],
+        prompts: list[str],
+        seeds: list[int],
         resolution,
         device,
         dtype,
         guidance_scale: float,
         total_steps: int,
         test_latents=None,
-        negative_prompts: Optional[List[str]] = None,
+        negative_prompts: list[str] | None = None,
     ):
         self.prompts = prompts
         if test_latents is None:
-            test_latents = generate_latents(
-                seeds[0], device, dtype, unet_input_shape(resolution)
-            )
+            test_latents = generate_latents(seeds[0], device, dtype, unet_input_shape(resolution))
         self.test_latents = test_latents
         self.negative_prompts = negative_prompts or NEGATIVE_PROMPTS
         self.total_steps = total_steps
@@ -192,16 +173,13 @@ class SDXLPipeCalibrationDataset(Dataset):
 
 
 def main(args):
-
     dtype = getattr(torch, args.dtype)
 
     calibration_prompts = CALIBRATION_PROMPTS
     if args.calibration_prompt_path is not None:
         calibration_prompts = load_calib_prompts(args.calibration_prompt_path)
     print(args.calibration_prompt, len(calibration_prompts))
-    assert args.calibration_prompt <= len(
-        calibration_prompts
-    ), f"Only {len(calibration_prompts)} prompts are available"
+    assert args.calibration_prompt <= len(calibration_prompts), f"Only {len(calibration_prompts)} prompts are available"
     calibration_prompts = calibration_prompts[: args.calibration_prompt]
 
     latents = None
@@ -263,9 +241,7 @@ def main(args):
     # Make sure there all LoRA layers are fused first, otherwise raise an error
     for m in pipe.unet.modules():
         if hasattr(m, "lora_layer") and m.lora_layer is not None:
-            raise RuntimeError(
-                "LoRA layers should be fused in before calling into quantization."
-            )
+            raise RuntimeError("LoRA layers should be fused in before calling into quantization.")
 
     pipe.set_progress_bar_config(disable=True)
 
@@ -352,17 +328,13 @@ def main(args):
         pipe.set_progress_bar_config(disable=True)
 
     if args.checkpoint_name is not None:
-        torch.save(
-            pipe.unet.state_dict(), os.path.join(output_dir, args.checkpoint_name)
-        )
+        torch.save(pipe.unet.state_dict(), os.path.join(output_dir, args.checkpoint_name))
 
     # Perform inference
     if args.prompt > 0:
         print("Computing accuracy on default prompt")
         testing_prompts = TESTING_PROMPTS[: args.prompt]
-        assert args.prompt <= len(
-            TESTING_PROMPTS
-        ), f"Only {len(TESTING_PROMPTS)} prompts are available"
+        assert args.prompt <= len(TESTING_PROMPTS), f"Only {len(TESTING_PROMPTS)} prompts are available"
 
         quant_images = run_test_inference(
             pipe,
@@ -379,16 +351,12 @@ def main(args):
 
         float_images_values = float_images.values()
         float_images_values = [x for x_nested in float_images_values for x in x_nested]
-        float_images_values = torch.tensor(
-            [np.array(image) for image in float_images_values]
-        )
+        float_images_values = torch.tensor([np.array(image) for image in float_images_values])
         float_images_values = float_images_values.permute(0, 3, 1, 2)
 
         quant_images_values = quant_images.values()
         quant_images_values = [x for x_nested in quant_images_values for x in x_nested]
-        quant_images_values = torch.tensor(
-            [np.array(image) for image in quant_images_values]
-        )
+        quant_images_values = torch.tensor([np.array(image) for image in quant_images_values])
         quant_images_values = quant_images_values.permute(0, 3, 1, 2)
 
         fid = FrechetInceptionDistance(normalize=False)
@@ -489,9 +457,7 @@ if __name__ == "__main__":
         default=512,
         help="Resolution along height and width dimension. Default: 512.",
     )
-    parser.add_argument(
-        "--guidance-scale", type=float, default=7.5, help="Guidance scale."
-    )
+    parser.add_argument("--guidance-scale", type=float, default=7.5, help="Guidance scale.")
     parser.add_argument(
         "--calibration-steps",
         type=float,
@@ -505,9 +471,7 @@ if __name__ == "__main__":
         default=".",
         help="Path where to generate output folder.",
     )
-    add_bool_arg(
-        parser, "quantize", default=True, help="Toggle quantization. Default: Enabled"
-    )
+    add_bool_arg(parser, "quantize", default=True, help="Toggle quantization. Default: Enabled")
     add_bool_arg(
         parser,
         "activation-equalization",
@@ -713,12 +677,8 @@ if __name__ == "__main__":
         default=True,
         help="Use negative prompts during generation/calibration. Default: Enabled",
     )
-    add_bool_arg(
-        parser, "quantize-sdp-1", default=False, help="Quantize SDP. Default: Disabled"
-    )
-    add_bool_arg(
-        parser, "quantize-sdp-2", default=False, help="Quantize SDP. Default: Disabled"
-    )
+    add_bool_arg(parser, "quantize-sdp-1", default=False, help="Quantize SDP. Default: Disabled")
+    add_bool_arg(parser, "quantize-sdp-2", default=False, help="Quantize SDP. Default: Disabled")
     args = parser.parse_args()
     print("Args: " + str(vars(args)))
     main(args)

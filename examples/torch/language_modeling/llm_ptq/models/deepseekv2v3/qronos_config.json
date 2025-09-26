@@ -1,0 +1,15 @@
+{
+  "name": "qronos",
+  "inside_layer_modules": [
+    "mlp.up_proj",
+    "mlp.gate_proj",
+    "mlp.down_proj",
+    "mlp.experts.*.up_proj",
+    "mlp.experts.*.gate_proj",
+    "mlp.experts.*.down_proj",
+    "mlp.shared_experts.gate_proj",
+    "mlp.shared_experts.up_proj",
+    "mlp.shared_experts.down_proj"
+  ],
+  "model_decoder_layers": "model.layers"
+}

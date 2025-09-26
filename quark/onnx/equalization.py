@@ -2,24 +2,34 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.shares.utils.log import ScreenLogger, log_errors
+import copy
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import onnx
-import copy
-from .optimize import Optimize
-from onnx import numpy_helper
-from .quant_utils import (remove_nodes, remove_initializers, get_weights_node_of_node, get_model_weight_name_dict,
-                          get_model_node_output_node_name_dict, get_weight_from_weight_name, get_output_nodes_of_node)
-from typing import Tuple, Any, Dict, List, Optional
-from onnx import ModelProto, NodeProto, TensorProto
 from numpy.typing import NDArray
+from onnx import ModelProto, NodeProto, TensorProto, numpy_helper
+
+from quark.shares.utils.log import ScreenLogger, log_errors
+
+from .optimize import Optimize
+from .quant_utils import (
+    get_model_node_output_node_name_dict,
+    get_model_weight_name_dict,
+    get_output_nodes_of_node,
+    get_weight_from_weight_name,
+    get_weights_node_of_node,
+    remove_initializers,
+    remove_nodes,
+)
 
 logger = ScreenLogger(__name__)
 
 
-def check_conv_layers_group(cle_conv: NodeProto, model_node_name_dict: Dict[str, str],
-                            model_weight_name_dict: Dict[str, TensorProto]) -> Tuple[bool, int]:
-    if cle_conv.op_type in ['Conv']:
+def check_conv_layers_group(
+    cle_conv: NodeProto, model_node_name_dict: dict[str, str], model_weight_name_dict: dict[str, TensorProto]
+) -> tuple[bool, int]:
+    if cle_conv.op_type in ["Conv"]:
         for attr in cle_conv.attribute:
             if attr.name == "group":
                 if attr.i == 1:
@@ -30,7 +40,7 @@ def check_conv_layers_group(cle_conv: NodeProto, model_node_name_dict: Dict[str,
                         return True, attr.i
                     else:
                         return False, attr.i
-    elif cle_conv.op_type in ['Gemm']:
+    elif cle_conv.op_type in ["Gemm"]:
         return True, 1
     logger.info(f"the node:{cle_conv} group does not support CLE.")
     return False, 0
@@ -39,7 +49,7 @@ def check_conv_layers_group(cle_conv: NodeProto, model_node_name_dict: Dict[str,
 def _calc_scale(
     head_weights: NDArray[np.float32],
     tail_weights: NDArray[np.float32],
-    balance_method: str = 'max',
+    balance_method: str = "max",
     weight_threshold: float = 0.5,
     calc_scale_use_threshold: bool = True,
 ) -> NDArray[np.float32]:
@@ -55,7 +65,7 @@ def _calc_scale(
     return scale
 
 
-def _combine_weight_and_bias(weights_ihw: NDArray[np.float32], bias: Optional[NDArray[np.float32]]) -> Any:
+def _combine_weight_and_bias(weights_ihw: NDArray[np.float32], bias: NDArray[np.float32] | None) -> Any:
     if bias is not None:
         bias_clamp = bias.copy().reshape(-1, 1)
         if np.count_nonzero(weights_ihw) != weights_ihw.size:
@@ -66,9 +76,11 @@ def _combine_weight_and_bias(weights_ihw: NDArray[np.float32], bias: Optional[ND
                     weight_ihw_clamp[channel] = 1e-7
                 elif np.count_nonzero(weight_ihw_clamp[channel]) != weight_ihw_clamp[channel].size:
                     minval = np.min(
-                        np.fabs(np.ma.masked_where(weight_ihw_clamp[channel] == 0.0, weight_ihw_clamp[channel])))
-                    weight_ihw_clamp[channel] = np.where(weight_ihw_clamp[channel] == 0.0, -minval,
-                                                         weight_ihw_clamp[channel])
+                        np.fabs(np.ma.masked_where(weight_ihw_clamp[channel] == 0.0, weight_ihw_clamp[channel]))
+                    )
+                    weight_ihw_clamp[channel] = np.where(
+                        weight_ihw_clamp[channel] == 0.0, -minval, weight_ihw_clamp[channel]
+                    )
             weight_ihw_clamp = np.where(np.fabs(weight_ihw_clamp) < 1e-7, 1e-7, weight_ihw_clamp)
             factor = np.fabs(bias_clamp) / np.fabs(weight_ihw_clamp)
         else:
@@ -97,10 +109,10 @@ def _combine_weight_and_bias(weights_ihw: NDArray[np.float32], bias: Optional[ND
 def _cross_layer_equalize(
     head_conv: NodeProto,
     tail_conv: NodeProto,
-    model_output_name_dict: Dict[str, str],
-    model_weights_node_dict: Dict[str, TensorProto],
+    model_output_name_dict: dict[str, str],
+    model_weights_node_dict: dict[str, TensorProto],
     model: ModelProto,
-    balance_method: str = 'max',
+    balance_method: str = "max",
     weight_threshold: float = 0.5,
     calc_scale_append_bias: bool = True,
     calc_scale_use_threshold: bool = True,
@@ -131,8 +143,9 @@ def _cross_layer_equalize(
     ic = tail_w_b[0].dims[0]  # oc* ic* k * k  for Conv
     tail_w_trans_data = tail_w_data
     if tail_conv.op_type == "Conv":
-        supported_conv, tail_conv_group = check_conv_layers_group(tail_conv, model_output_name_dict,
-                                                                  model_weights_node_dict)
+        supported_conv, tail_conv_group = check_conv_layers_group(
+            tail_conv, model_output_name_dict, model_weights_node_dict
+        )
         if not supported_conv:
             return
         if tail_conv_group == 1:
@@ -206,11 +219,15 @@ class Equalization(Optimize):
 
     """
 
-    def check_conv_layers_support(self, node_list: List[NodeProto], model_node_name_dict: Dict[str, str],
-                                  model_weight_name_dict: Dict[str, TensorProto]) -> bool:
+    def check_conv_layers_support(
+        self,
+        node_list: list[NodeProto],
+        model_node_name_dict: dict[str, str],
+        model_weight_name_dict: dict[str, TensorProto],
+    ) -> bool:
         conv_support = True
         for cle_conv in node_list:
-            if cle_conv.op_type in ['Conv']:
+            if cle_conv.op_type in ["Conv"]:
                 for attr in cle_conv.attribute:
                     if attr.name == "group":
                         if attr.i == 1:
@@ -222,7 +239,7 @@ class Equalization(Optimize):
                             else:
                                 conv_support = False
                                 break
-            elif cle_conv.op_type in ['Gemm']:
+            elif cle_conv.op_type in ["Gemm"]:
                 conv_support = True
             else:
                 conv_support = False
@@ -230,7 +247,7 @@ class Equalization(Optimize):
         return conv_support
 
     @log_errors
-    def get_head_tail_conv(self, pattern: Tuple[Any, ...]) -> Tuple[Optional[Any], Optional[Any]]:
+    def get_head_tail_conv(self, pattern: tuple[Any, ...]) -> tuple[Any | None, Any | None]:
         if pattern[0] == CLE_PAIR_TYPE.CONVCONV:
             head_conv = pattern[1]
             tail_conv = pattern[2]
@@ -247,14 +264,16 @@ class Equalization(Optimize):
             raise ValueError(f"This type {pattern[0]} CLE_Transforms is not supported")
         return head_conv, tail_conv
 
-    def process_cle_transforms(self,
-                               cle_pattern_list: List[Tuple[List[str], NodeProto, NodeProto]],
-                               cle_steps: int,
-                               cle_balance_method: str,
-                               cle_weight_threshold: float,
-                               cle_scale_append_bias: bool,
-                               cle_scale_use_threshold: bool,
-                               converge_thres: float = 1.9e-7) -> None:
+    def process_cle_transforms(
+        self,
+        cle_pattern_list: list[tuple[list[str], NodeProto, NodeProto]],
+        cle_steps: int,
+        cle_balance_method: str,
+        cle_weight_threshold: float,
+        cle_scale_append_bias: bool,
+        cle_scale_use_threshold: bool,
+        converge_thres: float = 1.9e-7,
+    ) -> None:
         diff = 10.0
         count = 0
         converge_count = 20
@@ -271,17 +290,27 @@ class Equalization(Optimize):
             model_node_output_node_name_dict = get_model_node_output_node_name_dict(self.model.graph)
             for pattern in cle_pattern_list:
                 head_conv, tail_conv = pattern[1], pattern[2]
-                _cross_layer_equalize(head_conv, tail_conv, model_node_output_node_name_dict, model_weight_name_dict,
-                                      self.model.graph, cle_balance_method, cle_weight_threshold, cle_scale_append_bias,
-                                      cle_scale_use_threshold)
+                _cross_layer_equalize(
+                    head_conv,
+                    tail_conv,
+                    model_node_output_node_name_dict,
+                    model_weight_name_dict,
+                    self.model.graph,
+                    cle_balance_method,
+                    cle_weight_threshold,
+                    cle_scale_append_bias,
+                    cle_scale_use_threshold,
+                )
 
             diff_tmp = 0.0
             for node in self.model.graph.node:
                 if node.op_type in target_type:
-                    prev_node_weight = get_weights_node_of_node(node, model_node_output_node_name_dict,
-                                                                prev_model_weight_name_dict)
-                    new_node_weight = get_weights_node_of_node(node, model_node_output_node_name_dict,
-                                                               model_weight_name_dict)
+                    prev_node_weight = get_weights_node_of_node(
+                        node, model_node_output_node_name_dict, prev_model_weight_name_dict
+                    )
+                    new_node_weight = get_weights_node_of_node(
+                        node, model_node_output_node_name_dict, model_weight_name_dict
+                    )
                     prev_node_data = numpy_helper.to_array(prev_node_weight[0])
                     new_node_data = numpy_helper.to_array(new_node_weight[0])
                     diff_tmp += float(np.mean(np.abs(np.float64(prev_node_data - new_node_data))))
@@ -295,7 +324,7 @@ class Equalization(Optimize):
             cle_step_count += 1
         logger.info(f"Total CrossLayerEqualization steps: {cle_step_count}")
 
-    def replace_clip_relu_with_pattern(self, cle_pattern_list: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+    def replace_clip_relu_with_pattern(self, cle_pattern_list: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
         nodes_to_remove = []
         model_weight_name_dict = get_model_weight_name_dict(self.model.graph)
         for index, pattern in enumerate(cle_pattern_list):
@@ -306,17 +335,16 @@ class Equalization(Optimize):
                 zero_compare = np.allclose(onnx.numpy_helper.to_array(clip_min), 0.0)
                 six_compare = np.allclose(onnx.numpy_helper.to_array(clip_max), 6.0)
                 if zero_compare and six_compare:
-                    relu_node = onnx.helper.make_node("Relu",
-                                                      inputs=[clip_node.input[0]],
-                                                      outputs=clip_node.output,
-                                                      name=clip_node.name)
+                    relu_node = onnx.helper.make_node(
+                        "Relu", inputs=[clip_node.input[0]], outputs=clip_node.output, name=clip_node.name
+                    )
                     nodes_to_remove.append(clip_node)
                     self.model.graph.node.append(relu_node)
                     cle_pattern_list[index] = (CLE_PAIR_TYPE.CONVRELUCONV, pattern[1], relu_node, pattern[3])
         self.model = remove_nodes(self.model, nodes_to_remove)
         return cle_pattern_list
 
-    def replace_one_clip_relu(self, clip_node: NodeProto) -> List[str]:
+    def replace_one_clip_relu(self, clip_node: NodeProto) -> list[str]:
         nodes_to_remove = []
         initializers_to_remove = []
         model_weight_name_dict = get_model_weight_name_dict(self.model.graph)
@@ -327,10 +355,9 @@ class Equalization(Optimize):
             zero_compare = np.allclose(onnx.numpy_helper.to_array(clip_min), 0.0)
             six_compare = np.allclose(onnx.numpy_helper.to_array(clip_max), 6.0)
             if zero_compare and six_compare:
-                relu_node = onnx.helper.make_node("Relu",
-                                                  inputs=[clip_node.input[0]],
-                                                  outputs=clip_node.output,
-                                                  name=clip_node.name)
+                relu_node = onnx.helper.make_node(
+                    "Relu", inputs=[clip_node.input[0]], outputs=clip_node.output, name=clip_node.name
+                )
                 nodes_to_remove.append(clip_node)
                 self.model.graph.node.extend([relu_node])
                 initializers_to_remove.append(clip_min.name)
@@ -352,7 +379,7 @@ class Equalization(Optimize):
                         init_to_remove.append(init)
         self.model = remove_initializers(self.model, init_to_remove)
 
-    def get_cle_pattern_pair(self) -> List[Tuple[List[str], NodeProto, NodeProto]]:
+    def get_cle_pattern_pair(self) -> list[tuple[list[str], NodeProto, NodeProto]]:
         model_weight_name_dict = get_model_weight_name_dict(self.model.graph)
         model_node_output_node_name_dict = get_model_node_output_node_name_dict(self.model.graph)
         cle_pattern_pair_list = []
@@ -372,8 +399,9 @@ class Equalization(Optimize):
                     elif node_output_nodes1[0].op_type in target_node:
                         if not self.should_quantize_node(node_output_nodes1[0]):
                             break
-                        if self.check_conv_layers_support([node, node_output_nodes1[0]],
-                                                          model_node_output_node_name_dict, model_weight_name_dict):
+                        if self.check_conv_layers_support(
+                            [node, node_output_nodes1[0]], model_node_output_node_name_dict, model_weight_name_dict
+                        ):
                             one_cle_pattern.append(node_output_nodes1[0].output[0])
                             one_cle_tuple = (one_cle_pattern, node, node_output_nodes1[0])
                             cle_pattern_pair_list.append(one_cle_tuple)
@@ -387,10 +415,12 @@ class Equalization(Optimize):
         return cle_pattern_pair_list
 
 
-def replace_all_clip6_to_relu(model: ModelProto,
-                              op_types_to_quantize: List[str],
-                              nodes_to_quantize: Optional[List[str]] = None,
-                              nodes_to_exclude: Optional[List[str]] = None) -> Any:
+def replace_all_clip6_to_relu(
+    model: ModelProto,
+    op_types_to_quantize: list[str],
+    nodes_to_quantize: list[str] | None = None,
+    nodes_to_exclude: list[str] | None = None,
+) -> Any:
     equalization = Equalization(
         model,
         op_types_to_quantize,
@@ -404,11 +434,11 @@ def replace_all_clip6_to_relu(model: ModelProto,
 
 def cle_transforms(
     model: ModelProto,
-    op_types_to_quantize: List[str],
-    nodes_to_quantize: List[str],
-    nodes_to_exclude: List[str],
+    op_types_to_quantize: list[str],
+    nodes_to_quantize: list[str],
+    nodes_to_exclude: list[str],
     cle_steps: int = -1,
-    cle_balance_method: str = 'max',
+    cle_balance_method: str = "max",
     cle_weight_threshold: float = 0.5,
     cle_scale_append_bias: bool = True,
     cle_scale_use_threshold: bool = True,
@@ -424,10 +454,17 @@ def cle_transforms(
     )
     cle_pattern_list = []
 
-    logger.info('Start CrossLayerEqualization...')
+    logger.info("Start CrossLayerEqualization...")
     cle_pattern_list = equalization.get_cle_pattern_pair()
     logger.info(f"CrossLayerEqualization pattern num: {len(cle_pattern_list)}")
-    equalization.process_cle_transforms(cle_pattern_list, cle_steps, cle_balance_method, cle_weight_threshold,
-                                        cle_scale_append_bias, cle_scale_use_threshold, cle_total_layer_diff_threshold)
-    logger.info('CrossLayerEqualization Done.')
+    equalization.process_cle_transforms(
+        cle_pattern_list,
+        cle_steps,
+        cle_balance_method,
+        cle_weight_threshold,
+        cle_scale_append_bias,
+        cle_scale_use_threshold,
+        cle_total_layer_diff_threshold,
+    )
+    logger.info("CrossLayerEqualization Done.")
     return equalization.model

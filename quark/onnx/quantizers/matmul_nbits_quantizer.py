@@ -9,17 +9,14 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
-from typing import Optional, Tuple, Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
 import onnx
 import torch
-
 from onnx.onnx_pb import GraphProto, ModelProto, NodeProto, TensorProto
-
 from onnxruntime.capi._pybind_state import quantize_matmul_4bits
-
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import attribute_to_kwarg
 
@@ -28,7 +25,7 @@ from quark.shares.utils.log import ScreenLogger
 logger = ScreenLogger(__name__)
 
 
-def get_initializer(name: str, graph_path: list[GraphProto]) -> tuple[Optional[TensorProto], Optional[GraphProto]]:
+def get_initializer(name: str, graph_path: list[GraphProto]) -> tuple[TensorProto | None, GraphProto | None]:
     for gid in range(len(graph_path) - 1, -1, -1):
         graph = graph_path[gid]
         for tensor in graph.initializer:
@@ -38,7 +35,6 @@ def get_initializer(name: str, graph_path: list[GraphProto]) -> tuple[Optional[T
 
 
 class WeightOnlyQuantConfig:
-
     def __init__(self, algorithm: str) -> None:
         """This is the Base class for Weight Only Quant Configuration.
 
@@ -50,7 +46,6 @@ class WeightOnlyQuantConfig:
 
 
 class DefaultWeightOnlyQuantConfig(WeightOnlyQuantConfig):
-
     def __init__(
         self,
         block_size: int = 128,
@@ -66,29 +61,30 @@ class DefaultWeightOnlyQuantConfig(WeightOnlyQuantConfig):
 
 
 class HQQWeightOnlyQuantConfig(WeightOnlyQuantConfig):
-
     def __init__(
         self,
         block_size: int = 128,
         bits: int = 4,
         axis: int = 1,
     ):
-        super().__init__(algorithm="HQQ", )
+        super().__init__(
+            algorithm="HQQ",
+        )
         self.block_size = block_size
         self.bits = bits
         self.axis = axis
 
 
 class GPTQWeightOnlyQuantConfig(WeightOnlyQuantConfig):
-
     def __init__(
-            self,
-            calibration_data_reader: torch.utils.data.DataLoader,  # type: ignore
-            percdamp: float = 0.01,
-            block_size: int = 128,
-            actorder: bool = False,
-            mse: bool = False,
-            perchannel: bool = True):
+        self,
+        calibration_data_reader: torch.utils.data.DataLoader,  # type: ignore
+        percdamp: float = 0.01,
+        block_size: int = 128,
+        actorder: bool = False,
+        mse: bool = False,
+        perchannel: bool = True,
+    ):
         super().__init__(algorithm="GPTQ")
         self.calibration_data_reader = calibration_data_reader
         self.percdamp = percdamp
@@ -99,7 +95,7 @@ class GPTQWeightOnlyQuantConfig(WeightOnlyQuantConfig):
         self.perchannel = perchannel
 
 
-def get_onnx_initializer(name: str, graph_path: list[GraphProto]) -> Tuple[Optional[TensorProto], Any]:
+def get_onnx_initializer(name: str, graph_path: list[GraphProto]) -> tuple[TensorProto | None, Any]:
     for gid in range(len(graph_path) - 1, -1, -1):
         graph = graph_path[gid]
         for tensor in graph.initializer:
@@ -109,12 +105,12 @@ def get_onnx_initializer(name: str, graph_path: list[GraphProto]) -> Tuple[Optio
 
 
 class DefaultWeightOnlyQuantizer:
-
     def __init__(self, config: DefaultWeightOnlyQuantConfig):
         self.config = config
 
     def int4_block_quant(
-            self, fp32weight: Any) -> Tuple[npt.NDArray[np.uint8], npt.NDArray[np.float32], npt.NDArray[np.uint8]]:
+        self, fp32weight: Any
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.float32], npt.NDArray[np.uint8]]:
         """4b quantize fp32 weight to a blob"""
 
         if len(fp32weight.shape) != 2:
@@ -173,7 +169,7 @@ class DefaultWeightOnlyQuantizer:
             Bs_graph.initializer.extend([zp_tensor])
             input_names.append(zp_tensor.name)
 
-        kwargs: Dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
         rows, cols = B_array.shape
         kwargs["K"] = rows
         kwargs["N"] = cols
@@ -199,15 +195,17 @@ class DefaultWeightOnlyQuantizer:
 class MatMulNBitsQuantizer:
     """Perform 4b quantization of constant MatMul weights"""
 
-    def __init__(self,
-                 model: ModelProto | str,
-                 block_size: int = 128,
-                 is_symmetric: bool = False,
-                 bits: int = 4,
-                 accuracy_level: int | None = None,
-                 nodes_to_exclude: Optional[List[str]] = None,
-                 algo_config: Optional[WeightOnlyQuantConfig] = None,
-                 extra_options: Dict[str, Any] = {}):
+    def __init__(
+        self,
+        model: ModelProto | str,
+        block_size: int = 128,
+        is_symmetric: bool = False,
+        bits: int = 4,
+        accuracy_level: int | None = None,
+        nodes_to_exclude: list[str] | None = None,
+        algo_config: WeightOnlyQuantConfig | None = None,
+        extra_options: dict[str, Any] = {},
+    ):
         if nodes_to_exclude is None:
             nodes_to_exclude = []
         self.model = ONNXModel(onnx.load(model)) if isinstance(model, str) else ONNXModel(model)
@@ -218,10 +216,9 @@ class MatMulNBitsQuantizer:
         self.accuracy_level = accuracy_level
         self.nodes_to_exclude = set(nodes_to_exclude)
         if algo_config is None:
-            algo_config = DefaultWeightOnlyQuantConfig(block_size=block_size,
-                                                       is_symmetric=is_symmetric,
-                                                       bits=bits,
-                                                       accuracy_level=accuracy_level)
+            algo_config = DefaultWeightOnlyQuantConfig(
+                block_size=block_size, is_symmetric=is_symmetric, bits=bits, accuracy_level=accuracy_level
+            )
         self.algo_config = algo_config
         if self.algo_config.algorithm == "HQQ":
             self.node_quantizer = HQQWeightOnlyQuantizer(self.algo_config)  # type: ignore
@@ -236,7 +233,8 @@ class MatMulNBitsQuantizer:
         for node in graph.node:
             # TODO: The support of subgraph need to be verified.
             graph_attrs = [
-                attr for attr in node.attribute
+                attr
+                for attr in node.attribute
                 if attr.type == onnx.AttributeProto.GRAPH or attr.type == onnx.AttributeProto.GRAPHS
             ]
             if len(graph_attrs):
@@ -257,7 +255,8 @@ class MatMulNBitsQuantizer:
                         kv = attribute_to_kwarg(attr)
                     kwargs.update(kv)
                 node = onnx.helper.make_node(  # noqa: PLW2901
-                    node.op_type, node.input, node.output, name=node.name, **kwargs)
+                    node.op_type, node.input, node.output, name=node.name, **kwargs
+                )
             out_node = None
             if node.name in self.nodes_to_exclude:
                 logger.info(f"exclude to quantize {node.name} as specified by nodes_to_exclude...")
@@ -287,16 +286,17 @@ class MatMulNBitsQuantizer:
             self.model.clean_initializers()
         elif self.algo_config.algorithm in ["GPTQ"]:
             from quark.onnx.gptq.gptq import GptqProcessor
+
             gptq_processor = GptqProcessor(
                 self.model_gptq,
                 self.model_gptq,
                 self.algo_config.calibration_data_reader,  # type: ignore[attr-defined]
-                self.extra_options)
+                self.extra_options,
+            )
             self.model = gptq_processor.apply_matmul4bits()
 
 
 class HQQWeightOnlyQuantizer:
-
     def __init__(
         self,
         config: HQQWeightOnlyQuantConfig,
@@ -310,9 +310,8 @@ class HQQWeightOnlyQuantizer:
         zero: torch.Tensor,
         min_max: list[int],
         axis: int = 0,
-        opt_params: Optional[Dict[str, Union[float, int]]] = None,
+        opt_params: dict[str, Union[float, int]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-
         opt_params = {"lp_norm": 0.7, "beta": 1e1, "kappa": 1.01, "iters": 20} if opt_params is None else opt_params
         lp_norm, beta, kappa, iters = (
             opt_params["lp_norm"],
@@ -328,7 +327,8 @@ class HQQWeightOnlyQuantizer:
 
         def shrink_op(x: torch.Tensor, beta: float, p: float = lp_norm) -> torch.Tensor:
             return torch.sign(x) * torch.nn.functional.relu(
-                torch.abs(x) - (1.0 / beta) * torch.pow(torch.abs(x) + 1e-8, p - 1))
+                torch.abs(x) - (1.0 / beta) * torch.pow(torch.abs(x) + 1e-8, p - 1)
+            )
 
         best_error = 1e4
         for i in range(int(iters)):
@@ -360,15 +360,16 @@ class HQQWeightOnlyQuantizer:
         else:
             raise NotImplementedError("Only 2,4,8 bits are supported.")
 
-    def quantize_internal(self,
-                          tensor: torch.Tensor,
-                          bits: int = 4,
-                          channel_wise: bool = True,
-                          group_size: int = 64,
-                          optimize: bool = True,
-                          round_zero: bool = True,
-                          axis: int = 1) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
+    def quantize_internal(
+        self,
+        tensor: torch.Tensor,
+        bits: int = 4,
+        channel_wise: bool = True,
+        group_size: int = 64,
+        optimize: bool = True,
+        round_zero: bool = True,
+        axis: int = 1,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         weight = tensor.float()
         ori_shape = weight.shape
 
@@ -399,7 +400,8 @@ class HQQWeightOnlyQuantizer:
                 scale=scale,
                 zero=zero,
                 min_max=min_max,
-                axis=axis)
+                axis=axis,
+            )
 
         w_q = torch.round(weight * scale + zero).clamp(min_max[0], min_max[1])
         w_q = w_q.reshape(shape).int()
@@ -434,9 +436,9 @@ class HQQWeightOnlyQuantizer:
         b_array_torch = torch.from_numpy(b_array)
         if torch.cuda.is_available():
             b_array_torch = b_array_torch.cuda()
-        quant_weight_torch, scales_torch, zero_points_torch = self.quantize_internal(b_array_torch.T,
-                                                                                     bits=self.config.bits,
-                                                                                     group_size=self.config.block_size)
+        quant_weight_torch, scales_torch, zero_points_torch = self.quantize_internal(
+            b_array_torch.T, bits=self.config.bits, group_size=self.config.block_size
+        )
         quant_weight_torch = quant_weight_torch.contiguous()
         scales_torch = scales_torch.contiguous()
         zero_points_torch = zero_points_torch.contiguous()

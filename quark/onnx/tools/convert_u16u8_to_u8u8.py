@@ -2,17 +2,18 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert u16u8 to u8u8.
-'''
+"""
+
+from argparse import ArgumentParser, Namespace
+from pathlib import Path
+from typing import Any, List, Optional, Union
 
 import numpy as np
-from pathlib import Path
 import onnx
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.onnx_model import ONNXModel
-from argparse import ArgumentParser, Namespace
-from typing import Union, List, Any, Optional
 
 
 def parse_args() -> Namespace:
@@ -45,7 +46,7 @@ ONNX_INT_TYPE_RANGE = {
     onnx_proto.TensorProto.UINT16: (0, 65535),
     onnx_proto.TensorProto.INT16: (-32768, 32767),
     onnx_proto.TensorProto.UINT32: (0, 2**32 - 1),
-    onnx_proto.TensorProto.INT32: (-2**31, 2**31 - 1),
+    onnx_proto.TensorProto.INT32: (-(2**31), 2**31 - 1),
 }
 
 ONNX_TYPE_TO_NP_TYPE = {
@@ -61,16 +62,17 @@ ONNX_TYPE_TO_NP_TYPE = {
     onnx_proto.TensorProto.BFLOAT16: np.float16,
 }
 
-OperationsQ = ['QuantizeLinear', 'ExtendedQuantizeLinear']
-OperationsDQ = ['DequantizeLinear', 'ExtendedDequantizeLinear']
-OperationsWithBias = ['Conv', 'ConvTranspose', 'Gemm']
+OperationsQ = ["QuantizeLinear", "ExtendedQuantizeLinear"]
+OperationsDQ = ["DequantizeLinear", "ExtendedDequantizeLinear"]
+OperationsWithBias = ["Conv", "ConvTranspose", "Gemm"]
 
 SOURCE_TYPE = onnx.TensorProto.UINT16
 TARGET_TYPE = onnx.TensorProto.UINT8
 
 
-def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
-                          output_model: Optional[Union[str, Path]] = None) -> Any:
+def convert_u16u8_to_u8u8(
+    input_model: Union[str, Path, onnx.ModelProto], output_model: Union[str, Path] | None = None
+) -> Any:
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     onnx_model = ONNXModel(model)
 
@@ -78,15 +80,18 @@ def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
     input_name_to_nodes = onnx_model.input_name_to_nodes()
 
     model_inputs = [inp.name for inp in onnx_model.model.graph.input]
-    updated_initializers: List[str] = []
+    updated_initializers: list[str] = []
 
-    def _modify_scale_value(scale_init: onnx.TensorProto, zp_init: onnx.TensorProto,
-                            quant_type: onnx.TensorProto.DataType) -> Union[onnx.TensorProto, None]:
+    def _modify_scale_value(
+        scale_init: onnx.TensorProto, zp_init: onnx.TensorProto, quant_type: onnx.TensorProto.DataType
+    ) -> Union[onnx.TensorProto, None]:
         source_dtype: onnx.TensorProto.DataType = ONNX_INT_TO_ONNX_TYPE[zp_init.data_type]
         target_dtype: onnx.TensorProto.DataType = quant_type
-        if source_dtype == target_dtype:
-            return None
-        elif source_dtype not in ONNX_INT_TYPE_RANGE or target_dtype not in ONNX_INT_TYPE_RANGE:
+        if (
+            source_dtype == target_dtype
+            or source_dtype not in ONNX_INT_TYPE_RANGE
+            or target_dtype not in ONNX_INT_TYPE_RANGE
+        ):
             return None
 
         source_qrange = ONNX_INT_TYPE_RANGE[source_dtype][1] - ONNX_INT_TYPE_RANGE[source_dtype][0]
@@ -99,13 +104,16 @@ def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
         new_init = onnx.numpy_helper.from_array(new_scale, name=scale_init.name)
         return new_init
 
-    def _create_zp_value_and_datatype(init: onnx.TensorProto,
-                                      quant_type: onnx.TensorProto.DataType) -> Union[onnx.TensorProto, None]:
+    def _create_zp_value_and_datatype(
+        init: onnx.TensorProto, quant_type: onnx.TensorProto.DataType
+    ) -> Union[onnx.TensorProto, None]:
         source_dtype: onnx.TensorProto.DataType = ONNX_INT_TO_ONNX_TYPE[init.data_type]
         target_dtype: onnx.TensorProto.DataType = quant_type
-        if source_dtype == target_dtype:
-            return None
-        elif source_dtype not in ONNX_INT_TYPE_RANGE or target_dtype not in ONNX_INT_TYPE_RANGE:
+        if (
+            source_dtype == target_dtype
+            or source_dtype not in ONNX_INT_TYPE_RANGE
+            or target_dtype not in ONNX_INT_TYPE_RANGE
+        ):
             return None
 
         source_qrange = ONNX_INT_TYPE_RANGE[source_dtype][1] - ONNX_INT_TYPE_RANGE[source_dtype][0]
@@ -120,7 +128,7 @@ def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
         new_init = onnx.numpy_helper.from_array(zp, name=init.name)
         return new_init
 
-    def _update_node_scale(node: onnx.NodeProto, updated_initializers: List[str]) -> None:
+    def _update_node_scale(node: onnx.NodeProto, updated_initializers: list[str]) -> None:
         scale_init = onnx_model.get_initializer(node.input[1])
         if scale_init is None:
             # print(f"ERROR: node '{node.name}' has no scale")
@@ -142,7 +150,7 @@ def convert_u16u8_to_u8u8(input_model: Union[str, Path, onnx.ModelProto],
                         updated_initializers.append(scale_init.name)
                         # print(f"INFO: updated scale of {scale_init.name}")
 
-    def _update_node_zp(node: onnx.NodeProto, updated_initializers: List[str]) -> None:
+    def _update_node_zp(node: onnx.NodeProto, updated_initializers: list[str]) -> None:
         zp_init = onnx_model.get_initializer(node.input[2])
         if zp_init is not None and zp_init.name in updated_initializers:
             # print(f"WARNING: this zero_point '{zp_init.name}' has been updated")
@@ -299,6 +307,6 @@ def convert(args: Namespace) -> None:
     print(f"Convert the u16u8 model {args.input} to the u8u8 model {args.output}.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     convert(args)

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
@@ -12,53 +11,28 @@
 # SPDX-License-Identifier: MIT
 
 import math
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.linalg import hadamard
 
-from typing import Callable, Any, Tuple
-
-from quark.torch.algorithm.rotation.hadamard import matmul_hadU
+from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.quarot.monkeypatch import add_wrapper_after_function_call_in_method
+from quark.torch.algorithm.rotation.hadamard import _get_hadamard_K, matmul_hadU
+from quark.torch.algorithm.rotation.rotation_utils import get_rotation_matrix, rotate_with_size
 
-
-def multiply_with_reshape(A: torch.Tensor, B: torch.Tensor, transpose: bool) -> torch.Tensor:
-    dtype = A.dtype
-    device = A.device
-    if transpose:
-        A = A.t()
-    shape = A.shape
-    A = A.reshape(-1, shape[-1] // B.shape[0], B.shape[0])
-    C = A.to(torch.float64) @ B.to(device=device)
-    C = C.reshape(shape)
-    if transpose:
-        C = C.t()
-    return C.to(device=device, dtype=dtype)
-
-
-def rotate_in_channels2(module: nn.Module, rotation: torch.Tensor) -> None:
-    """ Rotate the input channels of a linear layer.
-        If weight and rotation's sizes don't match, it reshapes weight in order to multiply them."""
-    module.weight.data = multiply_with_reshape(module.weight.data, rotation, transpose=False)
-
-
-def rotate_out_channels2(module: nn.Module, rotation: torch.Tensor) -> None:
-    """Rotate the output channels of a linear layer.
-        If weight/bias and rotation's sizes don't match
-        it reshapes weight/bias in order to multiply them."""
-    module.weight.data = multiply_with_reshape(module.weight.data, rotation, transpose=True)
-    if module.bias is not None:
-        module.bias.data = multiply_with_reshape(module.bias.data, rotation, transpose=True)
+logger = ScreenLogger(__name__)
 
 
 def hadamard_transform(x: torch.Tensor) -> torch.Tensor:
-    """ Applies Hadamard transform to x (without dividing by sqrt n). Ideally should be replaced by a hardware
+    """Applies Hadamard transform to x (without dividing by sqrt n). Ideally should be replaced by a hardware
     optimized kernel, since Hadamard transforms can in theory be done much faster than general matrix multiplications.
 
     Code from: https://github.com/Dao-AILab/fast-hadamard-transform/blob/master/fast_hadamard_transform/fast_hadamard_transform_interface.py
     """
-    from scipy.linalg import hadamard
+
     x_shape = x.shape
     dim = x.shape[-1]
     x = x.reshape(-1, dim)
@@ -71,19 +45,19 @@ def hadamard_transform(x: torch.Tensor) -> torch.Tensor:
 
 
 def hadamard_multiply(x: torch.Tensor) -> torch.Tensor:
-    """ Applies hadamard transform to x with dividing by sqrt n """
+    """Applies hadamard transform to x with dividing by sqrt n"""
     dtype = x.dtype
     return (hadamard_transform(x.float()) / math.sqrt(x.shape[-1])).to(dtype)
 
 
 class QKRotation(nn.Module):
-    """ Performs R3 rotation after RoPE of both Q and K, but does not do K quantization"""
+    """Performs R3 rotation after RoPE of both Q and K, but does not do K quantization"""
 
     def __init__(self, func: Callable[..., Any]):
         super().__init__()
         self.func = func
 
-    def forward(self, *args: Any, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
         q, k = self.func(*args, **kwargs)
         q = hadamard_multiply(q)
         k = hadamard_multiply(k)
@@ -107,7 +81,7 @@ def add_qk_rotation_after_function_call_in_forward(module: nn.Module, function_n
     setattr(module, attr_name, wrapper)
 
 
-class R4Wrapper(nn.Module):
+class InputRotationWrapper(nn.Module):
     """
     Wrapper around a nn.Module that applies a Hadamard rotation before the module.
     If the module is an nn.Linear or nn.Conv, then Quark will replace it by a quantized linear layer
@@ -115,12 +89,36 @@ class R4Wrapper(nn.Module):
     but before the forward pass of the module
     """
 
-    def __init__(self, module: nn.Module):
+    def __init__(self, module: nn.Module, rotation_size: int | None = None):
         super().__init__()
         self.module = module
 
+        if rotation_size is not None:
+            self.rotation_size = rotation_size
+            self.custom_rotation_size = True
+        else:
+            self.custom_rotation_size = False
+            # nn.Linear in_features
+            self.rotation_size = module.weight.shape[1]
+
+        if self.custom_rotation_size:
+            self.rotation_matrix = get_rotation_matrix(self.rotation_size, random=False)
+            self.rotation_matrix = self.rotation_matrix.to(self.module.weight.device)
+
+            self.rotation_matrix = self.rotation_matrix.to(self.module.weight.dtype)
+        else:
+            hadamard_K, K = _get_hadamard_K(self.rotation_size, force=True)
+
+            self.hadamard_K = hadamard_K.to(self.module.weight.device)
+            self.K = K
+
     def forward(self, x: torch.Tensor) -> Any:
-        x = matmul_hadU(x)
+        if self.custom_rotation_size:
+            x = rotate_with_size(x, rotation_size=self.rotation_size, rotation_matrix=self.rotation_matrix)
+        else:
+            # TODO: ideally, rotate_with_size should handle this case well.
+            x = matmul_hadU(x, hadamard_K=self.hadamard_K, K=self.K)
+
         # quantization will happen here, in between (since it happens before a nn.Linear layer)
         x = self.module(x)
         return x

@@ -24,7 +24,7 @@ maintainers = [
 ]
 name = "amd-quark"
 readme = "README.md"
-requires-python = ">= 3.9"
+requires-python = ">= 3.10"
 
 [project.urls]
 documentation = "https://quark.docs.amd.com"
@@ -32,6 +32,215 @@ homepage = "https://github.com/amd/quark"
 issues = "https://github.com/amd/quark/issues"
 repository = "https://github.com/amd/quark.git"
 
+[project.optional-dependencies]
+lint = [
+    "pyyaml",
+    "ruff",
+    "mypy",
+    "opencv-python",
+    "pre-commit",
+]
+
+[project.scripts]
+quark-cli = "quark.experimental.cli.main:main"
+
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 version = { attr = 'quark.__version__' }
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = [
+  "setup.py",
+  "__init__.py",
+  "docs/source/conf.py",
+  "quark/torch/algorithm/rotation/hadamard.py"
+]
+
+[tool.ruff.lint]
+select = [
+  "B", # flake8-bugbear
+  "C", # comprehension and complexity
+  "E", # pycodestyle error
+  "F", # Pyflakes
+  "G", # flake8-logging-format
+  "I", # isort
+  "SIM", # flake8-simplify
+  "UP", # pyupgrade
+  "W", # pycodestyle warning
+]
+ignore = [
+    "B006", # Do not use mutable data structures for argument defaults
+    "B007", # loop variable not used in loop
+    "B008", # Do not perform function call in argument defaults
+    "B011", # raise assertion error
+    "B015", # pointless comparison
+    "B020", # Loop control variable overrides iterable it iterates
+    "B023", # Function definition does not bind loop variable
+    "B024", # abstract class has no abstract methods or properties
+    "B026", # Star-arg unpacking after a keyword argument is strongly discouraged
+    "B027", # empty method in an abstract base class, but has no abstract decorator
+    "B028", # No explicit `stacklevel` keyword argument found
+    "B904", # use raise ... from err or raise ... from None in except clauses
+    "C401", # Unnecessary generator (rewrite as a set comprehension)
+    "C402", # Unnecessary generator (rewrite as a dict comprehension)
+    "C403", # Unnecessary list comprehension (rewrite as a set comprehension)
+    "C405", # unnecessary list literal
+    "C408", # Unnecessary `dict()` call (rewrite as a literal)
+    "C409", # Unnecessary list literal passed to `tuple()` (rewrite as a tuple literal)
+    "C416", # unnecessary comprehension
+    "C417", # unnecessary map()
+    "C419", # unnecessary list comprehension
+    "C901", # function is too complex
+    "E402", # Module level import not at top of file
+    "E501",  # line too long
+    "E721", # Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
+    "E741", # Ambiguous variable name
+    "F401", # Remove unused imported module
+    "F601", # Dictionary key literal repeated
+    "F811", # Redefinition of unused variable
+    "F821", # undefined name
+    "F841",  # unused variable
+    "G003", # + in logging statements
+    "G004", # f-strings in logging statements
+    "SIM101", # Multiple `isinstance` calls, merge into a single call
+    "SIM102", # use single if statement instead of nested
+    "SIM103", # return the condition directly
+    "SIM105", # Use `contextlib.suppress(ValueError)` instead of `try`-`except`-`pass`
+    "SIM108", # use ternary operator instead of if-else
+    "SIM110", # use any(...)
+    "SIM113", # Use `enumerate()` in `for` loop
+    "SIM115", # use a context manager for files
+    "SIM117", # use `with` statement with multiple contexts instead of nesting
+    "SIM118", # don't use dict.keys()
+    "SIM201", # Use !=
+    "SIM210", # Remove unnecessary `True if ... else False`
+    "SIM211", # use not ... instead of False if ... else True
+    "SIM401", # use .get() instead of if
+    "UP007", # Use `X | Y` for type annotations
+    "UP008", # use super()
+    "UP031", # use format specifiers instead of percent format
+    "UP035", # `typing.ContextManager` is deprecated
+    "UP038", # use | in isinstance calls
+]
+# extend-select = ["ALL"]
+
+[tool.mypy]
+strict = true
+disable_error_code = ["method-assign", "unused-ignore"]
+
+[[tool.mypy.overrides]]
+module = ["quark.*"]
+allow_redefinition = true
+disable_error_code = ["misc", "no-any-return", "arg-type", "index"]
+
+[[tool.mypy.overrides]]
+module = [
+  "quark.torch.quantization.fake_quantize.*",
+  "quark.onnx.*",
+  "quark.onnxsim.*",
+]
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = ["quark.torch.quantization.observer.*"]
+disallow_untyped_calls = false
+disable_error_code = ["override"]
+
+[[tool.mypy.overrides]]
+module = [
+  "examples.*",
+  "quark.experimental.cli.*",
+  "quark.torch.export.json_export.converter.*",
+]
+ignore_errors = true
+
+# From mypy.ini, TODO: this is temporary while the submodule persists. Tracked in #2791
+[[tool.mypy.overrides]]
+module = ["quark.contrib.onnx_utils.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+  "accelerate.*",
+  "bokeh.*",
+  "brevitas.*",
+  "cv2",
+  "datasets.*",
+  "google.*",
+  "matplotlib.*",
+  "onnx.*",
+  "onnxruntime.*",
+  "onnxruntime_extensions.*",
+  "onnxsim.*",
+  "packaging",
+  "packaging.version",
+  "packaging.*",
+  "pandas.*",
+  "quark.contrib.*",
+  "quark.version.*",
+  "rich.*",
+  "safetensors.*",
+  "scipy.*",
+  "six.*",
+  "torch.*",
+  "transformers.*",
+  "tqdm.*",
+]
+ignore_missing_imports = true
+
+# TODO: Fix this
+[[tool.mypy.overrides]]
+module = "torch.*"
+follow_imports = "skip"
+
+[tool.coverage.paths]
+source = [
+  "/scratch/**/Quark/Quark/",
+]
+
+[tool.coverage.run]
+  branch = true
+  relative_files = true
+  omit = [
+    "*/quark/onnx/tools/*",
+    "*/quark/torch/kernel/mx/triton.py",
+    "*/test/*",
+  ]
+  # concurrency = multiprocessing
+
+[tool.coverage.report]
+# Regexes for lines to exclude from consideration
+exclude_also = [
+  # Don't complain about missing debug-only code:
+  "def __repr__",
+  "if self\\.debug",
+
+  # Don't complain if tests don't hit defensive assertion code:
+  "raise AssertionError",
+  "raise ValueError",
+  "raise NotImplementedError",
+  "raise FileNotFoundError",
+  "raise RuntimeError",
+  "raise ImportError",
+  "raise ModuleNotFoundError",
+
+  # Don't complain if non-runnable code isn't run:
+  "if 0:",
+  "if __name__ == .__main__.:",
+
+  # Don't complain about abstract methods, they aren't run:
+  "@(abc\\.)?abstractmethod",
+  ]
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "-ra"]
+markers = [
+  "accelerate_test: Tests which requires `accelerate` library to run.",
+  "require_dual_gpu: Tests which requires two GPU devices to run",
+  "tensor_parallel: Tests for the Tensor Parallel feature",
+]

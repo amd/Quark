@@ -8,12 +8,11 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from quark.shares.utils.log import ScreenLogger
-from typing import Any, List, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import onnx
-from onnx import TensorProto, ModelProto
 import onnx.numpy_helper
+from onnx import ModelProto, TensorProto
 from onnxruntime.quantization.quant_utils import (
     QuantizationMode,
     add_dequant_output_suffix,
@@ -22,46 +21,62 @@ from onnxruntime.quantization.quant_utils import (
     find_by_name,
 )
 
+from quark.shares.utils.log import ScreenLogger
+
 from ..quant_utils import (
-    __producer__,
-    __version__,
-    ExtendedQuantType,
-    COP_BFP_OP_NAME,
     BFP_OP_DEFAULT_ATTRS,
+    COP_BFP_OP_NAME,
+    COP_DOMAIN,
     COP_MX_OP_NAME,
     MX_OP_DEFAULT_ATTRS,
-    COP_DOMAIN,
+    ExtendedQuantType,
+    __producer__,
+    __version__,
     get_annotate_tensors,
     get_qdq_to_remove,
-    remove_nodes,
     modified_annotate_input,
+    remove_nodes,
 )
-from .qdq_quantizer import VitisQDQQuantizer
 from ..registry import CreateQDQQuantizer
+from .qdq_quantizer import VitisQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
 class VitisBFPQuantizer(VitisQDQQuantizer):
-
-    def __init__(self,
-                 model: ModelProto,
-                 per_channel: bool,
-                 reduce_range: bool,
-                 mode: QuantizationMode.QLinearOps,
-                 static: bool,
-                 weight_qType: Any,
-                 activation_qType: Any,
-                 tensors_range: Any,
-                 nodes_to_quantize: List[str],
-                 nodes_to_exclude: List[str],
-                 op_types_to_quantize: List[str],
-                 calibrate_method: Any,
-                 quantized_tensor_type: Dict[Any, Any] = {},
-                 extra_options: Optional[Dict[str, Any]] = None):
-        super().__init__(model, per_channel, reduce_range, mode, static, weight_qType, activation_qType, tensors_range,
-                         nodes_to_quantize, nodes_to_exclude, op_types_to_quantize, calibrate_method,
-                         quantized_tensor_type, extra_options)
+    def __init__(
+        self,
+        model: ModelProto,
+        per_channel: bool,
+        reduce_range: bool,
+        mode: QuantizationMode.QLinearOps,
+        static: bool,
+        weight_qType: Any,
+        activation_qType: Any,
+        tensors_range: Any,
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
+        calibrate_method: Any,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            model,
+            per_channel,
+            reduce_range,
+            mode,
+            static,
+            weight_qType,
+            activation_qType,
+            tensors_range,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            calibrate_method,
+            quantized_tensor_type,
+            extra_options,
+        )
 
         self.int32_bias = False
         if extra_options is not None and "Int32Bias" in extra_options and extra_options["Int32Bias"]:
@@ -94,12 +109,9 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             if extra_options is not None and "MXAttributes" in extra_options:
                 self.fn_attrs.update(extra_options["MXAttributes"])
 
-    def _create_fn_nodes(self,
-                         q_input: Any,
-                         dq_output: Any,
-                         dequant_node_name: str,
-                         axis: Any = None,
-                         convert_to: Any = None) -> None:
+    def _create_fn_nodes(
+        self, q_input: Any, dq_output: Any, dequant_node_name: str, axis: Any = None, convert_to: Any = None
+    ) -> None:
         """
         create fix_neuron node
         """
@@ -142,7 +154,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
 
     def _quantize_normal_tensors(self) -> None:
         for tensor_name, tensor_info in self.tensors_to_quantize.copy().items():
-
             if tensor_name in self.quantized_value_map:
                 continue
 
@@ -171,7 +182,8 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
 
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)

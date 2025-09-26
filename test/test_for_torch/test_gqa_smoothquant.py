@@ -3,32 +3,44 @@
 # SPDX-License-Identifier: MIT
 #
 
+from dataclasses import replace
+
 import torch
 import torch.nn as nn
-from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PlaceholderObserver
-from dataclasses import replace
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from quark.torch.algorithm.awq.scale import scale_fc_fc
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, AWQConfig, SmoothQuantConfig
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device
+from quark.torch.algorithm.awq.scale import scale_fc_fc
+from quark.torch.algorithm.utils.utils import is_attention_module
+from quark.torch.quantization.config.config import (
+    AWQConfig,
+    Config,
+    QuantizationConfig,
+    QuantizationSpec,
+    SmoothQuantConfig,
+)
+from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PlaceholderObserver
 
 logger = ScreenLogger(__name__)
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                                             weight=INT8_PER_TENSOR_SPEC,
-                                                             bias=INT8_PER_TENSOR_SPEC,
-                                                             output_tensors=INT8_PER_TENSOR_SPEC)
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+)
 
 FLOAT16_SPEC = QuantizationSpec(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
 
@@ -38,9 +50,10 @@ hidden_size = 32
 num_attention_heads = 16
 num_key_value_heads = 4
 
-class SimpleLM(nn.Module):
+
+class SimpleLMAttention(nn.Module):
     def __init__(self):
-        super(SimpleLM, self).__init__()
+        super(SimpleLMAttention, self).__init__()
         self.head_dim = hidden_size // num_attention_heads
         self.num_key_value_groups = num_attention_heads // num_key_value_heads
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
@@ -71,7 +84,6 @@ class SimpleLM(nn.Module):
 
 def test_gqa_smoothquant():
     class MyDataset(Dataset):
-
         def __init__(self):
             return
 
@@ -88,20 +100,21 @@ def test_gqa_smoothquant():
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
     # model
-    model = SimpleLM().to(torch_device)
+    model = SimpleLMAttention().to(torch_device)
     model.num_key_value_groups = num_attention_heads // num_key_value_heads
     output_original = model(input_tensor)
 
     # algorithm config
     quant_config = Config(global_quant_config=FLOAT16_CONFIG)
-    quant_config = replace(quant_config, algo_config=SmoothQuantConfig())
-    quant_config.algo_config.num_attention_heads = num_attention_heads
-    quant_config.algo_config.num_key_value_heads = num_key_value_heads
-    quant_config.algo_config.alpha = 0.85
+    quant_config = replace(quant_config, algo_config=[SmoothQuantConfig()])
+    quant_config.algo_config[0].num_attention_heads = num_attention_heads
+    quant_config.algo_config[0].num_key_value_heads = num_key_value_heads
+    quant_config.algo_config[0].alpha = 0.85
 
     # smoothing
     scale = torch.rand(hidden_size, device=torch_device) + 1.0
-    scale_fc_fc(model.v_proj, model.o_proj, scale, num_attention_heads, num_key_value_heads)
+    is_for_attention_module = is_attention_module(model)
+    scale_fc_fc(model.v_proj, model.o_proj, scale, num_attention_heads, num_key_value_heads, is_for_attention_module)
     output_smooth = model(input_tensor)
 
     # check SmoothQuant results
@@ -111,7 +124,6 @@ def test_gqa_smoothquant():
 
 def test_gqa_awq():
     class MyDataset(Dataset):
-
         def __init__(self):
             return
 
@@ -128,26 +140,28 @@ def test_gqa_awq():
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
     # model
-    model = SimpleLM().to(torch_device)
+    model = SimpleLMAttention().to(torch_device)
     model.num_key_value_groups = num_attention_heads // num_key_value_heads
     output_original = model(input_tensor)
 
     # algorithm config
     quant_config = Config(global_quant_config=FLOAT16_CONFIG)
-    quant_config = replace(quant_config, algo_config=AWQConfig())
-    quant_config.algo_config.num_attention_heads = num_attention_heads
-    quant_config.algo_config.num_key_value_heads = num_key_value_heads
-    quant_config.algo_config.alpha = 0.85
+    quant_config = replace(quant_config, algo_config=[AWQConfig()])
+    quant_config.algo_config[0].num_attention_heads = num_attention_heads
+    quant_config.algo_config[0].num_key_value_heads = num_key_value_heads
+    quant_config.algo_config[0].alpha = 0.85
 
     # smoothing
     scale = torch.rand(hidden_size, device=torch_device) + 1.0
-    scale_fc_fc(model.v_proj, model.o_proj, scale, num_attention_heads, num_key_value_heads)
+    is_for_attention_module = is_attention_module(model)
+    scale_fc_fc(model.v_proj, model.o_proj, scale, num_attention_heads, num_key_value_heads, is_for_attention_module)
     output_smooth = model(input_tensor)
 
     # check AWQ results
     assert torch.norm(output_original - output_smooth) < 1e-5
     logger.info("GQA for AWQ is checked valid!")
     torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()

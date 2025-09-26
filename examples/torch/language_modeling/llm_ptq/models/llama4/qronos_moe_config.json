@@ -1,0 +1,9 @@
+{
+  "name": "qronos",
+  "inside_layer_modules": [
+    "up_proj",
+    "gate_proj",
+    "down_proj"
+  ],
+  "model_decoder_layers": "language_model.model.layers"
+}

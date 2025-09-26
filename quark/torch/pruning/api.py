@@ -4,17 +4,19 @@
 #
 """Quark Peuning API for PyTorch."""
 
+import logging
+from typing import Dict, List, Optional, Union
+
 import torch
-import torch.nn as nn
 import torch.fx
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Dict, Optional, Union, List
-from quark.torch.pruning.model_transformation import process_model_pruning
-from quark.torch.pruning.utils import pre_process_tuning
-from quark.torch.pruning.config import Config
+
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.api import apply_advanced_pruning_algo, blockwise_tuning_algo
-import logging
+from quark.torch.pruning.config import Config
+from quark.torch.pruning.model_transformation import process_model_pruning
+from quark.torch.pruning.utils import pre_process_tuning
 
 __all__ = ["ModelPruner"]
 
@@ -33,7 +35,7 @@ class ModelPruner:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self._is_accelerate: Optional[bool] = None
+        self._is_accelerate: bool | None = None
         self.set_logging_level()  # set log level: default info
 
     def set_logging_level(self) -> None:
@@ -51,8 +53,10 @@ class ModelPruner:
     def pruning_model(
         self,
         model: nn.Module,
-        dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]]]] = None
+        dataloader: Union[
+            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
+        ]
+        | None = None,
     ) -> nn.Module:
         """
         Prunes the given PyTorch model to optimize its performance and reduce its size.
@@ -86,7 +90,7 @@ class ModelPruner:
 
     def _check_model_device(self, model: nn.Module) -> None:
         # using accelerate cause, device can not be cpu or disk, temporarily
-        if hasattr(model, 'hf_device_map'):
+        if hasattr(model, "hf_device_map"):
             for _, layer_device in model.hf_device_map.items():
                 if layer_device == "cpu" or layer_device == "disk":
                     raise MemoryError(
@@ -104,8 +108,10 @@ class ModelPruner:
     def _apply_advanced_pruning_algo(
         self,
         model: nn.Module,
-        dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]]]] = None
+        dataloader: Union[
+            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
+        ]
+        | None = None,
     ) -> nn.Module:
         return apply_advanced_pruning_algo(model, self.config, self._is_accelerate, dataloader)
 
@@ -116,7 +122,9 @@ class ModelPruner:
         self,
         fp_model: nn.Module,
         model: nn.Module,
-        dataloader: Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]],
-                                   DataLoader[Dict[str, torch.Tensor]]]] = None
+        dataloader: Union[
+            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
+        ]
+        | None = None,
     ) -> nn.Module:
         return blockwise_tuning_algo(fp_model, model, self.config, self._is_accelerate, dataloader)

@@ -8,58 +8,64 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-import numpy as np
-from quark.shares.utils.log import ScreenLogger
-from typing import Any, List, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import onnx
 import onnx.numpy_helper
-from onnx import TensorProto, ModelProto
+import onnxruntime
+from onnx import ModelProto, TensorProto
 from onnx import onnx_pb as onnx_proto
-from onnxruntime.quantization.base_quantizer import (QuantizationParams, to_array_extended)
+from onnxruntime.quantization.base_quantizer import QuantizationParams, to_array_extended
+from onnxruntime.quantization.qdq_quantizer import (
+    QDQBiasQuantInfo,
+    QDQScaleZpInitializers,
+    QDQTensorQuantizedValue,
+    QDQTensorQuantParams,
+)
 from onnxruntime.quantization.qdq_quantizer import QDQQuantizer as OrtQDQQuantizer
-from onnxruntime.quantization.qdq_quantizer import (QDQBiasQuantInfo, QDQTensorQuantParams, QDQTensorQuantizedValue,
-                                                    QDQScaleZpInitializers)
-
 from onnxruntime.quantization.quant_utils import (
+    DEQUANT_OP_NAME,
+    ONNX_TYPE_TO_NP_TYPE,
+    TENSOR_NAME_QUANT_SUFFIX,
+    QuantizationMode,
     QuantizedValue,
     QuantizedValueType,
     QuantType,
-    QuantizationMode,
-    TENSOR_NAME_QUANT_SUFFIX,
-    DEQUANT_OP_NAME,
     add_dequant_output_suffix,
     add_dequant_suffix,
     add_quant_output_suffix,
     add_quant_suffix,
     find_by_name,
     ms_domain,
-    ONNX_TYPE_TO_NP_TYPE,
     normalize_axis,
     quantize_nparray,
 )
 
-from quark.onnx.quant_utils import is_ort_version_below
-if not is_ort_version_below("1.19.0"):
+from quark.onnx.quant_utils import is_version_below
+from quark.shares.utils.log import ScreenLogger
+
+if not is_version_below(onnxruntime, "1.19.0"):
     from onnxruntime.quantization.quant_utils import pack_bytes_to_4bit
 
-from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 from onnxruntime.quantization.calibrate import TensorData
+from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
+
 from ..quant_utils import (
+    ONNX_BFP_QTYPES_LIST,
+    ONNX_FP_QTYPES_LIST,
+    ExtendedQuantType,
     __producer__,
     __version__,
-    ExtendedQuantType,
+    compute_scale_zp,
+    compute_scale_zp_fp,
     get_annotate_tensors,
     get_qdq_to_remove,
-    remove_nodes,
-    modified_annotate_input,
-    compute_scale_zp,
-    ONNX_FP_QTYPES_LIST,
-    ONNX_BFP_QTYPES_LIST,
-    compute_scale_zp_fp,
-    quantize_data_pof2s,
     get_qmin_qmax_for_qType,
     get_tensor_type_from_qType,
+    modified_annotate_input,
+    quantize_data,
+    remove_nodes,
 )
 from ..registry import CreateQDQQuantizer
 
@@ -67,7 +73,6 @@ logger = ScreenLogger(__name__)
 
 
 class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
-
     def __init__(
         self,
         model: ModelProto,
@@ -78,10 +83,10 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
-        extra_options: Optional[Dict[str, Any]] = None,
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
+        extra_options: dict[str, Any] | None = None,
     ):
         super().__init__(
             model,
@@ -95,17 +100,20 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
             op_types_to_quantize=op_types_to_quantize,
             extra_options=extra_options,
         )
-        self.int32_bias = True if extra_options is None or "Int32Bias" not in extra_options else extra_options[
-            "Int32Bias"]
+        self.int32_bias = (
+            True if extra_options is None or "Int32Bias" not in extra_options else extra_options["Int32Bias"]
+        )
 
-        self.int16_bias = False if extra_options is None or "Int16Bias" not in extra_options else extra_options[
-            "Int16Bias"]
+        self.int16_bias = (
+            False if extra_options is None or "Int16Bias" not in extra_options else extra_options["Int16Bias"]
+        )
         if self.int16_bias:
             self.int32_bias = True
 
         # weights-only quantization switch
-        self.weights_only = False if extra_options is None or "WeightsOnly" not in extra_options else extra_options[
-            "WeightsOnly"]
+        self.weights_only = (
+            False if extra_options is None or "WeightsOnly" not in extra_options else extra_options["WeightsOnly"]
+        )
 
         # include-gptq quantization switch
         self.use_gptq = False if extra_options is None or "UseGPTQ" not in extra_options else extra_options["UseGPTQ"]
@@ -126,8 +134,8 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         elif tensor_name in self.value_infos:
             vi = self.value_infos[tensor_name]
             if vi.type.HasField("tensor_type") and vi.type.tensor_type.elem_type in (
-                    TensorProto.FLOAT,
-                    TensorProto.FLOAT16,
+                TensorProto.FLOAT,
+                TensorProto.FLOAT16,
             ):
                 return True
         else:
@@ -137,12 +145,9 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         return False
 
-    def quantize_bias_tensor(self,
-                             node_name: str,
-                             bias_name: str,
-                             input_name: str,
-                             weight_name: str,
-                             beta: float = 1.0) -> None:
+    def quantize_bias_tensor(
+        self, node_name: str, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0
+    ) -> None:
         """
         Adds a bias tensor to the list of bias tensors to quantize. Called by op quantizers that
         want to quantize a bias with bias_zero_point = 0 and bias_scale = input_scale * weight_scale * beta.
@@ -158,7 +163,8 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         # If the user provided quantization overrides for this tensor, treat it as a regular weight.
         if self.tensor_quant_overrides.get(bias_name):
             logger.info(
-                f"Quantizing bias tensor '{bias_name}' as a weight due to the presence of user-specified overrides")
+                f"Quantizing bias tensor '{bias_name}' as a weight due to the presence of user-specified overrides"
+            )
             is_per_channel, axis = self.is_tensor_per_channel(bias_name, default_axis=0)
             if is_per_channel:
                 self.quantize_weight_tensor_per_channel(bias_name, axis)
@@ -172,8 +178,9 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 if self.quantize_bias:
                     if bias_name not in self.bias_to_quantize:
                         if self.int32_bias:
-                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(node_name, input_name, weight_name,
-                                                                                beta)
+                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(
+                                node_name, input_name, weight_name, beta
+                            )
                         else:
                             if self.per_channel:
                                 self.quantize_weight_tensor_per_channel(bias_name, 0)
@@ -194,7 +201,7 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
             # Quantize the input
             self.quantize_bias_static(bias_name, bias_info)
             # TODO: Figure out why the program exits on Windows if we don't add a print statement here
-            logger.debug('Adds DQ ops (or Cast) for bias')
+            logger.debug("Adds DQ ops (or Cast) for bias")
             init = find_by_name(bias_name, self.model.initializer())
             self.model.remove_initializer(init)
             quant_value = self.quantized_value_map[bias_name].original
@@ -213,9 +220,9 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 )
             elif quant_value.node_type in (None, "DequantizeLinear"):
                 if quant_value.node_qtype in {
-                        onnx.TensorProto.FLOAT16,
-                        onnx.TensorProto.BFLOAT16,
-                        onnx.TensorProto.FLOAT,
+                    onnx.TensorProto.FLOAT16,
+                    onnx.TensorProto.BFLOAT16,
+                    onnx.TensorProto.FLOAT,
                 }:
                     raise RuntimeError(f"Unexpected quantize type {quant_value.node_qtype} for DequantizeLinear.")
                 inputs = [quant_value.q_name, quant_value.scale_name, quant_value.zp_name]
@@ -262,7 +269,8 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
         self.remove_nodes()
 
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -409,8 +417,9 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 quantized_value.scale_name,
             )
 
-        q_weight_name, zp_name, scale_name = self.quantize_initializer_impl(weight, qType, reduce_range,
-                                                                            keep_float_weight)
+        q_weight_name, zp_name, scale_name = self.quantize_initializer_impl(
+            weight, qType, reduce_range, keep_float_weight
+        )
 
         # Log entry for this quantized weight
         quantized_value = QuantizedValue(
@@ -426,7 +435,6 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
 
 class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
-
     def __init__(
         self,
         model: ModelProto,
@@ -437,12 +445,12 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         weight_qType: Any,
         activation_qType: Any,
         tensors_range: Any,
-        nodes_to_quantize: List[str],
-        nodes_to_exclude: List[str],
-        op_types_to_quantize: List[str],
+        nodes_to_quantize: list[str],
+        nodes_to_exclude: list[str],
+        op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: Dict[Any, Any] = {},
-        extra_options: Optional[Dict[str, Any]] = None,
+        quantized_tensor_type: dict[Any, Any] = {},
+        extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         self.quantized_tensor_type = quantized_tensor_type
@@ -451,9 +459,22 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         if extra_options is not None and "UsePowerOf2Scale" in extra_options:
             self.use_power_of_2_scale = extra_options["UsePowerOf2Scale"]
 
+        self.weight_method = (
+            extra_options.get("WeightCalibrateMethod", None)
+            if extra_options is not None and "WeightCalibrateMethod" in extra_options
+            else None
+        )
+
+        self.minmse_mode = (
+            extra_options.get("MinMSEModeFloatScale", None)
+            if extra_options is not None and "MinMSEModeFloatScale" in extra_options
+            else None
+        )
+
         # weights-only quantization switch
-        self.weights_only = False if extra_options is None or "WeightsOnly" not in extra_options else extra_options[
-            "WeightsOnly"]
+        self.weights_only = (
+            False if extra_options is None or "WeightsOnly" not in extra_options else extra_options["WeightsOnly"]
+        )
 
         # include-gptq quantization switch
         self.use_gptq = False if extra_options is None or "UseGPTQ" not in extra_options else extra_options["UseGPTQ"]
@@ -463,16 +484,30 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         # Scale weight and activation for floating point data types' quantization
         self.is_weight_scaled = True
-        if weight_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
-                            ExtendedQuantType.QMX):
-            self.is_weight_scaled = False if (extra_options is None
-                                              or "WeightScaled" not in extra_options) else extra_options["WeightScaled"]
+        if weight_qType in (
+            ExtendedQuantType.QFloat16,
+            ExtendedQuantType.QBFloat16,
+            ExtendedQuantType.QBFP,
+            ExtendedQuantType.QMX,
+        ):
+            self.is_weight_scaled = (
+                False
+                if (extra_options is None or "WeightScaled" not in extra_options)
+                else extra_options["WeightScaled"]
+            )
 
         self.is_activation_scaled = True
-        if activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
-                                ExtendedQuantType.QMX):
-            self.is_activation_scaled = False if (
-                extra_options is None or "ActivationScaled" not in extra_options) else extra_options["ActivationScaled"]
+        if activation_qType in (
+            ExtendedQuantType.QFloat16,
+            ExtendedQuantType.QBFloat16,
+            ExtendedQuantType.QBFP,
+            ExtendedQuantType.QMX,
+        ):
+            self.is_activation_scaled = (
+                False
+                if (extra_options is None or "ActivationScaled" not in extra_options)
+                else extra_options["ActivationScaled"]
+            )
 
         OrtQDQQuantizer.__init__(
             self,
@@ -487,77 +522,106 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             op_types_to_quantize,
             extra_options,
         )
-        self.tensors_to_quantize: Dict[str, Any] = {}
-        self.bias_to_quantize: Dict[str, Any] = {}
+        self.tensors_to_quantize: dict[str, Any] = {}
+        self.bias_to_quantize: dict[str, Any] = {}
 
-        self.nodes_to_remove: List[str] = []
+        self.nodes_to_remove: list[str] = []
 
         # Specific op types to exclude qdq quantization for their outputs.
         # In TRT, it's not recommended to quantize outputs for weighted ops such as Conv, Matmul, Gemm
         # because those ops may be followed by nodes that require high resolution inputs.
         # Adding QDQ for those ops' output may end up with worse accuracy.
         # So, we don't recommend to add QDQ to node's output under such condition.
-        self.op_types_to_exclude_output_quantization = ([] if extra_options is None
-                                                        or "OpTypesToExcludeOutputQuantization" not in extra_options
-                                                        else extra_options["OpTypesToExcludeOutputQuantization"])
+        self.op_types_to_exclude_output_quantization = (
+            []
+            if extra_options is None or "OpTypesToExcludeOutputQuantization" not in extra_options
+            else extra_options["OpTypesToExcludeOutputQuantization"]
+        )
 
         # Some scenarios do not need the bias quantized. For example, in the case of Quantization Aware Training,
         # quantizing the bias is not needed. This is because in QAT, all model parameters are expected to be in
         # floating point format. To that end, we can use the FakeQuant operator for weights and activations that
         # can always have QDQ pairs (by using AddQDQPairToWeight). But for biases in a quantized model, we can't use
         # FakeQuant because it only ever appears before a DQ (since it is quantized as int32).
-        self.quantize_bias = True if extra_options is None or "QuantizeBias" not in extra_options else extra_options[
-            "QuantizeBias"]
+        self.quantize_bias = (
+            True if extra_options is None or "QuantizeBias" not in extra_options else extra_options["QuantizeBias"]
+        )
 
         # We do quantization on Dequantizelinear's input to remove Quantizelinear for weight as an optimization.
         # In some cases, for example QDQ BERT model for TensorRT, QDQ should always appear as a pair.
         # Therefore, we need to disable this optimization and add qdq pair to weight.
-        self.add_qdq_pair_to_weight = (False if extra_options is None or "AddQDQPairToWeight" not in extra_options else
-                                       extra_options["AddQDQPairToWeight"])
+        self.add_qdq_pair_to_weight = (
+            False
+            if extra_options is None or "AddQDQPairToWeight" not in extra_options
+            else extra_options["AddQDQPairToWeight"]
+        )
 
         # The default behavior is that multiple nodes can share a QDQ pair as their inputs.
         # In TRT, QDQ pair can't be shared between nodes, so it will create dedicated QDQ pairs for each node.
-        self.dedicated_qdq_pair = (False if extra_options is None or "DedicatedQDQPair" not in extra_options else
-                                   extra_options["DedicatedQDQPair"])
-        self.tensor_to_its_receiving_nodes: Dict[str, Any] = {}
+        self.dedicated_qdq_pair = (
+            False
+            if extra_options is None or "DedicatedQDQPair" not in extra_options
+            else extra_options["DedicatedQDQPair"]
+        )
+        self.tensor_to_its_receiving_nodes: dict[str, Any] = {}
 
         # Let user set channel axis for specific op type and it's effective only when per channel quantization is supported and per_channel is True.
-        self.qdq_op_type_per_channel_support_to_axis = ({} if extra_options is None
-                                                        or "QDQOpTypePerChannelSupportToAxis" not in extra_options else
-                                                        extra_options["QDQOpTypePerChannelSupportToAxis"])
-        self.qdq_op_domain = ms_domain if extra_options is None or extra_options.get("UseQDQContribOps",
-                                                                                     False) else None
+        self.qdq_op_type_per_channel_support_to_axis = (
+            {}
+            if extra_options is None or "QDQOpTypePerChannelSupportToAxis" not in extra_options
+            else extra_options["QDQOpTypePerChannelSupportToAxis"]
+        )
+        self.qdq_op_domain = (
+            ms_domain if extra_options is None or extra_options.get("UseQDQContribOps", False) else None
+        )
 
         # The ONNX spec did not support 16-bit Q/DQ ops before opset 21.
         # So, may have to override the Q/DQ op domain to 'com.microsoft' if the activation or weight types
         # are 16-bit or 4-bit integers.
         if self.opset_version < 21:
             opset21_types = (TensorProto.UINT16, TensorProto.INT16, TensorProto.UINT4, TensorProto.INT4)
-            overrides_have_opset21_types = any(t.tensor_type in opset21_types
-                                               for t in self.tensor_quant_override_qtypes)
-            if not self.qdq_op_domain and (self.activation_qType in opset21_types or self.weight_qType in opset21_types
-                                           or overrides_have_opset21_types):
+            overrides_have_opset21_types = any(
+                t.tensor_type in opset21_types for t in self.tensor_quant_override_qtypes
+            )
+            if not self.qdq_op_domain and (
+                self.activation_qType in opset21_types
+                or self.weight_qType in opset21_types
+                or overrides_have_opset21_types
+            ):
                 logger.warning(
                     "ONNX QuantizeLinear and DequantizeLinear operators do not support "
                     "16-bit/4-bit integer quantization types prior to opset 21. "
                     f"The domain of QuantizeLinear and DequantizeLinear operators will be set to '{ms_domain}' to "
-                    "enable support.")
+                    "enable support."
+                )
                 self.qdq_op_domain = ms_domain
 
-        self.is_weight_symmetric = (weight_qType in (QuantType.QInt8, QuantType.QInt16, ExtendedQuantType.QInt16,
-                                                     ExtendedQuantType.QInt32, ExtendedQuantType.QFloat16,
-                                                     ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP,
-                                                     ExtendedQuantType.QMX) if "WeightSymmetric"
-                                    not in self.extra_options else self.extra_options["WeightSymmetric"])
-        self.is_activation_symmetric = (activation_qType in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16,
-                                                             ExtendedQuantType.QBFP,
-                                                             ExtendedQuantType.QMX) if "ActivationSymmetric"
-                                        not in self.extra_options else self.extra_options["ActivationSymmetric"])
+        self.is_weight_symmetric = (
+            weight_qType
+            in (
+                QuantType.QInt8,
+                QuantType.QInt16,
+                ExtendedQuantType.QInt16,
+                ExtendedQuantType.QInt32,
+                ExtendedQuantType.QFloat16,
+                ExtendedQuantType.QBFloat16,
+                ExtendedQuantType.QBFP,
+                ExtendedQuantType.QMX,
+            )
+            if "WeightSymmetric" not in self.extra_options
+            else self.extra_options["WeightSymmetric"]
+        )
+        self.is_activation_symmetric = (
+            activation_qType
+            in (ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16, ExtendedQuantType.QBFP, ExtendedQuantType.QMX)
+            if "ActivationSymmetric" not in self.extra_options
+            else self.extra_options["ActivationSymmetric"]
+        )
 
         self.quantization_params = self.calc_graph_quant_params()
 
         # Map of all original value names to quantized value names
-        self.quantized_value_map: Dict[str, Any] = {}
+        self.quantized_value_map: dict[str, Any] = {}
 
         # We quantize Bias using Int32 by default except floating point type quantization
         if self.weight_qType in ONNX_FP_QTYPES_LIST + ONNX_BFP_QTYPES_LIST:
@@ -570,8 +634,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             self.int16_bias = extra_options["Int16Bias"]
             if self.int16_bias:
                 self.int32_bias = True
-        if self.int32_bias and (self.weight_qType in ONNX_BFP_QTYPES_LIST
-                                or self.activation_qType in ONNX_BFP_QTYPES_LIST):
+        if self.int32_bias and (
+            self.weight_qType in ONNX_BFP_QTYPES_LIST or self.activation_qType in ONNX_BFP_QTYPES_LIST
+        ):
             self.int32_bias = False  # Cannot meet the requirement of bias_scale = input_scale * weight_scale
             logger.warning("Disabled Int32 Bias, because the quant type of activaion is BFP or MX")
 
@@ -588,23 +653,20 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         elif tensor_name in self.value_infos:
             vi = self.value_infos[tensor_name]
             if vi.type.HasField("tensor_type") and vi.type.tensor_type.elem_type in (
-                    TensorProto.FLOAT,
-                    TensorProto.FLOAT16,
+                TensorProto.FLOAT,
+                TensorProto.FLOAT16,
             ):
                 return True
         else:
             logger.warning(
-                "failed to infer the type of tensor: {}. Skip to quantize it. Please check if it is expected.".format(
-                    tensor_name))
+                f"failed to infer the type of tensor: {tensor_name}. Skip to quantize it. Please check if it is expected."
+            )
 
         return False
 
-    def quantize_bias_tensor(self,
-                             node_name: str,
-                             bias_name: str,
-                             input_name: str,
-                             weight_name: str,
-                             beta: float = 1.0) -> None:
+    def quantize_bias_tensor(
+        self, node_name: str, bias_name: str, input_name: str, weight_name: str, beta: float = 1.0
+    ) -> None:
         """
         Adds a bias tensor to the list of bias tensors to quantize. Called by op quantizers that
         want to quantize a bias with bias_zero_point = 0 and bias_scale = input_scale * weight_scale * beta.
@@ -620,7 +682,8 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         # If the user provided quantization overrides for this tensor, treat it as a regular weight.
         if self.tensor_quant_overrides.get(bias_name):
             logger.info(
-                f"Quantizing bias tensor '{bias_name}' as a weight due to the presence of user-specified overrides")
+                f"Quantizing bias tensor '{bias_name}' as a weight due to the presence of user-specified overrides"
+            )
             is_per_channel, axis = self.is_tensor_per_channel(bias_name, default_axis=0)
             if is_per_channel:
                 self.quantize_weight_tensor_per_channel(bias_name, axis)
@@ -634,8 +697,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 if self.quantize_bias:
                     if bias_name not in self.bias_to_quantize:
                         if self.int32_bias:
-                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(node_name, input_name, weight_name,
-                                                                                beta)
+                            self.bias_to_quantize[bias_name] = QDQBiasQuantInfo(
+                                node_name, input_name, weight_name, beta
+                            )
                         else:
                             if self.per_channel:
                                 self.quantize_weight_tensor_per_channel(bias_name, 0)
@@ -656,7 +720,7 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             # Quantize the input
             self.quantize_bias_static(bias_name, bias_info)
             # TODO: Figure out why the program exits on Windows if we don't add a print statement here
-            logger.debug('Adds DQ ops (or Cast) for bias')
+            logger.debug("Adds DQ ops (or Cast) for bias")
             init = find_by_name(bias_name, self.model.initializer())
             self.model.remove_initializer(init)
             quant_value = self.quantized_value_map[bias_name].original
@@ -675,9 +739,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 )
             elif quant_value.node_type in (None, "DequantizeLinear"):
                 if quant_value.node_qtype in {
-                        onnx.TensorProto.FLOAT16,
-                        onnx.TensorProto.BFLOAT16,
-                        onnx.TensorProto.FLOAT,
+                    onnx.TensorProto.FLOAT16,
+                    onnx.TensorProto.BFLOAT16,
+                    onnx.TensorProto.FLOAT,
                 }:
                     raise RuntimeError(f"Unexpected quantize type {quant_value.node_qtype} for DequantizeLinear.")
                 inputs = [quant_value.q_name, quant_value.scale_name, quant_value.zp_name]
@@ -724,7 +788,8 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors)
+            self.model.model, annotate_tensors
+        )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
         pruned_model.model = remove_nodes(pruned_model.model, dq_nodes_to_remove)
@@ -802,11 +867,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             )
             self.model.add_node(dequant_node)
 
-    def quantize_initializer_impl(self,
-                                  weight: TensorProto,
-                                  qType: Any,
-                                  reduce_range: bool = False,
-                                  keep_float_weight: bool = False) -> Any:
+    def quantize_initializer_impl(
+        self, weight: TensorProto, qType: Any, reduce_range: bool = False, keep_float_weight: bool = False
+    ) -> Any:
         """
         :param weight: TensorProto initializer
         :param qType: type to quantize to. Note that it may be different with weight_qType because of mixed precision
@@ -832,10 +895,12 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             assert isinstance(scale, np.ndarray), f"Unexpected type {type(scale)}"
 
         else:
-            _, _, zero_point, scale, q_weight_data = quantize_data_pof2s(
-                weight_data.flatten(),
-                qType,
-                self.is_weight_symmetric,
+            _, _, zero_point, scale, q_weight_data = quantize_data(
+                data=weight_data.flatten(),
+                qType=qType,
+                symmetric=self.is_weight_symmetric,
+                weight_method=self.weight_method,
+                minmse_mode=self.minmse_mode,
                 reduce_range=self.reduce_range and reduce_range,
                 method=self.calibrate_method,
                 use_pof2s=self.use_power_of_2_scale,
@@ -846,20 +911,22 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             assert isinstance(scale, np.ndarray), f"Unexpected type {type(scale)}"
 
         scale_dtype = weight.data_type
-        scale_initializer = onnx.helper.make_tensor(scale_name, scale_dtype, [], scale.reshape((-1, )).tolist())
+        scale_initializer = onnx.helper.make_tensor(scale_name, scale_dtype, [], scale.reshape((-1,)).tolist())
         if qType in ONNX_BFP_QTYPES_LIST:
             # BFP data types do not need zero point, but we need to consider the case of reusing zero point of
             # weight for activation, such as Gather aligns its output with input.
             if self.activation_qType in ONNX_BFP_QTYPES_LIST:
-                zero_initializer = onnx.helper.make_tensor(zp_name, onnx_proto.TensorProto.FLOAT, [],
-                                                           zero_point.reshape((-1, )).tolist())
+                zero_initializer = onnx.helper.make_tensor(
+                    zp_name, onnx_proto.TensorProto.FLOAT, [], zero_point.reshape((-1,)).tolist()
+                )
             else:
                 if self.activation_qType not in ONNX_FP_QTYPES_LIST:
                     zero_point = zero_point.astype(ONNX_TYPE_TO_NP_TYPE[self.activation_qType])
-                zero_initializer = onnx.helper.make_tensor(zp_name, self.activation_qType, [],
-                                                           zero_point.reshape((-1, )).tolist())
+                zero_initializer = onnx.helper.make_tensor(
+                    zp_name, self.activation_qType, [], zero_point.reshape((-1,)).tolist()
+                )
         else:
-            zero_initializer = onnx.helper.make_tensor(zp_name, qType, [], zero_point.reshape((-1, )).tolist())
+            zero_initializer = onnx.helper.make_tensor(zp_name, qType, [], zero_point.reshape((-1,)).tolist())
         self.model.initializer_extend([scale_initializer, zero_initializer])
         if not keep_float_weight:
             if qType == onnx.TensorProto.FLOAT8E4M3FN:
@@ -877,14 +944,17 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                         raise RuntimeError(
                             f"The initializer of shape {weight_data.shape} could not be created, expecting "
                             f"{q_weight_data.tobytes()[:10]}, got {check.tobytes()[:10]} and shape={weight.shape}"
-                            f"\nraw={str(q_weight_initializer)[:200]}.")
+                            f"\nraw={str(q_weight_initializer)[:200]}."
+                        )
             elif qType in (onnx.TensorProto.INT4, onnx.TensorProto.UINT4):
-                if is_ort_version_below("1.19.0"):
+                if is_version_below(onnxruntime, "1.19.0"):
                     raise RuntimeError(f"onnxruntime version >= 1.19 is required to support {qType} quantization.")
 
-                if q_weight_data.dtype not in (np.int8, np.uint8):
-                    raise RuntimeError(
-                        f"Quantized weights for {q_weight_name} must be 8-bit before packing as 4-bit values.")
+                if is_version_below(onnx, "1.19.0"):
+                    if q_weight_data.dtype not in (np.int8, np.uint8):
+                        raise RuntimeError(
+                            f"Quantized weights for {q_weight_name} must be 8-bit before packing as 4-bit values."
+                        )
 
                 # We do not use onnx.helper.pack_float32_to_4bit() due to performance.
                 # This can be the difference between a large model taking 30 minutes to quantize vs 5 minutes.
@@ -905,8 +975,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 q_weight_initializer.CopyFrom(weight)
                 q_weight_initializer.name = q_weight_name
             else:
-                q_weight_data = np.asarray(q_weight_data,
-                                           dtype=onnx.helper.tensor_dtype_to_np_dtype(qType)).reshape(weight.dims)
+                q_weight_data = np.asarray(q_weight_data, dtype=onnx.helper.tensor_dtype_to_np_dtype(qType)).reshape(
+                    weight.dims
+                )
                 q_weight_initializer = onnx.numpy_helper.from_array(q_weight_data, q_weight_name)
             self.model.initializer_extend([q_weight_initializer])
 
@@ -928,26 +999,30 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         weights_rank = len(weights.shape)
         is_axis_valid, axis_norm = normalize_axis(channel_axis, weights_rank)
         if not is_axis_valid:
-            raise ValueError(f"Weight {weight_name} has a per-channel axis with value {channel_axis} that is "
-                             f"out-of-bounds for rank {weights_rank}")
+            raise ValueError(
+                f"Weight {weight_name} has a per-channel axis with value {channel_axis} that is "
+                f"out-of-bounds for rank {weights_rank}"
+            )
 
         channel_axis = axis_norm
         channel_count = weights.shape[channel_axis]
-        quant_overrides_for_channels = self.tensor_quant_overrides.get_per_channel_overrides(weight_name,
-                                                                                             default_val=[{
-                                                                                                 "axis":
-                                                                                                 channel_axis
-                                                                                             }])
+        quant_overrides_for_channels = self.tensor_quant_overrides.get_per_channel_overrides(
+            weight_name, default_val=[{"axis": channel_axis}]
+        )
 
         num_channel_overrides = len(quant_overrides_for_channels)
         if num_channel_overrides != 1 and num_channel_overrides != channel_count:
-            raise ValueError(f"Per-channel tensor quantization overrides for {weight_name} must have "
-                             f"either 1 or {channel_count} elements in the list of dictionaries.")
+            raise ValueError(
+                f"Per-channel tensor quantization overrides for {weight_name} must have "
+                f"either 1 or {channel_count} elements in the list of dictionaries."
+            )
 
         is_axis_override_valid, axis_override = normalize_axis(quant_overrides_for_channels[0]["axis"], weights_rank)
         if not is_axis_override_valid or axis_override != channel_axis:
-            raise ValueError(f"Tensor quantization overrides for {weight_name} specify an unexpected axis. "
-                             f"Expected {channel_axis}, but got {quant_overrides_for_channels[0]['axis']}.")
+            raise ValueError(
+                f"Tensor quantization overrides for {weight_name} specify an unexpected axis. "
+                f"Expected {channel_axis}, but got {quant_overrides_for_channels[0]['axis']}."
+            )
 
         # If user provides per-channel quantization overrides, all channels must use the same quant_type,
         # axis, symmetric, and reduce_range values. So, just use the first channel's values.
@@ -965,31 +1040,38 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             if "scale" in channel_quant_overrides and "zero_point" in channel_quant_overrides:
                 zero_point = np.array(channel_quant_overrides["zero_point"], dtype=ONNX_TYPE_TO_NP_TYPE[weight_qType])
                 scale = np.array(channel_quant_overrides["scale"])
-                quantized_per_channel_data = quantize_nparray(weight_qType, per_channel_data.flatten(), scale,
-                                                              zero_point)
+                quantized_per_channel_data = quantize_nparray(
+                    weight_qType, per_channel_data.flatten(), scale, zero_point
+                )
                 assert isinstance(zero_point, np.ndarray), f"Unexpected type {type(zero_point)}"
-                assert (zero_point.dtype != np.float32
-                        and zero_point.dtype != np.float16), f"Unexpected dtype {zero_point.dtype}"
+                assert zero_point.dtype != np.float32 and zero_point.dtype != np.float16, (
+                    f"Unexpected dtype {zero_point.dtype}"
+                )
                 assert isinstance(scale, np.ndarray), f"Unexpected type {type(scale)}"
-                assert isinstance(quantized_per_channel_data,
-                                  np.ndarray), f"Unexpected type {type(quantized_per_channel_data)}"
+                assert isinstance(quantized_per_channel_data, np.ndarray), (
+                    f"Unexpected type {type(quantized_per_channel_data)}"
+                )
 
             else:
-                _, _, zero_point, scale, quantized_per_channel_data = quantize_data_pof2s(
-                    per_channel_data.flatten(),
-                    weight_qType,
-                    self.is_weight_symmetric,
-                    self.reduce_range and reduce_range,
+                _, _, zero_point, scale, quantized_per_channel_data = quantize_data(
+                    data=per_channel_data.flatten(),
+                    qType=weight_qType,
+                    symmetric=self.is_weight_symmetric,
+                    weight_method=self.weight_method,
+                    minmse_mode=self.minmse_mode,
+                    reduce_range=self.reduce_range and reduce_range,
                     method=self.calibrate_method,
                     use_pof2s=self.use_power_of_2_scale,
                 )
 
                 assert isinstance(zero_point, np.ndarray), f"Unexpected type {type(zero_point)}"
-                assert (zero_point.dtype != np.float32
-                        and zero_point.dtype != np.float16), f"Unexpected dtype {zero_point.dtype}"
+                assert zero_point.dtype != np.float32 and zero_point.dtype != np.float16, (
+                    f"Unexpected dtype {zero_point.dtype}"
+                )
                 assert isinstance(scale, np.ndarray), f"Unexpected type {type(scale)}"
-                assert isinstance(quantized_per_channel_data,
-                                  np.ndarray), f"Unexpected type {type(quantized_per_channel_data)}"
+                assert isinstance(quantized_per_channel_data, np.ndarray), (
+                    f"Unexpected type {type(quantized_per_channel_data)}"
+                )
 
             zero_point_list.append(zero_point)
             scale_list.append(scale)
@@ -1009,10 +1091,12 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         # Update packed weight, zero point, and scale initializers
         zero_scale_shape = [initializer.dims[channel_axis]]
-        scale_initializer = onnx.helper.make_tensor(scale_name, initializer.data_type, zero_scale_shape,
-                                                    np.hstack(scale_list).tolist())
-        zero_initializer = onnx.helper.make_tensor(zp_name, weight_qType, zero_scale_shape,
-                                                   np.hstack(zero_point_list).tolist())
+        scale_initializer = onnx.helper.make_tensor(
+            scale_name, initializer.data_type, zero_scale_shape, np.hstack(scale_list).tolist()
+        )
+        zero_initializer = onnx.helper.make_tensor(
+            zp_name, weight_qType, zero_scale_shape, np.hstack(zero_point_list).tolist()
+        )
 
         self.model.initializer_extend([scale_initializer, zero_initializer])
 
@@ -1055,8 +1139,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         return quantization_params
 
-    def calc_quant_params(self, tensor_name: str, tensor_data: TensorData,
-                          quant_overrides: Dict[str, Any]) -> QuantizationParams:
+    def calc_quant_params(
+        self, tensor_name: str, tensor_data: TensorData, quant_overrides: dict[str, Any]
+    ) -> QuantizationParams:
         """
         Calculates quantization parameters (scale/zero-point) given a tensor's min/max range and optional
         user-provided overrides.
@@ -1074,8 +1159,16 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         if quant_type in ONNX_FP_QTYPES_LIST:
             reduce_range = self.is_activation_scaled  # If scale the activation, it will use a reduced range
             qmin, qmax = get_qmin_qmax_for_qType(quant_type, reduce_range=reduce_range)
-            zero, scale = compute_scale_zp_fp(rmin, rmax, qmin, qmax, quant_type, self.calibrate_method,
-                                              self.is_activation_symmetric, self.is_activation_scaled)
+            zero, scale = compute_scale_zp_fp(
+                rmin,
+                rmax,
+                qmin,
+                qmax,
+                quant_type,
+                self.calibrate_method,
+                self.is_activation_symmetric,
+                self.is_activation_scaled,
+            )
         else:
             if "quant_type" in quant_overrides:
                 quant_type = quant_overrides["quant_type"].tensor_type
@@ -1086,8 +1179,16 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 symmetric = quant_overrides.get("symmetric", self.is_activation_symmetric)
                 reduce_range = quant_overrides.get("reduce_range", False)
                 qmin, qmax = get_qmin_qmax_for_qType(quant_type, reduce_range=reduce_range, symmetric=symmetric)
-                zero, scale = compute_scale_zp(rmin, rmax, qmin, qmax, quant_type, self.calibrate_method,
-                                               self.is_activation_symmetric, self.use_power_of_2_scale)
+                zero, scale = compute_scale_zp(
+                    rmin,
+                    rmax,
+                    qmin,
+                    qmax,
+                    quant_type,
+                    self.calibrate_method,
+                    self.is_activation_symmetric,
+                    self.use_power_of_2_scale,
+                )
 
         return QuantizationParams(zero_point=zero, scale=scale, quant_type=quant_type)
 
@@ -1160,8 +1261,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 quantized_value.scale_name,
             )
 
-        q_weight_name, zp_name, scale_name = self.quantize_initializer_impl(weight, qType, reduce_range,
-                                                                            keep_float_weight)
+        q_weight_name, zp_name, scale_name = self.quantize_initializer_impl(
+            weight, qType, reduce_range, keep_float_weight
+        )
 
         # Log entry for this quantized weight
         quantized_value = QuantizedValue(
@@ -1192,9 +1294,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 quantized_value.scale_name,
             )
 
-        q_weight_name, zp_name, scale_name = self.quantize_weight_per_channel_impl(weight_name, weight_qType,
-                                                                                   channel_axis, reduce_range,
-                                                                                   keep_float_weight)
+        q_weight_name, zp_name, scale_name = self.quantize_weight_per_channel_impl(
+            weight_name, weight_qType, channel_axis, reduce_range, keep_float_weight
+        )
         quantized_value = QuantizedValue(
             weight_name,
             q_weight_name,
@@ -1207,10 +1309,9 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         return q_weight_name, zp_name, scale_name
 
-    def _make_scale_zp_initializers(self,
-                                    param_name: str,
-                                    params: QuantizationParams,
-                                    init_name_suffix: str = "") -> QDQScaleZpInitializers:
+    def _make_scale_zp_initializers(
+        self, param_name: str, params: QuantizationParams, init_name_suffix: str = ""
+    ) -> QDQScaleZpInitializers:
         """
         Creates and returns scale and zero-point initializers for the given quantization params. The initializers are
         named:
@@ -1224,14 +1325,15 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         assert scale_values.dtype != np.float64
         zero_point_type = params.data.get("quant_type", self.activation_qType)
 
-        zero_point_shape: List[Any] = []
+        zero_point_shape: list[Any] = []
         zero_point_name = param_name + "_zero_point" + init_name_suffix
-        scale_shape: List[Any] = []
+        scale_shape: list[Any] = []
         scale_name = param_name + "_scale" + init_name_suffix
 
         # Add initializers to model
-        init_zp = onnx.helper.make_tensor(zero_point_name, zero_point_type, zero_point_shape,
-                                          zero_point_values.ravel().tolist())
+        init_zp = onnx.helper.make_tensor(
+            zero_point_name, zero_point_type, zero_point_shape, zero_point_values.ravel().tolist()
+        )
         self.model.add_initializer(init_zp)
 
         if scale_values.dtype == np.float32:
@@ -1240,7 +1342,7 @@ class VitisQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             scale_type = onnx_proto.TensorProto.FLOAT16
         else:
             raise ValueError(f"Unexpected dtype={scale_values.dtype} for param_name={param_name!r}")
-        init_scale = onnx.helper.make_tensor(scale_name, scale_type, scale_shape, scale_values.reshape((-1, )).tolist())
+        init_scale = onnx.helper.make_tensor(scale_name, scale_type, scale_shape, scale_values.reshape((-1,)).tolist())
         self.model.add_initializer(init_scale)
 
         return QDQScaleZpInitializers(init_scale, init_zp)

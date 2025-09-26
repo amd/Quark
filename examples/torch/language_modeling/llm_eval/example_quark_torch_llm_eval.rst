@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Language Model Evaluations in Quark
 ===================================
 
@@ -37,7 +39,7 @@ Getting Started
 ---------------
 
 1. Ensure that Quark package is installed in your conda environment
-2. Install additional requirements for evalautions from:
+2. Install additional requirements for evaluation from:
 
 .. code:: bash
 
@@ -46,7 +48,7 @@ Getting Started
 User Guide
 ----------
 
-Below we share a list of recipies that enable the features above. Please
+Below we share a list of recipes that enable the features above. Please
 click on each individual links below for more details.
 
 .. toctree::

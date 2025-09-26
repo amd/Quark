@@ -4,17 +4,14 @@
 #
 """Defines core classes for expressing onnx model transformations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
-import six
 from typing import Any, Dict, List, Optional, OrderedDict, Union
+
+import six
 from onnx import NodeProto, TensorProto
 
 
-class OpTypePattern(object):
+class OpTypePattern:
     """Defines a tree sub-graph pattern of onnx nodes to match in a model.
 
     `OpTypePattern` can be used to describe various common patterns in model
@@ -37,10 +34,9 @@ class OpTypePattern(object):
 
     """
 
-    def __init__(self,
-                 op_type: str = "",
-                 inputs: Optional[List[OpTypePattern]] = None,
-                 config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self, op_type: str = "", inputs: list[OpTypePattern] | None = None, config: dict[str, Any] | None = None
+    ) -> None:
         """Construct pattern to match.
 
         Args:
@@ -53,18 +49,18 @@ class OpTypePattern(object):
             inputs = []
 
         if not isinstance(op_type, str):
-            raise ValueError('Invalid op_type: {}'.format(op_type))
+            raise ValueError(f"Invalid op_type: {op_type}")
         self.op_type: str = op_type
 
-        assert (inputs is not None), "input is None"
-        self.inputs: List[OpTypePattern] = inputs
-        self.config: Optional[Dict[str, Any]] = config
+        assert inputs is not None, "input is None"
+        self.inputs: list[OpTypePattern] = inputs
+        self.config: dict[str, Any] | None = config
 
     def __str__(self) -> str:
-        return '{} <- [{}]'.format(self.op_type, ', '.join([str(inp) for inp in self.inputs]))
+        return "{} <- [{}]".format(self.op_type, ", ".join([str(inp) for inp in self.inputs]))
 
 
-class NodeTree(object):
+class NodeTree:
     """Represents a pattern matching results in a node containing a tree.
 
     `NodeTree` is used to represent a tree of nodes in a model. It contains
@@ -74,11 +70,13 @@ class NodeTree(object):
     been found in a model, and nodes which should be replaced inside the model.
     """
 
-    def __init__(self,
-                 node: Optional[NodeProto] = None,
-                 weights: Union[OrderedDict[str, TensorProto], List[Any], None] = None,
-                 input_nodes: Optional[List[NodeTree]] = None,
-                 metadata: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        node: NodeProto | None = None,
+        weights: Union[OrderedDict[str, TensorProto], list[Any], None] = None,
+        input_nodes: list[NodeTree] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Construct a NodeTree representing a tree of nodes.
 
         Args:
@@ -91,17 +89,17 @@ class NodeTree(object):
             input_nodes = []
 
         self.node: Any = node
-        self.weights: Union[OrderedDict[str, TensorProto], List[Any], None] = weights
-        assert (input_nodes is not None), "input_nodes is None"
-        self.input_nodes: List[NodeTree] = input_nodes
+        self.weights: Union[OrderedDict[str, TensorProto], list[Any], None] = weights
+        assert input_nodes is not None, "input_nodes is None"
+        self.input_nodes: list[NodeTree] = input_nodes
 
     def __str__(self) -> str:
-        assert (self.node is not None), "self.node is None"
-        return '{} <- [{}]'.format(self.node.name, ', '.join([str(input_node) for input_node in self.input_nodes]))
+        assert self.node is not None, "self.node is None"
+        return "{} <- [{}]".format(self.node.name, ", ".join([str(input_node) for input_node in self.input_nodes]))
 
 
 @six.add_metaclass(abc.ABCMeta)
-class Transform(object):
+class Transform:
     """Defines a transform to be applied to a onnx model graph.
 
     A transform is a combination of 'Find + Replace' which describes how to find

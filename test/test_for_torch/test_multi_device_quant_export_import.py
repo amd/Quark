@@ -3,39 +3,66 @@
 # SPDX-License-Identifier: MIT
 #
 
-import torch
+import tempfile
+from typing import List, Optional
+
 import pytest
+import torch
+from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from torch.utils.data import DataLoader
-from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, GPTQConfig
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType
-from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver, PerTensorMinMaxObserver, PerChannelMinMaxObserver
-from quark.torch import ModelExporter, ModelImporter
-from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+from quark.shares.utils.testing_utils import (
+    PatchEverywhere,
+    require_torch_higher_or_equal,
+    retry_flaky_test,
+    torch_device,
+)
+from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.safetensors import _load_weights_from_safetensors
-import quark
-
-import tempfile
-from typing import Optional, List
-
-from quark.shares.utils.testing_utils import torch_device, retry_flaky_test
+from quark.torch.quantization.config.config import Config, GPTQConfig, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import (
+    PerChannelMinMaxObserver,
+    PerGroupMinMaxObserver,
+    PerTensorMinMaxObserver,
+)
 
 MODEL_DIR = "facebook/opt-125m"
 torch.manual_seed(42)
 INPUT_IDS = torch.randint(0, 1024, (1, 10)).to(torch_device)
 
-GPTQ_CONFIG = GPTQConfig(model_decoder_layers="model.decoder.layers", inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.out_proj", "fc1", "fc2"])
+GPTQ_CONFIG = GPTQConfig(
+    model_decoder_layers="model.decoder.layers",
+    inside_layer_modules=[
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+        "self_attn.q_proj",
+        "self_attn.out_proj",
+        "fc1",
+        "fc2",
+    ],
+)
 
-UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4, observer_cls=PerGroupMinMaxObserver, symmetric=False, scale_type=ScaleType.float, round_method=RoundType.half_even, qscheme=QSchemeType.per_group, ch_axis=1, is_dynamic=False, group_size=32)
+UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+    dtype=Dtype.uint4,
+    observer_cls=PerGroupMinMaxObserver,
+    symmetric=False,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_group,
+    ch_axis=1,
+    is_dynamic=False,
+    group_size=32,
+)
+
 
 def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
     text = "Hello, how are you?"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenized_outputs = tokenizer(text, return_tensors="pt")
-    calib_dataloader = DataLoader(tokenized_outputs['input_ids'].to(device))
+    calib_dataloader = DataLoader(tokenized_outputs["input_ids"].to(device))
     return calib_dataloader
+
 
 def get_accelerate_cpu_model(model_name="facebook/opt-125m"):
     max_memory = {"cpu": "100GB"}
@@ -47,7 +74,9 @@ def get_accelerate_cpu_model(model_name="facebook/opt-125m"):
             for i in range(1, torch.cuda.device_count()):
                 max_memory[i] = "0GB"
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
+    )
     print(model.hf_device_map)
     return model
 
@@ -62,17 +91,23 @@ def get_multi_device_model(model_name="facebook/opt-125m"):
             for i in range(1, torch.cuda.device_count()):
                 max_memory[i] = "0GB"
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
+    )
     print(model.hf_device_map)
     return model
 
 
-def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False, multi_device=True, device_map: Optional[str] = "auto"):
+def quantize_model(
+    quant_config, model_name="facebook/opt-125m", multi_gpu=False, multi_device=True, device_map: str | None = "auto"
+):
     # Get quantizer
     if not multi_device:
         quantizer = ModelQuantizer(quant_config)
         if multi_gpu:
-            model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, device_map="auto", torch_dtype="auto", trust_remote_code=True
+            )
             model.eval()
         else:
             model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -89,7 +124,9 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
                     max_memory[i] = "0GB"
 
         quantizer = ModelQuantizer(quant_config, multi_device=True)
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
+        )
         print(model.hf_device_map)
 
     # Get dataloader, if multi_gpu, give the first layer's device
@@ -103,9 +140,15 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
     return quant_model
 
 
-@pytest.mark.parametrize("qscheme", [
-    pytest.param(qscheme, id=str(qscheme)) for qscheme in [QSchemeType.per_tensor, QSchemeType.per_channel, QSchemeType.per_group]
-])
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
+@pytest.mark.parametrize(
+    "qscheme",
+    [
+        pytest.param(qscheme, id=str(qscheme))
+        for qscheme in [QSchemeType.per_tensor, QSchemeType.per_channel, QSchemeType.per_group]
+    ],
+)
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
 def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
     model_id = "facebook/opt-125m"
@@ -119,25 +162,24 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
         QSchemeType.per_channel: 0,
         QSchemeType.per_group: 1,
     }
-    quant_spec = QuantizationSpec(dtype=Dtype.int4,
-                                  qscheme=qscheme,
-                                  observer_cls=qscheme_to_observer[qscheme],
-                                  symmetric=True,
-                                  scale_type=ScaleType.float,
-                                  round_method=RoundType.half_even,
-                                  is_dynamic=False,
-                                  ch_axis=qscheme_to_ch_axis[qscheme],
-                                  group_size=8 if qscheme == QSchemeType.per_group else None)
+    quant_spec = QuantizationSpec(
+        dtype=Dtype.int4,
+        qscheme=qscheme,
+        observer_cls=qscheme_to_observer[qscheme],
+        symmetric=True,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+        ch_axis=qscheme_to_ch_axis[qscheme],
+        group_size=8 if qscheme == QSchemeType.per_group else None,
+    )
 
     quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
 
     quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False, device_map=None)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        export_config = ExporterConfig(json_export_config=JsonExporterConfig(weight_format=weight_format))
-
-        model_exporter = ModelExporter(config=export_config, export_dir=tmpdir)
-        model_exporter.export_safetensors_model(model=quant_model, quant_config=quant_config)
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
         quant_model(INPUT_IDS).to_tuple()
 
@@ -149,8 +191,7 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
         # Used for later comparison.
         model_state_dict = _load_weights_from_safetensors(tmpdir)
 
-        importer = ModelImporter(tmpdir, saved_format="safetensors", multi_device=True)
-        q_model = importer.import_model_info(original_model)
+        q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=True)
         q_model = q_model.eval()
 
         q_model_state_dict = q_model.state_dict()
@@ -160,20 +201,25 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
                 assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
                 assert model_state_dict[key].shape == q_model_state_dict[key].shape
 
-
         with torch.no_grad():
             outputs = q_model(INPUT_IDS).to_tuple()
 
-        for ref_output, output in zip(ref_outputs[0], outputs[0]):
+        for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
             if torch_device.type == "cpu":
                 assert torch.equal(ref_output, output)
             else:
                 assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
-@pytest.mark.parametrize("qscheme", [
-    pytest.param(qscheme, id=str(qscheme)) for qscheme in [QSchemeType.per_tensor, QSchemeType.per_channel, QSchemeType.per_group]
-])
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
+@pytest.mark.parametrize(
+    "qscheme",
+    [
+        pytest.param(qscheme, id=str(qscheme))
+        for qscheme in [QSchemeType.per_tensor, QSchemeType.per_channel, QSchemeType.per_group]
+    ],
+)
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
 def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
     model_id = "facebook/opt-125m"
@@ -187,25 +233,24 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
         QSchemeType.per_channel: 0,
         QSchemeType.per_group: 1,
     }
-    quant_spec = QuantizationSpec(dtype=Dtype.int8,
-                                  qscheme=qscheme,
-                                  observer_cls=qscheme_to_observer[qscheme],
-                                  symmetric=True,
-                                  scale_type=ScaleType.float,
-                                  round_method=RoundType.half_even,
-                                  is_dynamic=False,
-                                  ch_axis=qscheme_to_ch_axis[qscheme],
-                                  group_size=8 if qscheme == QSchemeType.per_group else None)
+    quant_spec = QuantizationSpec(
+        dtype=Dtype.int8,
+        qscheme=qscheme,
+        observer_cls=qscheme_to_observer[qscheme],
+        symmetric=True,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+        ch_axis=qscheme_to_ch_axis[qscheme],
+        group_size=8 if qscheme == QSchemeType.per_group else None,
+    )
 
     quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
 
     quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False, device_map=None)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        export_config = ExporterConfig(json_export_config=JsonExporterConfig(weight_format=weight_format))
-
-        model_exporter = ModelExporter(config=export_config, export_dir=tmpdir)
-        model_exporter.export_safetensors_model(model=quant_model, quant_config=quant_config)
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
         quant_model(INPUT_IDS).to_tuple()
 
@@ -217,8 +262,7 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
         # Used for later comparison.
         model_state_dict = _load_weights_from_safetensors(tmpdir)
 
-        importer = ModelImporter(tmpdir, saved_format="safetensors", multi_device=True)
-        q_model = importer.import_model_info(original_model)
+        q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=True)
         q_model = q_model.eval()
 
         q_model_state_dict = q_model.state_dict()
@@ -228,72 +272,73 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
                 assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
                 assert model_state_dict[key].shape == q_model_state_dict[key].shape
 
-
         with torch.no_grad():
             outputs = q_model(INPUT_IDS).to_tuple()
 
-        for ref_output, output in zip(ref_outputs[0], outputs[0]):
+        for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
             if torch_device.type == "cpu":
                 assert torch.equal(ref_output, output)
             else:
                 assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
-
-@pytest.mark.parametrize("kv_cache_group", [
-    pytest.param(kv_cache_group, id=str(kv_cache_group)) for kv_cache_group in [[], ["*k_proj", "*v_proj"]]
-])
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
+@pytest.mark.parametrize(
+    "kv_cache_group",
+    [pytest.param(kv_cache_group, id=str(kv_cache_group)) for kv_cache_group in [[], ["*k_proj", "*v_proj"]]],
+)
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
 @retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU.
-def test_fp8_kv_cache_import(kv_cache_group: List[str], weight_format: str):
-    '''
+def test_fp8_kv_cache_import(kv_cache_group: list[str], weight_format: str):
+    """
     Test Features:
         Import Format:            Json-safetensors
         Quantization Method:      FP8 KV_Cache_FP8
-    '''
+    """
 
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.fp8_e4m3,
-                                           qscheme=QSchemeType.per_tensor,
-                                           observer_cls=PerTensorMinMaxObserver,
-                                           is_dynamic=False)
+    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+        dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
+    )
 
     EXCLUDE_LAYERS = ["lm_head"]
 
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                                       weight=FP8_PER_TENSOR_SPEC)
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
     kv_cache_quant_config = {}
     if len(kv_cache_group) > 0:
         layer_quant_config = {
-                "*v_proj":
-                QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                   weight=FP8_PER_TENSOR_SPEC,
-                                   output_tensors=FP8_PER_TENSOR_SPEC),
-                "*k_proj":
-                QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                   weight=FP8_PER_TENSOR_SPEC,
-                                   output_tensors=FP8_PER_TENSOR_SPEC),
+            "*v_proj": QuantizationConfig(
+                input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+            ),
+            "*k_proj": QuantizationConfig(
+                input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+            ),
         }
         kv_cache_quant_config = layer_quant_config.copy()
     else:
         layer_quant_config = {}
 
-    quant_config = Config(global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
-                          layer_quant_config=layer_quant_config,
-                          kv_cache_quant_config=kv_cache_quant_config,
-                          exclude=EXCLUDE_LAYERS)
+    quant_config = Config(
+        global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
+        layer_quant_config=layer_quant_config,
+        kv_cache_quant_config=kv_cache_quant_config,
+        kv_cache_group=kv_cache_group,
+        exclude=EXCLUDE_LAYERS,
+    )
     with torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
-
-        NO_MERGE_REALQ_CONFIG = JsonExporterConfig(weight_format=weight_format, kv_cache_group=kv_cache_group, pack_method="reorder")
-        export_config = ExporterConfig(json_export_config=NO_MERGE_REALQ_CONFIG)
-
         with tempfile.TemporaryDirectory() as tmpdir:
             for custom_mode in ["quark", "fp8"]:
                 if custom_mode == "fp8" and weight_format == "fake_quantized":
                     continue
 
-                model_exporter = ModelExporter(config=export_config, export_dir=tmpdir)
-                model_exporter.export_safetensors_model(model=quant_model, quant_config=quant_config, custom_mode=custom_mode)
+                export_safetensors(
+                    model=quant_model,
+                    output_dir=tmpdir,
+                    custom_mode=custom_mode,
+                    weight_format=weight_format,
+                    pack_method="reorder",
+                )
 
                 ref_outputs = quant_model(INPUT_IDS).to_tuple()
 
@@ -301,22 +346,26 @@ def test_fp8_kv_cache_import(kv_cache_group: List[str], weight_format: str):
 
                 original_model.eval()
 
-                importer = ModelImporter(tmpdir, saved_format="safetensors", multi_device=True)
-                q_model = importer.import_model_info(original_model)
+                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=True)
+
                 # scaled_mm has exclusive tests, only naive mode is tested here.
-                quark.torch.export.nn.modules.qparamslinear.SCALED_MM_AVAILABLE_DEV = None
+                with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", None, module_name_prefix="quark"):
+                    outputs = q_model(INPUT_IDS).to_tuple()
 
-                outputs = q_model(INPUT_IDS).to_tuple()
+                    for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                        # When `kv_cache_group` is specified, a single scale is used for key/value linear after export,
+                        # which does not match the behavior prior to export.
+                        if len(kv_cache_group) == 0:
+                            if torch_device.type == "cpu":
+                                assert torch.equal(ref_output, output)
+                            else:
+                                assert torch.allclose(
+                                    output, ref_output, atol=1e-4
+                                )  # This one appears not to be flaky.
 
-                for ref_output, output in zip(ref_outputs[0], outputs[0]):
-                    # When `kv_cache_group` is specified, a single scale is used for key/value linear after export,
-                    # which does not match the behavior prior to export.
-                    if len(kv_cache_group) == 0:
-                        if torch_device.type == "cpu":
-                            assert torch.equal(ref_output, output)
-                        else:
-                            assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
 def test_OOM():
     model_id = "facebook/opt-125m"
     accelerate_cpu_model = get_multi_device_model(model_id)
@@ -331,15 +380,17 @@ def test_OOM():
         QSchemeType.per_group: 1,
     }
     qscheme = QSchemeType.per_tensor
-    quant_spec = QuantizationSpec(dtype=Dtype.int4,
-                                  qscheme=qscheme,
-                                  observer_cls=qscheme_to_observer[qscheme],
-                                  symmetric=True,
-                                  scale_type=ScaleType.float,
-                                  round_method=RoundType.half_even,
-                                  is_dynamic=False,
-                                  ch_axis=qscheme_to_ch_axis[qscheme],
-                                  group_size=8 if qscheme == QSchemeType.per_group else None)
+    quant_spec = QuantizationSpec(
+        dtype=Dtype.int4,
+        qscheme=qscheme,
+        observer_cls=qscheme_to_observer[qscheme],
+        symmetric=True,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+        ch_axis=qscheme_to_ch_axis[qscheme],
+        group_size=8 if qscheme == QSchemeType.per_group else None,
+    )
 
     quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
     quantizer = ModelQuantizer(quant_config, multi_device=False)
@@ -348,7 +399,10 @@ def test_OOM():
     try:
         quant_model = quantizer.quantize_model(accelerate_cpu_model, calib_dataloader)
     except MemoryError as e:
-        assert "Out of memory. The available GPU memory is insufficient to load the entire model. You can try adding '--multi_device' " in str(e)
+        assert (
+            "Out of memory. The available GPU memory is insufficient to load the entire model. You can try adding '--multi_device' "
+            in str(e)
+        )
     else:
         raise ValueError("Expected ValueError was not raised.")
 

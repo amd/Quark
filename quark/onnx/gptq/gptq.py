@@ -3,31 +3,29 @@
 # SPDX-License-Identifier: MIT
 #
 
-import os
-import torch
-import math
-import numpy as np
-from tqdm.auto import tqdm
 import copy
-import tempfile
+import math
+import os
+from collections import OrderedDict
+from typing import Any, Dict, List, Tuple, Union
 
+import numpy as np
 import onnx
 import onnxruntime
-from onnxruntime.transformers.onnx_model import OnnxModel
-
-from typing import Any, Dict, List, Tuple, Union
-from collections import OrderedDict
-from onnx import ModelProto, NodeProto, TensorProto
+import torch
 from numpy.typing import NDArray
+from onnx import ModelProto, NodeProto, TensorProto
+from onnxruntime.transformers.onnx_model import OnnxModel
+from tqdm.auto import tqdm
 
+from quark.onnx.quant_utils import create_infer_session_for_onnx_model, create_tmp_dir
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 
-class GPTQ():
-
-    def __init__(self, weight: NDArray[Any], extra_options: Dict[str, Any]) -> None:
+class GPTQ:
+    def __init__(self, weight: NDArray[Any], extra_options: dict[str, Any]) -> None:
         self.W = weight
         self.H = np.zeros((self.W.shape[0], self.W.shape[0]))
         self.scale: NDArray[Any] = np.zeros(1)
@@ -47,11 +45,10 @@ class GPTQ():
     def fasterquant(
         self,
         blocksize: int = 128,
-        percdamp: float = .01,
+        percdamp: float = 0.01,
         groupsize: int = -1,
         actorder: bool = False,
-    ) -> Tuple[NDArray[np.float32], NDArray[np.uint8], NDArray[np.float64], NDArray[np.float64]]:
-
+    ) -> tuple[NDArray[np.float32], NDArray[np.uint8], NDArray[np.float64], NDArray[np.float64]]:
         W = self.W.copy()
         if not self.ready():
             self.find_params(W)
@@ -97,14 +94,14 @@ class GPTQ():
 
                 if groupsize != -1:
                     if (i1 + i) % groupsize == 0:
-                        self.find_params(W[(i1 + i):(i1 + i + groupsize), :])
+                        self.find_params(W[(i1 + i) : (i1 + i + groupsize), :])
 
                 q_int = self.quantize_int(w, self.scale, self.zero, self.maxq).flatten()
                 q = self.scale * (q_int - self.zero)
 
                 Q1[i, :] = q
                 Q1_int[i, :] = q_int
-                Losses1[i, :] = (w - q)**2 / d**2
+                Losses1[i, :] = (w - q) ** 2 / d**2
 
                 err1 = (w - q) / d
                 W1[i:, :] -= np.matmul(np.expand_dims(Hinv1[i:, i], axis=1), np.expand_dims(err1, axis=0))
@@ -137,7 +134,7 @@ class GPTQ():
         mse: bool = False,
         norm: float = 2.4,
         grid: int = 100,
-        maxshrink: float = .8,
+        maxshrink: float = 0.8,
         trits: bool = False,
     ) -> None:
         self.maxq = np.array(2**bits - 1)
@@ -176,7 +173,7 @@ class GPTQ():
             else:
                 self.zero = np.round(-xmin / self.scale)
         if self.mse:
-            best = np.full([x.shape[1]], float('inf'))
+            best = np.full([x.shape[1]], float("inf"))
             for i in range(int(self.maxshrink * self.grid)):
                 p = 1 - i / self.grid
                 xmin1 = p * xmin
@@ -210,57 +207,58 @@ class GPTQ():
     def ready(self) -> bool:
         return bool(np.all(self.scale != 0))
 
-    def quantize_int(self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64],
-                     maxq: NDArray[Any]) -> Any:
+    def quantize_int(
+        self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64], maxq: NDArray[Any]
+    ) -> Any:
         if maxq < 0:
-            return ((x > scale / 2.0) * scale + (x < zero / 2.0) * zero)
+            return (x > scale / 2.0) * scale + (x < zero / 2.0) * zero
         q = np.clip(np.round(x / scale) + zero, 0, maxq).astype(x.dtype)
         return q
 
-    def quantize_real(self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64],
-                      maxq: NDArray[Any]) -> Any:
+    def quantize_real(
+        self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64], maxq: NDArray[Any]
+    ) -> Any:
         if maxq < 0:
-            return ((x > scale / 2.0) * scale + (x < zero / 2.0) * zero)
+            return (x > scale / 2.0) * scale + (x < zero / 2.0) * zero
         q = np.clip(np.round(x / scale) + zero, 0, maxq).astype(x.dtype)
         return scale * (q - zero)
 
 
-class GptqProcessor():
-
+class GptqProcessor:
     def __init__(
-            self,
-            float_model: Union[ModelProto, str],
-            quant_model: Union[ModelProto, str],
-            dataloader: torch.utils.data.DataLoader,  # type: ignore
-            extra_options: Dict[str, Any],
-            use_external_data_format: bool = False,
-            providers: List[str] = ["CPUExecutionProvider"]) -> None:
+        self,
+        float_model: Union[ModelProto, str],
+        quant_model: Union[ModelProto, str],
+        dataloader: torch.utils.data.DataLoader,  # type: ignore
+        extra_options: dict[str, Any],
+        use_external_data_format: bool = False,
+        providers: list[str] = ["CPUExecutionProvider"],
+    ) -> None:
         self.float_model = copy.deepcopy(float_model) if isinstance(float_model, ModelProto) else onnx.load(float_model)
         self.quant_model = copy.deepcopy(quant_model) if isinstance(quant_model, ModelProto) else onnx.load(quant_model)
         self.onnx_model_float = OnnxModel(self.float_model)
         self.onnx_model_quant = OnnxModel(self.quant_model)
 
-        self.quant_node_list: List[NodeProto] = []
-        self.ln_outputs: List[str] = []
-        self.out_dict: Dict[str, TensorProto] = {}
-        self.extend_output_nodes: List[str] = []
+        self.quant_node_list: list[NodeProto] = []
+        self.ln_outputs: list[str] = []
+        self.out_dict: dict[str, TensorProto] = {}
+        self.extend_output_nodes: list[str] = []
         self.dataloader = dataloader
 
-        self.base_dir = tempfile.TemporaryDirectory(prefix="quark_onnx.gptq.").name
+        self.base_dir = create_tmp_dir(prefix="quark_onnx.gptq.").name
         self.gptq_model_path = os.path.join(self.base_dir, "decoder_model_gptq.onnx")
-        self.tmp_model_path = os.path.join(self.base_dir, "decoder_model_tmp.onnx")
         self.use_external_data_format = use_external_data_format
         self.providers = providers
         self.extra_options = extra_options
 
-        self.bits = self.extra_options.get('GPTQParams', {}).get('Bits', 8)
-        self.blocksize = self.extra_options.get('GPTQParams', {}).get('BlockSize', 128)
-        self.percdamp = self.extra_options.get('GPTQParams', {}).get('PercDamp', 0.01)
-        self.groupsize = self.extra_options.get('GPTQParams', {}).get('GroupSize', -1)
-        self.actorder = self.extra_options.get('GPTQParams', {}).get('ActOrder', False)
-        self.perchannel = self.extra_options.get('GPTQParams', {}).get('PerChannel', False)
-        self.sym = self.extra_options.get('GPTQParams', {}).get('WeightSymmetric', True)
-        self.mse = self.extra_options.get('GPTQParams', {}).get('MSE', False)
+        self.bits = self.extra_options.get("GPTQParams", {}).get("Bits", 8)
+        self.blocksize = self.extra_options.get("GPTQParams", {}).get("BlockSize", 128)
+        self.percdamp = self.extra_options.get("GPTQParams", {}).get("PercDamp", 0.01)
+        self.groupsize = self.extra_options.get("GPTQParams", {}).get("GroupSize", -1)
+        self.actorder = self.extra_options.get("GPTQParams", {}).get("ActOrder", False)
+        self.perchannel = self.extra_options.get("GPTQParams", {}).get("PerChannel", False)
+        self.sym = self.extra_options.get("GPTQParams", {}).get("WeightSymmetric", True)
+        self.mse = self.extra_options.get("GPTQParams", {}).get("MSE", False)
 
         self.accuracy_level = 0
 
@@ -282,20 +280,17 @@ class GptqProcessor():
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self.use_external_data_format:
-            self.onnx_model_float.save_model_to_file(self.tmp_model_path,
-                                                     use_external_data_format=True,
-                                                     all_tensors_to_one_file=True)
-            session = onnxruntime.InferenceSession(self.tmp_model_path, sess_options, providers=self.providers)
-        else:
-            session = onnxruntime.InferenceSession(self.float_model.SerializeToString(),
-                                                   sess_options,
-                                                   providers=self.providers)
+        session = create_infer_session_for_onnx_model(
+            self.onnx_model_float.model,
+            sess_options=sess_options,
+            providers=self.providers,
+            use_external_data_format=self.use_external_data_format,
+        )
 
         for inputs in tqdm(self.dataloader):
             inputs_dict = inputs
             ort_outs = session.run(self.ln_outputs, inputs_dict)
-            self.out_dict = OrderedDict(zip(self.ln_outputs, ort_outs))
+            self.out_dict = OrderedDict(zip(self.ln_outputs, ort_outs, strict=False))
             break
 
     def remove_extend_output_node(self) -> None:
@@ -317,28 +312,28 @@ class GptqProcessor():
             gptq = GPTQ(weight_data, self.extra_options)
             gptq.configure(bits=8, perchannel=self.perchannel, sym=self.sym, mse=self.mse, trits=False)
             gptq.add_batch(out_dict_emd)
-            quantized_weights, quantized_weights_int, scale, zero = gptq.fasterquant(blocksize=self.blocksize,
-                                                                                     percdamp=self.percdamp,
-                                                                                     groupsize=-1,
-                                                                                     actorder=self.actorder)
+            quantized_weights, quantized_weights_int, scale, zero = gptq.fasterquant(
+                blocksize=self.blocksize, percdamp=self.percdamp, groupsize=-1, actorder=self.actorder
+            )
             quantized_per_channel_data_list.append(quantized_weights_int)
             quantized_weights_int = np.concatenate(quantized_per_channel_data_list, axis=1)
 
-            quantized_weights_init = onnx.numpy_helper.from_array(quantized_weights_int,
-                                                                  weight_init.name + '_quantized')
-            weight_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + '_quantized')
+            quantized_weights_init = onnx.numpy_helper.from_array(
+                quantized_weights_int, weight_init.name + "_quantized"
+            )
+            weight_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + "_quantized")
             if weight_init_quant is not None:
                 self.onnx_model_quant.model.graph.initializer.remove(weight_init_quant)
                 self.onnx_model_quant.model.graph.initializer.append(quantized_weights_init)
 
-            scale_init = onnx.numpy_helper.from_array(scale, weight_init.name + '_scale')
-            scale_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + '_scale')
+            scale_init = onnx.numpy_helper.from_array(scale, weight_init.name + "_scale")
+            scale_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + "_scale")
             if scale_init_quant is not None:
                 self.onnx_model_quant.model.graph.initializer.remove(scale_init_quant)
                 self.onnx_model_quant.model.graph.initializer.append(scale_init)
 
-            zero_init = onnx.numpy_helper.from_array(zero, weight_init.name + '_zero_point')
-            zero_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + '_zero_point')
+            zero_init = onnx.numpy_helper.from_array(zero, weight_init.name + "_zero_point")
+            zero_init_quant = self.onnx_model_quant.get_initializer(weight_init.name + "_zero_point")
             if zero_init_quant is not None:
                 self.onnx_model_quant.model.graph.initializer.remove(zero_init_quant)
                 self.onnx_model_quant.model.graph.initializer.append(zero_init)
@@ -347,10 +342,11 @@ class GptqProcessor():
 
         return self.onnx_model_quant.model  # type: ignore
 
-    def prepare_matmul4bits_node(self, node: NodeProto, quantized_weights: NDArray[Any], scale: NDArray[Any],
-                                 zero: NDArray[Any]) -> Tuple[NodeProto, List[TensorProto]]:
-        bits = self.extra_options.get('MatMulNBitsParams', {}).get('Bits', 4)
-        kwargs: Dict[str, Any] = {}
+    def prepare_matmul4bits_node(
+        self, node: NodeProto, quantized_weights: NDArray[Any], scale: NDArray[Any], zero: NDArray[Any]
+    ) -> tuple[NodeProto, list[TensorProto]]:
+        bits = self.extra_options.get("MatMulNBitsParams", {}).get("Bits", 4)
+        kwargs: dict[str, Any] = {}
         rows, cols = quantized_weights.shape
         kwargs["K"] = rows
         kwargs["N"] = cols
@@ -379,10 +375,11 @@ class GptqProcessor():
             new_zero = np.ones(max_q.shape).astype(np.uint8) * (1 << (bits - 1))
         else:
             new_scale[max_q != min_q] = np.array(
-                [float(q) / (2**bits - 1) for q in (max_q - min_q)[max_q != min_q].flatten().tolist()])
-            new_zero = np.maximum(0,
-                                  np.minimum(2**bits - 1,
-                                             ((np.zeros(new_scale.shape) - min_q) / new_scale).round())).astype("uint8")
+                [float(q) / (2**bits - 1) for q in (max_q - min_q)[max_q != min_q].flatten().tolist()]
+            )
+            new_zero = np.maximum(
+                0, np.minimum(2**bits - 1, ((np.zeros(new_scale.shape) - min_q) / new_scale).round())
+            ).astype("uint8")
         new_scale = new_scale.astype(scale.dtype)
         quantized_weights = np.clip(np.round(quantized_weights / new_scale + new_zero), 0, 2**bits - 1).astype(np.uint8)
 
@@ -401,7 +398,7 @@ class GptqProcessor():
 
         # create zero tensor
         packed_zero = np.full((new_zero.shape[0], 1), 136, dtype="uint8")
-        packed_zero[:packed_zero.shape[0] // 2, :] = (new_zero[::2, :]) | (new_zero[1::2, :] << 4)
+        packed_zero[: packed_zero.shape[0] // 2, :] = (new_zero[::2, :]) | (new_zero[1::2, :] << 4)
         zero_tensor = onnx.numpy_helper.from_array(packed_zero)
         zero_tensor.name = node.input[1] + "_zero_points"
 
@@ -430,7 +427,7 @@ class GptqProcessor():
         new_nodes = []
 
         for node in graph.node:
-            if (node.op_type != 'MatMul') or (node not in self.quant_node_list):
+            if (node.op_type != "MatMul") or (node not in self.quant_node_list):
                 new_nodes.append(node)
                 continue
 
@@ -443,10 +440,9 @@ class GptqProcessor():
             gptq = GPTQ(weight_data, self.extra_options)
             gptq.configure(bits=4, perchannel=self.perchannel, sym=self.sym, mse=self.mse, trits=False)
             gptq.add_batch(out_dict_emd)
-            quantized_weights, quantized_weights_int, scale, zero = gptq.fasterquant(blocksize=self.blocksize,
-                                                                                     percdamp=self.percdamp,
-                                                                                     groupsize=self.groupsize,
-                                                                                     actorder=self.actorder)
+            quantized_weights, quantized_weights_int, scale, zero = gptq.fasterquant(
+                blocksize=self.blocksize, percdamp=self.percdamp, groupsize=self.groupsize, actorder=self.actorder
+            )
             quantized_per_channel_data_list.append(quantized_weights)
             quantized_weights = np.concatenate(quantized_per_channel_data_list, axis=1)
             graph.initializer.remove(weight_init)
@@ -460,9 +456,11 @@ class GptqProcessor():
         self.remove_extend_output_node()
 
         if self.use_external_data_format:
-            self.onnx_model_float.save_model_to_file(self.gptq_model_path,
-                                                     use_external_data_format=self.use_external_data_format,
-                                                     all_tensors_to_one_file=True)
+            self.onnx_model_float.save_model_to_file(
+                self.gptq_model_path,
+                use_external_data_format=self.use_external_data_format,
+                all_tensors_to_one_file=True,
+            )
             return OnnxModel(onnx.load(self.gptq_model_path))
         else:
             self.onnx_model_float.topological_sort()

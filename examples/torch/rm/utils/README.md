@@ -1,1 +1,6 @@
 Please copy the code [https://github.com/mlcommons/inference_results_v3.1/tree/main/closed/Intel/code/dlrm-v2-99/pytorch-cpu-int8/python] (https://github.com/mlcommons/inference_results_v3.1/tree/main/closed/Intel/code/dlrm-v2-99/pytorch-cpu-int8/python) to here and fix the bug as the ../README.md.
+
+<!--
+## License
+Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

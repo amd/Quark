@@ -4,15 +4,24 @@
 #
 
 from unittest.mock import MagicMock, patch
+
 import torch
 import torch.nn as nn
 
-from quark.torch.quantization.config.config import Config, RotationConfig, SmoothQuantConfig, AWQConfig, QuantizationConfig, Float16Spec
-from quark.torch.algorithm.utils.auto_config import dump_config_to_json
 from quark.torch.algorithm.api import add_algorithm_config_by_model
+from quark.torch.algorithm.utils.auto_config import dump_config_to_json
+from quark.torch.quantization.config.config import (
+    AWQConfig,
+    Config,
+    Float16Spec,
+    QuantizationConfig,
+    RotationConfig,
+    SmoothQuantConfig,
+)
 
 FLOAT16_SPEC = Float16Spec().to_quantization_spec()
 DEFAULT_CONFIG = QuantizationConfig(weight=FLOAT16_SPEC)
+
 
 @patch("os.makedirs")
 @patch("builtins.open")
@@ -28,11 +37,20 @@ def test_smoke_dump_config_to_json(mock_json_dump, mock_open, mock_makedirs):
     # Act
     dump_config_to_json(model, file_name, data_dict)
 
+
 def test_smoke_enhance_algorithm_config():
     # TODO: make it a unit test rather than smoke test
     # Arrange
     from transformers import AutoModelForCausalLM
+
     model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen1.5-0.5B")
-    config = Config(global_quant_config=DEFAULT_CONFIG, pre_quant_opt_config=[RotationConfig(), SmoothQuantConfig()], algo_config=AWQConfig())
+    config = Config(
+        global_quant_config=DEFAULT_CONFIG,
+        algo_config=[
+            RotationConfig(scaling_layers={}, model_decoder_layers="model.layers"),
+            SmoothQuantConfig(),
+            AWQConfig(),
+        ],
+    )
     dataloader = torch.utils.data.DataLoader(torch.tensor([[1, 2, 3, 4]]))
     updated_config = add_algorithm_config_by_model(model, dataloader, config)

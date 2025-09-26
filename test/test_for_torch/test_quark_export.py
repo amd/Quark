@@ -3,103 +3,125 @@
 # SPDX-License-Identifier: MIT
 #
 
-import sys
-import torch
-import onnx
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import numpy as np
-from torch.fx import GraphModule
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from dataclasses import replace
-from quark.torch import ModelQuantizer
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, AWQConfig
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerChannelMinMaxObserver, PerGroupMinMaxObserver
-from quark.torch.export.main_export.quant_config_parser import QuantConfigParser
-from quark.torch import ModelExporter
-from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
-from quark.shares.utils.testing_utils import retry_flaky_test
-from quark.shares.utils.testing_utils import torch_device
-from quark.shares.utils.testing_utils import use_temporary_directory
-
-import pytest
-import tempfile
-
-from pathlib import Path
 import copy
+import sys
+import tempfile
+from dataclasses import replace
+from pathlib import Path
 
-INT8_PER_GROUP_SYM_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                           observer_cls=PerGroupMinMaxObserver,
-                                           symmetric=True,
-                                           scale_type=ScaleType.float,
-                                           round_method=RoundType.half_even,
-                                           qscheme=QSchemeType.per_group,
-                                           ch_axis=1,
-                                           is_dynamic=False,
-                                           group_size=128)
+import numpy as np
+import onnx
+import pytest
+import torch
+import torch.nn as nn
+from torch.fx import GraphModule
+from torch.utils.data import DataLoader
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-INT4_PER_GROUP_SYM_SPEC = QuantizationSpec(dtype=Dtype.int4,
-                                           observer_cls=PerGroupMinMaxObserver,
-                                           symmetric=True,
-                                           scale_type=ScaleType.float,
-                                           round_method=RoundType.half_even,
-                                           qscheme=QSchemeType.per_group,
-                                           ch_axis=1,
-                                           is_dynamic=False,
-                                           group_size=128)
+from quark.shares.utils.testing_utils import (
+    require_torch_higher_or_equal,
+    retry_flaky_test,
+    torch_device,
+    use_temporary_directory,
+)
+from quark.torch import ModelExporter, ModelQuantizer
+from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+from quark.torch.export.main_export.quant_config_parser import QuantConfigParser
+from quark.torch.quantization.config.config import AWQConfig, Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import (
+    PerChannelMinMaxObserver,
+    PerGroupMinMaxObserver,
+    PerTensorMinMaxObserver,
+)
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 
-INT4_PER_CHANNEL_SPEC = QuantizationSpec(dtype=Dtype.int4,
-                                         observer_cls=PerChannelMinMaxObserver,
-                                         symmetric=True,
-                                         scale_type=ScaleType.float,
-                                         round_method=RoundType.half_even,
-                                         qscheme=QSchemeType.per_channel,
-                                         ch_axis=0,
-                                         is_dynamic=False)
+INT8_PER_GROUP_SYM_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    observer_cls=PerGroupMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_group,
+    ch_axis=1,
+    is_dynamic=False,
+    group_size=128,
+)
 
-INT32_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int32,
-                                         observer_cls=PerTensorMinMaxObserver,
-                                         symmetric=True,
-                                         scale_type=ScaleType.float,
-                                         round_method=RoundType.half_even,
-                                         qscheme=QSchemeType.per_tensor,
-                                         is_dynamic=False)
+INT4_PER_GROUP_SYM_SPEC = QuantizationSpec(
+    dtype=Dtype.int4,
+    observer_cls=PerGroupMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_group,
+    ch_axis=1,
+    is_dynamic=False,
+    group_size=128,
+)
 
-INT16_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int16,
-                                         observer_cls=PerTensorMinMaxObserver,
-                                         symmetric=True,
-                                         scale_type=ScaleType.float,
-                                         round_method=RoundType.half_even,
-                                         qscheme=QSchemeType.per_tensor,
-                                         is_dynamic=False)
+INT4_PER_CHANNEL_SPEC = QuantizationSpec(
+    dtype=Dtype.int4,
+    observer_cls=PerChannelMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_channel,
+    ch_axis=0,
+    is_dynamic=False,
+)
 
-UINT16_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.uint16,
-                                          observer_cls=PerTensorMinMaxObserver,
-                                          symmetric=True,
-                                          scale_type=ScaleType.float,
-                                          round_method=RoundType.half_even,
-                                          qscheme=QSchemeType.per_tensor,
-                                          is_dynamic=False)
+INT32_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int32,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_tensor,
+    is_dynamic=False,
+)
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        qscheme=QSchemeType.per_tensor,
-                                        is_dynamic=False)
+INT16_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int16,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_tensor,
+    is_dynamic=False,
+)
 
-UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4,
-                                             observer_cls=PerGroupMinMaxObserver,
-                                             symmetric=False,
-                                             scale_type=ScaleType.float,
-                                             round_method=RoundType.half_even,
-                                             qscheme=QSchemeType.per_group,
-                                             ch_axis=1,
-                                             is_dynamic=False,
-                                             group_size=4)
+UINT16_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.uint16,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_tensor,
+    is_dynamic=False,
+)
+
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_tensor,
+    is_dynamic=False,
+)
+
+UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+    dtype=Dtype.uint4,
+    observer_cls=PerGroupMinMaxObserver,
+    symmetric=False,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    qscheme=QSchemeType.per_group,
+    ch_axis=1,
+    is_dynamic=False,
+    group_size=4,
+)
 
 W_INT8_PER_GROUP_CONFIG = QuantizationConfig(weight=INT8_PER_GROUP_SYM_SPEC)
 
@@ -109,32 +131,26 @@ W_INT4_PER_CHANNEL_CONFIG = QuantizationConfig(weight=INT4_PER_CHANNEL_SPEC)
 
 W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
 
-FP8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.fp8_e4m3,
-                                       qscheme=QSchemeType.per_tensor,
-                                       observer_cls=PerTensorMinMaxObserver,
-                                       is_dynamic=False)
+FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
+)
 
 W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
 
-AWQ_CONFIG = AWQConfig(scaling_layers=[{
-    "prev_op": "self_attn_layer_norm",
-    "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
-    "inp": "self_attn.q_proj",
-    "module2inspect": "self_attn"
-}, {
-    "prev_op": "self_attn.v_proj",
-    "layers": ["self_attn.out_proj"],
-    "inp": "self_attn.out_proj"
-}, {
-    "prev_op": "final_layer_norm",
-    "layers": ["fc1"],
-    "inp": "fc1"
-}, {
-    "prev_op": "fc1",
-    "layers": ["fc2"],
-    "inp": "fc2"
-}],
-                       model_decoder_layers="model.decoder.layers")
+AWQ_CONFIG = AWQConfig(
+    scaling_layers=[
+        {
+            "prev_op": "self_attn_layer_norm",
+            "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+            "inp": "self_attn.q_proj",
+            "module2inspect": "self_attn",
+        },
+        {"prev_op": "self_attn.v_proj", "layers": ["self_attn.out_proj"], "inp": "self_attn.out_proj"},
+        {"prev_op": "final_layer_norm", "layers": ["fc1"], "inp": "fc1"},
+        {"prev_op": "fc1", "layers": ["fc2"], "inp": "fc2"},
+    ],
+    model_decoder_layers="model.decoder.layers",
+)
 
 EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
 sys.path.append("..")
@@ -166,35 +182,40 @@ def fx_contain_module_num(model: GraphModule, target_module: torch.nn.Module) ->
 
 
 def set_config_for_awq_or_smooth(algo_config):
-    algo_config.scaling_layers = [{
-        "prev_op": "self_attn_layer_norm",
-        "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
-        "inp": "self_attn.q_proj",
-        "module2inspect": "self_attn",
-        "has_kwargs": True,
-        "help": "attention input"
-    }, {
-        "prev_op": "self_attn.v_proj",
-        "layers": ["self_attn.out_proj"],
-        "inp": "self_attn.out_proj",
-        "module2inspect": None,
-        "has_kwargs": False,
-        "help": "attention out"
-    }, {
-        "prev_op": "final_layer_norm",
-        "layers": ["fc1"],
-        "inp": "fc1",
-        "module2inspect": None,
-        "has_kwargs": False,
-        "help": "linear 1"
-    }, {
-        "prev_op": "fc1",
-        "layers": ["fc2"],
-        "inp": "fc2",
-        "module2inspect": None,
-        "has_kwargs": False,
-        "help": "linear 2"
-    }]
+    algo_config.scaling_layers = [
+        {
+            "prev_op": "self_attn_layer_norm",
+            "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+            "inp": "self_attn.q_proj",
+            "module2inspect": "self_attn",
+            "has_kwargs": True,
+            "help": "attention input",
+        },
+        {
+            "prev_op": "self_attn.v_proj",
+            "layers": ["self_attn.out_proj"],
+            "inp": "self_attn.out_proj",
+            "module2inspect": None,
+            "has_kwargs": False,
+            "help": "attention out",
+        },
+        {
+            "prev_op": "final_layer_norm",
+            "layers": ["fc1"],
+            "inp": "fc1",
+            "module2inspect": None,
+            "has_kwargs": False,
+            "help": "linear 1",
+        },
+        {
+            "prev_op": "fc1",
+            "layers": ["fc2"],
+            "inp": "fc2",
+            "module2inspect": None,
+            "has_kwargs": False,
+            "help": "linear 2",
+        },
+    ]
     algo_config.model_decoder_layers = "model.decoder.layers"
     algo_config.embedding_layers = ["model.decoder.embed_tokens", "model.decoder.embed_positions"]
     return algo_config
@@ -204,23 +225,20 @@ def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
     text = "Hello, how are you?"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenized_outputs = tokenizer(text, return_tensors="pt")
-    calib_dataloader = DataLoader(tokenized_outputs['input_ids'].to(device))
+    calib_dataloader = DataLoader(tokenized_outputs["input_ids"].to(device))
     return calib_dataloader
 
 
-def quantize_model(quant_config,
-                   export_path: str,
-                   model_name="facebook/opt-125m",
-                   multi_gpu=False,
-                   custom_mode: str = "quark"):
+def quantize_model(
+    quant_config, export_path: str, model_name="facebook/opt-125m", multi_gpu=False, custom_mode: str = "quark"
+):
     # Get quantizer
     quantizer = ModelQuantizer(quant_config)
 
     if multi_gpu:
-        model = AutoModelForCausalLM.from_pretrained(model_name,
-                                                     device_map="auto",
-                                                     torch_dtype="auto",
-                                                     trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, device_map="auto", torch_dtype="auto", trust_remote_code=True
+        )
         model.eval()
     else:
         model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -245,37 +263,40 @@ def quantize_model(quant_config,
     return quant_model
 
 
-LAYER_QUANT_CONFIG = Config(global_quant_config=W_INT8_PER_GROUP_CONFIG,
-                            layer_quant_config={
-                                "model.model.decoder.layers.0.self_attn": W_INT4_PER_GROUP_SYM_CONFIG,
-                                "model.model.decoder.layers[2].fc1": W_INT4_PER_CHANNEL_CONFIG
-                            },
-                            exclude=EXCLUDE_LAYERS)
+LAYER_QUANT_CONFIG = Config(
+    global_quant_config=W_INT8_PER_GROUP_CONFIG,
+    layer_quant_config={
+        "model.model.decoder.layers.0.self_attn": W_INT4_PER_GROUP_SYM_CONFIG,
+        "model.model.decoder.layers[2].fc1": W_INT4_PER_CHANNEL_CONFIG,
+    },
+    exclude=EXCLUDE_LAYERS,
+)
 
-LAYER_TYPE_QUANT_CONFIG = Config(global_quant_config=W_INT8_PER_GROUP_CONFIG,
-                                 layer_type_quant_config={nn.Linear: W_INT4_PER_GROUP_SYM_CONFIG},
-                                 exclude=EXCLUDE_LAYERS)
+LAYER_TYPE_QUANT_CONFIG = Config(
+    global_quant_config=W_INT8_PER_GROUP_CONFIG,
+    layer_type_quant_config={nn.Linear: W_INT4_PER_GROUP_SYM_CONFIG},
+    exclude=EXCLUDE_LAYERS,
+)
 
-DEFAULT_AWQ_CONFIG = Config(global_quant_config=W_INT4_PER_GROUP_SYM_CONFIG,
-                            algo_config=AWQConfig(),
-                            exclude=EXCLUDE_LAYERS)
+DEFAULT_AWQ_CONFIG = Config(
+    global_quant_config=W_INT4_PER_GROUP_SYM_CONFIG, algo_config=[AWQConfig()], exclude=EXCLUDE_LAYERS
+)
 
-DEFAULT_AWQ_CONFIG.algo_config = set_config_for_awq_or_smooth(DEFAULT_AWQ_CONFIG.algo_config)
+DEFAULT_AWQ_CONFIG.algo_config = [set_config_for_awq_or_smooth(DEFAULT_AWQ_CONFIG.algo_config[0])]
 
-DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG = Config(global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
-                                               exclude=EXCLUDE_LAYERS)
+DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG = Config(
+    global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS
+)
 
 
 def test_fp8_kv_cache_check():
     layer_quant_config = {
-        "*v_proj":
-        QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                           weight=FP8_PER_TENSOR_SPEC,
-                           output_tensors=FP8_PER_TENSOR_SPEC),
-        "*k_proj":
-        QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                           weight=FP8_PER_TENSOR_SPEC,
-                           output_tensors=FP8_PER_TENSOR_SPEC)
+        "*v_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+        "*k_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
     }
 
     parser = QuantConfigParser(Config(global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG), JsonExporterConfig())
@@ -290,66 +311,68 @@ def test_fp8_kv_cache_check():
 
     parser._kv_cache_group = ["*k_proj", "*v_proj"]
     layer_quant_config = {
-        "*v_proj":
-        QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                           weight=FP8_PER_TENSOR_SPEC,
-                           output_tensors=FP8_PER_TENSOR_SPEC),
-        "*k_proj":
-        None
+        "*v_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+        "*k_proj": None,
     }
     assert parser.fp8_kv_cache_check(layer_quant_config) is None
     assert parser._fp8_kv_cache_scheme is None
 
     layer_quant_config = {
-        "*v_proj": QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                      weight=None,
-                                      output_tensors=FP8_PER_TENSOR_SPEC),
-        "*k_proj": QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                      weight=None,
-                                      output_tensors=FP8_PER_TENSOR_SPEC)
+        "*v_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=None, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+        "*k_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=None, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
     }
     assert parser.fp8_kv_cache_check(layer_quant_config) is None
     assert parser._fp8_kv_cache_scheme is None
 
     layer_quant_config = {
-        "*v_proj":
-        QuantizationConfig(input_tensors=INT4_PER_GROUP_SYM_SPEC,
-                           weight=FP8_PER_TENSOR_SPEC,
-                           output_tensors=FP8_PER_TENSOR_SPEC),
-        "*k_proj":
-        QuantizationConfig(input_tensors=INT4_PER_GROUP_SYM_SPEC,
-                           weight=FP8_PER_TENSOR_SPEC,
-                           output_tensors=FP8_PER_TENSOR_SPEC)
+        "*v_proj": QuantizationConfig(
+            input_tensors=INT4_PER_GROUP_SYM_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+        "*k_proj": QuantizationConfig(
+            input_tensors=INT4_PER_GROUP_SYM_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
     }
     assert parser.fp8_kv_cache_check(layer_quant_config) is None
     assert parser._fp8_kv_cache_scheme is None
 
     layer_quant_config = {
-        "*v_proj": QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                      weight=FP8_PER_TENSOR_SPEC,
-                                      output_tensors=None),
-        "*k_proj": QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC,
-                                      weight=FP8_PER_TENSOR_SPEC,
-                                      output_tensors=None)
+        "*v_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=None
+        ),
+        "*k_proj": QuantizationConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=None
+        ),
     }
     assert parser.fp8_kv_cache_check(layer_quant_config) is None
     assert parser._fp8_kv_cache_scheme is None
 
 
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
 @pytest.mark.parametrize(
     "model_dtype",
-    [pytest.param(model_dtype, id=str(model_dtype)) for model_dtype in [torch.float32, torch.float16, torch.bfloat16]])
-@pytest.mark.parametrize("scale_type", [
-    pytest.param(scale_type, id=str(scale_type))
-    for scale_type in [ScaleType.float, ScaleType.float32, ScaleType.float16, ScaleType.bfloat16]
-])
+    [pytest.param(model_dtype, id=str(model_dtype)) for model_dtype in [torch.float32, torch.float16, torch.bfloat16]],
+)
+@pytest.mark.parametrize(
+    "scale_type",
+    [
+        pytest.param(scale_type, id=str(scale_type))
+        for scale_type in [ScaleType.float, ScaleType.float32, ScaleType.float16, ScaleType.bfloat16]
+    ],
+)
 def test_scale_type(model_dtype: torch.dtype, scale_type: ScaleType):
     # Test that exported scale dtype match with what was specified in the quantization config.
 
     scale_type_to_torch = {
         ScaleType.float32: torch.float32,
         ScaleType.float16: torch.float16,
-        ScaleType.bfloat16: torch.bfloat16
+        ScaleType.bfloat16: torch.bfloat16,
     }
 
     model = AutoModelForCausalLM.from_pretrained("fxmarty/tiny-llama-fast-tokenizer", torch_dtype=model_dtype)
@@ -398,6 +421,8 @@ def test_scale_type(model_dtype: torch.dtype, scale_type: ScaleType):
                     assert param.dtype == scale_type_to_torch[scale_type]
 
 
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
 @use_temporary_directory
 def test_int8_per_group(tmpdir: str):
     quant_spec = copy.deepcopy(INT8_PER_GROUP_SYM_SPEC)
@@ -417,7 +442,6 @@ def test_int8_per_group(tmpdir: str):
 
 
 class Tiny_Conv_model(nn.Module):
-
     def __init__(self):
         super(Tiny_Conv_model, self).__init__()
         self.conv = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1, bias=True)
@@ -434,19 +458,22 @@ class Tiny_Conv_model(nn.Module):
 @retry_flaky_test()
 @use_temporary_directory
 def test_int16_onnx_export(tmpdir: str):
-    int16_config = QuantizationConfig(input_tensors=INT16_PER_TENSOR_SPEC,
-                                      output_tensors=INT16_PER_TENSOR_SPEC,
-                                      weight=INT8_PER_TENSOR_SPEC,
-                                      bias=INT8_PER_TENSOR_SPEC)
+    int16_config = QuantizationConfig(
+        input_tensors=INT16_PER_TENSOR_SPEC,
+        output_tensors=INT16_PER_TENSOR_SPEC,
+        weight=INT8_PER_TENSOR_SPEC,
+        bias=INT8_PER_TENSOR_SPEC,
+    )
     int16_quant_config = Config(global_quant_config=int16_config, quant_mode=QuantizationMode.fx_graph_mode)
 
-    from quark.torch.export.onnx import change_opset_version
     import onnxruntime as ort
+
+    from quark.torch.export.onnx import change_opset_version
 
     # API test
     for each_quant_config in [int16_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
-        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device), )
+        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
@@ -475,7 +502,7 @@ def test_int16_onnx_export(tmpdir: str):
     #  the high level quant pipeline test
     for each_quant_config in [int16_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
-        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device), )
+        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
 
         quantizer = ModelQuantizer(each_quant_config)
@@ -483,8 +510,8 @@ def test_int16_onnx_export(tmpdir: str):
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 7
         config = ExporterConfig(json_export_config=JsonExporterConfig())
         exporter = ModelExporter(config=config, export_dir=tmpdir)
-        freezeded_model = quantizer.freeze(quantized_model.eval())
-        exporter.export_onnx_model(freezeded_model, example_inputs[0])
+        frozen_model = quantizer.freeze(quantized_model.eval())
+        exporter.export_onnx_model(frozen_model, example_inputs[0])
         ortSession = ort.InferenceSession(tmpdir + "/quark_model.onnx")
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "Conv") == 2
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 7
@@ -495,19 +522,22 @@ def test_int16_onnx_export(tmpdir: str):
 @retry_flaky_test()
 @use_temporary_directory
 def test_int32_onnx_export(tmpdir: str):
-    int32_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                      output_tensors=INT8_PER_TENSOR_SPEC,
-                                      weight=INT8_PER_TENSOR_SPEC,
-                                      bias=INT32_PER_TENSOR_SPEC)
+    int32_config = QuantizationConfig(
+        input_tensors=INT8_PER_TENSOR_SPEC,
+        output_tensors=INT8_PER_TENSOR_SPEC,
+        weight=INT8_PER_TENSOR_SPEC,
+        bias=INT32_PER_TENSOR_SPEC,
+    )
     a8w8b32_quant_config = Config(global_quant_config=int32_config, quant_mode=QuantizationMode.fx_graph_mode)
 
-    from quark.torch.export.onnx import fold_quantizers_for_bias
     import onnxruntime as ort
+
+    from quark.torch.export.onnx import fold_quantizers_for_bias
 
     # API test
     for each_quant_config in [a8w8b32_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
-        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device), )
+        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
@@ -528,7 +558,7 @@ def test_int32_onnx_export(tmpdir: str):
     #  the high level quant pipeline test
     for each_quant_config in [a8w8b32_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
-        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device), )
+        example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
 
         quantizer = ModelQuantizer(each_quant_config)
@@ -536,8 +566,8 @@ def test_int32_onnx_export(tmpdir: str):
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 7
         config = ExporterConfig(json_export_config=JsonExporterConfig())
         exporter = ModelExporter(config=config, export_dir=tmpdir)
-        freezeded_model = quantizer.freeze(quantized_model.eval())
-        exporter.export_onnx_model(freezeded_model, example_inputs[0])
+        frozen_model = quantizer.freeze(quantized_model.eval())
+        exporter.export_onnx_model(frozen_model, example_inputs[0])
         ortSession = ort.InferenceSession(tmpdir + "/quark_model.onnx")
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "Conv") == 2
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 5

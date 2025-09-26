@@ -2,17 +2,20 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Replace BFloat16 QDQ with Cast op.
-'''
-import onnx
-from onnx import helper, numpy_helper, ModelProto
-from onnxruntime.quantization.onnx_model import ONNXModel
+"""
+
 import argparse
 import os
-import numpy as np
-from quark.shares.utils.log import ScreenLogger
 from typing import Any, Tuple
+
+import numpy as np
+import onnx
+from onnx import ModelProto, helper, numpy_helper
+from onnxruntime.quantization.onnx_model import ONNXModel
+
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -24,7 +27,7 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
 
     new_nodes = []
 
-    def check_second_third_input(graph: onnx.GraphProto, node: onnx.NodeProto) -> Tuple[bool, Any]:
+    def check_second_third_input(graph: onnx.GraphProto, node: onnx.NodeProto) -> tuple[bool, Any]:
         # Ensure the node has at least 3 inputs
         if len(node.input) < 3:
             return False, None
@@ -54,7 +57,7 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
     try:
         onnx_model = ONNXModel(model)
         for node in graph.node:
-            if node.op_type in ['ExtendedQuantizeLinear', 'ExtendedDequantizeLinear']:
+            if node.op_type in ["ExtendedQuantizeLinear", "ExtendedDequantizeLinear"]:
                 # Check if second input (scale) and third input (zero_point) meet the conditions
                 is_valid, scale_value = check_second_third_input(graph, node)
 
@@ -62,24 +65,29 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
                     # If scale is not 1, prepare the scale or reciprocal of scale for Mul node
                     if scale_value is not None and np.all(scale_value != 1):
                         scale_tensor_name = f"{node.name}_scale"
-                        reciprocal_scale = 1.0 / scale_value if node.op_type == 'ExtendedQuantizeLinear' else scale_value
+                        reciprocal_scale = (
+                            1.0 / scale_value if node.op_type == "ExtendedQuantizeLinear" else scale_value
+                        )
 
                         # Convert scale to ndarray and add to initializers
-                        scale_initializer = helper.make_tensor(name=scale_tensor_name,
-                                                               data_type=onnx.TensorProto.FLOAT,
-                                                               dims=scale_value.shape,
-                                                               vals=reciprocal_scale.flatten() if node.op_type
-                                                               == 'ExtendedQuantizeLinear' else scale_value.flatten())
+                        scale_initializer = helper.make_tensor(
+                            name=scale_tensor_name,
+                            data_type=onnx.TensorProto.FLOAT,
+                            dims=scale_value.shape,
+                            vals=reciprocal_scale.flatten()
+                            if node.op_type == "ExtendedQuantizeLinear"
+                            else scale_value.flatten(),
+                        )
                         graph.initializer.append(scale_initializer)
 
                     # Replace node with Cast and Mul if scale != 1
-                    if node.op_type == 'ExtendedQuantizeLinear':
+                    if node.op_type == "ExtendedQuantizeLinear":
                         # Add Mul before the Cast with scale's reciprocal
                         if scale_value is not None and np.all(scale_value != 1):
                             mul_before_cast = helper.make_node(
-                                'Mul',
+                                "Mul",
                                 inputs=[node.input[0], scale_tensor_name],
-                                outputs=[f"{node.name}_mul_out"]  # Intermediate output before Cast
+                                outputs=[f"{node.name}_mul_out"],  # Intermediate output before Cast
                             )
                             new_nodes.append(mul_before_cast)
                             cast_input = f"{node.name}_mul_out"  # Mul output as input to Cast
@@ -88,27 +96,29 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
 
                         # Create Cast to Bfloat16
                         cast_to_bfloat16 = helper.make_node(
-                            'Cast',
+                            "Cast",
                             inputs=[cast_input],
                             outputs=node.output,  # Final output of the QuantizeLinear node
-                            to=onnx.TensorProto.BFLOAT16)
+                            to=onnx.TensorProto.BFLOAT16,
+                        )
                         new_nodes.append(cast_to_bfloat16)
 
-                    elif node.op_type == 'ExtendedDequantizeLinear':
+                    elif node.op_type == "ExtendedDequantizeLinear":
                         # Create Cast to Float
                         cast_to_float = helper.make_node(
-                            'Cast',
+                            "Cast",
                             inputs=[node.input[0]],  # Only keep the first input
                             outputs=[f"{node.name}_cast_out"],  # Intermediate output after Cast
-                            to=onnx.TensorProto.FLOAT)
+                            to=onnx.TensorProto.FLOAT,
+                        )
                         new_nodes.append(cast_to_float)
 
                         # Add Mul after the Cast with the original scale value
                         if scale_value is not None and np.all(scale_value != 1):
                             mul_after_cast = helper.make_node(
-                                'Mul',
+                                "Mul",
                                 inputs=[f"{node.name}_cast_out", scale_tensor_name],
-                                outputs=node.output  # Final output of the DequantizeLinear node
+                                outputs=node.output,  # Final output of the DequantizeLinear node
                             )
                             new_nodes.append(mul_after_cast)
                         else:
@@ -121,7 +131,7 @@ def replace_bfloat16_qdq_cast(model: ModelProto) -> Any:
                 new_nodes.append(node)
 
         # Replace the graph's nodes with the new node list
-        graph.ClearField('node')
+        graph.ClearField("node")
         graph.node.extend(new_nodes)
 
         onnx_model.clean_initializers()
@@ -153,9 +163,9 @@ def main() -> None:
     onnx.save(model, FLAGS.output_model)
 
     # Save the modified model
-    logger.info('Replace Finished!')
-    logger.info(f'model saved in: {FLAGS.output_model}')
+    logger.info("Replace Finished!")
+    logger.info(f"model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -4,17 +4,13 @@
 #
 """Graph transforms for the conversion of onnx models."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from typing import Any
+
 import numpy as np
 from onnx import helper
 
 from quark.onnx.graph_transformations import transforms
 from quark.onnx.utils import model_utils
-
 from quark.shares.utils.log import ScreenLogger
 
 Transform = transforms.Transform
@@ -27,43 +23,47 @@ logger = ScreenLogger(__name__)
 
 
 class ConvQDQToQOPTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
 
     def pattern(self) -> OpTypePattern:
         return OpTypePattern(
-            'QuantizeLinear',
+            "QuantizeLinear",
             [
                 OpTypePattern(
-                    'Conv',
+                    "Conv",
                     [
                         OpTypePattern(
-                            'DequantizeLinear',
+                            "DequantizeLinear",
                             [
-                                OpTypePattern('QuantizeLinear'),  # x
-                                OpTypePattern('.*'),  # x scale
-                                OpTypePattern('.*'),  # x zero_point
-                            ]),
+                                OpTypePattern("QuantizeLinear"),  # x
+                                OpTypePattern(".*"),  # x scale
+                                OpTypePattern(".*"),  # x zero_point
+                            ],
+                        ),
                         OpTypePattern(
-                            'DequantizeLinear',
+                            "DequantizeLinear",
                             [
-                                OpTypePattern('.*'),  # w
-                                OpTypePattern('.*'),  # w scale
-                                OpTypePattern('.*'),  # w zero_point
-                            ]),
+                                OpTypePattern(".*"),  # w
+                                OpTypePattern(".*"),  # w scale
+                                OpTypePattern(".*"),  # w zero_point
+                            ],
+                        ),
                         OpTypePattern(
-                            'DequantizeLinear',  # conv bias
+                            "DequantizeLinear",  # conv bias
                             [
-                                OpTypePattern('.*'),  # b
-                                OpTypePattern('.*'),  # b scale
-                                OpTypePattern('.*'),  # b zero_point
-                            ]),
-                    ]),
-                OpTypePattern('.*'),  # y scale
-                OpTypePattern('.*'),  # y zero_point
-            ])
+                                OpTypePattern(".*"),  # b
+                                OpTypePattern(".*"),  # b scale
+                                OpTypePattern(".*"),  # b zero_point
+                            ],
+                        ),
+                    ],
+                ),
+                OpTypePattern(".*"),  # y scale
+                OpTypePattern(".*"),  # y zero_point
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
         x_node = match_node.input_nodes[0].input_nodes[0].input_nodes[0]
@@ -78,7 +78,7 @@ class ConvQDQToQOPTransform(transforms.Transform):
         b_scale_node = match_node.input_nodes[0].input_nodes[2].input_nodes[1]
         b_zero_point_node = match_node.input_nodes[0].input_nodes[2].input_nodes[2]
         conv_node = match_node.input_nodes[0]
-        logger.info('Convert conv: ', conv_node.node.name)
+        logger.info("Convert conv: ", conv_node.node.name)
         y_scale_node = match_node.input_nodes[1]
         y_zero_point_node = match_node.input_nodes[2]
 
@@ -95,7 +95,7 @@ class ConvQDQToQOPTransform(transforms.Transform):
 
         # Make the QLinearConv node
         qlinear_conv = helper.make_node(
-            'QLinearConv',
+            "QLinearConv",
             inputs=[
                 x_node.node.output[0],  # x
                 x_scale_node.node.name,  # x_scale
@@ -108,48 +108,62 @@ class ConvQDQToQOPTransform(transforms.Transform):
                 rescale_b_node.node.name,  # b
             ],
             outputs=[match_node.node.output[0]],
-            name=conv_node.node.name)
-        qlinear_conv_node = NodeTree(qlinear_conv,
-                                     weights=None,
-                                     input_nodes=[
-                                         x_node,
-                                         x_scale_node,
-                                         x_zero_point_node,
-                                         w_node,
-                                         w_scale_node,
-                                         w_zero_point_node,
-                                         y_scale_node,
-                                         y_zero_point_node,
-                                         rescale_b_node,
-                                     ],
-                                     metadata=None)
+            name=conv_node.node.name,
+        )
+        qlinear_conv_node = NodeTree(
+            qlinear_conv,
+            weights=None,
+            input_nodes=[
+                x_node,
+                x_scale_node,
+                x_zero_point_node,
+                w_node,
+                w_scale_node,
+                w_zero_point_node,
+                y_scale_node,
+                y_zero_point_node,
+                rescale_b_node,
+            ],
+            metadata=None,
+        )
 
         return qlinear_conv_node
 
 
 class MatMulQDQToQOPTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
 
     def pattern(self) -> OpTypePattern:
-        return OpTypePattern('QuantizeLinear', [
-            OpTypePattern('MatMul', [
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-            ]),
-            OpTypePattern('.*'),
-            OpTypePattern('.*'),
-        ])
+        return OpTypePattern(
+            "QuantizeLinear",
+            [
+                OpTypePattern(
+                    "MatMul",
+                    [
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                    ],
+                ),
+                OpTypePattern(".*"),
+                OpTypePattern(".*"),
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
         x_node = match_node.input_nodes[0].input_nodes[0].input_nodes[0]
@@ -161,22 +175,22 @@ class MatMulQDQToQOPTransform(transforms.Transform):
         y_zero_point_node = match_node.input_nodes[0].input_nodes[1].input_nodes[2]
 
         matmul_node = match_node.input_nodes[0]
-        logger.info('Convert MatMul: ', matmul_node.node.name)
+        logger.info("Convert MatMul: ", matmul_node.node.name)
         z_scale_node = match_node.input_nodes[1]
         z_zero_point_node = match_node.input_nodes[2]
 
-        if hasattr(x_node.node, 'output'):
+        if hasattr(x_node.node, "output"):
             x_name = x_node.node.output[0]
         else:
             x_name = x_node.node.name
 
-        if hasattr(y_node.node, 'output'):
+        if hasattr(y_node.node, "output"):
             y_name = y_node.node.output[0]
         else:
             y_name = y_node.node.name
         # Make the QLinearConv node
         qlinear_matmul = helper.make_node(
-            'QLinearMatMul',
+            "QLinearMatMul",
             inputs=[
                 x_name,  # x
                 x_scale_node.node.name,  # x_scale
@@ -188,47 +202,61 @@ class MatMulQDQToQOPTransform(transforms.Transform):
                 z_zero_point_node.node.name,  # y_zero_point
             ],
             outputs=[match_node.node.output[0]],
-            name=matmul_node.node.name)
-        qlinear_matmul_node = NodeTree(qlinear_matmul,
-                                       weights=None,
-                                       input_nodes=[
-                                           x_node,
-                                           x_scale_node,
-                                           x_zero_point_node,
-                                           y_node,
-                                           y_scale_node,
-                                           y_zero_point_node,
-                                           z_scale_node,
-                                           z_zero_point_node,
-                                       ],
-                                       metadata=None)
+            name=matmul_node.node.name,
+        )
+        qlinear_matmul_node = NodeTree(
+            qlinear_matmul,
+            weights=None,
+            input_nodes=[
+                x_node,
+                x_scale_node,
+                x_zero_point_node,
+                y_node,
+                y_scale_node,
+                y_zero_point_node,
+                z_scale_node,
+                z_zero_point_node,
+            ],
+            metadata=None,
+        )
 
         return qlinear_matmul_node
 
 
 class AddQDQToQOPTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
 
     def pattern(self) -> OpTypePattern:
-        return OpTypePattern('QuantizeLinear', [
-            OpTypePattern('Add', [
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-            ]),
-            OpTypePattern('.*'),
-            OpTypePattern('.*'),
-        ])
+        return OpTypePattern(
+            "QuantizeLinear",
+            [
+                OpTypePattern(
+                    "Add",
+                    [
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                    ],
+                ),
+                OpTypePattern(".*"),
+                OpTypePattern(".*"),
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
         x_node = match_node.input_nodes[0].input_nodes[0].input_nodes[0]
@@ -240,22 +268,22 @@ class AddQDQToQOPTransform(transforms.Transform):
         y_zero_point_node = match_node.input_nodes[0].input_nodes[1].input_nodes[2]
 
         add_node = match_node.input_nodes[0]
-        logger.info('Convert Add: ', add_node.node.name)
+        logger.info("Convert Add: ", add_node.node.name)
         z_scale_node = match_node.input_nodes[1]
         z_zero_point_node = match_node.input_nodes[2]
 
-        if hasattr(x_node.node, 'output'):
+        if hasattr(x_node.node, "output"):
             x_name = x_node.node.output[0]
         else:
             x_name = x_node.node.name
 
-        if hasattr(y_node.node, 'output'):
+        if hasattr(y_node.node, "output"):
             y_name = y_node.node.output[0]
         else:
             y_name = y_node.node.name
         # Make the QLinearConv node
         qlinear_add = helper.make_node(
-            'QLinearAdd',
+            "QLinearAdd",
             inputs=[
                 x_name,  # x
                 x_scale_node.node.name,  # x_scale
@@ -268,47 +296,61 @@ class AddQDQToQOPTransform(transforms.Transform):
             ],
             outputs=[match_node.node.output[0]],
             domain=ms_domain,
-            name=add_node.node.name)
-        qlinear_add_node = NodeTree(qlinear_add,
-                                    weights=None,
-                                    input_nodes=[
-                                        x_node,
-                                        x_scale_node,
-                                        x_zero_point_node,
-                                        y_node,
-                                        y_scale_node,
-                                        y_zero_point_node,
-                                        z_scale_node,
-                                        z_zero_point_node,
-                                    ],
-                                    metadata=None)
+            name=add_node.node.name,
+        )
+        qlinear_add_node = NodeTree(
+            qlinear_add,
+            weights=None,
+            input_nodes=[
+                x_node,
+                x_scale_node,
+                x_zero_point_node,
+                y_node,
+                y_scale_node,
+                y_zero_point_node,
+                z_scale_node,
+                z_zero_point_node,
+            ],
+            metadata=None,
+        )
 
         return qlinear_add_node
 
 
 class MulQDQToQOPTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
 
     def pattern(self) -> OpTypePattern:
-        return OpTypePattern('QuantizeLinear', [
-            OpTypePattern('Mul', [
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-            ]),
-            OpTypePattern('.*'),
-            OpTypePattern('.*'),
-        ])
+        return OpTypePattern(
+            "QuantizeLinear",
+            [
+                OpTypePattern(
+                    "Mul",
+                    [
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                    ],
+                ),
+                OpTypePattern(".*"),
+                OpTypePattern(".*"),
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
         x_node = match_node.input_nodes[0].input_nodes[0].input_nodes[0]
@@ -320,22 +362,22 @@ class MulQDQToQOPTransform(transforms.Transform):
         y_zero_point_node = match_node.input_nodes[0].input_nodes[1].input_nodes[2]
 
         mul_node = match_node.input_nodes[0]
-        logger.info('Convert Mul: ', mul_node.node.name)
+        logger.info("Convert Mul: ", mul_node.node.name)
         z_scale_node = match_node.input_nodes[1]
         z_zero_point_node = match_node.input_nodes[2]
 
-        if hasattr(x_node.node, 'output'):
+        if hasattr(x_node.node, "output"):
             x_name = x_node.node.output[0]
         else:
             x_name = x_node.node.name
 
-        if hasattr(y_node.node, 'output'):
+        if hasattr(y_node.node, "output"):
             y_name = y_node.node.output[0]
         else:
             y_name = y_node.node.name
         # Make the QLinearConv node
         qlinear_mul = helper.make_node(
-            'QLinearMul',
+            "QLinearMul",
             inputs=[
                 x_name,  # x
                 x_scale_node.node.name,  # x_scale
@@ -348,42 +390,53 @@ class MulQDQToQOPTransform(transforms.Transform):
             ],
             outputs=[match_node.node.output[0]],
             domain=ms_domain,
-            name=mul_node.node.name)
-        qlinear_mul_node = NodeTree(qlinear_mul,
-                                    weights=None,
-                                    input_nodes=[
-                                        x_node,
-                                        x_scale_node,
-                                        x_zero_point_node,
-                                        y_node,
-                                        y_scale_node,
-                                        y_zero_point_node,
-                                        z_scale_node,
-                                        z_zero_point_node,
-                                    ],
-                                    metadata=None)
+            name=mul_node.node.name,
+        )
+        qlinear_mul_node = NodeTree(
+            qlinear_mul,
+            weights=None,
+            input_nodes=[
+                x_node,
+                x_scale_node,
+                x_zero_point_node,
+                y_node,
+                y_scale_node,
+                y_zero_point_node,
+                z_scale_node,
+                z_zero_point_node,
+            ],
+            metadata=None,
+        )
 
         return qlinear_mul_node
 
 
 class SigmoidQDQToQOPTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = False
 
     def pattern(self) -> OpTypePattern:
-        return OpTypePattern('QuantizeLinear', [
-            OpTypePattern('Sigmoid', [
-                OpTypePattern('DequantizeLinear', [
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                    OpTypePattern('.*'),
-                ]),
-            ]),
-            OpTypePattern('.*'),
-            OpTypePattern('.*'),
-        ])
+        return OpTypePattern(
+            "QuantizeLinear",
+            [
+                OpTypePattern(
+                    "Sigmoid",
+                    [
+                        OpTypePattern(
+                            "DequantizeLinear",
+                            [
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                                OpTypePattern(".*"),
+                            ],
+                        ),
+                    ],
+                ),
+                OpTypePattern(".*"),
+                OpTypePattern(".*"),
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
         x_node = match_node.input_nodes[0].input_nodes[0].input_nodes[0]
@@ -391,18 +444,18 @@ class SigmoidQDQToQOPTransform(transforms.Transform):
         x_zero_point_node = match_node.input_nodes[0].input_nodes[0].input_nodes[2]
 
         sigmoid_node = match_node.input_nodes[0]
-        logger.info('Convert Sigmoid: ', sigmoid_node.node.name)
+        logger.info("Convert Sigmoid: ", sigmoid_node.node.name)
         z_scale_node = match_node.input_nodes[1]
         z_zero_point_node = match_node.input_nodes[2]
 
-        if hasattr(x_node.node, 'output'):
+        if hasattr(x_node.node, "output"):
             x_name = x_node.node.output[0]
         else:
             x_name = x_node.node.name
 
         # Make the QLinearConv node
         qlinear_sigmoid = helper.make_node(
-            'QLinearSigmoid',
+            "QLinearSigmoid",
             inputs=[
                 x_name,  # x
                 x_scale_node.node.name,  # x_scale
@@ -412,42 +465,46 @@ class SigmoidQDQToQOPTransform(transforms.Transform):
             ],
             outputs=[match_node.node.output[0]],
             domain=ms_domain,
-            name=sigmoid_node.node.name)
-        qlinear_sigmoid_node = NodeTree(qlinear_sigmoid,
-                                        weights=None,
-                                        input_nodes=[
-                                            x_node,
-                                            x_scale_node,
-                                            x_zero_point_node,
-                                            z_scale_node,
-                                            z_zero_point_node,
-                                        ],
-                                        metadata=None)
+            name=sigmoid_node.node.name,
+        )
+        qlinear_sigmoid_node = NodeTree(
+            qlinear_sigmoid,
+            weights=None,
+            input_nodes=[
+                x_node,
+                x_scale_node,
+                x_zero_point_node,
+                z_scale_node,
+                z_zero_point_node,
+            ],
+            metadata=None,
+        )
 
         return qlinear_sigmoid_node
 
 
 class RemoveQDQTransform(transforms.Transform):
-
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = False
 
     def pattern(self) -> OpTypePattern:
         return OpTypePattern(
-            'DequantizeLinear',
+            "DequantizeLinear",
             [
                 OpTypePattern(
-                    'QuantizeLinear',
+                    "QuantizeLinear",
                     [
-                        OpTypePattern('.*'),  # input
-                        OpTypePattern('.*'),
-                        OpTypePattern('.*')
-                    ]),
-                OpTypePattern('.*'),  # scale
-                OpTypePattern('.*'),  # zero_point
-            ])
+                        OpTypePattern(".*"),  # input
+                        OpTypePattern(".*"),
+                        OpTypePattern(".*"),
+                    ],
+                ),
+                OpTypePattern(".*"),  # scale
+                OpTypePattern(".*"),  # zero_point
+            ],
+        )
 
     def replacement(self, match_node: NodeTree) -> Any:
-        logger.info('Remove: ', match_node.node.name)
+        logger.info("Remove: ", match_node.node.name)
         return match_node.input_nodes[0].input_nodes[0]

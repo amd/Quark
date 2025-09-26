@@ -29,6 +29,18 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
   The version X.Y.Z is read from version.txt which lives in the repository.
 """
 
+def update_pyproject_toml_project_name(new_name: str) -> None:
+    if not new_name.replace("-", "_").isidentifier():
+        raise ValueError(f"Invalid python package name: {new_name}")
+
+    with open('pyproject.toml', 'r') as f:
+        lines = f.readlines()
+    with open('pyproject.toml', 'w') as f:
+        for line in lines:
+            if line.replace(" ", "").startswith('name='):
+                line = f'name = "{new_name}"\n'
+            f.write(line)
+
 def string_to_bool(s):
     s = s.lower()
     if s in ('true', '1', 'yes'):
@@ -43,7 +55,15 @@ _version_txt = open("quark/version.txt", "r").read().strip()
 is_nightly = string_to_bool(os.getenv('QUARK_NIGHTLY', 'false')) is True
 is_release = string_to_bool(os.getenv('QUARK_RELEASE', 'false')) is True
 
+if is_nightly:
+    # Naming nightly packagse differently to allow easy pip install without conflicting with the release versions
+    # E.g., pip install amd-quark-nightly --trusted-host artifactory.domain.com -i "https://artifactory.domain.com/artifactory/api/pypi/repository_name/simple"
+    package_name += '-nightly'
 
+# Update quark package name to support nightly build packages with -nightly appended to package_name
+# local pyproject.toml needs to be updated to rename wheel package in additional to setup.py
+# https://discuss.python.org/t/dynamic-project-names-and-pep-621/21359/13
+update_pyproject_toml_project_name(package_name)
 class CustomBdistWheel(_bdist_wheel):
     def run(self):
         super().run()
@@ -168,7 +188,8 @@ if __name__ == '__main__':
           author="Advanced Micro Devices, Inc.",
           author_email='help@amd.com',
           license="MIT",
-          packages=find_packages(include=['quark', 'quark.*']), # Only include folder 'quark'
+          packages=find_packages(include=['quark', 'quark.*'],
+                                 exclude=['quark.contrib.dummy']), # Only include folder 'quark'
           include_package_data=True,
           cmdclass=cmdclass,
           install_requires=install_requires,

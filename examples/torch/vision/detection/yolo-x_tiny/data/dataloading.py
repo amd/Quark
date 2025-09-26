@@ -12,10 +12,12 @@
 
 import random
 import uuid
+
 import numpy as np
 import torch
 from torch.utils.data.dataloader import DataLoader as torchDataLoader
 from torch.utils.data.dataloader import default_collate
+
 from .samplers import YoloBatchSampler
 
 
@@ -85,7 +87,7 @@ def list_collate(batch):
     Use this as the collate function in a Dataloader, if you want to have a list of
     items as an output, as opposed to tensors (eg. Brambox.boxes).
     """
-    items = list(zip(*batch))
+    items = list(zip(*batch, strict=False))
 
     for i in range(len(items)):
         if isinstance(items[i][0], (list, tuple)):

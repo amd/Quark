@@ -4,16 +4,17 @@
 #
 import copy
 import unittest
-import torch
-import torch.nn as nn
+from pathlib import Path
+
 import numpy as np
 import onnxruntime as ort
-
-from pathlib import Path
+import torch
+import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
+
 from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
 from quark.onnx.quantization.config.config import Config
+from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array([[0.36239759, 0.55816052, 0.28596501, 0.2115006]]).astype(np.float32)
@@ -23,7 +24,7 @@ golden_output = np.array([[27.0, 15.5, 15.0, 19.0]]).astype(np.float32)
 class DataReader(CalibrationDataReader):
     def __init__(self, input_tensor):
         self.data = [input_tensor]
-        self.input_name = 'input'
+        self.input_name = "input"
         self.index = 0
 
     def get_next(self):
@@ -63,26 +64,28 @@ def prepare_model(output_dir: str):
     torch.manual_seed(42)
 
     model = MultiMulAddModel()
-    onnx_model_path = Path(output_dir, 'multi_mul_add.onnx').as_posix()
-    quant_onnx_model_path = Path(output_dir, 'multi_mul_add_quantized.onnx').as_posix()
+    onnx_model_path = Path(output_dir, "multi_mul_add.onnx").as_posix()
+    quant_onnx_model_path = Path(output_dir, "multi_mul_add_quantized.onnx").as_posix()
 
     dummy_input = torch.randn([1, 4])
-    torch.onnx.export(model,
-                      dummy_input,
-                      onnx_model_path,
-                      input_names=['input'],
-                      output_names=['output'],
-                      keep_initializers_as_inputs=False,
-                      do_constant_folding=False,
-                      opset_version=17)
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        keep_initializers_as_inputs=False,
+        do_constant_folding=False,
+        opset_version=17,
+    )
 
-    print(f'Model has been saved to {onnx_model_path}')
+    print(f"Model has been saved to {onnx_model_path}")
     return onnx_model_path, quant_onnx_model_path
 
 
 def prepare_config(config):
     config_copy = copy.deepcopy(config)
-    config_copy.extra_options['RemoveQDQMulAdd'] = True
+    config_copy.extra_options["RemoveQDQMulAdd"] = True
     config_copy.debug_mode = True
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
@@ -100,7 +103,7 @@ def prepare_quantizer(quant_config):
 
 def quantize_static(quantizer, input_model_path, output_model_path, data_reader):
     quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-    print('Quantized the ONNX model and saved it at:', output_model_path)
+    print("Quantized the ONNX model and saved it at:", output_model_path)
     return output_model_path
 
 
@@ -112,7 +115,7 @@ def infer_quantized_model(input_data, quantized_model_path):
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
     output = sess.run([output_name], {input_name: input_data})
-    print(f'Model output: {output}')
+    print(f"Model output: {output}")
     return output
 
 
@@ -129,10 +132,12 @@ def tensor_quantize(input_data, output_dir: str):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_MultiMulAddModel(self, tmpdir: str):
-        with self.assertLogs('quark.onnx.tools.remove_qdq_mul_add_screen', level='DEBUG') as cm:
+        with self.assertLogs("quark.onnx.tools.remove_qdq_mul_add_screen", level="DEBUG") as cm:
             output, quantized_model_path = tensor_quantize(input_data, output_dir=tmpdir)
         self.assertTrue(any("Skip pattern match: output of DequantizeLinear" in message for message in cm.output))
-        self.assertTrue(any("Removed QuantizeLinear & DequantizeLinear operations: mul-add." in message for message in cm.output))
+        self.assertTrue(
+            any("Removed QuantizeLinear & DequantizeLinear operations: mul-add." in message for message in cm.output)
+        )
         comp_equal = np.allclose(output, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)
 

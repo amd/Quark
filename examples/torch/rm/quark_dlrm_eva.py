@@ -7,20 +7,17 @@
 mlperf inference benchmarking tool
 """
 
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import os
 import argparse
+import os
 import time
-import numpy as np
 
+import numpy as np
+import sklearn
 from utils import multihot_criteo
 from utils.backend_pytorch_native import get_backend
-import sklearn
 
 from quark.torch.quantization.api import load_params
+
 # pylint: disable=missing-docstring
 
 # the datasets we support
@@ -58,13 +55,9 @@ def get_args():
     # parser.add_argument("--num-bins", type=int, required=True, help="number of bins to use for calibaration")
     parser.add_argument("--dataset", choices=SUPPORTED_DATASETS.keys(), help="dataset")
     parser.add_argument("--dataset-path", required=True, help="path to the dataset")
-    parser.add_argument(
-        "--profile", choices=SUPPORTED_PROFILES.keys(), help="standard profiles"
-    )
+    parser.add_argument("--profile", choices=SUPPORTED_PROFILES.keys(), help="standard profiles")
     parser.add_argument("--max-ind-range", type=int, default=-1)
-    parser.add_argument(
-        "--max-batchsize", type=int, help="max batch size in a single inference"
-    )
+    parser.add_argument("--max-batchsize", type=int, help="max batch size in a single inference")
     parser.add_argument("--output", help="test results")
     parser.add_argument("--inputs", help="model inputs (currently not used)")
     parser.add_argument("--outputs", help="model outputs (currently not used)")
@@ -79,9 +72,7 @@ def get_args():
     )
 
     # file to use mlperf rules compliant parameters
-    parser.add_argument(
-        "--mlperf_conf", default="mlperf.conf", help="mlperf rules config"
-    )
+    parser.add_argument("--mlperf_conf", default="mlperf.conf", help="mlperf rules config")
     # file for user LoadGen settings such as target QPS
     parser.add_argument(
         "--user_conf",
@@ -92,9 +83,7 @@ def get_args():
     # below will override mlperf rules compliant settings - don't use for official submission
     parser.add_argument("--duration", type=int, help="duration in milliseconds (ms)")
     parser.add_argument("--target-qps", type=int, help="target/expected qps")
-    parser.add_argument(
-        "--max-latency", type=float, help="mlperf max latency in pct tile"
-    )
+    parser.add_argument("--max-latency", type=float, help="mlperf max latency in pct tile")
     parser.add_argument("--count-samples", type=int, help="dataset items to use")
     parser.add_argument("--count-queries", type=int, help="number of queries to use")
     parser.add_argument(
@@ -146,23 +135,14 @@ def get_args():
         action="store_true",
         help="Whether load the compressed model",
     )
-    parser.add_argument(
-        "--int8-configure-dir", type=str,
-        default="./int8_configure.json",
-        help="int8 recipe location"
-    )
+    parser.add_argument("--int8-configure-dir", type=str, default="./int8_configure.json", help="int8 recipe location")
     parser.add_argument(
         "--int8-model-dir",
         type=str,
         default="./",
         help="int8 model location",
     )
-    parser.add_argument(
-        "--int8-model-name",
-        type=str,
-        default="dlrm_int8",
-        help="int8 model name"
-    )
+    parser.add_argument("--int8-model-name", type=str, default="dlrm_int8", help="int8 model name")
     parser.add_argument("--use-int8", action="store_true", default=False)
     parser.add_argument("--use-bf16", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
@@ -188,6 +168,7 @@ def get_args():
         args.outputs = args.outputs.split(",")
 
     return args
+
 
 def main():
     args = get_args()
@@ -244,7 +225,7 @@ def main():
     json_path = os.path.join(args.int8_model_dir, args.int8_model_name + ".json")
     safetensors_path = os.path.join(args.int8_model_dir, args.int8_model_name + ".safetensors")
     model = load_params(model, json_path=json_path, safetensors_path=safetensors_path, compressed=args.compressed)
-    print("Loading the export model cost {:.2f} s".format(time.time() - s_t))
+    print(f"Loading the export model cost {time.time() - s_t:.2f} s")
 
     dsx, lsi, lso, labels = ds.test_data.load_batch(range(0, args.max_batchsize))
 
@@ -266,7 +247,7 @@ def main():
         print(f"Done for {i} / {count}", end="\r")
 
     print("\nTotal ROC AUC = ", sklearn.metrics.roc_auc_score(targets, results))
-    print("AUC calc costs {:.2f} s".format(time.time() - s_t))
+    print(f"AUC calc costs {time.time() - s_t:.2f} s")
 
 
 if __name__ == "__main__":

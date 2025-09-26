@@ -112,10 +112,13 @@ def _matmul_hadU(X: torch.Tensor, hadamard_K: torch.Tensor, K: int) -> torch.Ten
     return input.view(X.shape) / torch.tensor(n).sqrt()
 
 
-def matmul_hadU(X: torch.Tensor) -> torch.Tensor:
+def matmul_hadU(X: torch.Tensor, hadamard_K: Optional[torch.Tensor] = None, K: Optional[int] = None) -> torch.Tensor:
     """ Find Hadamard matrix and apply to the input tensor."""
     n = X.shape[-1]
-    hadamard_K, K = _get_hadamard_K(n, force=True)
+
+    if hadamard_K is None or K is None:
+        hadamard_K, K = _get_hadamard_K(n, force=True)
+
     return _matmul_hadU(X, hadamard_K, K)
 
 

@@ -1,9 +1,11 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 .. raw:: html
 
    <!-- omit in toc -->
 
-Quantizating Llama-2-7b model using MatMulNBits quantizer
-=========================================================
+Quantizing Llama-2-7b model using MatMulNBits quantizer
+=======================================================
 
 .. note::
 

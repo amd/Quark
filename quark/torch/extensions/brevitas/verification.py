@@ -6,10 +6,9 @@
 
 from typing import List, Optional
 
-import quark.torch.quantization.config.type as quark_config_type
-import quark.torch.extensions.brevitas.config as brevitas_config
 import quark.torch.extensions.brevitas.algos as brevitas_algos
-
+import quark.torch.extensions.brevitas.config as brevitas_config
+import quark.torch.quantization.config.type as quark_config_type
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -49,17 +48,17 @@ class ConfigVerifier:
                 raise ValueError("Asymmetric quantization is not supported with float quantization.")
 
     @classmethod
-    def _verify_activation_quant_spec(cls, spec: Optional[brevitas_config.QuantizationSpec]) -> None:
+    def _verify_activation_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 
     @classmethod
-    def _verify_weight_quant_spec(cls, spec: Optional[brevitas_config.QuantizationSpec]) -> None:
+    def _verify_weight_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 
     @classmethod
-    def _verify_bias_quant_spec(cls, spec: Optional[brevitas_config.QuantizationSpec]) -> None:
+    def _verify_bias_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 
@@ -68,7 +67,8 @@ class ConfigVerifier:
 
             if spec.qscheme is not quark_config_type.QSchemeType.per_tensor:
                 logger.warning(
-                    "qscheme for bias quantization is implicitly per_tensor, different values will be ignored.")
+                    "qscheme for bias quantization is implicitly per_tensor, different values will be ignored."
+                )
 
             if spec.symmetric is False:
                 logger.warning("symmetric is not used for bias quantization.")
@@ -86,8 +86,9 @@ class ConfigVerifier:
                 logger.warning("mantissa_bit_width is not used for bias quantization")
 
     @classmethod
-    def _verify_pre_quant_configs(cls, pre_quant_configs: List[brevitas_algos.PreQuantOptConfig],
-                                  config: brevitas_config.Config) -> None:
+    def _verify_pre_quant_configs(
+        cls, pre_quant_configs: list[brevitas_algos.PreQuantOptConfig], config: brevitas_config.Config
+    ) -> None:
         if len(pre_quant_configs) > 0:
             # check if preprocess is in the list
             using_preprocess = False
@@ -97,13 +98,15 @@ class ConfigVerifier:
 
             if using_preprocess is False:
                 logger.warning(
-                    "Preprocess is not being applied, you may want to consider adding it to improve quantization.")
+                    "Preprocess is not being applied, you may want to consider adding it to improve quantization."
+                )
 
             for idx, pre_config in enumerate(pre_quant_configs):
                 if isinstance(pre_config, brevitas_algos.Preprocess):
                     if idx != 0:
                         logger.warning(
-                            "Preprocess is being applied after other optimizations, it probably should be first.")
+                            "Preprocess is being applied after other optimizations, it probably should be first."
+                        )
                 elif isinstance(pre_config, brevitas_algos.ActivationEqualization):
                     if config.backend == brevitas_config.Backend.layerwise and pre_config.is_layerwise is False:
                         raise ValueError(
@@ -111,8 +114,9 @@ class ConfigVerifier:
                         )
 
     @classmethod
-    def _verify_post_quant_configs(cls, post_quant_configs: List[brevitas_algos.AlgoConfig],
-                                   config: brevitas_config.Config) -> None:
+    def _verify_post_quant_configs(
+        cls, post_quant_configs: list[brevitas_algos.AlgoConfig], config: brevitas_config.Config
+    ) -> None:
         # check if GPTQ, GPFQ or GPFA2Q are being combined which they shouldn't
         if len(post_quant_configs) > 0:
             count = 0
@@ -123,7 +127,8 @@ class ConfigVerifier:
             if count > 1:
                 raise ValueError("GPTQ, GPFQ or GPFA2Q should not be mixed, please just use one.")
 
-        if any(isinstance(x, brevitas_algos.GPFQ)
-               for x in post_quant_configs) or any(isinstance(x, brevitas_algos.GPFA2Q) for x in post_quant_configs):
+        if any(isinstance(x, brevitas_algos.GPFQ) for x in post_quant_configs) or any(
+            isinstance(x, brevitas_algos.GPFA2Q) for x in post_quant_configs
+        ):
             if config.global_quant_config.input_tensors is None:
                 raise ValueError("GPFQ and GPFA2Q need input_tensor quantization to be defined.")

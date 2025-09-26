@@ -4,20 +4,23 @@
 #
 
 from __future__ import annotations
+
 import time
-from typing import Callable, List, Optional, Tuple, TYPE_CHECKING
-from tqdm import tqdm
+from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 if TYPE_CHECKING:
     from quark.torch.pruning.config import OSSCARConfig
-from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import (get_device, get_named_linears, move_to_device)
-from quark.torch.algorithm.utils.prepare import init_device_map, init_blockwise_algo
-from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
-from quark.torch.algorithm.utils.utils import clear_memory
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
+from quark.torch.algorithm.processor import BaseAlgoProcessor
+from quark.torch.algorithm.utils.module import get_device, get_named_linears, move_to_device
+from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
 
@@ -28,7 +31,6 @@ CUDA = torch.device("cuda")
 
 
 class OSSCAR:
-
     def __init__(self, layer: nn.Module, layer_idx: int) -> None:
         self.layer = layer
         self.layer_idx = layer_idx
@@ -45,7 +47,7 @@ class OSSCAR:
             W = W.t()
         self.rows = W.shape[0]
         self.columns = W.shape[1]
-        self.XtX: Optional[torch.Tensor] = torch.zeros((self.columns, self.columns), device=self.dev)
+        self.XtX: torch.Tensor | None = torch.zeros((self.columns, self.columns), device=self.dev)
 
     def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
         if len(inp.shape) == 2:
@@ -65,9 +67,8 @@ class OSSCAR:
         self,
         mlp_pruning_ratio: float,
         upd_iter: int = 1,
-        percdamp: float = .01,
+        percdamp: float = 0.01,
     ) -> None:
-
         assert self.XtX is not None
 
         W = self.layer.weight.data.clone()
@@ -85,26 +86,26 @@ class OSSCAR:
 
         self.XtX += torch.eye(B.shape[0]).to(self.dev) * percdamp * torch.mean(torch.diag(self.XtX))
 
-        self.XtY = (self.XtX @ B)
+        self.XtY = self.XtX @ B
 
         pre_time = time.time() - st_time
         st_time = time.time()
 
         num_cin = B.shape[0]
 
-        logger.info(f'mlp pruning ratio is : {(mlp_pruning_ratio)}')
-        logger.info(f'input channel of layer is : {(num_cin)}')
+        logger.info(f"mlp pruning ratio is : {(mlp_pruning_ratio)}")
+        logger.info(f"input channel of layer is : {(num_cin)}")
 
         num_sp_orig = int(num_cin * (1 - mlp_pruning_ratio))
 
         if num_sp_orig % 128 != 0:
             num_sp = round(num_sp_orig / 128) * 128
             logger.info(
-                f'pruned channel is : {(num_sp_orig)}, which can not divisible by 128 and is adjusted to be : {(num_sp)}'
+                f"pruned channel is : {(num_sp_orig)}, which can not divisible by 128 and is adjusted to be : {(num_sp)}"
             )
         else:
             num_sp = num_sp_orig
-            logger.info(f'pruned channel is : {(num_sp)}')
+            logger.info(f"pruned channel is : {(num_sp)}")
 
         B_sol, B_obj = self.OSSCAR_fastprune(B.clone(), self.XtX, self.XtY, num_cin, num_sp, upd_iter)
 
@@ -112,8 +113,8 @@ class OSSCAR:
 
         B = torch.Tensor(B_sol).to(self.dev)
 
-        logger.info(f'pre-processing time: {(pre_time):.4f} seconds.')
-        logger.info(f'OSSCAR pruning time: {(run_time):.4f} seconds.')
+        logger.info(f"pre-processing time: {(pre_time):.4f} seconds.")
+        logger.info(f"OSSCAR pruning time: {(run_time):.4f} seconds.")
 
         if "transformers.pytorch_utils.Conv1D" in str(self.layer.__class__):
             self.layer.weight.data = B.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
@@ -121,15 +122,16 @@ class OSSCAR:
             self.layer.weight.data = B.t().reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
         return
 
-    def OSSCAR_fastprune(self,
-                         W: torch.Tensor,
-                         XTX: torch.Tensor,
-                         XTY: torch.Tensor,
-                         num_cin: int,
-                         num_sp: int,
-                         update_iter: int = 1,
-                         blocksize: int = -1) -> Tuple[torch.Tensor, torch.Tensor]:
-
+    def OSSCAR_fastprune(
+        self,
+        W: torch.Tensor,
+        XTX: torch.Tensor,
+        XTY: torch.Tensor,
+        num_cin: int,
+        num_sp: int,
+        update_iter: int = 1,
+        blocksize: int = -1,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         DEV = W.device
         totp, num_cout = W.shape
         ksize = int(totp / num_cin)
@@ -164,7 +166,7 @@ class OSSCAR:
             if upd_it == 0:
                 upd_it = 1
             quo, rem = divmod(int(num_cin - num_sp - num_prune), int(upd_it))
-            update_ten = torch.full((upd_it, ), quo, dtype=torch.int).to(DEV)
+            update_ten = torch.full((upd_it,), quo, dtype=torch.int).to(DEV)
             update_ten[:rem] += 1
 
         for i1 in range(upd_it):
@@ -178,23 +180,25 @@ class OSSCAR:
 
             idx = torch.argsort(obj_sum + 1e20 * (prune_list))
 
-            upd_idx = torch.cat([
-                torch.arange(idx[i].item() * ksize, (idx[i].item() + 1) * ksize)
-                for i in range(int(update_ten[i1].item()))
-            ])
+            upd_idx = torch.cat(
+                [
+                    torch.arange(idx[i].item() * ksize, (idx[i].item() + 1) * ksize)
+                    for i in range(int(update_ten[i1].item()))
+                ]
+            )
 
             Xinv_tmp = torch.linalg.inv(XTX_inv[upd_idx[:, None], upd_idx])
 
             W -= XTX_inv[:, upd_idx] @ Xinv_tmp @ W[upd_idx, :]
             W = W.reshape(num_cin, ksize, num_cout)
-            W[idx[:update_ten[i1]], :, :] = 0
+            W[idx[: update_ten[i1]], :, :] = 0
             W = W.reshape(totp, num_cout)
 
             XTX_inv -= XTX_inv[:, upd_idx] @ Xinv_tmp @ XTX_inv[upd_idx, :]
             XTX_inv[upd_idx, :] = 0
             XTX_inv[:, upd_idx] = 0
 
-            prune_list[idx[:update_ten[i1]]] = True
+            prune_list[idx[: update_ten[i1]]] = True
 
         W_sol = torch.zeros_like(W)
         nzi = torch.nonzero(W[:, 0], as_tuple=True)[0]
@@ -209,9 +213,9 @@ class OSSCAR:
 
 
 class OsscarProcessor(BaseAlgoProcessor):
-
-    def __init__(self, model: nn.Module, pruning_algo_config: OSSCARConfig,
-                 data_loader: DataLoader[torch.Tensor]) -> None:
+    def __init__(
+        self, model: nn.Module, pruning_algo_config: OSSCARConfig, data_loader: DataLoader[torch.Tensor]
+    ) -> None:
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
 
@@ -224,15 +228,18 @@ class OsscarProcessor(BaseAlgoProcessor):
         self.model_decoder_layers = pruning_algo_config.model_decoder_layers
         self.data_loader = data_loader
         self.device_map = init_device_map(self.model)
-        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(self.model, self.model_decoder_layers,
-                                                                          self.data_loader)
-        assert self.mlp_pruning_modules is not None and self.inside_layer_modules is not None, "mlp_pruning_modules and inside_layer_modules must not be None"
+        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(
+            self.model, self.model_decoder_layers, self.data_loader
+        )
+        assert self.mlp_pruning_modules is not None and self.inside_layer_modules is not None, (
+            "mlp_pruning_modules and inside_layer_modules must not be None"
+        )
 
     def apply(self) -> None:
         cache_examples_on_gpu = True
         num_batches = len(self.inps)
         layer_inputs = [inp for inp in self.inps]
-        layer_outputs: List[torch.Tensor] = []
+        layer_outputs: list[torch.Tensor] = []
         forward_pass_use_cache = self.model.config.use_cache
         self.model.config.use_cache = False
 
@@ -255,7 +262,7 @@ class OsscarProcessor(BaseAlgoProcessor):
             inside_layer_modules = self.inside_layer_modules
 
             if not self.true_sequential:
-                inside_layer_modules = [''.join(self.inside_layer_modules)]
+                inside_layer_modules = ["".join(self.inside_layer_modules)]
 
             for names in inside_layer_modules:
                 if isinstance(names, list):
@@ -270,9 +277,8 @@ class OsscarProcessor(BaseAlgoProcessor):
                     if name in self.mlp_pruning_modules:
                         osscar[name] = OSSCAR(subset[name], i)
 
-                def add_batch(name: str) -> Callable[[torch.nn.Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
-
-                    def tmp(_: nn.Module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
+                def add_batch(name: str) -> Callable[[torch.nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
+                    def tmp(_: nn.Module, inp: tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
                         osscar[name].add_batch(inp[0].data, out.data)
 
                     return tmp
@@ -283,8 +289,15 @@ class OsscarProcessor(BaseAlgoProcessor):
                         handles.append(subset[name].register_forward_hook(add_batch(name)))
 
                 # collect linear input data to calculate Hessian
-                layer_outputs = block_forward(layer, self.module_kwargs, num_batches, cur_layer_device, layer_inputs,
-                                              layer_outputs, cache_examples_on_gpu)
+                layer_outputs = block_forward(
+                    layer,
+                    self.module_kwargs,
+                    num_batches,
+                    cur_layer_device,
+                    layer_inputs,
+                    layer_outputs,
+                    cache_examples_on_gpu,
+                )
                 layer_outputs = []
 
                 for h in handles:
@@ -292,15 +305,22 @@ class OsscarProcessor(BaseAlgoProcessor):
 
                 for name in subset:
                     if name in self.mlp_pruning_modules:
-                        logger.info(f'Pruning {name} in layer {i + 1}/{len(self.modules)}...')
+                        logger.info(f"Pruning {name} in layer {i + 1}/{len(self.modules)}...")
                         osscar[name].prune(
                             mlp_pruning_ratio=self.mlp_pruning_ratio,
                             percdamp=self.damp_percent,
                         )
                         osscar[name].free()
 
-            layer_outputs = block_forward(layer, self.module_kwargs, num_batches, cur_layer_device, layer_inputs,
-                                          layer_outputs, cache_examples_on_gpu)
+            layer_outputs = block_forward(
+                layer,
+                self.module_kwargs,
+                num_batches,
+                cur_layer_device,
+                layer_inputs,
+                layer_outputs,
+                cache_examples_on_gpu,
+            )
 
             layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
 

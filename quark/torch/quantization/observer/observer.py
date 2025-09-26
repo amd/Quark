@@ -5,28 +5,36 @@
 
 from __future__ import annotations
 
-from typing import Tuple, TYPE_CHECKING, Any, cast, Optional, List
 from abc import ABC, abstractmethod
-import torch.nn as nn
-import torch
 from collections import Counter
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, cast
+
+import torch
+import torch.nn as nn
 from torch.ao.quantization import HistogramObserver
+
 import quark.torch.kernel  # noqa
+
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import QuantizationSpec
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ZeroPointType, ScaleType
-from quark.torch.quantization.nn.utils import check_min_max_valid
-from quark.torch.quantization.utils import calculate_qmin_qmax, reshape_to_blocks, get_dtype_params, t_exponent, even_round
-from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.shares.utils.import_utils import is_torch_greater_or_equal_2_5
+from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_int  # type: ignore
+from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, ZeroPointType
+from quark.torch.quantization.nn.utils import check_min_max_valid
+from quark.torch.quantization.utils import (
+    calculate_qmin_qmax,
+    even_round,
+    get_dtype_params,
+    reshape_to_blocks,
+    t_exponent,
+)
 
 logger = ScreenLogger(__name__)
 
 
 class ObserverBase(ABC, nn.Module):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__()
         self.dtype = qspec.dtype
 
@@ -34,7 +42,7 @@ class ObserverBase(ABC, nn.Module):
         if qspec.scale_type in [ScaleType.float32, ScaleType.float16, ScaleType.bfloat16]:
             self.scale_torch_dtype = qspec.scale_type.to_torch_dtype()
 
-        self._num_observed_tokens: Optional[int] = None
+        self._num_observed_tokens: int | None = None
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> Any:
@@ -64,9 +72,11 @@ class ObserverBase(ABC, nn.Module):
             raise ValueError(f"Expected value to be a tensor, got {type(batch_tensor)}")
 
         if batch_tensor.ndim != 2:
-            logger.debug("The input tensor is expected to have two dimensions "
-                         "(batch_size * sequence_length, num_features). "
-                         f"But the input tensor has {batch_tensor.ndim} dimensions.")
+            logger.debug(
+                "The input tensor is expected to have two dimensions "
+                "(batch_size * sequence_length, num_features). "
+                f"But the input tensor has {batch_tensor.ndim} dimensions."
+            )
             return
 
         if self._num_observed_tokens is None:
@@ -92,7 +102,7 @@ class PlaceholderObserver(ObserverBase):
     def __init__(
         self,
         qspec: QuantizationSpec,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ) -> None:
         super().__init__(qspec, device)
 
@@ -119,10 +129,9 @@ class UniformScalingObserver(ObserverBase):
     min_val: torch.Tensor
     max_val: torch.Tensor
 
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps) -> None:
+    def __init__(
+        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
         super().__init__(qspec, device)
 
         self.qspec = qspec
@@ -140,11 +149,11 @@ class UniformScalingObserver(ObserverBase):
 
         self.quant_min, self.quant_max = calculate_qmin_qmax(qspec.dtype)
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
         return self.calculate_qparams(self.min_val, self.max_val)
 
-    def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
         if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2]:
             return self.calculate_fp8_quant_parameters(min_val, max_val)
@@ -153,20 +162,17 @@ class UniformScalingObserver(ObserverBase):
         else:
             return self.calculate_int_quant_params(min_val, max_val)
 
-    def calculate_int_quant_params(self, min_val: torch.Tensor,
-                                   max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        # TODO setup eps device when init
-        self.eps = self.eps.to(min_val.dtype).to(min_val.device)
-
+    def calculate_int_quant_params(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if not check_min_max_valid(min_val, max_val):
             return torch.tensor([1.0], device=min_val.device.type), torch.tensor([0], device=min_val.device.type)
 
         quant_min, quant_max = self.quant_min, self.quant_max
         assert isinstance(quant_min, int)
         assert isinstance(quant_max, int)
-        min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
-        max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
+        min_val_neg = torch.clamp(min_val, max=0)
+        max_val_pos = torch.clamp(max_val, min=0)
 
         device = min_val_neg.device
         scale = torch.ones(min_val_neg.size(), dtype=torch.float32, device=device)
@@ -178,7 +184,7 @@ class UniformScalingObserver(ObserverBase):
         if self.symmetric:
             max_val_pos = torch.max(-min_val_neg, max_val_pos)
             scale = max_val_pos / (float(quant_max - quant_min) / 2)
-            scale = torch.max(scale, self.eps)
+            scale = torch.max(scale, self.eps.to(scale.device))
         else:
             if self.zero_point_type == ZeroPointType.float32:
                 scale = (max_val - min_val) / float(quant_max - quant_min)
@@ -187,18 +193,17 @@ class UniformScalingObserver(ObserverBase):
             else:
                 # AWQ
                 scale = (max_val_pos - min_val_neg) / float(quant_max - quant_min)
-                # TODO: reset eps's device
-                self.eps = self.eps.to(scale.device)
-                scale = torch.max(scale, self.eps)
+                scale = torch.max(scale, self.eps.to(scale.device))
                 zero_point = quant_min - torch.round(min_val_neg / scale).to(torch.int)
                 zero_point = torch.clamp(zero_point, quant_min, quant_max)
-
         return scale.to(self.scale_torch_dtype), zero_point
 
-    def calculate_fp8_quant_parameters(self, min_val: torch.Tensor,
-                                       max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_fp8_quant_parameters(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
+        self.eps = self.eps.to(min_val.dtype).to(min_val.device)
 
         device = min_val_neg.device
         scale = torch.ones(min_val_neg.size(), dtype=torch.float32, device=device)
@@ -207,10 +212,12 @@ class UniformScalingObserver(ObserverBase):
         amax = torch.maximum(torch.abs(min_val_neg), torch.abs(max_val_pos))
         _, max_norm = calculate_qmin_qmax(self.dtype)
         scale = amax / max_norm
+        scale = scale.masked_fill(scale == 0.0, self.eps)
         return scale.to(self.scale_torch_dtype), zero_point
 
-    def calculate_fp4_quant_parameters(self, min_val: torch.Tensor,
-                                       max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_fp4_quant_parameters(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # TODO: reduce redundancy with calculate_qparams in PerBlockMXObserver, need to re-design
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
@@ -273,10 +280,14 @@ class UniformScalingObserver(ObserverBase):
         if self.is_dynamic:
             self.reset_min_max_vals()
 
+    # NOTE this class should not be instance, so we set to abs class
+    @abstractmethod
+    def forward(self, x: torch.Tensor) -> Any:
+        pass
+
 
 class PerTensorMinMaxObserver(UniformScalingObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
@@ -298,14 +309,14 @@ class PerTensorMinMaxObserver(UniformScalingObserver):
 
 
 class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32
-                               ], "Currently PerTensorPowOf2Observer only support int8, uint8 and int32 Dtype"
+        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
+            "Currently PerTensorPowOf2Observer only support int8, uint8 and int32 Dtype"
+        )
 
-        self.record_scale: List[float] = []
-        self.record_zp: List[float] = []
+        self.record_scale: list[float] = []
+        self.record_zp: list[float] = []
 
     def _scale2pos(self, scale: torch.Tensor) -> torch.Tensor:
         """
@@ -321,8 +332,9 @@ class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
         """
         return torch.pow(2.0, -pos)
 
-    def _calculate_one_batch_quant_param(self, min_val: torch.Tensor,
-                                         max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_one_batch_quant_param(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # ref: quark/onnx/quant_utils.py: compute_scale_zp
         self.eps = self.eps.to(min_val.dtype).to(min_val.device)
 
@@ -355,9 +367,9 @@ class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
             new_zero_point = torch.tensor(128, dtype=torch.int32)
         return pof2_scale.to(self.scale_torch_dtype), new_zero_point
 
-    def calculate_int_quant_params(self, min_val: torch.Tensor,
-                                   max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-
+    def calculate_int_quant_params(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         device = min_val.device
         one_batch_scale, one_batch_zero_point = self._calculate_one_batch_quant_param(min_val, max_val)
         self.record_scale.append(one_batch_scale.item())
@@ -381,17 +393,18 @@ class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
 
 
 class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
-    '''
+    """
     MINMSE method to get the the proper scale for target input tensor
-    More ref: Quark/quark/onnx/quant_utils.py func: quantize_data_pof2s
-    '''
+    More ref: Quark/quark/onnx/quant_utils.py func: quantize_data
+    """
 
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        self.original_tensor: Optional[
-            torch.Tensor] = None  # not use `register_buffer`, as this function will save dict, waist disk space
+        self.original_tensor: torch.Tensor | None = (
+            None  # not use `register_buffer`, as this function will save dict, waist disk space
+        )
         self.pos_range = 5
-        self.compute_device = 'cpu'
+        self.compute_device = "cpu"
 
     def _fake_quantize_data(self, data: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor) -> torch.Tensor:
         cliplow, cliphigh = self.quant_min, self.quant_max
@@ -403,10 +416,11 @@ class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
         deq_tensor = (data - zero_point) * scale
         return deq_tensor
 
-    def _calculate_one_batch_quant_param(self, min_val: torch.Tensor,
-                                         max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_one_batch_quant_param(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         assert self.original_tensor is not None
-        # ref: quark/onnx/quant_utils.py quantize_data_pof2s
+        # ref: quark/onnx/quant_utils.py quantize_data
         # Step 1, give a initial power of 2 scale
         scale, zero_point = PerTensorPowOf2MinMaxObserver._calculate_one_batch_quant_param(self, min_val, max_val)
         scale_device = scale.device
@@ -434,9 +448,9 @@ class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
         return scale_mse.to(scale_device), zero_point.to(scale_device)
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         collect alll the original tensor, we then perform mes to calculate the best scale
-        '''
+        """
         if x_orig.numel() == 0:
             return x_orig
         _ = super().forward(x_orig)  # this will init the min & max val
@@ -446,11 +460,9 @@ class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
 
 
 class PerChannelMinMaxObserver(UniformScalingObserver):
-
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps) -> None:
+    def __init__(
+        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
         super().__init__(qspec, device)
 
         self.qspec = qspec
@@ -510,14 +522,14 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
 
 
 class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32
-                               ], "Currently PerChannelPowOf2MinMaxObserver only support int8, uint8 and int32 Dtype"
+        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
+            "Currently PerChannelPowOf2MinMaxObserver only support int8, uint8 and int32 Dtype"
+        )
 
-        self.record_scale_zp: List[torch.Tensor] = []
-        self.compute_device = 'cpu'
+        self.record_scale_zp: list[torch.Tensor] = []
+        self.compute_device = "cpu"
 
     def _scale2pos(self, scale: torch.Tensor) -> torch.Tensor:
         """
@@ -533,8 +545,9 @@ class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
         """
         return torch.pow(2.0, -pos)
 
-    def _calculate_one_batch_quant_param(self, min_val: torch.Tensor,
-                                         max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_one_batch_quant_param(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # ref: quark/onnx/quant_utils.py: compute_scale_zp
         self.eps = self.eps.to(min_val.dtype).to(min_val.device)
 
@@ -569,9 +582,9 @@ class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
             new_zero_point = torch.full_like(zero_point, 128, dtype=torch.int32)
         return pof2_scale.to(self.scale_torch_dtype), new_zero_point
 
-    def calculate_int_quant_params(self, min_val: torch.Tensor,
-                                   max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-
+    def calculate_int_quant_params(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         device = min_val.device
         one_batch_scale, one_batch_zero_point = self._calculate_one_batch_quant_param(min_val, max_val)
         cat_scale_zp = torch.cat([one_batch_scale, one_batch_zero_point])
@@ -594,17 +607,18 @@ class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
 
 
 class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
-    '''
+    """
     MINMSE method to get the the proper scale for target input tensor
-    More ref: Quark/quark/onnx/quant_utils.py func: quantize_data_pof2s
-    '''
+    More ref: Quark/quark/onnx/quant_utils.py func: quantize_data
+    """
 
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        self.original_tensor: Optional[
-            torch.Tensor] = None  # not use `register_buffer`, as this function will save dict, waist disk space
+        self.original_tensor: torch.Tensor | None = (
+            None  # not use `register_buffer`, as this function will save dict, waist disk space
+        )
         self.pos_range = 5
-        self.compute_device = 'cpu'
+        self.compute_device = "cpu"
 
     def _fake_quantize_data(self, data: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor) -> torch.Tensor:
         cliplow, cliphigh = self.quant_min, self.quant_max
@@ -623,10 +637,11 @@ class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
         deq_tensor = (data - zero_point.view(scale_shape)) * scale.view(scale_shape)
         return deq_tensor
 
-    def _calculate_one_batch_quant_param(self, min_val: torch.Tensor,
-                                         max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_one_batch_quant_param(
+        self, min_val: torch.Tensor, max_val: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         assert self.original_tensor is not None
-        # ref: quark/onnx/quant_utils.py quantize_data_pof2s
+        # ref: quark/onnx/quant_utils.py quantize_data
         # Step 1, give a initial power of 2 scale
         scale, zero_point = PerChannelPowOf2MinMaxObserver._calculate_one_batch_quant_param(self, min_val, max_val)
         scale_device = scale.device
@@ -654,9 +669,9 @@ class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
         return scale_mse.to(scale_device), zero_point.to(scale_device)
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         collect alll the original tensor, we then perform mes to calculate the best scale
-        '''
+        """
         if x_orig.numel() == 0:
             return x_orig
         _ = super().forward(x_orig)  # this will init the min & max val
@@ -666,26 +681,14 @@ class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
 
 
 class PerBlockMXObserver(ObserverBase):
-
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps) -> None:
+    def __init__(
+        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
         super().__init__(qspec=qspec, device=device)
         self.qspec = qspec
-        assert self.qspec.dtype in [
-            Dtype.mx, Dtype.mx6, Dtype.mx9, Dtype.fp4, Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e2m3, Dtype.fp6_e3m2
-        ]
+        assert self.qspec.dtype in [Dtype.fp4, Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e2m3, Dtype.fp6_e3m2]
         assert qspec.group_size is not None
         assert qspec.ch_axis is not None
-        if self.qspec.dtype == Dtype.mx:
-            assert qspec.mx_element_dtype is not None
-            self.quant_bit = None
-        else:
-            if self.qspec.dtype == Dtype.mx6:
-                self.quant_bit = 5
-            elif self.qspec.dtype == Dtype.mx9:
-                self.quant_bit = 8
 
         self.block_size = qspec.group_size
         self.axis = qspec.ch_axis
@@ -698,8 +701,6 @@ class PerBlockMXObserver(ObserverBase):
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
         block_x = reshape_to_blocks(x_orig, self.block_size, self.axis)
-        if self.qspec.dtype in [Dtype.mx6, Dtype.mx9]:
-            block_x.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         amax, _ = torch.max(torch.abs(block_x), dim=-1, keepdim=True)
         amax = amax.squeeze(-1)
         if self.is_dynamic:
@@ -711,7 +712,7 @@ class PerBlockMXObserver(ObserverBase):
 
         return x_orig
 
-    def calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.scale_format == "e8m0":
             dtype = self.qspec.dtype if self.qspec.mx_element_dtype is None else self.qspec.mx_element_dtype
             _, _, emax = get_dtype_params(dtype)
@@ -756,7 +757,7 @@ class PerBlockMXObserver(ObserverBase):
         scale = scale.to(self.scale_torch_dtype)
         return scale, zero_point
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self.calculate_qparams()
 
     def reset_state(self) -> None:
@@ -766,31 +767,32 @@ class PerBlockMXObserver(ObserverBase):
         """Resets the amax values."""
         if not hasattr(self, "amax"):
             raise AttributeError("PerBlockMXObserver has no attribute 'amax'.")
-        self.amax = torch.tensor(float(0.0))
+        self.amax = torch.tensor(0.0)
 
 
 class PerBlockMXDiffsObserver(PerBlockMXObserver):
-
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps,
-                 scope: int = 1) -> None:
+    def __init__(
+        self,
+        qspec: QuantizationSpec,
+        device: torch.device | None = None,
+        eps: float = torch.finfo(torch.float32).eps,
+        scope: int = 1,
+    ) -> None:
         super().__init__(qspec=qspec, device=device, eps=eps)
         self.quant_min, self.quant_max = calculate_qmin_qmax(self.qspec.dtype)
         self.round_method = getattr(self.qspec.round_method, "value", None)
         self.qscheme_str_name = getattr(self.qspec.qscheme, "value", None)
         self.scope = scope
-        self.mx_element_dtype_value = 'None' if self.mx_element_dtype is None else self.mx_element_dtype.value
+        self.mx_element_dtype_value = "None" if self.mx_element_dtype is None else self.mx_element_dtype.value
         self.mx_dtype = self.mx_element_dtype if self.mx_element_dtype is not None else self.qspec.dtype
 
-    def calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         _, _, emax = get_dtype_params(self.mx_dtype)
         init_scale = torch.ceil(torch.log2(self.amax)) - emax
         best_scale = init_scale.clone()
 
         block_x = reshape_to_blocks(self.last_x, self.block_size, self.axis)
-        best_diffs = torch.full(init_scale.shape, float('inf'), device=self.last_x.device)
+        best_diffs = torch.full(init_scale.shape, float("inf"), device=self.last_x.device)
 
         for scale_offset in range(0, -self.scope - 1, -1):
             test_scales = init_scale + scale_offset
@@ -799,12 +801,22 @@ class PerBlockMXDiffsObserver(PerBlockMXObserver):
 
             # Quantize entire tensor at once using per-group quantization
             quantized = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                self.dtype.value, self.last_x, scale_factors, zero_points.to(torch.int), self.axis, self.block_size,
-                self.quant_min, self.quant_max, self.round_method, self.qscheme_str_name, self.mx_element_dtype_value)
+                self.dtype.value,
+                self.last_x,
+                scale_factors,
+                zero_points.to(torch.int),
+                self.axis,
+                self.block_size,
+                self.quant_min,
+                self.quant_max,
+                self.round_method,
+                self.qscheme_str_name,
+                self.mx_element_dtype_value,
+            )
             block_quantized = reshape_to_blocks(quantized, self.block_size, self.axis)
 
             # Calculate MSE for all blocks at once
-            diffs = torch.sum((block_x - block_quantized)**2, dim=-1)
+            diffs = torch.sum((block_x - block_quantized) ** 2, dim=-1)
 
             # Update best_scale only where new diff is better
             better_mask = diffs < best_diffs
@@ -823,11 +835,9 @@ class PerBlockMXDiffsObserver(PerBlockMXObserver):
 
 
 class PerBlockBFPObserver(ObserverBase):
-
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps) -> None:
+    def __init__(
+        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
         super().__init__(qspec=qspec, device=device)
         self.qspec = qspec
         self.block_size = qspec.group_size
@@ -845,28 +855,30 @@ class PerBlockBFPObserver(ObserverBase):
         else:
             self.amax = torch.max(self.amax, amax)
         scale, zero_point = self.calculate_qparams()
-        quantized_block_x_int = fake_quantize_int(inputs=block_x,
-                                                  scale=scale,
-                                                  zero_point=zero_point,
-                                                  axis=-1,
-                                                  group_size=self.block_size,
-                                                  quant_min=-129,
-                                                  quant_max=128,
-                                                  qscheme=QSchemeType.per_group.value) / scale.unsqueeze(-1)
+        quantized_block_x_int = fake_quantize_int(
+            inputs=block_x,
+            scale=scale,
+            zero_point=zero_point,
+            axis=-1,
+            group_size=self.block_size,
+            quant_min=-129,
+            quant_max=128,
+            qscheme=QSchemeType.per_group.value,
+        ) / scale.unsqueeze(-1)
         bool_mask = torch.logical_or(quantized_block_x_int >= 128, quantized_block_x_int < -128)
         scale_adjust = torch.pow(2, torch.any(bool_mask, dim=-1).to(torch.float32))
         self.amax *= scale_adjust
         return x_orig
 
     # TODO: there is no test covering this method.
-    def calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:  # pragma: no cover
+    def calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:  # pragma: no cover
         scale = torch.pow(2, torch.floor(torch.log2(self.amax)) - 6)
         scale = scale.masked_fill(scale == 0.0, self.eps)
         scale = scale.to(self.scale_torch_dtype)
         zero_point = torch.zeros_like(scale).to(torch.int32)
         return scale, zero_point
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self.calculate_qparams()
 
     def reset_state(self) -> None:
@@ -879,11 +891,9 @@ class PerBlockBFPObserver(ObserverBase):
 
 
 class PerGroupMinMaxObserver(UniformScalingObserver):
-
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 eps: float = torch.finfo(torch.float32).eps) -> None:
+    def __init__(
+        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
         super().__init__(qspec, device)
 
         self.qspec = qspec
@@ -948,7 +958,7 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
         self.max_val = self.max_val.to(input_origin_type)
         return x_orig
 
-    def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
         if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2]:
             _scale, _zero_point = super().calculate_fp8_quant_parameters(min_val, max_val)
@@ -960,11 +970,10 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
 
 
 class PerTensorHistogramObserver(UniformScalingObserver):
-
     calib_bin_edges: torch.Tensor
     calib_hist: torch.Tensor
 
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec)
 
         self.register_buffer("calib_bin_edges", torch.tensor([], device=device), persistent=False)
@@ -1008,25 +1017,22 @@ class PerTensorHistogramObserver(UniformScalingObserver):
                 if x_min < self.calib_bin_edges[0]:
                     width = (self.calib_bin_edges[1] - self.calib_bin_edges[0]).item()
                     self._num_bins += int(((self.calib_bin_edges[0] - x_min) / width).ceil().item())
-                    self.calib_bin_edges = torch.arange(x_min - width,
-                                                        self.calib_bin_edges[-1].item(),
-                                                        width,
-                                                        device=x.device)
+                    self.calib_bin_edges = torch.arange(
+                        x_min - width, self.calib_bin_edges[-1].item(), width, device=x.device
+                    )
                 if x_max > self.calib_bin_edges[-1]:
                     width = (self.calib_bin_edges[1] - self.calib_bin_edges[0]).item()
                     self._num_bins += int(((x_max - self.calib_bin_edges[-1]) / width).ceil().item())
-                    self.calib_bin_edges = torch.arange(self.calib_bin_edges[0].item(),
-                                                        x_max + width,
-                                                        width,
-                                                        device=x.device)
+                    self.calib_bin_edges = torch.arange(
+                        self.calib_bin_edges[0].item(), x_max + width, width, device=x.device
+                    )
                 assert x_max <= self.calib_bin_edges[-1]
                 assert x_min >= self.calib_bin_edges[0]
 
-                hist = torch.histc(x,
-                                   bins=self._num_bins,
-                                   min=self.calib_bin_edges[0].item(),
-                                   max=self.calib_bin_edges[-1].item())
-                hist[:self.calib_hist.numel()] += self.calib_hist
+                hist = torch.histc(
+                    x, bins=self._num_bins, min=self.calib_bin_edges[0].item(), max=self.calib_bin_edges[-1].item()
+                )
+                hist[: self.calib_hist.numel()] += self.calib_hist
                 self.calib_hist = hist
 
             assert isinstance(self.calib_hist, torch.Tensor)
@@ -1038,16 +1044,18 @@ class PerTensorHistogramObserver(UniformScalingObserver):
 
 
 class PerTensorHistogramObserverPro(UniformScalingObserver):
-    '''
+    """
     A wrap of pytorch version observer: HistogramObserver
-    '''
+    """
 
-    def __init__(self,
-                 qspec: QuantizationSpec,
-                 device: Optional[torch.device] = None,
-                 bins: int = 256,
-                 reduce_range: bool = False,
-                 upsample_rate: int = 384) -> None:
+    def __init__(
+        self,
+        qspec: QuantizationSpec,
+        device: torch.device | None = None,
+        bins: int = 256,
+        reduce_range: bool = False,
+        upsample_rate: int = 384,
+    ) -> None:
         super().__init__(qspec, device)
         self.qscheme = qspec.qscheme
         self.symmetric = qspec.symmetric
@@ -1074,13 +1082,15 @@ class PerTensorHistogramObserverPro(UniformScalingObserver):
         else:  # pragma: no cover
             kwargs = {"upsample_rate": upsample_rate}
 
-        self.histogram = HistogramObserver(qscheme=torch_qscheme,
-                                           dtype=torch_dtype,
-                                           bins=bins,
-                                           quant_min=quant_min,
-                                           quant_max=quant_max,
-                                           reduce_range=reduce_range,
-                                           **kwargs)
+        self.histogram = HistogramObserver(
+            qscheme=torch_qscheme,
+            dtype=torch_dtype,
+            bins=bins,
+            quant_min=quant_min,
+            quant_max=quant_max,
+            reduce_range=reduce_range,
+            **kwargs,
+        )
 
     def forward(self, x_orig: torch.Tensor) -> Any:
         return self.histogram(x_orig)
@@ -1091,8 +1101,7 @@ class PerTensorHistogramObserverPro(UniformScalingObserver):
 
 
 class PerTensorPercentileObserver(PerTensorHistogramObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
         # TODO: make the value can be set
@@ -1100,18 +1109,19 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
         self._num_bins = 4200
         self.percentile = 99.99999999
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
         self.min_val, self.max_val = self._calculate_min_and_max_using_percentile()
         return self.calculate_qparams(self.min_val, self.max_val)
 
-    def _calculate_min_and_max_using_percentile(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_min_and_max_using_percentile(self) -> tuple[torch.Tensor, torch.Tensor]:
         assert isinstance(self.calib_hist, torch.Tensor)
         assert isinstance(self.calib_bin_edges, torch.Tensor)
         return self.get_min_max_by_percentile(self.calib_hist, self.calib_bin_edges, self.percentile)
 
-    def get_min_max_by_percentile(self, histogram: torch.Tensor, bin_edges: torch.Tensor,
-                                  percentile: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_min_max_by_percentile(
+        self, histogram: torch.Tensor, bin_edges: torch.Tensor, percentile: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate the minimum and maximum values of a histogram at a specified percentile.
 
@@ -1137,7 +1147,7 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
 
         # Return None if no data is available
         if bin_edges is None and histogram is None:
-            return None
+            raise ValueError("no data available")
 
         # Calculate cumulative distribution function
         hist_total = histogram.sum()
@@ -1164,7 +1174,7 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
             assert isinstance(upper_idx, int), "Index must be an integer"
             max_value = bin_edges[upper_idx]
 
-            min_value = torch.tensor(0, device='cpu')
+            min_value = torch.tensor(0, device="cpu")
 
         max_value = max_value.to(self.device)
         min_value = min_value.to(self.device)
@@ -1172,28 +1182,25 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
 
 
 class PerTensorMSEObserver(PerTensorHistogramObserver):
-
-    def __init__(self, qspec: QuantizationSpec, device: Optional[torch.device] = None) -> None:
+    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
-    def _calculate_qparams(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
         self.min_val, self.max_val = self._calculate_min_and_max_using_mse()
         return self.calculate_qparams(self.min_val, self.max_val)
 
-    def _calculate_min_and_max_using_mse(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _calculate_min_and_max_using_mse(self) -> tuple[torch.Tensor, torch.Tensor]:
         assert isinstance(self.calib_hist, torch.Tensor)
         assert isinstance(self.calib_bin_edges, torch.Tensor)
         return self.get_min_max_by_mse(self.calib_hist, self.calib_bin_edges)
 
-    def get_min_max_by_mse(self,
-                           calib_hist: torch.Tensor,
-                           calib_bin_edges: torch.Tensor,
-                           stride: int = 1,
-                           start_bin: int = 2045) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_min_max_by_mse(
+        self, calib_hist: torch.Tensor, calib_bin_edges: torch.Tensor, stride: int = 1, start_bin: int = 2045
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns amax that minimizes MSE of the collected histogram."""
         # If calibrator hasn't collected any data, return none
         if calib_bin_edges is None and calib_hist is None:
-            return None
+            raise ValueError("no data available")
 
         counts = calib_hist
         edges = calib_bin_edges
@@ -1206,7 +1213,7 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
         mses = []
         arguments = []
 
-        min_value = torch.tensor(0, device='cpu')
+        min_value = torch.tensor(0, device="cpu")
         min_value = min_value.to(self.device)
 
         for i in range(start_bin, len(centers), stride):
@@ -1216,10 +1223,11 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
             elif self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2]:
                 quant_centers = self.scaling_fp8(centers, amax)
             else:
-                raise ValueError(f"Invalid dtype {self.dtype}. dtype must be a positive integer, fp8_e4m3 or fp8_e5m2."
-                                 )  # pragma: no cover
+                raise ValueError(
+                    f"Invalid dtype {self.dtype}. dtype must be a positive integer, fp8_e4m3 or fp8_e5m2."
+                )  # pragma: no cover
 
-            mse = ((quant_centers - centers)**2 * counts).mean()
+            mse = ((quant_centers - centers) ** 2 * counts).mean()
 
             mses.append(mse.cpu())
             arguments.append(i)
@@ -1235,8 +1243,9 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
         scale, zero_point = self.calculate_int_quant_params(min_value, max_value)
         assert isinstance(self.quant_min, int)
         assert isinstance(self.quant_max, int)
-        X = torch.fake_quantize_per_tensor_affine(X, scale.to(torch.float), zero_point.to(torch.int), self.quant_min,
-                                                  self.quant_max)
+        X = torch.fake_quantize_per_tensor_affine(
+            X, scale.to(torch.float), zero_point.to(torch.int), self.quant_min, self.quant_max
+        )
         return X
 
     @log_errors
@@ -1252,15 +1261,7 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
             fp8_dtype = torch.float8_e5m2
         else:
             raise ValueError(
-                f"Invalid dtype {self.dtype}. Supported fp8 formats: fp8_e4m3, fp8_e5m2.")  # pragma: no cover
+                f"Invalid dtype {self.dtype}. Supported fp8 formats: fp8_e4m3, fp8_e5m2."
+            )  # pragma: no cover
         X = X.to(fp8_dtype).to(X_orig_dtype) * scale
         return X
-
-
-OBSERVER_CLASSES = {
-    PlaceholderObserver, UniformScalingObserver, PerTensorMinMaxObserver, PerChannelMinMaxObserver, PerBlockMXObserver,
-    PerBlockBFPObserver, PerGroupMinMaxObserver, PerTensorHistogramObserver, PerTensorPercentileObserver,
-    PerTensorMSEObserver, PerTensorHistogramObserverPro, PerBlockMXDiffsObserver
-}
-
-OBSERVER_MAP = {observer_cls.__name__: observer_cls for observer_cls in OBSERVER_CLASSES}

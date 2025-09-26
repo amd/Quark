@@ -2,10 +2,11 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from super_gradients.training import models
-from super_gradients.common.object_names import Models
-import torch
 import argparse
+
+import torch
+from super_gradients.common.object_names import Models
+from super_gradients.training import models
 
 
 def main(args):
@@ -25,10 +26,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output_model_path",
-                        help="Specify the input model to be quantized",
-                        default="yolo_nas_s.onnx",
-                        required=False)
+    parser.add_argument(
+        "--output_model_path", help="Specify the input model to be quantized", default="yolo_nas_s.onnx", required=False
+    )
     args = parser.parse_args()
 
     main(args)

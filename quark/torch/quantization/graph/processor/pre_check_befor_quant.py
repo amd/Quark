@@ -3,23 +3,25 @@
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
+
 import torch.fx
+
 from quark.torch.quantization.config.config import Config
 
 __all__ = [
     "pre_quant_model_and_config_checks",
 ]
-'''
+"""
 All check related the model should be here
-'''
+"""
 
 
 def _model_type_check(model: Any) -> bool:
-    '''
+    """
     raise ValueError(
             "Quark graph-based quantization requires a model inheriting from torch.fx.GraphModule but the provided model is not. Please check your model and refer to https://pytorch.org/docs/stable/fx.html and https://pytorch.org/docs/stable/export.html#torch.export.ExportedProgram.module."
     )
-    '''
+    """
     if not isinstance(model, torch.fx.GraphModule):
         return False
     return True
@@ -37,28 +39,28 @@ def _all_model_checks(model: Any) -> bool:
     return True
 
 
-'''
+"""
 All check related to config should be here
-'''
+"""
 
 
 def _contain_layer_quant_config(config: Config) -> bool:
-    '''
+    """
     raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_quant_config`, got {config.layer_quant_config}. Please use eager mode quantization for now."
         )
-    '''
+    """
     if len(config.layer_quant_config) > 0:
         return False
     return True
 
 
 def _contain_layer_type_quant_config(config: Config) -> bool:
-    '''
+    """
     raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_type_quant_config`, got {config.layer_type_quant_config}. Please use eager mode quantization for now."
         )
-    '''
+    """
     if len(config.layer_type_quant_config) > 0:
         return False
     return True
@@ -79,9 +81,9 @@ def pre_quant_model_and_config_checks(model: Any, config: Config) -> bool:
     return True
 
 
-'''
+"""
 TODO NOTE replaced to pre_quant_model_and_config_checks or other func later
-'''
+"""
 
 
 def check_supported_model_and_config(model: torch.fx.GraphModule, config: Config) -> None:  # pragma: no cover
@@ -108,8 +110,10 @@ def check_supported_model_and_config(model: torch.fx.GraphModule, config: Config
     if config.global_quant_config is not None:
         global_quant_config = config.global_quant_config
         quant_specs = [
-            global_quant_config.input_tensors, global_quant_config.output_tensors, global_quant_config.weight,
-            global_quant_config.bias
+            global_quant_config.input_tensors,
+            global_quant_config.output_tensors,
+            global_quant_config.weight,
+            global_quant_config.bias,
         ]
         if any(isinstance(spec, list) for spec in quant_specs):
             raise NotImplementedError(

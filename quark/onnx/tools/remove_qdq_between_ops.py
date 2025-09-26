@@ -4,13 +4,9 @@
 #
 """Remove QuantizeLinear (q) and DequantizeLinear (dq) nodes between specified operator pairs."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import os
 import argparse
-from typing import Any, List, Tuple, Optional, Union
+import os
+from typing import Any, List, Optional, Tuple, Union
 
 import onnx
 from onnx import ModelProto, NodeProto
@@ -22,7 +18,7 @@ from quark.shares.utils.log import ScreenLogger
 logger = ScreenLogger(__name__)
 
 
-def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[Tuple[str, str]], Any]) -> Any:
+def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[tuple[str, str]], Any]) -> Any:
     """
     Modify an ONNX quantized model to remove q and dq ops between specified operation pairs.
     Start from `lower_op` nodes and traverse upwards to `upper_op`.
@@ -84,7 +80,7 @@ def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[Tuple[str,
         logger.warning(f"Unable to remove QuantizeLinear & DequantizeLinear operations: {between_ops}. Exception: {e}")
 
 
-def find_node_by_output(nodes: List[NodeProto], output_name: str) -> Optional[NodeProto]:
+def find_node_by_output(nodes: list[NodeProto], output_name: str) -> NodeProto | None:
     """
     Find a node that produces the specified output.
 
@@ -101,14 +97,16 @@ def find_node_by_output(nodes: List[NodeProto], output_name: str) -> Optional[No
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_model", type=str, default="", help="input onnx model file path.")
-    parser.add_argument('--between_ops',
-                        type=lambda s: [tuple(item.split(',')) for item in s.split(';')],
-                        help="List of operation pairs to match, formatted as 'Op1,Op2;Op3,Op4;Op5,Op6'.")
+    parser.add_argument(
+        "--between_ops",
+        type=lambda s: [tuple(item.split(",")) for item in s.split(";")],
+        help="List of operation pairs to match, formatted as 'Op1,Op2;Op3,Op4;Op5,Op6'.",
+    )
     parser.add_argument("--output_model", type=str, default="", help="output onnx model file path.")
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.remove_qdq_between_ops --input_model INPUT_MODEL_PATH --between_ops 'Conv,Relu;Conv,LeakyRelu;Conv,PRelu;Mul,Add' --output_model OUTPUT_MODEL_PATH."
         )
@@ -117,9 +115,9 @@ def main() -> None:
     model = onnx.load_model(FLAGS.input_model)
     converted_model = remove_qdq_between_ops(model, FLAGS.between_ops)
     onnx.save(converted_model, FLAGS.output_model)
-    logger.info('Conversion Finished!')
-    logger.info('Converted model saved in: {}'.format(FLAGS.output_model))
+    logger.info("Conversion Finished!")
+    logger.info(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

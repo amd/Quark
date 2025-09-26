@@ -1,0 +1,31 @@
+{
+  "name": "smooth",
+  "alpha": 0.8,
+  "scale_clamp_min": 0.001,
+  "scaling_layers": [
+    {
+      "prev_op": "post_attention_layernorm",
+      "layers": [
+        "mlp.gate_proj",
+        "mlp.up_proj"
+      ],
+      "inp": "mlp.gate_proj",
+      "module2inspect": "mlp"
+    },
+    {
+      "prev_op": "mlp.up_proj",
+      "layers": [
+        "mlp.down_proj"
+      ],
+      "inp": "mlp.down_proj"
+    },
+    {
+      "prev_op": "up_proj",
+      "layers": [
+        "down_proj"
+      ],
+      "inp": "down_proj"
+    }
+  ],
+  "model_decoder_layers": "model.layers"
+}

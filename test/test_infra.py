@@ -2,11 +2,10 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.testing.common_utils import TestCase, slow_test, slow_test_if, skip_if_no_gpu
+from quark.testing.common_utils import TestCase, skip_if_no_gpu, slow_test, slow_test_if
 
 
 class TestTorch(TestCase):
-
     @slow_test
     def test_slow_test(self):
         # Just a smoketest to make sure our test_slow_test decorator works.
@@ -27,6 +26,7 @@ class TestTorch(TestCase):
         # Just a smoketest to make sure our skip_if_no_gpu decorator works.
         try:
             import torch
+
             self.assertTrue(torch.cuda.is_available())
         except ImportError:
             pass

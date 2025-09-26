@@ -5,33 +5,30 @@
 
 #include "cu_utils.h"
 
-
-dim3 GetGridSizeF(unsigned n){
+dim3 GetGridSizeF(unsigned n) {
   dim3 Gr;
-  unsigned nb=( n + BLOCKSIZE - 1 ) / BLOCKSIZE;
-  if(nb<65536){
-      Gr.x=nb;
-      Gr.y=1;
-  }else{
-      float tmp=nb;
-      float sqrt_val=sqrt(tmp);
-      unsigned x=sqrt_val;
-      Gr.x=x;
-      unsigned y=(nb+Gr.x-1)/Gr.x;
-      Gr.y =y;
+  unsigned nb = (n + BLOCKSIZE - 1) / BLOCKSIZE;
+  if (nb < 65536) {
+    Gr.x = nb;
+    Gr.y = 1;
+  } else {
+    float tmp = nb;
+    float sqrt_val = sqrt(tmp);
+    unsigned x = sqrt_val;
+    Gr.x = x;
+    unsigned y = (nb + Gr.x - 1) / Gr.x;
+    Gr.y = y;
   }
   Gr.z = 1;
   return Gr;
 }
 
-void GetBlockSizesForSimpleMatrixOperation(int num_rows,
-                                           int num_cols,
-                                           dim3 *dimGrid,
-                                           dim3 *dimBlock) {
+void GetBlockSizesForSimpleMatrixOperation(
+  int num_rows, int num_cols, dim3 *dimGrid, dim3 *dimBlock
+) {
   int col_blocksize = BLOCKSIZE_COL, row_blocksize = BLOCKSIZE_ROW;
-  while (col_blocksize > 1 &&
-         (num_cols + (num_cols / 2) <= col_blocksize ||
-          num_rows > 65536 * row_blocksize)) {
+  while (col_blocksize > 1 && (num_cols + (num_cols / 2) <= col_blocksize ||
+                               num_rows > 65536 * row_blocksize)) {
     col_blocksize /= 2;
     row_blocksize *= 2;
   }

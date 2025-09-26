@@ -1,0 +1,14 @@
+{
+  "model_decoder_layers": "model.layers",
+  "name": "gptq",
+  "inside_layer_modules": [
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+    "mlp.up_proj"
+  ]
+}

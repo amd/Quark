@@ -5,27 +5,30 @@
 
 import torch
 import torch.nn as nn
-from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+from torch.utils.data import DataLoader, Dataset
 
 from quark.torch import ModelQuantizer
-from torch.utils.data import Dataset, DataLoader
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
 
-from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+)
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
-
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                                             weight=INT8_PER_TENSOR_SPEC,
-                                                             bias=INT8_PER_TENSOR_SPEC,
-                                                             output_tensors=INT8_PER_TENSOR_SPEC)
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=10):
@@ -38,12 +41,12 @@ class SimpleCNN(nn.Module):
         x = self.fc(x)
         return x
 
+
 input_tensor = torch.randn(1, 64, 64)
 
 
 def test_net():
     class MyDataset(Dataset):
-
         def __init__(self):
             return
 
@@ -59,11 +62,11 @@ def test_net():
     quant_config = Config(global_quant_config=DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG)
     quantizer = ModelQuantizer(quant_config)
     quant_model = quantizer.quantize_model(model, dataloader)
-    assert(
-        hasattr(quant_model.conv, "_input_quantizer") and
-        hasattr(quant_model.conv, "_weight_quantizer") and
-        hasattr(quant_model.conv, "_bias_quantizer") and
-        hasattr(quant_model.conv, "_output_quantizer")
+    assert (
+        hasattr(quant_model.conv, "_input_quantizer")
+        and hasattr(quant_model.conv, "_weight_quantizer")
+        and hasattr(quant_model.conv, "_bias_quantizer")
+        and hasattr(quant_model.conv, "_output_quantizer")
     )
 
 

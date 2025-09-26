@@ -1,3 +1,5 @@
+#!/bin/bash
+
 #
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -8,6 +10,8 @@ pip install --upgrade pip
 pip install pip-tools
 rm -f source/sphinx/requirements.txt
 LC_ALL=C pip-compile source/sphinx/requirements.in
+
+pip install quark-dashboard --no-cache --trusted-host xcoartifactory.xilinx.com -i https://xcoartifactory.xilinx.com/artifactory/api/pypi/uai-pip-local/simple/
 
 # Install updated requirements.txt
 pip install -r source/sphinx/requirements.txt

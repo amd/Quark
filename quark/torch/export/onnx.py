@@ -4,15 +4,17 @@
 #
 
 import os
-from quark.shares.utils.log import ScreenLogger
+
 import numpy as np
+
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 try:
     import onnx
-    from onnxsim import simplify
     from onnx import numpy_helper
+    from onnxsim import simplify
 except ModuleNotFoundError as e:
     logger.error(str(e))
     raise ModuleNotFoundError("Please install onnx package if exporting onnx graph. " + str(e)) from e
@@ -24,13 +26,13 @@ __all__ = [
 
 
 def export_onnx_model_optimization(onnx_graph: str) -> None:
-    '''
+    """
     This is the top level API, called by quark/torch/export/api.py: func:export_onnx_model
     NOTE all following function should:
         input: onnx_graph type: str
             modify the onnx and save the modified onnx to the original path.
         output: None
-    '''
+    """
     # if int16/uint16 quant, change the opset so that can onnxruntime
     change_opset_version(onnx_graph)
     # if int32 quant(usually for bias), as QuantizeLinear not support int32 runtime,
@@ -44,7 +46,7 @@ def convert_model_to_uint4_int4(onnx_graph: str) -> None:
     model = onnx.load(onnx_graph)
     graph = model.graph
     for node in model.graph.node:
-        if node.op_type == 'QuantizeLinear':
+        if node.op_type == "QuantizeLinear":
             node_name = node.input[2]
             for node in graph.initializer:
                 if node_name == node.name:
@@ -54,7 +56,7 @@ def convert_model_to_uint4_int4(onnx_graph: str) -> None:
                 found_node.data_type = 21
             elif found_node.data_type == 3:
                 found_node.data_type = 22
-        elif node.op_type == 'DequantizeLinear':
+        elif node.op_type == "DequantizeLinear":
             node_name = node.input[2]
             for node in graph.initializer:
                 if node_name in node.name:
@@ -73,7 +75,7 @@ def convert_model_to_uint4_int4(onnx_graph: str) -> None:
     uint4_int4_onnx = os.path.join(uint4_int4_dir, "quark_model.onnx")
     onnx.save_model(model, uint4_int4_onnx, save_as_external_data=True)
     logger.info("Converted to int4/uint4 onnx model successfully")
-    logger.info("Quantized onnx model exported to {} successfully.".format(uint4_int4_onnx))
+    logger.info(f"Quantized onnx model exported to {uint4_int4_onnx} successfully.")
 
 
 # ==============if int16/uint16 quant then change op_set version====
@@ -85,7 +87,7 @@ def _contain_uint16_or_int16_quant(onnx_graph: str) -> bool:
         initializers = {init.name: init for init in model.graph.initializer}
 
         for node in model.graph.node:
-            if node.op_type == 'QuantizeLinear':
+            if node.op_type == "QuantizeLinear":
                 if len(node.input) >= 3:
                     y_zero_point_name = node.input[2]
                     if y_zero_point_name in initializers:
@@ -99,7 +101,7 @@ def _contain_uint16_or_int16_quant(onnx_graph: str) -> bool:
 
 
 def change_opset_version(onnx_path: str, opset_version: int = 21) -> None:
-    '''
+    """
     If int16/Uint16 quant, the dataflow would be like:
         input_date
             |
@@ -118,7 +120,7 @@ def change_opset_version(onnx_path: str, opset_version: int = 21) -> None:
             The exported model with opset version less than 21.
     For better compatibility with onnxruntime:
         Once find uint16/int16 quantization, we would change the opset version to 21>=.
-    '''
+    """
 
     # Step1: check whether contain int16/uint16 quant
     if not _contain_uint16_or_int16_quant(onnx_path):
@@ -132,16 +134,18 @@ def change_opset_version(onnx_path: str, opset_version: int = 21) -> None:
         model_simp, check = simplify(onnx_model)
         # step3: optimization, change the op_set to 21 or higher
         from onnx import version_converter
+
         converted_model = version_converter.convert_version(model_simp, opset_version)
         onnx.save(converted_model, onnx_path)
-        logger.info("During export onnx, find int16/uint16 quant, converting opset from: {} to {}".format(
-            old_opset_version, opset_version))
+        logger.info(
+            f"During export onnx, find int16/uint16 quant, converting opset from: {old_opset_version} to {opset_version}"
+        )
     return
 
 
 # ==============if bias int32 quant, delete QuantizeLinear and remain DequantizeLinear node ====
 def fold_quantizers_for_bias(model_path: str) -> None:
-    '''
+    """
     If Conv's bias is int32 quant.
     As QuantizeLinear not support int32 quant,
        So for bias:
@@ -156,7 +160,7 @@ def fold_quantizers_for_bias(model_path: str) -> None:
     After:
         DequantizeLinear (INT32_bias, zp(int32), scale(fp32))
                 |
-    '''
+    """
     target_conv = ["Conv", "ConvTranspose"]  # TODO rich the target conv
     target_bias_type = ["int32"]
     # Load the model and simplify
@@ -171,21 +175,20 @@ def fold_quantizers_for_bias(model_path: str) -> None:
     graph = model.graph
     name_to_initializer = {init.name: init for init in graph.initializer}
     input_0_to_dequnt_node = {
-        node.input[0]: node
-        for node in graph.node if node.op_type == "DequantizeLinear"
+        node.input[0]: node for node in graph.node if node.op_type == "DequantizeLinear"
     }  # DequantizeLinear
     input_2_to_conv_node = {node.input[2]: node for node in graph.node if node.op_type in target_conv}  # Conv
 
     # Step1: find the demand QuantizeLinear node
-    '''
+    """
     The demand patterm:
         QuantizeLinear(int32)(bias) -> DequantizeLinear(bias)(int32) -> conv
     The following not meet the demand
-    '''
+    """
     target_bias_quant_node = []
     for node in model.graph.node:
         # if is a single QuantizeLinear, and input is a param
-        if (not node.op_type == 'QuantizeLinear') or (not node.input[0] in name_to_initializer):
+        if (not node.op_type == "QuantizeLinear") or (node.input[0] not in name_to_initializer):
             continue
         quant_node = node
         y_zero_point_name = quant_node.input[2]
@@ -193,26 +196,28 @@ def fold_quantizers_for_bias(model_path: str) -> None:
             continue
         y_zero_point_initializer = name_to_initializer[y_zero_point_name]
         # if not int32 quant format, then skip
-        if not onnx.helper.tensor_dtype_to_np_dtype(y_zero_point_initializer.data_type) in target_bias_type:
+        if onnx.helper.tensor_dtype_to_np_dtype(y_zero_point_initializer.data_type) not in target_bias_type:
             continue
 
         # if followed by Dequantizer node
         output_node_name = quant_node.output[0]
-        if (output_node_name not in input_0_to_dequnt_node) or (not input_0_to_dequnt_node[output_node_name].op_type
-                                                                == 'DequantizeLinear'):
+        if (output_node_name not in input_0_to_dequnt_node) or (
+            not input_0_to_dequnt_node[output_node_name].op_type == "DequantizeLinear"
+        ):
             continue
         dequant_outnode = input_0_to_dequnt_node[output_node_name]
         x_zero_point_name = dequant_outnode.input[2]
         if x_zero_point_name not in name_to_initializer:
             continue
         x_zero_point_initializer = name_to_initializer[x_zero_point_name]
-        if not onnx.helper.tensor_dtype_to_np_dtype(x_zero_point_initializer.data_type) in target_bias_type:
+        if onnx.helper.tensor_dtype_to_np_dtype(x_zero_point_initializer.data_type) not in target_bias_type:
             continue
 
         # if followed by conv node
         output_node_name = dequant_outnode.output[0]
-        if (output_node_name
-                not in input_2_to_conv_node) or (not input_2_to_conv_node[output_node_name].op_type in target_conv):
+        if (output_node_name not in input_2_to_conv_node) or (
+            input_2_to_conv_node[output_node_name].op_type not in target_conv
+        ):
             continue
 
         target_bias_quant_node.append(quant_node)
@@ -246,7 +251,7 @@ def fold_quantizers_for_bias(model_path: str) -> None:
 
         # get the INT32 format BIAS
         q = np.round(x / y_scale + y_zero_point).astype(np.int32)
-        np.clip(q, -2**31, 2**31 - 1, out=q)
+        np.clip(q, -(2**31), 2**31 - 1, out=q)
 
         # A new bias
         new_initer_bias_name = input_bias_name + "_int32"
@@ -272,6 +277,6 @@ def fold_quantizers_for_bias(model_path: str) -> None:
     model_simp, check = simplify(model)
     onnx.save_model(model_simp, model_path)
     logger.info(
-        "As bias is int32 quant, fold bias QuantizeLinear to DequantizeLinear for better onnxruntime, total convert: {}"
-        .format(bias_quant_node_num))
+        f"As bias is int32 quant, fold bias QuantizeLinear to DequantizeLinear for better onnxruntime, total convert: {bias_quant_node_num}"
+    )
     return

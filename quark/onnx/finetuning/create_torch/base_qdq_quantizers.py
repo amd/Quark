@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: MIT
 #
 
+from typing import Any, Optional, Tuple
+
 import torch
-from typing import Optional, Tuple, Any
 
 
-class RoundHalfToEven(torch.autograd.Function):
-
+class RoundHalfToEven(torch.autograd.Function):  # type: ignore
     @staticmethod
     def forward(ctx: torch.autograd.Function, t: torch.Tensor) -> torch.Tensor:
         return torch.round(t)
@@ -19,11 +19,17 @@ class RoundHalfToEven(torch.autograd.Function):
         return grad_input
 
 
-class INTQuantFunction(torch.autograd.Function):
-
+class INTQuantFunction(torch.autograd.Function):  # type: ignore
     @staticmethod
-    def forward(ctx: torch.autograd.Function, tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor,
-                min_q: torch.Tensor, max_q: torch.Tensor, round_func: torch.autograd.Function) -> torch.Tensor:
+    def forward(
+        ctx: torch.autograd.Function,
+        tensor: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        min_q: torch.Tensor,
+        max_q: torch.Tensor,
+        round_func: torch.autograd.Function,
+    ) -> torch.Tensor:
         quant_t = round_func(tensor / scale) + zero_point
 
         # quant_t = torch.minimum(torch.maximum(quant_t, min_q), max_q)
@@ -32,36 +38,43 @@ class INTQuantFunction(torch.autograd.Function):
         return quant_t
 
     @staticmethod  # type: ignore
-    def backward(ctx: torch.autograd.Function,
-                 grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None, None, None, None]:
+    def backward(
+        ctx: torch.autograd.Function, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, None, None, None, None, None]:
         return grad_output, None, None, None, None, None
 
 
-class INTDeQuantFunction(torch.autograd.Function):
-
+class INTDeQuantFunction(torch.autograd.Function):  # type: ignore
     @staticmethod
     def forward(ctx: Any, tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor) -> torch.Tensor:
         ctx.save_for_backward(scale, zero_point)
         return (tensor - zero_point) * scale
 
     @staticmethod  # type: ignore
-    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
         scale, zero_point = ctx.saved_tensors
         return (grad_output - zero_point) * scale, None, None
 
 
-class INTQuantDequantFunction(torch.autograd.Function):
-
+class INTQuantDequantFunction(torch.autograd.Function):  # type: ignore
     @staticmethod
-    def forward(ctx: torch.autograd.Function, tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor,
-                min_q: torch.Tensor, max_q: torch.Tensor, round_func: torch.autograd.Function) -> torch.Tensor:
+    def forward(
+        ctx: torch.autograd.Function,
+        tensor: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        min_q: torch.Tensor,
+        max_q: torch.Tensor,
+        round_func: torch.autograd.Function,
+    ) -> torch.Tensor:
         quant_t = round_func(tensor / scale) + zero_point
         quant_t = (torch.clamp(quant_t, min_q, max_q) - zero_point) * scale
         return quant_t
 
     @staticmethod  # type: ignore
-    def backward(ctx: torch.autograd.Function,
-                 grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None, None, None, None]:
+    def backward(
+        ctx: torch.autograd.Function, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, None, None, None, None, None]:
         grad_input = grad_output.clone()
         return grad_input, None, None, None, None, None
 
@@ -73,27 +86,35 @@ int_dequant_func = INTDeQuantFunction.apply
 
 
 # Followed pylight, we use a common function to implement quantize-dequantize
-def int_quant_dequant_func(tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor, min_q: torch.Tensor,
-                           max_q: torch.Tensor, round_func: Any) -> torch.Tensor:
+def int_quant_dequant_func(
+    tensor: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    min_q: torch.Tensor,
+    max_q: torch.Tensor,
+    round_func: Any,
+) -> torch.Tensor:
     quant_t = round_func(tensor / scale) + zero_point
     quant_t = (torch.clamp(quant_t, min_q, max_q) - zero_point) * scale
     return quant_t
 
 
-class INTQuantizer(torch.nn.Module):
-    """ Standard integer quantizer has three functions including quantize,
+class INTQuantizer(torch.nn.Module):  # type: ignore
+    """Standard integer quantizer has three functions including quantize,
     dequantize and quantize_dequantize, which is corresponding to ONNX
     QuantizeLinear, DequantizeLinear and Q/DQ pair separately.
     By default in forward, it works in quantize_dequantize mode.
     """
 
-    def __init__(self,
-                 scale: torch.Tensor,
-                 zero_point: torch.Tensor,
-                 min_q: torch.Tensor,
-                 max_q: torch.Tensor,
-                 ch_axis: int = 0,
-                 q_folded: bool = False) -> None:
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        min_q: torch.Tensor,
+        max_q: torch.Tensor,
+        ch_axis: int = 0,
+        q_folded: bool = False,
+    ) -> None:
         super().__init__()
 
         self.scale = scale
@@ -111,19 +132,19 @@ class INTQuantizer(torch.nn.Module):
         self.q_folded = q_folded
 
     def round_impl(self, tensor: torch.Tensor) -> None:
-        """ Implement the round function, designed for adaround quantizer """
+        """Implement the round function, designed for adaround quantizer"""
         self.round_func = default_round_func
 
     def _to_device(self, tensor: torch.Tensor) -> None:
-        """ Set the device of quantization parameters as the tensor """
+        """Set the device of quantization parameters as the tensor"""
         self.scale = self.scale.to(device=tensor.device)
         self.zero_point = self.zero_point.to(device=tensor.device)
         self.min_q = self.min_q.to(device=tensor.device)
         self.max_q = self.max_q.to(device=tensor.device)
 
     def _broad_cast(self, param: torch.Tensor, tensor: torch.Tensor) -> torch.Tensor:
-        """ This method takes a 1-dimension parameter and n-dimension tensor.
-        The parameter is broad-casted to match the n-dimensional tensor """
+        """This method takes a 1-dimension parameter and n-dimension tensor.
+        The parameter is broad-casted to match the n-dimensional tensor"""
         assert len(param.shape) <= 1  # Should be 1-dimensional tensor (scalar or vector)
 
         # No need broad cast for per_tensor
@@ -142,7 +163,7 @@ class INTQuantizer(torch.nn.Module):
         return param.view(shape)
 
     def tensor_sync(self, tensor: torch.Tensor) -> None:
-        """ The Pre-processing of the parameter according to the input tensor """
+        """The Pre-processing of the parameter according to the input tensor"""
         self._to_device(tensor)
 
         if len(self.scale.shape) <= 1:
@@ -169,24 +190,27 @@ class INTQuantizer(torch.nn.Module):
 
 
 class AdaroundConstants:
-    """ Constants used for Adarounding """
+    """Constants used for Adarounding"""
+
     GAMMA = -0.1
     ZETA = 1.1
 
 
 class AdaroundINTQuantizer(INTQuantizer):
-    """ AdaRound integer quantizer has a alpha paramter for optimizing weight rounding """
+    """AdaRound integer quantizer has a alpha paramter for optimizing weight rounding"""
 
-    def __init__(self,
-                 scale: torch.Tensor,
-                 zero_point: torch.Tensor,
-                 min_q: torch.Tensor,
-                 max_q: torch.Tensor,
-                 ch_axis: int = 0,
-                 q_folded: bool = False) -> None:
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        min_q: torch.Tensor,
+        max_q: torch.Tensor,
+        ch_axis: int = 0,
+        q_folded: bool = False,
+    ) -> None:
         super().__init__(scale, zero_point, min_q, max_q, ch_axis=ch_axis, q_folded=q_folded)
 
-        self.alpha: Optional[torch.nn.Parameter] = None
+        self.alpha: torch.nn.Parameter | None = None
         self.use_soft_rounding = True
 
     def round_impl(self, tensor: torch.Tensor) -> None:
@@ -213,8 +237,9 @@ class AdaroundINTQuantizer(INTQuantizer):
         tensor_floor = torch.floor(tensor / self.scale)
 
         tensor_diff = (tensor / self.scale) - tensor_floor
-        alpha = -torch.log((AdaroundConstants.ZETA - AdaroundConstants.GAMMA) /
-                           (tensor_diff - AdaroundConstants.GAMMA) - 1)
+        alpha = -torch.log(
+            (AdaroundConstants.ZETA - AdaroundConstants.GAMMA) / (tensor_diff - AdaroundConstants.GAMMA) - 1
+        )
 
         # Even if the input is integer type, alpha has to be kept in float32
         # in order to be updated by the optimizer
@@ -229,15 +254,23 @@ class AdaroundINTQuantizer(INTQuantizer):
         # rectified sigmoid function and hard rounding maps it to exactly zero or one
         if self.use_soft_rounding:
             h_alpha = torch.clamp(
-                torch.sigmoid(alpha) * (AdaroundConstants.ZETA - AdaroundConstants.GAMMA) + AdaroundConstants.GAMMA, 0,
-                1)
+                torch.sigmoid(alpha) * (AdaroundConstants.ZETA - AdaroundConstants.GAMMA) + AdaroundConstants.GAMMA,
+                0,
+                1,
+            )
         else:
-            h_alpha = (alpha >= 0)
+            h_alpha = alpha >= 0
         return h_alpha
 
 
-def fp_quant_func(tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor, min_q: torch.Tensor,
-                  max_q: torch.Tensor, quant_type: torch.dtype) -> torch.Tensor:
+def fp_quant_func(
+    tensor: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    min_q: torch.Tensor,
+    max_q: torch.Tensor,
+    quant_type: torch.dtype,
+) -> torch.Tensor:
     quant_t = tensor / scale + zero_point  # These should be float32 all
     quant_t = quant_t.to(quant_type)  # Let's convert it to the quant_type
     quant_t = torch.clamp(quant_t, min_q, max_q)
@@ -250,8 +283,14 @@ def fp_dequant_func(tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch
     return quant_t
 
 
-def fp_quant_dequant_func(tensor: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor, min_q: torch.Tensor,
-                          max_q: torch.Tensor, quant_type: torch.dtype) -> torch.Tensor:
+def fp_quant_dequant_func(
+    tensor: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    min_q: torch.Tensor,
+    max_q: torch.Tensor,
+    quant_type: torch.dtype,
+) -> torch.Tensor:
     quant_t = tensor / scale + zero_point  # These should be float32 all
     quant_t = quant_t.to(quant_type)  # Let's convert it to the quant_type
     quant_t = torch.clamp(quant_t, min_q, max_q)
@@ -261,7 +300,7 @@ def fp_quant_dequant_func(tensor: torch.Tensor, scale: torch.Tensor, zero_point:
 
 
 class FPQuantizer(INTQuantizer):
-    """ Standard floating point quantizer, such as quantizer for Float16 and BFloat16 quantization.
+    """Standard floating point quantizer, such as quantizer for Float16 and BFloat16 quantization.
     There are still scale and zp for the quantization to do the scaling and shift.
     """
 

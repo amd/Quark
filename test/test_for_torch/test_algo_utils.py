@@ -3,16 +3,23 @@
 # SPDX-License-Identifier: MIT
 #
 
-import tempfile
 import os
+import tempfile
 
-from quark.torch.quantization.config.config import load_pre_optimization_config_from_file, load_quant_algo_config_from_file, _load_pre_optimization_config_from_dict, _load_quant_algo_config_from_dict
+from quark.torch.quantization.config.config import (
+    _load_pre_optimization_config_from_dict,
+    _load_quant_algo_config_from_dict,
+    load_pre_optimization_config_from_file,
+    load_quant_algo_config_from_file,
+)
+
 
 def create_temp_file(content: str):
-    temp_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json')
+    temp_file = tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".json")
     temp_file.write(content)
     temp_file.close()
     return temp_file.name
+
 
 def test_load_pre_optimization_config_from_file():
     file_path = create_temp_file(
@@ -49,6 +56,36 @@ def test_load_pre_optimization_config_from_dict():
 def test_load_quant_algo_config_from_dict():
     config_dict = {
         "name": "awq",
+        "scaling_layers": [{"prev_op": "self_attn_layer_norm"}],
+        "model_decoder_layers": "model.decoder.layers",
+    }
+    loaded_config = _load_quant_algo_config_from_dict(config_dict)
+    assert loaded_config.model_decoder_layers == "model.decoder.layers"
+
+
+def test_load_rotation_config_from_dict():
+    config_dict = {
+        "name": "rotation",
+        "scaling_layers": [{"prev_op": "self_attn_layer_norm"}],
+        "model_decoder_layers": "model.decoder.layers",
+    }
+    loaded_config = _load_quant_algo_config_from_dict(config_dict)
+    assert loaded_config.model_decoder_layers == "model.decoder.layers"
+
+
+def test_load_quarot_config_from_dict():
+    config_dict = {
+        "name": "quarot",
+        "scaling_layers": [{"prev_op": "self_attn_layer_norm"}],
+        "model_decoder_layers": "model.decoder.layers",
+    }
+    loaded_config = _load_quant_algo_config_from_dict(config_dict)
+    assert loaded_config.model_decoder_layers == "model.decoder.layers"
+
+
+def test_load_smoothquant_config_from_dict():
+    config_dict = {
+        "name": "smooth",
         "scaling_layers": [{"prev_op": "self_attn_layer_norm"}],
         "model_decoder_layers": "model.decoder.layers",
     }

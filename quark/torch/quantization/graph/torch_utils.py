@@ -4,39 +4,58 @@
 #
 
 import types
+
 import torch
 import torch.fx
 from torch import ops  # type: ignore[attr-defined]
-from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
-from quark.torch.quantization.nn.modules.quantize_leakyrelu import QuantLeakyReLU
-from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d, QuantConvTransposeBatchNorm2d
-from quark.torch.quantization.nn.modules.quantize_pool import QuantAdaptiveAvgPool2d, QuantAvgPool2d
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.quantization.observer.observer import PerTensorPowOf2MinMaxObserver
 
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
+from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import (
+    QuantConvTransposeBatchNorm2d,
+    QuantizedConvBatchNorm2d,
+)
+from quark.torch.quantization.nn.modules.quantize_leakyrelu import QuantLeakyReLU
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
+from quark.torch.quantization.nn.modules.quantize_pool import QuantAdaptiveAvgPool2d, QuantAvgPool2d
+from quark.torch.quantization.observer.observer import (
+    PerChannelPowOf2MinMaxObserver,
+    PerChannelPowOf2MinMSEObserver,
+    PerTensorPowOf2MinMaxObserver,
+    PerTensorPowOf2MinMSEObserver,
+)
+from quark.torch.quantization.observer.tqt_observer import TQTObserver
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+
 # from torch.ao.quantization.pt2e.utils import _get_node_name_to_scope
 logger = ScreenLogger(__name__)
-'''
+"""
 NOTE for better development, all ops type check should be here
-'''
+"""
 
 # Quark inner module
 QUANT_CONV_WITH_BN = (QuantizedConvBatchNorm2d, QuantConvTransposeBatchNorm2d)
 QUANT_CONV_WO_BN = (QuantLinear, QuantConv2d, QuantConvTranspose2d)
 QUANT_CONV_LIKE_MODULE = QUANT_CONV_WITH_BN + QUANT_CONV_WO_BN
 _STRATEGY_SHIFT_CUT_MODULE = (QuantizedConvBatchNorm2d, QuantLinear, QuantConv2d)  # used for AdjustShiftCutQOPass
-QUANT_ADAPTIVEAVGPOOL2D = (QuantAdaptiveAvgPool2d, )
-QUANT_AVGPOOL2D = (QuantAvgPool2d, )
-QUANT_LEAKY_RELU = (QuantLeakyReLU, )
+_CLE_ALG_TARGET_MODULE = (QuantizedConvBatchNorm2d, QuantConv2d, QuantLinear)
+QUANT_ADAPTIVEAVGPOOL2D = (QuantAdaptiveAvgPool2d,)
+QUANT_AVGPOOL2D = (QuantAvgPool2d,)
+QUANT_LEAKY_RELU = (QuantLeakyReLU,)
+POW_OF_2_OBSERVER = (
+    PerTensorPowOf2MinMaxObserver,
+    PerTensorPowOf2MinMSEObserver,
+    PerChannelPowOf2MinMaxObserver,
+    PerChannelPowOf2MinMSEObserver,
+    TQTObserver,
+)
 
 # NOTE different torch version and device may parse to different ops
-LINEAR_OPS = (ops.aten.linear.default, )
-CONV1D_OPS = (ops.aten.conv1d.default, )
-CONV2D_OPS = (ops.aten.conv2d.default, )
-CONV3D_OPS = (ops.aten.conv3d.default, )
-CONVTRANSPOSE2D_OPS = (ops.aten.conv_transpose2d.input, )
+LINEAR_OPS = (ops.aten.linear.default,)
+CONV1D_OPS = (ops.aten.conv1d.default,)
+CONV2D_OPS = (ops.aten.conv2d.default,)
+CONV3D_OPS = (ops.aten.conv3d.default,)
+CONVTRANSPOSE2D_OPS = (ops.aten.conv_transpose2d.input,)
 # the possible dropout ops that parse from nn.Dropout()
 DROPOUT_OPS = (
     ops.aten.dropout.default,
@@ -63,11 +82,11 @@ MUL_OPS = (
 )
 DIV_OPS = (ops.aten.div.Tensor, ops.aten.div_.Tensor)
 MATH_ARITHEMETIC_OPS = ADD_OPS + SUB_OPS + MUL_OPS + DIV_OPS
-'''
+"""
 # the possible batchnorm ops that parse from nn.BatchNorm2d()
 # NOTE: from PyTorch official doc, the bn operation will be unified in the future and will not have so many version
 # /pytorch/pytorch/blob/main/aten/src/ATen/native/native_functions.yaml
-'''
+"""
 # NOTE: args with: input, weight, bias, running_mean, running_var, training, momentum, eps, ...
 BATCHNORM_OPS_W_TRAIN = (
     ops.aten.batch_norm.default,
@@ -78,7 +97,7 @@ BATCHNORM_OPS_W_TRAIN = (
 )
 # NOTE: args with: input, weight, bias, running_mean, running_var, momentum, eps, ...
 # without training
-BATCHNORM_OPS_WO_TRAIN = (ops.aten._native_batch_norm_legit_no_training.default, )
+BATCHNORM_OPS_WO_TRAIN = (ops.aten._native_batch_norm_legit_no_training.default,)
 BATCHNORM_OPS = BATCHNORM_OPS_W_TRAIN + BATCHNORM_OPS_WO_TRAIN
 SPLIT_OPS = (
     ops.aten.split_with_sizes.default,
@@ -87,8 +106,11 @@ SPLIT_OPS = (
 MAX_POOL_2D_OP = ops.aten.max_pool2d.default
 AVG_POOL_2D_OP = ops.aten.avg_pool2d.default
 ADAPTIVE_AVG_POOL_OP = ops.aten.adaptive_avg_pool2d.default
+PAD_OP = ops.aten.pad.default
+RESHAPE_OP = ops.aten.reshape.default
 SLICE_OP = ops.aten.slice.Tensor
-'''
+PERMUTE_OP = ops.aten.permute.default
+"""
 batch_norm:
     (input, weight, bias, running_mean, running_var, training, momentum, eps, cudnn_enabled) -> Tensor
 cudnn_batch_norm:
@@ -101,7 +123,7 @@ miopen_batch_norm
     (input, weight, bias, running_mean, running_var, training, momentum, epsilon) -> (Tensor, Tensor, Tensor)
 _native_batch_norm_legit_no_training
     (input, weight, bias, running_mean, running_var, momentum, eps) -> (Tensor, Tensor, Tensor)
-'''
+"""
 
 
 def is_linear_node(node: torch.fx.Node) -> bool:
@@ -191,11 +213,11 @@ def is_softmax_node(n: torch.fx.Node) -> bool:
 
 
 def is_reshape_node(n: torch.fx.Node) -> bool:
-    return n.op == "call_function" and n.target in [ops.aten.reshape.default]
+    return n.op == "call_function" and n.target in [RESHAPE_OP]
 
 
 def is_permute_node(n: torch.fx.Node) -> bool:
-    return n.op == "call_function" and n.target in [ops.aten.permute.default]
+    return n.op == "call_function" and n.target in [PERMUTE_OP]
 
 
 def is_squeeze_node(n: torch.fx.Node) -> bool:
@@ -296,7 +318,7 @@ def _active_bn(model: torch.fx.GraphModule, enable: bool = True) -> None:
                 module.update_bn_stats()
             else:
                 module.freeze_bn_stats()
-    out_log = 'Enable update bn_stats.' if enable else 'Freeze bn_stats.'
+    out_log = "Enable update bn_stats." if enable else "Freeze bn_stats."
     logger.info(out_log)
     return
 
@@ -307,15 +329,19 @@ def _active_bn(model: torch.fx.GraphModule, enable: bool = True) -> None:
 def _clear_all_observered_tensor(model: torch.fx.GraphModule) -> None:
     observer_num, need_clear_count = 0, 0
     for module in model.modules():
-        if isinstance(module, ScaledFakeQuantize) and isinstance(module.observer, PerTensorPowOf2MinMaxObserver):
-            if len(module.observer.record_scale) != 0 or len(module.observer.record_zp) != 0:
+        if isinstance(module, ScaledFakeQuantize) and isinstance(module.observer, POW_OF_2_OBSERVER):
+            if hasattr(module.observer, "record_scale"):
                 module.observer.record_scale = []
+            if hasattr(module.observer, "record_zp"):
                 module.observer.record_zp = []
-                need_clear_count += 1
+            if hasattr(module.observer, "original_tensor"):
+                module.observer.original_tensor = None  # type: ignore[assignment]
+            if hasattr(module.observer, "record_scale_zp"):
+                module.observer.record_scale_zp = []
+            need_clear_count += 1
             observer_num += 1
     if need_clear_count != 0:
-        out_log = 'Total find: {} PerTensorPowOf2MinMaxObserver, clear {} of scale & zp'.format(
-            observer_num, need_clear_count)
+        out_log = f"Total find: {observer_num} PerTensor/Channel_Pow_of_2_Observer, clear {need_clear_count} of recorded status"
         logger.info(out_log)
     return
 
@@ -327,7 +353,7 @@ def _enable_observer(model: torch.fx.GraphModule, enable: bool = True) -> None:
                 module.enable_observer()
             else:
                 module.disable_observer()
-    out_log = 'Enable observer.' if enable else 'Disable observer.'
+    out_log = "Enable observer." if enable else "Disable observer."
     logger.info(out_log)
     return
 
@@ -342,7 +368,7 @@ def _enable_fake_quant(model: torch.fx.GraphModule, enable: bool = True) -> None
                 module.enable_fake_quant()
             else:
                 module.disable_fake_quant()
-    out_log = 'Enable fake quant.' if enable else 'Disable fake quant.'
+    out_log = "Enable fake quant." if enable else "Disable fake quant."
     logger.info(out_log)
     return
 
@@ -357,6 +383,7 @@ def _move_exported_model_to_eval(model: torch.fx.GraphModule) -> torch.fx.GraphM
     QAT users should call this before performing inference on the model.
     """
     from quark.torch.quantization.graph.optimization.activate_dropout import ActivateDropoutNode
+
     _active_bn(model=model, enable=False)
     _enable_observer(model=model, enable=False)
     _clear_all_observered_tensor(model=model)
@@ -373,6 +400,7 @@ def _move_exported_model_to_train(model: torch.fx.GraphModule) -> torch.fx.Graph
     QAT users should call this before performing training on the model.
     """
     from quark.torch.quantization.graph.optimization.activate_dropout import ActivateDropoutNode
+
     _active_bn(model=model, enable=True)
     _enable_observer(model=model, enable=True)
     _clear_all_observered_tensor(model=model)

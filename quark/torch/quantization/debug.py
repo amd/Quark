@@ -3,25 +3,26 @@
 # SPDX-License-Identifier: MIT
 #
 
-import numpy as np
-from functools import partial
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
-from quark.shares.utils.log import ScreenLogger
-from pathlib import Path
 import json
+import multiprocessing
+import os
+from contextlib import contextmanager
+from functools import partial
+from pathlib import Path
+from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
-from typing import Tuple, Dict, Optional, List, Union, Any, Iterable, Iterator, Collection
+import numpy as np
+import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch
+
+from quark.shares.utils.import_utils import is_matplotlib_available, is_transformers_available
+from quark.shares.utils.log import ScreenLogger
+from quark.torch.quantization.config.config import Config
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.config.config import Config
-import torch.nn as nn
-from contextlib import contextmanager
-import os
-import multiprocessing
-from quark.shares.utils.import_utils import is_matplotlib_available, is_transformers_available
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
 
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
@@ -33,29 +34,26 @@ logger = ScreenLogger(__name__)
 
 SAVE_ACTIVATIONS_HISTOGRAM = os.environ.get("QUARK_DEBUG_ACT_HIST", None) == "1"
 DEBUG_INPUT_PICKLE = os.environ.get("QUARK_DEBUG_INPUT_PICKLE", None)
-DEBUG_NAN = os.environ.get("QUARK_DEBUG_NAN", None)
+
+QUARK_DEBUG = os.environ.get("QUARK_DEBUG", "0") == "1"
+QUARK_GRAPH_DEBUG = os.environ.get("QUARK_GRAPH_DEBUG", "0") == "1"
 
 # Selects the Q/DQ/QDQ implementation to use with mxfp4.
 # Available: "hip", "triton". Default is "hip".
 QUARK_MXFP4_IMPL = os.environ.get("QUARK_MXFP4_IMPL", "hip")
 
-
-def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
-    """
-    Asserts that the tensor does not contain any NaN value. If it does, it will raise a `AssertionError` with the given message.
-
-    Only does the assertion if the environment variable `QUARK_DEBUG_NAN` is set to `1`. This is useful to avoid the overhead of checking for NaNs in production code.
-
-    Args:
-        tensor (torch.Tensor): The tensor to check for NaNs.
-        message (str): The message to display in the `AssertionError` if the tensor contains NaNs.
-    """
-    if DEBUG_NAN:
-        torch._assert_async(~torch.isnan(tensor).any(), message)
+QUARK_ALGO_DEBUG = os.environ.get("QUARK_ALGO_DEBUG", "0") == "1"
 
 
-def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: torch.Tensor, module_name: str,
-                      log_dir: str, n_bins: int, stats: Dict[str, Any]) -> None:
+def weight_stats_hook(
+    module: FakeQuantizeBase,
+    args: tuple[Any, ...],
+    output: torch.Tensor,
+    module_name: str,
+    log_dir: Path,
+    n_bins: int,
+    stats: dict[str, Any],
+) -> None:
     """
     Hook to collect statistics on the weight and bias quantization. This hook should only be attached to `FakeQuantizeBase` layers corresponding to weight and bias quantization.
 
@@ -66,7 +64,7 @@ def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: t
         args (Tuple[Any, ...]): The module inputs, as specified in `torch.nn.Module.register_forward_hook` documentation.
         output (torch.Tensor): The module output, as specified in `torch.nn.Module.register_forward_hook` documentation.
         module_name (str): The module name, set with `functools.partial`. This is useful to access the module name from within the hook.
-        log_dir (str): The directory the weight statistics will be saved to, set with `functools.partial`.
+        log_dir (Path): The directory the weight statistics will be saved to, set with `functools.partial`.
         n_bins (int): The number of bins inthe histograms of values that are saved for visualization.
         stats (Dict[str, Any]): The dictionary used to store statistics on the weight and bias quantization. It can be set using an empty handle using `functools.partial`. Passing a dictionary is useful to access outside of the hook its content that was modified from within the hook.
     """
@@ -83,10 +81,10 @@ def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: t
         stats[module_name]["shape"] = input_tensor.shape
         quantized_tensor = output.to(torch.float32)
 
-        if module.fake_quant_enabled[0] == 1 and "l1_error" not in stats[module_name]:
+        if module.fake_quant_enabled and "l1_error" not in stats[module_name]:
             # Maximum entropy would be with an uniform distribution, all the quantization bins filled equally.
             # We should also compute the entropy of the quantized weight distribution, but it is a bit expensive with QDQ so not doing it for now.
-            reference_entropy = -torch.sum(1 / n_bins * torch.log(torch.full((n_bins, ), 1 / n_bins))).item()
+            reference_entropy = -torch.sum(1 / n_bins * torch.log(torch.full((n_bins,), 1 / n_bins))).item()
 
             l1_error = (input_tensor - quantized_tensor).abs().max().item()
 
@@ -94,7 +92,7 @@ def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: t
             tensor_stats = {"l1_error": l1_error, "theorical_q_entropy": reference_entropy}
 
             short_module_name = module_name.replace("_weight_quantizer", "weight").replace("_bias_quantizer", "bias")
-            with open(Path(log_dir, short_module_name + "_stats.json"), 'w') as fp:
+            with open(Path(log_dir, short_module_name + "_stats.json"), "w") as fp:
                 json.dump(tensor_stats, fp)
 
         if "histogram" not in stats[module_name]:
@@ -102,12 +100,13 @@ def weight_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: t
             stats[module_name]["histogram"] = (histogram[0].numpy(), histogram[1].numpy())
 
 
-def activation_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], output: torch.Tensor, module_name: str,
-                          stats: Dict[str, Any]) -> None:
+def activation_stats_hook(
+    module: FakeQuantizeBase, args: tuple[Any, ...], output: torch.Tensor, module_name: str, stats: dict[str, Any]
+) -> None:
     """
     Hook to collect statistics on the activation quantization. This hook should only be attached to `FakeQuantizeBase` layers corresponding to input/output quantization.
     """
-    if module.fake_quant_enabled[0] == 0:
+    if not module.fake_quant_enabled:
         quantizer_enabled = False
     else:
         quantizer_enabled = True
@@ -168,9 +167,10 @@ def activation_stats_hook(module: FakeQuantizeBase, args: Tuple[Any, ...], outpu
 
 
 def distribution_plot(
-        histogram: Tuple[np.ndarray, np.ndarray],  # type: ignore[type-arg]
-        save_path: Union[str, Path],
-        title: str) -> None:
+    histogram: tuple[np.ndarray, np.ndarray],  # type: ignore[type-arg]
+    save_path: Union[str, Path],
+    title: str,
+) -> None:
     """
     Plots and saves a bar plot using the bins and distribution from `histogram`. This is useful to save a given layer distribution, error, etc.
     """
@@ -178,7 +178,7 @@ def distribution_plot(
     width = bins[1] - bins[0]
     center = (bins[:-1] + bins[1:]) / 2
     plt.clf()
-    plt.bar(center, hist, edgecolor='black', fill=True, align='center', width=width, linewidth=0.5)
+    plt.bar(center, hist, edgecolor="black", fill=True, align="center", width=width, linewidth=0.5)
     plt.axvline(bins.min(), color="r", label="min tensor value")
     plt.axvline(bins.max(), color="r", label="max tensor value")
     plt.legend()
@@ -195,14 +195,14 @@ def barplot(labels: Collection[str], values: Iterable[float], name: str, log_dir
     x_range = range(len(labels))
     plt.clf()
     plt.figure(figsize=(2 + int(0.2 * len(x_range)), 5))  # Dynamic x axis size to avoid having its ticks overlap.
-    plt.bar(x_range, values, edgecolor='black')
-    plt.xticks(x_range, labels, rotation=65, fontsize=9, ha='right', rotation_mode='anchor')
+    plt.bar(x_range, list(values), edgecolor="black")
+    plt.xticks(x_range, list(labels), rotation=65, fontsize=9, ha="right", rotation_mode="anchor")
     plt.xlim([-1, len(x_range)])
     plt.grid()
     plt.savefig(Path(log_dir, f"{name}.png"), dpi=300, bbox_inches="tight")
 
 
-def save_distribution_histogram(module_name: str, tensor_stats: Dict[str, Any], log_dir: str) -> None:
+def save_distribution_histogram(module_name: str, tensor_stats: dict[str, Any], log_dir: str) -> None:
     """
     Saves bar plots of activations. Utility function to be used by multiprocessing.
     """
@@ -214,45 +214,52 @@ def save_distribution_histogram(module_name: str, tensor_stats: Dict[str, Any], 
 
     # Plot the histogram of values of the reference inputs at the point the FakeQuantize layer is inserted (input or output of a module).
     histogram_file = Path(log_dir, module_name + f"{quantizer_type}_ref_histogram.png")
-    distribution_plot(tensor_stats["input_ref_histogram"],
-                      histogram_file,
-                      title=module_name + f"\nref input histogram (tensor={input_shape_str})")
+    distribution_plot(
+        tensor_stats["input_ref_histogram"],
+        histogram_file,
+        title=module_name + f"\nref input histogram (tensor={input_shape_str})",
+    )
 
     # Plot the histogram of values of the reference inputs at the point the FakeQuantize layer is inserted, absmean reduced on the -2 dimension.
     histogram_file = Path(log_dir, module_name + f"{quantizer_type}_ref_histogram_absmean_ch0.png")
     reduced_shape_str = str(
-        tuple(tensor_stats['ref_input_tensor'].shape[:-2] + tensor_stats['ref_input_tensor'].shape[-1:]))
+        tuple(tensor_stats["ref_input_tensor"].shape[:-2] + tensor_stats["ref_input_tensor"].shape[-1:])
+    )
     distribution_plot(
         tensor_stats["input_ref_histogram_absmean_ch0"],
         histogram_file,
-        title=module_name +
-        f"\nref input histogram, absmean ch0 (tensor={input_shape_str})\nreduction over -2 dim (tensor={reduced_shape_str})"
+        title=module_name
+        + f"\nref input histogram, absmean ch0 (tensor={input_shape_str})\nreduction over -2 dim (tensor={reduced_shape_str})",
     )
 
     # Plot the histogram of values of the reference inputs at the point the FakeQuantize layer is inserted, absmean reduced on the -1 dimension.
     histogram_file = Path(log_dir, module_name + f"{quantizer_type}_ref_histogram_absmean_ch1.png")
-    reduced_shape_str = str(tuple(tensor_stats['ref_input_tensor'].shape[:-1]))
+    reduced_shape_str = str(tuple(tensor_stats["ref_input_tensor"].shape[:-1]))
     distribution_plot(
         tensor_stats["input_ref_histogram_absmean_ch1"],
         histogram_file,
-        title=module_name +
-        f"\nref input histogram, absmean ch1 (tensor={input_shape_str})\nreduction over -1 dim (tensor={reduced_shape_str})"
+        title=module_name
+        + f"\nref input histogram, absmean ch1 (tensor={input_shape_str})\nreduction over -1 dim (tensor={reduced_shape_str})",
     )
 
     # Plot the histogram of values of the activation inputs to the FakeQuantize layer.
     histogram_file = Path(log_dir, module_name + f"{quantizer_type}_histogram.png")
-    distribution_plot(tensor_stats["input_histogram"],
-                      histogram_file,
-                      title=module_name + f"\ninput histogram (tensor={input_shape_str})")
+    distribution_plot(
+        tensor_stats["input_histogram"],
+        histogram_file,
+        title=module_name + f"\ninput histogram (tensor={input_shape_str})",
+    )
 
     # Plot the histogram of values of the activation outputs of the FakeQuantize layer (after QDQ).
     histogram_file = Path(log_dir, module_name + f"{quantizer_type}_qdq_histogram.png")
-    distribution_plot(tensor_stats["input_qdq_histogram"],
-                      histogram_file,
-                      title=module_name + f"\nqdq input histogram (tensor={input_shape_str})")
+    distribution_plot(
+        tensor_stats["input_qdq_histogram"],
+        histogram_file,
+        title=module_name + f"\nqdq input histogram (tensor={input_shape_str})",
+    )
 
 
-def summarize_weight(stats: Dict[str, Any], log_dir: Path) -> None:
+def summarize_weight(stats: dict[str, Any], log_dir: Path) -> None:
     """
     Saves a histogram of the distribution of the weight tensor for each weight tracked. Saves as well a summary plot of the L1 quantization error over all the different weight tensors.
     """
@@ -271,10 +278,11 @@ def summarize_weight(stats: Dict[str, Any], log_dir: Path) -> None:
             histogram_file = Path(log_dir, module_name + ".weight.png")
             shape_str = str(tuple(tensor_stats["shape"]))
             distribution_plot_args.append(
-                (tensor_stats["histogram"], histogram_file, module_name + f"\n weight histogram (tensor= {shape_str})"))
+                (tensor_stats["histogram"], histogram_file, module_name + f"\n weight histogram (tensor= {shape_str})")
+            )
 
     start_method = multiprocessing.get_start_method()
-    multiprocessing.set_start_method('spawn', force=True)
+    multiprocessing.set_start_method("spawn", force=True)
     pool = multiprocessing.Pool(processes=32)
 
     for _ in tqdm(pool.starmap(distribution_plot, distribution_plot_args), total=len(distribution_plot_args)):
@@ -290,7 +298,7 @@ def summarize_weight(stats: Dict[str, Any], log_dir: Path) -> None:
     barplot(l1_errors_weights.keys(), l1_errors_weights.values(), name="summary_weight_error", log_dir=log_dir)
 
 
-def summarize_activation(stats: Dict[str, Any], log_dir: Path) -> None:
+def summarize_activation(stats: dict[str, Any], log_dir: Path) -> None:
     """
     Saves a summary over all activations of the error between the quantized / non-quantized model.
     """
@@ -307,8 +315,7 @@ def summarize_activation(stats: Dict[str, Any], log_dir: Path) -> None:
 
     # Plot the summary of relative error of input tensor of FakeQuantizeBase compared to reference input tensor (non-quantized model).
     labels = [
-        key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o")
-        for key in l1_errors_ref_input.keys()
+        key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_errors_ref_input.keys()
     ]
     barplot(labels, l1_errors_ref_input.values(), name="summary_ref_input_error", log_dir=log_dir)
 
@@ -324,15 +331,19 @@ def summarize_activation(stats: Dict[str, Any], log_dir: Path) -> None:
     barplot(labels, l1_io_error.values(), name="summary_io_quantization_error", log_dir=log_dir)
 
     if SAVE_ACTIVATIONS_HISTOGRAM:
-        save_distribution_args = [(module_name, tensor_stats, log_dir) for module_name, tensor_stats in stats.items()
-                                  if tensor_stats["quantizer_type"] in ["input", "output"]]
+        save_distribution_args = [
+            (module_name, tensor_stats, log_dir)
+            for module_name, tensor_stats in stats.items()
+            if tensor_stats["quantizer_type"] in ["input", "output"]
+        ]
 
         start_method = multiprocessing.get_start_method()
-        multiprocessing.set_start_method('spawn', force=True)
+        multiprocessing.set_start_method("spawn", force=True)
         pool = multiprocessing.Pool(processes=32)
 
-        for _ in tqdm(pool.starmap(save_distribution_histogram, save_distribution_args),
-                      total=len(save_distribution_args)):
+        for _ in tqdm(
+            pool.starmap(save_distribution_histogram, save_distribution_args), total=len(save_distribution_args)
+        ):
             pass
 
         pool.close()
@@ -343,7 +354,7 @@ def summarize_activation(stats: Dict[str, Any], log_dir: Path) -> None:
 
 
 @contextmanager
-def insert_stats_hooks(model: nn.Module, stats: Dict[str, Any], log_dir: Path) -> Iterator[None]:
+def insert_stats_hooks(model: nn.Module, stats: dict[str, Any], log_dir: Path) -> Iterator[None]:
     """
     Inserts the hooks to track statistics about quantization error.
     """
@@ -352,7 +363,8 @@ def insert_stats_hooks(model: nn.Module, stats: Dict[str, Any], log_dir: Path) -
         if isinstance(module, FakeQuantizeBase):
             if "weight_quantizer" in name or "bias_quantizer" in name:
                 hook = module.register_forward_hook(
-                    partial(weight_stats_hook, module_name=name, log_dir=log_dir, n_bins=256, stats=stats))
+                    partial(weight_stats_hook, module_name=name, log_dir=log_dir, n_bins=256, stats=stats)
+                )
                 hooks.append(hook)
             elif "input_quantizer" in name or "output_quantizer" in name:
                 hook = module.register_forward_hook(partial(activation_stats_hook, module_name=name, stats=stats))
@@ -364,12 +376,18 @@ def insert_stats_hooks(model: nn.Module, stats: Dict[str, Any], log_dir: Path) -
         hook.remove()
 
 
-def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union[DataLoader[torch.Tensor],
-                                                                                 DataLoader[List[Dict[str,
-                                                                                                      torch.Tensor]]],
-                                                                                 DataLoader[Dict[str, torch.Tensor]],
-                                                                                 DataLoader[List["BatchFeature"]]]],
-                                    stats: Dict[str, Any], log_dir: Path) -> None:
+def collect_quantization_statistics(
+    model: nn.Module,
+    dataloader: Union[
+        DataLoader[torch.Tensor],
+        DataLoader[list[dict[str, torch.Tensor]]],
+        DataLoader[dict[str, torch.Tensor]],
+        DataLoader[list["BatchFeature"]],
+    ]
+    | None,
+    stats: dict[str, Any],
+    log_dir: Path,
+) -> None:
     """
     Collects (through the hooks attached to the model) statistics on the operators inputs/outputs to compute quantization error metrics, as well as on the weights.
 
@@ -386,15 +404,16 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                 "The histograms of activations / activation errors are saved only for the first item in the dataloader. Please make sure that this input is meaningful, and bear in mind that this item was used as well for calibration. In order to use specific inputs to collect activation quantization statistics, please specify the environment variable `QUARK_DEBUG_INPUT_PICKLE` to a file containing the reference tensor or dict inputs saved with `torch.save`."
             )
 
-        input_iterable: Optional[Iterable[Any]] = dataloader
+        input_iterable: Iterable[Any] | None = dataloader
     else:
         input_dict = torch.load(DEBUG_INPUT_PICKLE, weights_only=True)
         input_iterable = [input_dict]
 
     if input_iterable is not None:
         for module_name, module in model.named_modules():
-            if isinstance(module, FakeQuantizeBase) and ("input_quantizer" in module_name
-                                                         or "output_quantizer" in module_name):
+            if isinstance(module, FakeQuantizeBase) and (
+                "input_quantizer" in module_name or "output_quantizer" in module_name
+            ):
                 if "input_quantizer" in module_name:
                     quantizer_type = "input"
                 else:
@@ -405,7 +424,7 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                         "l1_ref_input": [],
                         "l1_io_error": [],
                         "l1_ref_output": [],
-                        "quantizer_type": quantizer_type
+                        "quantizer_type": quantizer_type,
                     }
                 else:
                     stats[module_name]["l1_ref_input"] = []
@@ -419,9 +438,9 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                     module.disable_fake_quant()
 
             with torch.no_grad():
-                if isinstance(data, dict):  # pragma: no cover
-                    _ = model(**data)
-                elif is_transformers_available() and isinstance(data, BatchFeature):
+                if (
+                    isinstance(data, dict) or is_transformers_available() and isinstance(data, BatchFeature)
+                ):  # pragma: no cover
                     _ = model(**data)
                 else:
                     _ = model(data)
@@ -431,9 +450,9 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
                     module.enable_fake_quant()
 
             with torch.no_grad():
-                if isinstance(data, dict):  # pragma: no cover
-                    _ = model(**data)
-                elif is_transformers_available() and isinstance(data, BatchFeature):
+                if (
+                    isinstance(data, dict) or is_transformers_available() and isinstance(data, BatchFeature)
+                ):  # pragma: no cover
                     _ = model(**data)
                 else:
                     _ = model(data)
@@ -455,8 +474,7 @@ def collect_quantization_statistics(model: nn.Module, dataloader: Optional[Union
 
 
 class QuantizerStatsHelper:
-
-    def __init__(self, quantizer: ScaledFakeQuantize, quantizer_type: str, module_name: str, summary: Dict[str, Any]):
+    def __init__(self, quantizer: ScaledFakeQuantize, quantizer_type: str, module_name: str, summary: dict[str, Any]):
         assert isinstance(quantizer, ScaledFakeQuantize)
         self.quantizer = quantizer
         summary[quantizer_type] = {}
@@ -464,26 +482,25 @@ class QuantizerStatsHelper:
         self.quantizer_type = quantizer_type
         self.moudule_name = module_name
 
-    def get_scale_min_max(self) -> Tuple[Any, Any]:
+    def get_scale_min_max(self) -> tuple[Any, Any]:
         return self.quantizer.scale.min().item(), self.quantizer.scale.max().item()
 
     def check_scale(self) -> None:
-        self.summary['scale_shape'] = self.quantizer.scale.shape
-        self.summary['scale_dtype'] = str(self.quantizer.scale.dtype)
+        self.summary["scale_shape"] = self.quantizer.scale.shape
+        self.summary["scale_dtype"] = str(self.quantizer.scale.dtype)
 
         min_max = self.get_scale_min_max()
-        self.summary['scale_min_max'] = min_max
+        self.summary["scale_min_max"] = min_max
         is_zero = min_max[0] == 0.0
         if is_zero:
             logger.warning(
                 f"{self.moudule_name + '.' + self.quantizer_type} has zero scale. This may lead to incorrect quantization."
             )
-        self.summary['has_zero_scale'] = is_zero
+        self.summary["has_zero_scale"] = is_zero
 
 
 class ModuleStatsHelper:
-
-    def __init__(self, module_name: str, module: nn.Module, summary: Dict[str, Any]):
+    def __init__(self, module_name: str, module: nn.Module, summary: dict[str, Any]):
         self.input_quantizer = None
         self.weight_quantizer = None
         self.output_quantizer = None
@@ -495,22 +512,26 @@ class ModuleStatsHelper:
         self.summary = summary[module_name]
 
         if module.input_quantizer is not None and isinstance(module.input_quantizer, ScaledFakeQuantize):
-            self.input_quantizer = QuantizerStatsHelper(module.input_quantizer, "_input_quantizer", module_name,
-                                                        self.summary)
+            self.input_quantizer = QuantizerStatsHelper(
+                module.input_quantizer, "_input_quantizer", module_name, self.summary
+            )
         if module.weight_quantizer is not None and isinstance(module.weight_quantizer, ScaledFakeQuantize):
-            self.weight_quantizer = QuantizerStatsHelper(module.weight_quantizer, "_weight_quantizer", module_name,
-                                                         self.summary)
+            self.weight_quantizer = QuantizerStatsHelper(
+                module.weight_quantizer, "_weight_quantizer", module_name, self.summary
+            )
         if module.output_quantizer is not None and isinstance(module.output_quantizer, ScaledFakeQuantize):
-            self.output_quantizer = QuantizerStatsHelper(module.output_quantizer, "_output_quantizer", module_name,
-                                                         self.summary)
+            self.output_quantizer = QuantizerStatsHelper(
+                module.output_quantizer, "_output_quantizer", module_name, self.summary
+            )
         if module.bias_quantizer is not None and isinstance(module.bias_quantizer, ScaledFakeQuantize):
-            self.bias_quantizer = QuantizerStatsHelper(module.bias_quantizer, "_bias_quantizer", module_name,
-                                                       self.summary)
+            self.bias_quantizer = QuantizerStatsHelper(
+                module.bias_quantizer, "_bias_quantizer", module_name, self.summary
+            )
 
     def check_scale(self) -> None:
-        self.summary['weight_shape'] = self.module.weight.shape
+        self.summary["weight_shape"] = self.module.weight.shape
         if self.module.bias is not None:
-            self.summary['bias_shape'] = self.module.bias.shape
+            self.summary["bias_shape"] = self.module.bias.shape
         if self.input_quantizer is not None:
             self.input_quantizer.check_scale()
         if self.weight_quantizer is not None:
@@ -521,8 +542,8 @@ class ModuleStatsHelper:
             self.bias_quantizer.check_scale()
 
 
-SCALE_DEBUG_DIR = './debug_scale'
-SCALE_STATS_FILE = 'scale_stats.json'
+SCALE_DEBUG_DIR = "./debug_scale"
+SCALE_STATS_FILE = "scale_stats.json"
 CHECK_MODULE = QuantLinear
 
 
@@ -531,16 +552,16 @@ def check_scale_stats(model: nn.Module, config: Config) -> None:
     Check the scale of the model's quantizer.
     """
     summary = {}
-    summary['quantization_config'] = config.to_dict()
-    summary['scale_stats'] = {}
+    summary["quantization_config"] = config.to_dict()
+    summary["scale_stats"] = {}
     for module_name, module in model.named_modules():
         if isinstance(module, CHECK_MODULE):
-            module_stats = ModuleStatsHelper(module_name, module, summary['scale_stats'])
+            module_stats = ModuleStatsHelper(module_name, module, summary["scale_stats"])
             module_stats.check_scale()
 
     # save to file
     os.makedirs(SCALE_DEBUG_DIR, exist_ok=True)
-    save_file = SCALE_DEBUG_DIR + '/' + SCALE_STATS_FILE
-    with open(save_file, 'w') as f:
+    save_file = SCALE_DEBUG_DIR + "/" + SCALE_STATS_FILE
+    with open(save_file, "w") as f:
         json.dump(summary, f, indent=4)
     logger.info(f"Saving scale stats to {save_file}")

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
@@ -13,11 +12,12 @@
 import copy
 import functools
 import types
-from typing import Callable, Any, Optional, Dict
+from typing import Any, Callable, Dict, Optional
+
 import torch.nn as nn
 
 
-def copy_func_with_new_globals(f: Callable[..., Any], globals: Optional[Dict[str, Any]] = None) -> Callable[..., Any]:
+def copy_func_with_new_globals(f: Callable[..., Any], globals: dict[str, Any] | None = None) -> Callable[..., Any]:
     """Based on https://stackoverflow.com/a/13503277/2988730 (@unutbu)"""
     if globals is None:
         globals = f.__globals__
@@ -30,7 +30,7 @@ def copy_func_with_new_globals(f: Callable[..., Any], globals: Optional[Dict[str
     )
     g = functools.update_wrapper(g, f)
     g.__module__ = f.__module__
-    g.__kwdefaults__ = copy.copy(f.__kwdefaults__)
+    g.__kwdefaults__ = copy.copy(f.__kwdefaults__)  # type: ignore[attr-defined]
     return g
 
 

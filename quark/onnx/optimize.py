@@ -2,24 +2,27 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.shares.utils.log import ScreenLogger
-import numpy as np
-from math import sqrt
 import copy
+from math import sqrt
+from typing import List, Optional, Tuple, Union
+
+import numpy as np
 import onnx
-from onnxruntime.quantization.onnx_model import ONNXModel
-from onnxruntime.transformers.onnx_model import OnnxModel
-from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
-from onnxruntime.transformers.fusion_gelu import FusionGelu
-from .quant_utils import QUANT_OP_TYPES, DEQUANT_OP_TYPES, get_clip_min_max, get_opset_version
-from typing import Tuple, List, Optional, Union
 from numpy.typing import NDArray
 from onnx import ModelProto, NodeProto
+from onnxruntime.quantization.onnx_model import ONNXModel
+from onnxruntime.transformers.fusion_gelu import FusionGelu
+from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
+from onnxruntime.transformers.onnx_model import OnnxModel
+
+from quark.shares.utils.log import ScreenLogger
+
+from .quant_utils import DEQUANT_OP_TYPES, QUANT_OP_TYPES, get_clip_min_max, get_opset_version
 
 logger = ScreenLogger(__name__)
 
 
-class Optimize(object):
+class Optimize:
     """
     A class for optimizations to be applied to onnx model before quantization.
 
@@ -30,16 +33,24 @@ class Optimize(object):
 
     """
 
-    def __init__(self, model: ModelProto, op_types_to_quantize: List[str], nodes_to_quantize: Optional[List[str]],
-                 nodes_to_exclude: Optional[List[str]]) -> None:
+    def __init__(
+        self,
+        model: ModelProto,
+        op_types_to_quantize: list[str],
+        nodes_to_quantize: list[str] | None,
+        nodes_to_exclude: list[str] | None,
+    ) -> None:
         self.model = model
         self.op_types_to_quantize = op_types_to_quantize
         self.nodes_to_quantize = nodes_to_quantize
         self.nodes_to_exclude = nodes_to_exclude
 
     def should_quantize_node(self, node: NodeProto) -> bool:
-        if (self.nodes_to_quantize is not None and len(self.nodes_to_quantize) != 0
-                and node.name not in self.nodes_to_quantize):
+        if (
+            self.nodes_to_quantize is not None
+            and len(self.nodes_to_quantize) != 0
+            and node.name not in self.nodes_to_quantize
+        ):
             return False
 
         if node.op_type not in self.op_types_to_quantize:
@@ -57,12 +68,15 @@ class Optimize(object):
         return new_node
 
     def convert_bn_to_conv(self) -> None:
-        """Convert BatchNormalization to Conv.
-        """
+        """Convert BatchNormalization to Conv."""
 
-        def _get_folded_conv_weights(bn_gamma: NDArray[np.float32], bn_beta: NDArray[np.float32],
-                                     bn_mm: NDArray[np.float32], bn_mv: NDArray[np.float32],
-                                     bn_epsilon: float) -> Tuple[NDArray[np.float32], NDArray[np.float32]]:
+        def _get_folded_conv_weights(
+            bn_gamma: NDArray[np.float32],
+            bn_beta: NDArray[np.float32],
+            bn_mm: NDArray[np.float32],
+            bn_mv: NDArray[np.float32],
+            bn_epsilon: float,
+        ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
             if bn_gamma is not None:
                 multiplier = bn_gamma / np.sqrt(bn_mv + bn_epsilon)
             else:
@@ -73,28 +87,38 @@ class Optimize(object):
             return folded_conv_kernel, folded_conv_bias
 
         self.op_types_to_quantize.append("BatchNormalization")
-        nodes_to_remove: List[NodeProto] = []
-        init_to_remove: List[str] = []
+        nodes_to_remove: list[NodeProto] = []
+        init_to_remove: list[str] = []
         onnx_model = ONNXModel(self.model)
+        init_name = onnx_model.get_initializer_name_set()
         for node in onnx_model.model.graph.node:
-
-            if node.op_type == 'BatchNormalization' and self.should_quantize_node(node):
+            if node.op_type == "BatchNormalization" and self.should_quantize_node(node):
                 input_name = node.input[0]
-                input_shape: List[str] = []
+                input_shape: list[str] = []
                 for input_info in onnx_model.model.graph.value_info:
                     if input_info.name == input_name:
                         input_shape = [dim.dim_value for dim in input_info.type.tensor_type.shape.dim]
                 if len(node.input) == 5 and len(input_shape) == 4:
-                    bn_epsilon = next((attr.f for attr in node.attribute if attr.name == 'epsilon'), 1e-10)
-                    for init in onnx_model.model.graph.initializer:
-                        if init.name == node.input[1]:
-                            bn_gamma = onnx.numpy_helper.to_array(init)
-                        elif init.name == node.input[2]:
-                            bn_beta = onnx.numpy_helper.to_array(init)
-                        elif init.name == node.input[3]:
-                            bn_mm = onnx.numpy_helper.to_array(init)
-                        elif init.name == node.input[4]:
-                            bn_mv = onnx.numpy_helper.to_array(init)
+                    bn_epsilon = next((attr.f for attr in node.attribute if attr.name == "epsilon"), 1e-10)
+
+                    missing_initializer_names = ", ".join(
+                        f"{name}" for i, name in enumerate(node.input[1:]) if name not in init_name
+                    )
+                    if missing_initializer_names:
+                        logger.warning(
+                            f"Skip converting bn to conv for node '{node.name}': missing initializer(s): {missing_initializer_names}."
+                        )
+                        continue
+
+                    gamma_init = onnx_model.get_initializer(node.input[1])
+                    bn_gamma = onnx.numpy_helper.to_array(gamma_init)
+                    beta_init = onnx_model.get_initializer(node.input[2])
+                    bn_beta = onnx.numpy_helper.to_array(beta_init)
+                    mm_init = onnx_model.get_initializer(node.input[3])
+                    bn_mm = onnx.numpy_helper.to_array(mm_init)
+                    mv_init = onnx_model.get_initializer(node.input[4])
+                    bn_mv = onnx.numpy_helper.to_array(mv_init)
+
                     try:
                         weights, bias = _get_folded_conv_weights(bn_gamma, bn_beta, bn_mm, bn_mv, bn_epsilon)
                         num_channel = bn_mm.shape[0]
@@ -109,16 +133,17 @@ class Optimize(object):
                             group=num_channel,
                             kernel_shape=[1, 1],
                             strides=[1, 1],
-                            name=node.name)
+                            name=node.name,
+                        )
 
                         nodes_to_remove.append(node)
                         init_to_remove.extend([node.input[1], node.input[2], node.input[3], node.input[4]])
                         onnx_model.model.graph.node.append(new_node)
-                        logger.info(f"Found BatchNormalization node {node.name}. "
-                                    f"Replacing with Conv.")
+                        logger.info(f"Found BatchNormalization node {node.name}. Replacing with Conv.")
                     except Exception as e:
                         logger.warning(
-                            f"Fail to generate conv's weights and bias beacuse of {e}, skip converting bn to conv")
+                            f"Fail to generate conv's weights and bias beacuse of {e}, skip converting bn to conv"
+                        )
                 else:
                     logger.warning(
                         f"Fail to convert bn {node.name} to conv beacuse BatchNormalization's input or shape does not meet the requirements"
@@ -130,32 +155,35 @@ class Optimize(object):
         self.model = onnx_model.model
 
     def convert_reduce_mean_to_global_avg_pool(self) -> None:
-        """Convert ReduceMean to GlobalAveragePool.
-        """
+        """Convert ReduceMean to GlobalAveragePool."""
 
         from .quant_utils import check_reduce_mean_condition
+
         nodes_to_remove = []
         onnx_model = ONNXModel(self.model)
         for node in onnx_model.model.graph.node:
-
-            if node.op_type == 'ReduceMean' and check_reduce_mean_condition(onnx_model.model,
-                                                                            node) and self.should_quantize_node(node):
+            if (
+                node.op_type == "ReduceMean"
+                and check_reduce_mean_condition(onnx_model.model, node)
+                and self.should_quantize_node(node)
+            ):
                 if len(node.input) == 1:
-                    new_node = self.replace_node_with(node, 'GlobalAveragePool')
+                    new_node = self.replace_node_with(node, "GlobalAveragePool")
                     nodes_to_remove.append(node)
-                    logger.info(f"Found ReduceMean node {node.name} with axes=[2, 3]. "
-                                f"Replacing with GlobalAveragePool.")
+                    logger.info(
+                        f"Found ReduceMean node {node.name} with axes=[2, 3]. Replacing with GlobalAveragePool."
+                    )
                 # Handling opset >= 18 for Reduce Mean
                 elif len(node.input) == 2:
-                    new_node = onnx.helper.make_node('GlobalAveragePool',
-                                                     inputs=[node.input[0]],
-                                                     outputs=node.output,
-                                                     name=node.name)
+                    new_node = onnx.helper.make_node(
+                        "GlobalAveragePool", inputs=[node.input[0]], outputs=node.output, name=node.name
+                    )
 
                     nodes_to_remove.append(node)
                     onnx_model.model.graph.node.append(new_node)
-                    logger.info(f"Found ReduceMean node {node.name} with axes=[2, 3]. "
-                                f"Replacing with GlobalAveragePool.")
+                    logger.info(
+                        f"Found ReduceMean node {node.name} with axes=[2, 3]. Replacing with GlobalAveragePool."
+                    )
         onnx_model.remove_nodes(nodes_to_remove)
         onnx_model.clean_initializers()
         onnx_model.topological_sort()
@@ -167,10 +195,10 @@ class Optimize(object):
         split it into multiple smaller poolings.
         """
 
-        def _get_factors(num: int) -> Tuple[int, int]:
+        def _get_factors(num: int) -> tuple[int, int]:
             factor_1 = int(sqrt(num))
-            while (factor_1 > 1):
-                if (num % (factor_1) == 0):
+            while factor_1 > 1:
+                if num % (factor_1) == 0:
                     factor_2 = num / factor_1
                     return int(factor_1), int(factor_2)
                 factor_1 = factor_1 - 1
@@ -192,8 +220,7 @@ class Optimize(object):
                             kw = input_shape[3]
                         break
                 if not kw or not kh:
-                    logger.warning('Failed to get the input shape, skip optimizing for GlobalAveragePool {}.'.format(
-                        node.name))
+                    logger.warning(f"Failed to get the input shape, skip optimizing for GlobalAveragePool {node.name}.")
                     continue
                 # Only one split is supported.
                 # TODO: Support multiple split operations
@@ -201,37 +228,42 @@ class Optimize(object):
                     kh1, kh2 = _get_factors(kh)
                     kw1, kw2 = _get_factors(kw)
                     if kh1 * kw1 > 512 or kh2 * kw2 > 512:
-                        logger.warning("After split, the kernel size is still too large."
-                                       "Currently, only one split is supported. Skip optimization.")
+                        logger.warning(
+                            "After split, the kernel size is still too large."
+                            "Currently, only one split is supported. Skip optimization."
+                        )
                     else:
                         split_tensor = node.input[0] + "_Split"
-                        pool_node = onnx.helper.make_node("AveragePool",
-                                                          inputs=[node.input[0]],
-                                                          outputs=[split_tensor],
-                                                          kernel_shape=[kh1, kw1],
-                                                          strides=[kh1, kw1],
-                                                          name=split_tensor)
+                        pool_node = onnx.helper.make_node(
+                            "AveragePool",
+                            inputs=[node.input[0]],
+                            outputs=[split_tensor],
+                            kernel_shape=[kh1, kw1],
+                            strides=[kh1, kw1],
+                            name=split_tensor,
+                        )
                         if not node.name:
                             node.name = node.output[0]
                         node.input[0] = split_tensor
                         onnx_model.model.graph.node.extend([pool_node])
-                        logger.info(f"Found GlobalAveragePool node {node.name} with large kernel size. "
-                                    f"Split it into multiple AveragePools.")
+                        logger.info(
+                            f"Found GlobalAveragePool node {node.name} with large kernel size. "
+                            f"Split it into multiple AveragePools."
+                        )
         onnx_model.clean_initializers()
         onnx_model.topological_sort()
         self.model = onnx_model.model
 
     def convert_split_to_slice(self) -> None:
-        """Convert Split to Slice.
-        """
-        nodes_to_remove: List[NodeProto] = []
-        init_to_remove: List[str] = []
+        """Convert Split to Slice."""
+        nodes_to_remove: list[NodeProto] = []
+        init_to_remove: list[str] = []
         onnx_model = ONNXModel(self.model)
         for node in onnx_model.model.graph.node:
-            if node.op_type == 'Split' and self.should_quantize_node(node):
+            if node.op_type == "Split" and self.should_quantize_node(node):
                 num_input = len(node.input)
-                axis_attr = next((attr for attr in node.attribute if attr.name == 'axis'), None)
-                assert (axis_attr is not None), "No axis attribute founded in Split node"
+                axis_attr = next((attr for attr in node.attribute if attr.name == "axis"), None)
+                assert axis_attr is not None, "No axis attribute founded in Split node"
                 axis = axis_attr.i  # if axis_attr is not None else 0
                 input_name = node.input[0]
                 output_names = node.output
@@ -241,70 +273,89 @@ class Optimize(object):
                         if init.name == node.input[1]:
                             splits = onnx.numpy_helper.to_array(init).tolist()
                     if splits is None:
-                        logger.warning(f"No split detected of {node.name}, "
-                                       "failed to convert split to slice, please check the input model.")
+                        logger.warning(
+                            f"No split detected of {node.name}, "
+                            "failed to convert split to slice, please check the input model."
+                        )
                         break
                 elif num_input == 1:
-                    split_attr = next((attr for attr in node.attribute if attr.name == 'split'), None)
+                    split_attr = next((attr for attr in node.attribute if attr.name == "split"), None)
                     if split_attr is None:
-                        logger.warning(f"No split detected of {node.name}, "
-                                       "failed to convert split to slice, please check the input model.")
+                        logger.warning(
+                            f"No split detected of {node.name}, "
+                            "failed to convert split to slice, please check the input model."
+                        )
                         break
                     splits = split_attr.ints
                 else:
-                    logger.warning(f"Failed to convert split of {node.name} to slice, "
-                                   "the number of input nodes is not supported.")
+                    logger.warning(
+                        f"Failed to convert split of {node.name} to slice, the number of input nodes is not supported."
+                    )
                     break
                 starts = [sum(splits[:i]) for i in range(len(splits))]
-                ends = [sum(splits[:i + 1]) for i in range(len(splits))]
+                ends = [sum(splits[: i + 1]) for i in range(len(splits))]
                 for i in range(len(output_names)):
-                    starts_node = onnx.helper.make_node('Constant',
-                                                        inputs=[],
-                                                        outputs=[output_names[i] + '_starts_' + str(i)],
-                                                        value=onnx.helper.make_tensor(name=output_names[i] +
-                                                                                      '_starts_' + str(i),
-                                                                                      data_type=onnx.TensorProto.INT64,
-                                                                                      dims=[1],
-                                                                                      vals=[starts[i]]))
-                    ends_node = onnx.helper.make_node('Constant',
-                                                      inputs=[],
-                                                      outputs=[output_names[i] + '_ends_' + str(i)],
-                                                      value=onnx.helper.make_tensor(name=output_names[i] + '_ends_' +
-                                                                                    str(i),
-                                                                                    data_type=onnx.TensorProto.INT64,
-                                                                                    dims=[1],
-                                                                                    vals=[ends[i]]))
-                    axes_node = onnx.helper.make_node('Constant',
-                                                      inputs=[],
-                                                      outputs=[output_names[i] + '_axes_' + str(i)],
-                                                      value=onnx.helper.make_tensor(name=output_names[i] + '_axes_' +
-                                                                                    str(i),
-                                                                                    data_type=onnx.TensorProto.INT64,
-                                                                                    dims=[1],
-                                                                                    vals=[axis]))
-                    steps_node = onnx.helper.make_node('Constant',
-                                                       inputs=[],
-                                                       outputs=[output_names[i] + '_steps_' + str(i)],
-                                                       value=onnx.helper.make_tensor(name=output_names[i] + '_steps_' +
-                                                                                     str(i),
-                                                                                     data_type=onnx.TensorProto.INT64,
-                                                                                     dims=[1],
-                                                                                     vals=[1]))
-                    slice_node = onnx.helper.make_node("Slice",
-                                                       inputs=[
-                                                           input_name, output_names[i] + '_starts_' + str(i),
-                                                           output_names[i] + '_ends_' + str(i),
-                                                           output_names[i] + '_axes_' + str(i),
-                                                           output_names[i] + '_steps_' + str(i)
-                                                       ],
-                                                       outputs=[output_names[i]],
-                                                       name=output_names[i] + '_' + str(i))
+                    starts_node = onnx.helper.make_node(
+                        "Constant",
+                        inputs=[],
+                        outputs=[output_names[i] + "_starts_" + str(i)],
+                        value=onnx.helper.make_tensor(
+                            name=output_names[i] + "_starts_" + str(i),
+                            data_type=onnx.TensorProto.INT64,
+                            dims=[1],
+                            vals=[starts[i]],
+                        ),
+                    )
+                    ends_node = onnx.helper.make_node(
+                        "Constant",
+                        inputs=[],
+                        outputs=[output_names[i] + "_ends_" + str(i)],
+                        value=onnx.helper.make_tensor(
+                            name=output_names[i] + "_ends_" + str(i),
+                            data_type=onnx.TensorProto.INT64,
+                            dims=[1],
+                            vals=[ends[i]],
+                        ),
+                    )
+                    axes_node = onnx.helper.make_node(
+                        "Constant",
+                        inputs=[],
+                        outputs=[output_names[i] + "_axes_" + str(i)],
+                        value=onnx.helper.make_tensor(
+                            name=output_names[i] + "_axes_" + str(i),
+                            data_type=onnx.TensorProto.INT64,
+                            dims=[1],
+                            vals=[axis],
+                        ),
+                    )
+                    steps_node = onnx.helper.make_node(
+                        "Constant",
+                        inputs=[],
+                        outputs=[output_names[i] + "_steps_" + str(i)],
+                        value=onnx.helper.make_tensor(
+                            name=output_names[i] + "_steps_" + str(i),
+                            data_type=onnx.TensorProto.INT64,
+                            dims=[1],
+                            vals=[1],
+                        ),
+                    )
+                    slice_node = onnx.helper.make_node(
+                        "Slice",
+                        inputs=[
+                            input_name,
+                            output_names[i] + "_starts_" + str(i),
+                            output_names[i] + "_ends_" + str(i),
+                            output_names[i] + "_axes_" + str(i),
+                            output_names[i] + "_steps_" + str(i),
+                        ],
+                        outputs=[output_names[i]],
+                        name=output_names[i] + "_" + str(i),
+                    )
                     onnx_model.model.graph.node.extend([slice_node, starts_node, ends_node, axes_node, steps_node])
                 nodes_to_remove.append(node)
                 if len(node.input) > 1:
                     init_to_remove.append(node.input[1])
-                logger.info(f"Found Split node {node.name}. "
-                            f"Replacing with Slice.")
+                logger.info(f"Found Split node {node.name}. Replacing with Slice.")
         onnx_model.remove_nodes(nodes_to_remove)
         onnx_model.remove_initializers(init_to_remove)
         onnx_model.clean_initializers()
@@ -312,13 +363,13 @@ class Optimize(object):
         self.model = onnx_model.model
 
     def fuse_instance_norm(self) -> None:
-        '''
+        """
         The split instance norm operation will be fused to InstanceNorm operation
-        '''
+        """
         onnx_model = ONNXModel(self.model)
         tensor_to_producer_dict = {}
-        remove_nodes: List[NodeProto] = []
-        remove_inits: List[onnx.TensorProto] = []
+        remove_nodes: list[NodeProto] = []
+        remove_inits: list[onnx.TensorProto] = []
         for node in onnx_model.model.graph.node:
             for output in node.output:
                 tensor_to_producer_dict[output] = node
@@ -377,7 +428,6 @@ class Optimize(object):
                                                         sub1_i0_node = tensor_to_producer_dict[sub1_i0]
                                                         sub1_i1_node = tensor_to_producer_dict[sub1_i1]
                                                         if sub1_i1_node.op_type == "GlobalAveragePool":
-
                                                             # Remove nodes
                                                             remove_node_list = [
                                                                 node,
@@ -402,10 +452,12 @@ class Optimize(object):
                                                             eps_init = onnx_model.get_initializer(add1_i1)
 
                                                             instance_norm_node = onnx.helper.make_node(
-                                                                "InstanceNormalization", [sub1_i0, mul1_i1, sub0_i0],
+                                                                "InstanceNormalization",
+                                                                [sub1_i0, mul1_i1, sub0_i0],
                                                                 node.output,
                                                                 node.name,
-                                                                epsilon=onnx.numpy_helper.to_array(eps_init).item())
+                                                                epsilon=onnx.numpy_helper.to_array(eps_init).item(),
+                                                            )
                                                             logger.info(
                                                                 f"Matched Instance Normalization, fuse it into InstanceNormalization {node.name}"
                                                             )
@@ -429,8 +481,8 @@ class Optimize(object):
         """
         onnx_model = ONNXModel(self.model)
         tensor_to_producer_dict = {}
-        remove_nodes: List[NodeProto] = []
-        remove_inits: List[onnx.TensorProto] = []
+        remove_nodes: list[NodeProto] = []
+        remove_inits: list[onnx.TensorProto] = []
         for node in onnx_model.model.graph.node:
             for output in node.output:
                 tensor_to_producer_dict[output] = node
@@ -482,9 +534,9 @@ class Optimize(object):
                                         # Add LpNormalization
                                         inp = uns_node.output[0]
                                         out = node.output[0]
-                                        l2norm_node = onnx.helper.make_node("LpNormalization", [inp], [out],
-                                                                            node.name,
-                                                                            p=2)
+                                        l2norm_node = onnx.helper.make_node(
+                                            "LpNormalization", [inp], [out], node.name, p=2
+                                        )
                                         onnx_model.add_node(l2norm_node)
                                         logger.info("Converted L2norm ops from {node.name} to LpNormalization.")
                 except Exception as e:
@@ -502,11 +554,16 @@ class Optimize(object):
         fold BatchNormalization to target operations
         """
 
-        def _get_folded_weight_bias(target_type: str, target_weight: NDArray[np.float32],
-                                    target_bias: Union[NDArray[np.float32], NDArray[np.float64]],
-                                    bn_gamma: Optional[NDArray[np.float32]], bn_beta: Optional[NDArray[np.float32]],
-                                    bn_mean: NDArray[np.float32], bn_var: NDArray[np.float32],
-                                    bn_epsilon: float) -> Tuple[NDArray[np.float32], NDArray[np.float32]]:
+        def _get_folded_weight_bias(
+            target_type: str,
+            target_weight: NDArray[np.float32],
+            target_bias: Union[NDArray[np.float32], NDArray[np.float64]],
+            bn_gamma: NDArray[np.float32] | None,
+            bn_beta: NDArray[np.float32] | None,
+            bn_mean: NDArray[np.float32],
+            bn_var: NDArray[np.float32],
+            bn_epsilon: float,
+        ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
             if bn_gamma is not None:
                 multiplier = bn_gamma / np.sqrt(bn_var + bn_epsilon)
             else:
@@ -534,12 +591,12 @@ class Optimize(object):
 
         onnx_model = ONNXModel(self.model)
 
-        TARGET_OPS = ('ConvTranspose', 'Gemm')
+        TARGET_OPS = ("ConvTranspose", "Gemm")
 
         remove_nodes = []
 
         for node in onnx_model.model.graph.node:
-            if node.op_type != 'BatchNormalization' or self.should_quantize_node(node):
+            if node.op_type != "BatchNormalization" or self.should_quantize_node(node):
                 continue
 
             if len(node.input) != 5:
@@ -563,7 +620,7 @@ class Optimize(object):
             bn_mean = None if bn_mean_init is None else onnx.numpy_helper.to_array(bn_mean_init)
             bn_var_init = onnx_model.get_initializer(node.input[4])
             bn_var = None if bn_var_init is None else onnx.numpy_helper.to_array(bn_var_init)
-            bn_epsilon = next((attr.f for attr in node.attribute if attr.name == 'epsilon'), 1e-10)
+            bn_epsilon = next((attr.f for attr in node.attribute if attr.name == "epsilon"), 1e-10)
 
             if bn_mean is None or bn_var is None:
                 logger.warning(f"BatchNorm {node.name} that is missing mean or variance cannot be folded.")
@@ -581,13 +638,13 @@ class Optimize(object):
 
             target_type = target_node.op_type
             if target_type == "Gemm":
-                transB = next((attr.i for attr in target_node.attribute if attr.name == 'transB'), 0)
+                transB = next((attr.i for attr in target_node.attribute if attr.name == "transB"), 0)
                 # TODO: Support transB is 0
                 if transB == 0:
                     logger.debug(f"Target node f{target_node.name}'s transB=0 is not supported.")
                     continue
             if target_type == "ConvTranspose":
-                group = next((attr.i for attr in target_node.attribute if attr.name == 'group'), 1)
+                group = next((attr.i for attr in target_node.attribute if attr.name == "group"), 1)
                 # TODO: Support ConvTranspose group != 1
                 if group != 1:
                     logger.debug(f"Target node f{target_node.name}'s group !=1 is not supported.")
@@ -605,13 +662,16 @@ class Optimize(object):
                 target_node.input.append(target_bias_name)
 
             # Calculate the weight and bias after folded
-            folded_weight, folded_bias = _get_folded_weight_bias(target_type, target_weight, target_bias, bn_gamma,
-                                                                 bn_beta, bn_mean, bn_var, bn_epsilon)
+            folded_weight, folded_bias = _get_folded_weight_bias(
+                target_type, target_weight, target_bias, bn_gamma, bn_beta, bn_mean, bn_var, bn_epsilon
+            )
 
             # Update target node's weight and bias
-            folded_weight_init = onnx.numpy_helper.from_array(folded_weight.astype(np.float32),
-                                                              name=target_weight_init.name)
+            folded_weight_init = onnx.numpy_helper.from_array(
+                folded_weight.astype(np.float32), name=target_weight_init.name
+            )
             target_weight_init.CopyFrom(folded_weight_init)
+            assert target_bias_init is not None
             folded_bias_init = onnx.numpy_helper.from_array(folded_bias.astype(np.float32), name=target_bias_init.name)
             target_bias_init = onnx_model.get_initializer(target_node.input[2])
             target_bias_init.CopyFrom(folded_bias_init)
@@ -640,15 +700,15 @@ class Optimize(object):
         self.model = onnx_model.model
 
     def convert_clip_to_relu(self) -> None:
-        '''
+        """
         Convert Clip to Relu.
-        '''
+        """
         nodes_to_remove = []
         init_to_remove = []
         onnx_model = ONNXModel(self.model)
 
         for node in onnx_model.model.graph.node:
-            if node.op_type == 'Clip' and self.should_quantize_node(node):
+            if node.op_type == "Clip" and self.should_quantize_node(node):
                 min_value, max_value, para_type = get_clip_min_max(onnx_model.model, node)
 
                 if min_value is None or min_value < 0:
@@ -665,11 +725,13 @@ class Optimize(object):
                 elif para_type == 2:
                     # This Clip node's min and max come from other nodes
                     for nd in onnx_model.model.graph.node:
-                        if ((len(node.input) > 1 and node.input[1] in nd.output)
-                                or (len(node.input) > 2 and node.input[2] in nd.output)) is False:
+                        if (
+                            (len(node.input) > 1 and node.input[1] in nd.output)
+                            or (len(node.input) > 2 and node.input[2] in nd.output)
+                        ) is False:
                             continue
 
-                        if nd.op_type == 'Identity':
+                        if nd.op_type == "Identity":
                             for init in onnx_model.model.graph.initializer:
                                 if len(nd.input) > 1 and init.name == nd.input[1]:
                                     init_to_remove.append(init)
@@ -677,11 +739,13 @@ class Optimize(object):
                                     init_to_remove.append(init)
                             nodes_to_remove.append(nd)
 
-                        elif nd.op_type == 'Constant':
+                        elif nd.op_type == "Constant":
                             nodes_to_remove.append(nd)
 
-                logger.info(f"Convert Clip node {node.name} to Relu, "
-                            f"its min is {min_value}, max is {max_value} and type is {para_type}")
+                logger.info(
+                    f"Convert Clip node {node.name} to Relu, "
+                    f"its min is {min_value}, max is {max_value} and type is {para_type}"
+                )
                 relu_node = onnx.helper.make_node("Relu", [node.input[0]], node.output, node.name)
                 onnx_model.model.graph.node.extend([relu_node])  # insert a Relu node
                 nodes_to_remove.append(node)  # to remove this Clip node
@@ -697,12 +761,18 @@ class Optimize(object):
         fold BatchNormalization (after concat) to target operations
         """
 
-        def _get_folded_weight_bias(target_type: str, target_weight: NDArray[np.float32],
-                                    target_bias: Union[NDArray[np.float32],
-                                                       NDArray[np.float64]], bn_gamma: Union[NDArray[np.float32], None],
-                                    bn_beta: Union[NDArray[np.float32], None], bn_mean: NDArray[np.float32],
-                                    bn_var: NDArray[np.float32], bn_epsilon: float, start: int,
-                                    end: int) -> Tuple[NDArray[np.float32], NDArray[np.float32]]:
+        def _get_folded_weight_bias(
+            target_type: str,
+            target_weight: NDArray[np.float32],
+            target_bias: Union[NDArray[np.float32], NDArray[np.float64]],
+            bn_gamma: Union[NDArray[np.float32], None],
+            bn_beta: Union[NDArray[np.float32], None],
+            bn_mean: NDArray[np.float32],
+            bn_var: NDArray[np.float32],
+            bn_epsilon: float,
+            start: int,
+            end: int,
+        ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
             if bn_gamma is not None:
                 multiplier = bn_gamma[start:end] / np.sqrt(bn_var[start:end] + bn_epsilon)
             else:
@@ -735,13 +805,12 @@ class Optimize(object):
 
         onnx_model = ONNXModel(self.model)
 
-        TARGET_OPS = ('ConvTranspose', 'Gemm', 'Conv')
+        TARGET_OPS = ("ConvTranspose", "Gemm", "Conv")
 
         remove_nodes = []
 
         for node in onnx_model.model.graph.node:
-
-            if node.op_type != 'BatchNormalization' or self.should_quantize_node(node):
+            if node.op_type != "BatchNormalization" or self.should_quantize_node(node):
                 continue
 
             if len(node.input) != 5:
@@ -754,7 +823,7 @@ class Optimize(object):
                 logger.warning(f"BatchNorm {node.name} that is isolated node cannot be folded.")
                 continue
 
-            if parent_node.op_type == 'Concat':
+            if parent_node.op_type == "Concat":
                 grandparent_nodes = onnx_model.get_parents(parent_node)
             else:
                 continue
@@ -762,7 +831,6 @@ class Optimize(object):
             # check if all target nodes satisfy the requirements to be folded
             is_foldable = True
             for target_node in grandparent_nodes:
-
                 target_type = target_node.op_type
                 if target_type not in TARGET_OPS:
                     logger.debug(
@@ -771,14 +839,14 @@ class Optimize(object):
                     is_foldable = False
                     break
                 if target_type == "Gemm":
-                    transB = next((attr.i for attr in target_node.attribute if attr.name == 'transB'), 0)
+                    transB = next((attr.i for attr in target_node.attribute if attr.name == "transB"), 0)
                     # TODO: Support transB is 0
                     if transB == 0:
                         logger.debug(f"Target node f{target_node.name}'s transB=0 is not supported.")
                         is_foldable = False
                         break
                 if target_type == "ConvTranspose":
-                    group = next((attr.i for attr in target_node.attribute if attr.name == 'group'), 1)
+                    group = next((attr.i for attr in target_node.attribute if attr.name == "group"), 1)
                     # TODO: Support ConvTranspose group != 1
                     if group != 1:
                         logger.debug(f"Target node f{target_node.name}'s group !=1 is not supported.")
@@ -803,7 +871,7 @@ class Optimize(object):
             bn_mean = None if bn_mean_init is None else onnx.numpy_helper.to_array(bn_mean_init)
             bn_var_init = onnx_model.get_initializer(node.input[4])
             bn_var = None if bn_var_init is None else onnx.numpy_helper.to_array(bn_var_init)
-            bn_epsilon = next((attr.f for attr in node.attribute if attr.name == 'epsilon'), 1e-10)
+            bn_epsilon = next((attr.f for attr in node.attribute if attr.name == "epsilon"), 1e-10)
 
             if bn_mean is None or bn_var is None:
                 logger.warning(f"BatchNorm {node.name} that is missing mean or variance cannot be folded.")
@@ -817,39 +885,51 @@ class Optimize(object):
                 target_weight_init = onnx_model.get_initializer(target_node.input[1])
                 target_weight = onnx.numpy_helper.to_array(target_weight_init)
 
-                target_bias_init = onnx_model.get_initializer(target_node.input[2]) if len(
-                    target_node.input) > 2 else None
+                target_bias_init = (
+                    onnx_model.get_initializer(target_node.input[2]) if len(target_node.input) > 2 else None
+                )
                 target_bias = None if target_bias_init is None else onnx.numpy_helper.to_array(target_bias_init)
 
                 if target_bias is None:
-                    if target_type == "Conv":
-                        target_bias = np.zeros(target_weight.shape[0])
-                    elif target_type == "Gemm":
+                    if target_type == "Conv" or target_type == "Gemm":
                         target_bias = np.zeros(target_weight.shape[0])
                     else:  # if target_type == "ConvTranspose":
                         target_bias = np.zeros(target_weight.shape[1])
 
                     target_bias_name = target_node.name + "_bias_4bn"
-                    target_bias_init = onnx.numpy_helper.from_array(target_bias.astype(np.float32),
-                                                                    name=target_bias_name)
+                    target_bias_init = onnx.numpy_helper.from_array(
+                        target_bias.astype(np.float32), name=target_bias_name
+                    )
                     onnx_model.add_initializer(target_bias_init)
                     target_node.input.append(target_bias_name)
 
                 end_idx += target_bias.shape[0]
 
                 # Calculate the weight and bias after folded
-                folded_weight, folded_bias = _get_folded_weight_bias(target_type, target_weight, target_bias, bn_gamma,
-                                                                     bn_beta, bn_mean, bn_var, bn_epsilon, start_idx,
-                                                                     end_idx)
+                folded_weight, folded_bias = _get_folded_weight_bias(
+                    target_type,
+                    target_weight,
+                    target_bias,
+                    bn_gamma,
+                    bn_beta,
+                    bn_mean,
+                    bn_var,
+                    bn_epsilon,
+                    start_idx,
+                    end_idx,
+                )
 
                 start_idx += target_bias.shape[0]
 
                 # Update target node's weight and bias
-                folded_weight_init = onnx.numpy_helper.from_array(folded_weight.astype(np.float32),
-                                                                  name=target_weight_init.name)
+                folded_weight_init = onnx.numpy_helper.from_array(
+                    folded_weight.astype(np.float32), name=target_weight_init.name
+                )
                 target_weight_init.CopyFrom(folded_weight_init)
-                folded_bias_init = onnx.numpy_helper.from_array(folded_bias.astype(np.float32),
-                                                                name=target_bias_init.name)
+                assert target_bias_init is not None
+                folded_bias_init = onnx.numpy_helper.from_array(
+                    folded_bias.astype(np.float32), name=target_bias_init.name
+                )
                 target_bias_init = onnx_model.get_initializer(target_node.input[2])
                 target_bias_init.CopyFrom(folded_bias_init)
 
@@ -925,9 +1005,11 @@ class Optimize(object):
                     nodes_to_add.append(parent_new)
 
                     output_info = next(
-                        (info for info in onnx_model.model.graph.value_info if info.name == parent.output[0]), None)
+                        (info for info in onnx_model.model.graph.value_info if info.name == parent.output[0]), None
+                    )
                     output_info_new = next(
-                        (info for info in onnx_model.model.graph.value_info if info.name == parent_new.output[0]), None)
+                        (info for info in onnx_model.model.graph.value_info if info.name == parent_new.output[0]), None
+                    )
                     if output_info is not None and output_info_new is None:
                         output_info_new = copy.deepcopy(output_info)
                         output_info_new.name = parent_new.output[0]
@@ -942,10 +1024,12 @@ class Optimize(object):
                 nodes_to_add.append(node_new)
 
                 # Copy shape info
-                output_info = next((info for info in onnx_model.model.graph.value_info if info.name == node.output[0]),
-                                   None)
+                output_info = next(
+                    (info for info in onnx_model.model.graph.value_info if info.name == node.output[0]), None
+                )
                 output_info_new = next(
-                    (info for info in onnx_model.model.graph.value_info if info.name == node_new.output[0]), None)
+                    (info for info in onnx_model.model.graph.value_info if info.name == node_new.output[0]), None
+                )
                 if output_info is not None and output_info_new is None:
                     output_info_new = copy.deepcopy(output_info)
                     output_info_new.name = node_new.output[0]
@@ -960,22 +1044,24 @@ class Optimize(object):
             self.model = onnx_model.model
 
 
-def optimize(model: ModelProto,
-             op_types_to_quantize: List[str],
-             nodes_to_quantize: Optional[List[str]],
-             nodes_to_exclude: Optional[List[str]],
-             convert_bn_to_conv: bool = True,
-             convert_reduce_mean_to_global_avg_pool: bool = True,
-             split_large_kernel_pool: bool = True,
-             convert_split_to_slice: bool = True,
-             fuse_instance_norm: bool = True,
-             fuse_l2_norm: bool = True,
-             fuse_gelu: bool = True,
-             fuse_layer_norm: bool = True,
-             fold_batch_norm: bool = True,
-             convert_clip_to_relu: bool = True,
-             fold_batch_norm_after_concat: bool = True,
-             dedicate_dq_node: bool = False) -> ModelProto:
+def optimize(
+    model: ModelProto,
+    op_types_to_quantize: list[str],
+    nodes_to_quantize: list[str] | None,
+    nodes_to_exclude: list[str] | None,
+    convert_bn_to_conv: bool = True,
+    convert_reduce_mean_to_global_avg_pool: bool = True,
+    split_large_kernel_pool: bool = True,
+    convert_split_to_slice: bool = True,
+    fuse_instance_norm: bool = True,
+    fuse_l2_norm: bool = True,
+    fuse_gelu: bool = True,
+    fuse_layer_norm: bool = True,
+    fold_batch_norm: bool = True,
+    convert_clip_to_relu: bool = True,
+    fold_batch_norm_after_concat: bool = True,
+    dedicate_dq_node: bool = False,
+) -> ModelProto:
     """
     Optimize an ONNX model to meet specific constraints and requirements for deployment on an CPU/NPU.
 

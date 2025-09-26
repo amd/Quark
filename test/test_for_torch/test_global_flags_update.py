@@ -2,8 +2,9 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-import torch
 import unittest
+
+import torch
 
 
 class TestTorchGlobalFlags(unittest.TestCase):

@@ -2,20 +2,21 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 Convert quantized model to FP32 model.
-'''
+"""
 
-import onnx
-from onnx import numpy_helper, ModelProto
-import numpy as np
-from onnxruntime.quantization.onnx_model import ONNXModel
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Dict, Tuple, Any, Union, Optional
+from typing import Any, Dict, Optional, Tuple, Union
+
+import numpy as np
+import onnx
+from onnx import ModelProto, numpy_helper
+from onnxruntime.quantization.onnx_model import ONNXModel
 
 
-def convert_initializers_to_float(model: ModelProto, initializers_to_convert: Dict[str, Dict[str, str]]) -> ModelProto:
+def convert_initializers_to_float(model: ModelProto, initializers_to_convert: dict[str, dict[str, str]]) -> ModelProto:
     """
     Convert integer initializers used by DequantizeLinear nodes to float initializers.
     """
@@ -25,8 +26,8 @@ def convert_initializers_to_float(model: ModelProto, initializers_to_convert: Di
     for init in model.graph.initializer:
         if init.name in initializers_to_convert:
             int_data = numpy_helper.to_array(init).astype(np.float32)
-            scale = numpy_helper.to_array(initializer_map[initializers_to_convert[init.name]['scale']])
-            zero_point = numpy_helper.to_array(initializer_map[initializers_to_convert[init.name]['zero_point']])
+            scale = numpy_helper.to_array(initializer_map[initializers_to_convert[init.name]["scale"]])
+            zero_point = numpy_helper.to_array(initializer_map[initializers_to_convert[init.name]["zero_point"]])
             # Convert to float
             float_data = (int_data - zero_point) * scale
             new_init = numpy_helper.from_array(float_data, init.name)
@@ -41,7 +42,7 @@ def convert_initializers_to_float(model: ModelProto, initializers_to_convert: Di
     return model
 
 
-def remove_quantize_dequantize_nodes(model: ModelProto) -> Tuple[ModelProto, Dict[str, Dict[str, str]]]:
+def remove_quantize_dequantize_nodes(model: ModelProto) -> tuple[ModelProto, dict[str, dict[str, str]]]:
     nodes_to_remove = []
     initializers_to_convert = {}
     node_output_map = {}
@@ -49,7 +50,7 @@ def remove_quantize_dequantize_nodes(model: ModelProto) -> Tuple[ModelProto, Dic
         node_output_map[node.output[0]] = node
 
     for node in model.graph.node:
-        if node.op_type == 'DequantizeLinear':
+        if node.op_type == "DequantizeLinear":
             input_name = node.input[0]
             output_name = node.output[0]
 
@@ -58,10 +59,10 @@ def remove_quantize_dequantize_nodes(model: ModelProto) -> Tuple[ModelProto, Dic
             if is_initializer:
                 scale_name = node.input[1]
                 zero_point_name = node.input[2]
-                initializers_to_convert[input_name] = {'scale': scale_name, 'zero_point': zero_point_name}
+                initializers_to_convert[input_name] = {"scale": scale_name, "zero_point": zero_point_name}
 
             nodes_to_remove.append(node)
-        elif node.op_type == 'QuantizeLinear':
+        elif node.op_type == "QuantizeLinear":
             nodes_to_remove.append(node)
     all_graph_ouput_name = [output.name for output in model.graph.output]
     # Remove nodes and update connections
@@ -85,8 +86,9 @@ def remove_quantize_dequantize_nodes(model: ModelProto) -> Tuple[ModelProto, Dic
     return model, initializers_to_convert
 
 
-def convert_quant_to_float(quant_model: Union[str, Path, ModelProto],
-                           float_model: Optional[Union[str, Path]] = None) -> Any:
+def convert_quant_to_float(
+    quant_model: Union[str, Path, ModelProto], float_model: Union[str, Path] | None = None
+) -> Any:
     # Load the ONNX model
     model = quant_model if isinstance(quant_model, ModelProto) else onnx.load(quant_model)
 

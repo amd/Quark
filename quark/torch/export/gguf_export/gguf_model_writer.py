@@ -12,14 +12,20 @@ import json
 import os
 from abc import ABC, abstractmethod
 from enum import IntEnum
-from pathlib import Path
 from hashlib import sha256
-from typing import Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast, Dict
+from pathlib import Path
+from typing import Any, Callable, ContextManager, Dict, Iterator, Optional, Sequence, TypeVar, cast
 
 import torch
-from .tensor_convert import convert_to_gguf
+
+from quark.shares.utils.import_utils import (
+    is_gguf_available_and_version_0_6_0,
+    is_safetensors_available,
+    is_transformers_available,
+)
 from quark.shares.utils.log import ScreenLogger, log_errors
-from quark.shares.utils.import_utils import is_transformers_available, is_safetensors_available
+
+from .tensor_convert import convert_to_gguf
 
 if is_transformers_available():
     from transformers import AutoTokenizer
@@ -29,23 +35,21 @@ if is_safetensors_available():
 
 logger = ScreenLogger(__name__)
 
-try:
+if is_gguf_available_and_version_0_6_0():
     import gguf  # type: ignore
-except ImportError as e:
-    logger.exception(str(e))
-    raise ImportError("please install gguf==0.6.0")
 
 from .utils import permute
 
 
-class QuantSpec(object):
-
-    def __init__(self,
-                 tensor_name: str,
-                 tensor: torch.Tensor,
-                 scales: torch.Tensor | None = None,
-                 zero_points: torch.Tensor | None = None,
-                 quant_type: gguf.GGMLQuantizationType = None) -> None:
+class QuantSpec:
+    def __init__(
+        self,
+        tensor_name: str,
+        tensor: torch.Tensor,
+        scales: torch.Tensor | None = None,
+        zero_points: torch.Tensor | None = None,
+        quant_type: gguf.GGMLQuantizationType | None = None,
+    ) -> None:
         self.tensor_name = tensor_name
         self.tensor = tensor
         self.scales = scales
@@ -68,22 +72,24 @@ AnyModel = TypeVar("AnyModel", bound="type[ModelWriter]")
 class ModelWriter(ABC):
     _model_classes: dict[str, type[ModelWriter]] = {}
 
-    def __init__(self,
-                 model_name: str,
-                 json_path: Path,
-                 safetensor_path: Path,
-                 tokenizer_dir: Path,
-                 fname_out: Path,
-                 is_big_endian: bool = False,
-                 use_temp_file: bool = False):
+    def __init__(
+        self,
+        model_name: str,
+        json_path: Path,
+        safetensor_path: Path,
+        tokenizer_dir: Path,
+        fname_out: Path,
+        is_big_endian: bool = False,
+        use_temp_file: bool = False,
+    ):
         if not is_safetensors_available():
             raise ImportError(
                 "The class `ModelWriter` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
             )
 
         self.model_name = model_name
-        with open(json_path, 'r') as f:
-            self._model_json: Dict[str, int | str | Any] = json.load(f)
+        with open(json_path) as f:
+            self._model_json: dict[str, int | str | Any] = json.load(f)
         self.safetensor_path = safetensor_path
         self.tokenizer_dir = tokenizer_dir
         self.fname_out = fname_out
@@ -91,16 +97,18 @@ class ModelWriter(ABC):
         self.endianess = gguf.GGUFEndian.BIG if is_big_endian else gguf.GGUFEndian.LITTLE
         self.use_temp_file = use_temp_file
         self.hparams = self.load_hparams()
-        self.gguf_writer = gguf.GGUFWriter(fname_out,
-                                           gguf.MODEL_ARCH_NAMES[self.model_arch],
-                                           endianess=self.endianess,
-                                           use_temp_file=self.use_temp_file)
+        self.gguf_writer = gguf.GGUFWriter(
+            fname_out,
+            gguf.MODEL_ARCH_NAMES[self.model_arch],
+            endianess=self.endianess,
+            use_temp_file=self.use_temp_file,
+        )
         self.block_count = self.find_hparam(["n_layers", "num_hidden_layers", "n_layer"])
 
-    def parse_quant_info(self) -> Dict[str, Dict[str, str | int]]:
+    def parse_quant_info(self) -> dict[str, dict[str, str | int]]:
         quant_info = {}
 
-        def traverse_model_json(model_json: Dict[str, Any]) -> None:
+        def traverse_model_json(model_json: dict[str, Any]) -> None:
             for k, v in model_json.items():
                 if not isinstance(v, dict):
                     continue
@@ -112,9 +120,12 @@ class ModelWriter(ABC):
         traverse_model_json(self._model_json)
         return quant_info
 
-    def get_quant_type_from_weight_quant(self, weight_quant: Dict[str, str | int]) -> gguf.GGMLQuantizationType:
-        if weight_quant["dtype"] == "uint4" and weight_quant["qscheme"] == "per_group" and weight_quant[
-                "group_size"] == 32:
+    def get_quant_type_from_weight_quant(self, weight_quant: dict[str, str | int]) -> gguf.GGMLQuantizationType:
+        if (
+            weight_quant["dtype"] == "uint4"
+            and weight_quant["qscheme"] == "per_group"
+            and weight_quant["group_size"] == 32
+        ):
             return gguf.GGMLQuantizationType.Q4_1
         else:
             raise Exception("Unsupported quant spec")
@@ -140,7 +151,7 @@ class ModelWriter(ABC):
 
     def get_tensors(self) -> Iterator[tuple[str, torch.Tensor]]:
         ctx: ContextManager[Any]
-        ctx = cast(ContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))
+        ctx = cast(ContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))  # type: ignore
 
         with ctx as model_part:
             for name in model_part.keys():
@@ -168,24 +179,25 @@ class ModelWriter(ABC):
         logger.info(f"gguf: head count = {n_head}")
 
         if (n_head_kv := self.hparams.get("num_key_value_heads")) is not None:
-            self.gguf_writer.add_head_count_kv(n_head_kv)
+            self.gguf_writer.add_head_count_kv(n_head_kv)  # type: ignore[arg-type]
             logger.info(f"gguf: key-value head count = {n_head_kv}")
 
         if (rope_theta := self.hparams.get("rope_theta")) is not None:
-            self.gguf_writer.add_rope_freq_base(rope_theta)
+            self.gguf_writer.add_rope_freq_base(rope_theta)  # type: ignore[arg-type]
             logger.info(f"gguf: rope theta = {rope_theta}")
         if (f_rms_eps := self.hparams.get("rms_norm_eps")) is not None:
-            self.gguf_writer.add_layer_norm_rms_eps(f_rms_eps)
+            self.gguf_writer.add_layer_norm_rms_eps(f_rms_eps)  # type: ignore[arg-type]
             logger.info(f"gguf: rms norm epsilon = {f_rms_eps}")
-        if (f_norm_eps := self.find_hparam(["layer_norm_eps", "layer_norm_epsilon", "norm_epsilon"],
-                                           optional=True)) is not None:
+        if (
+            f_norm_eps := self.find_hparam(["layer_norm_eps", "layer_norm_epsilon", "norm_epsilon"], optional=True)
+        ) is not None:
             self.gguf_writer.add_layer_norm_eps(f_norm_eps)
             logger.info(f"gguf: layer norm epsilon = {f_norm_eps}")
         if (n_experts := self.hparams.get("num_local_experts")) is not None:
-            self.gguf_writer.add_expert_count(n_experts)
+            self.gguf_writer.add_expert_count(n_experts)  # type: ignore
             logger.info(f"gguf: expert count = {n_experts}")
         if (n_experts_used := self.hparams.get("num_experts_per_tok")) is not None:
-            self.gguf_writer.add_expert_used_count(n_experts_used)
+            self.gguf_writer.add_expert_used_count(n_experts_used)  # type: ignore
             logger.info(f"gguf: experts used count = {n_experts_used}")
 
         self.gguf_writer.add_file_type(gguf.GGMLQuantizationType.F32)
@@ -215,7 +227,7 @@ class ModelWriter(ABC):
 
         return num_parts
 
-    def load_hparams(self) -> Dict[str, int | str | Any]:
+    def load_hparams(self) -> dict[str, int | str | Any]:
         return self._model_json["config"]  # type: ignore[return-value]
 
     @classmethod
@@ -235,7 +247,7 @@ class ModelWriter(ABC):
         try:
             return cls._model_classes[arch]
         except KeyError as e:
-            raise NotImplementedError(f'Architecture {arch!r} not supported!')
+            raise NotImplementedError(f"Architecture {arch!r} not supported!")
 
     # used for GPT-2 BPE and WordPiece vocabs
     def get_vocab_base(self) -> tuple[list[str], list[int], str]:
@@ -246,7 +258,7 @@ class ModelWriter(ABC):
             raise ImportError(
                 "The `transformers` library is required to run `ModelWriter.get_vocab_base`, but the library was not found in the current environment. Please install Transformers library (`pip install transformers`)."
             )
-        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_dir)
+        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_dir)  # type: ignore
         vocab_size = int(self.hparams.get("vocab_size", len(tokenizer.vocab)))
         assert max(tokenizer.vocab.values()) < vocab_size
 
@@ -280,7 +292,7 @@ class ModelWriter(ABC):
         # we will use this unique identifier to write a "tokenizer.ggml.pre" entry in the GGUF file which we can
         # use in llama.cpp to implement the same pre-tokenizer
 
-        chktxt = '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL'
+        chktxt = "\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````\"\"\"\"......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL"
 
         chktok = tokenizer.encode(chktxt)
         chkhsh = sha256(str(chktok).encode()).hexdigest()
@@ -328,7 +340,8 @@ class ModelWriter(ABC):
             logger.warning("**          - the model has not been added to convert-hf-to-gguf-update.py yet")
             logger.warning("**          - the pre-tokenization config has changed upstream")
             logger.warning(
-                "**          Check your model files and convert-hf-to-gguf-update.py and update them accordingly.")
+                "**          Check your model files and convert-hf-to-gguf-update.py and update them accordingly."
+            )
             logger.warning("** ref:     https://github.com/ggerganov/llama.cpp/pull/6920")
             logger.warning("**")
             logger.warning(f"** chkhsh:  {chkhsh}")
@@ -341,9 +354,9 @@ class ModelWriter(ABC):
     def _set_vocab_sentencepiece(self) -> None:
         from sentencepiece import SentencePieceProcessor  # type: ignore
 
-        tokenizer_path = self.tokenizer_dir / 'tokenizer.model'
+        tokenizer_path = self.tokenizer_dir / "tokenizer.model"
 
-        tokens: list[bytes | str] = []
+        tokens: list[bytes] = []
         scores: list[float] = []
         toktypes: list[int] = []
 
@@ -351,7 +364,7 @@ class ModelWriter(ABC):
             raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
         tokenizer = SentencePieceProcessor(str(tokenizer_path))
-        vocab_size = int(self.hparams.get('vocab_size', tokenizer.vocab_size()))
+        vocab_size = int(self.hparams.get("vocab_size", tokenizer.vocab_size()))
 
         for token_id in range(tokenizer.vocab_size()):
             piece = tokenizer.id_to_piece(token_id)
@@ -372,9 +385,9 @@ class ModelWriter(ABC):
             scores.append(score)
             toktypes.append(toktype)
 
-        added_tokens_file = self.tokenizer_dir / 'added_tokens.json'
+        added_tokens_file = self.tokenizer_dir / "added_tokens.json"
         if added_tokens_file.is_file():
-            with open(added_tokens_file, "r", encoding="utf-8") as f:
+            with open(added_tokens_file, encoding="utf-8") as f:
                 added_tokens_json = json.load(f)
 
                 for key in added_tokens_json:
@@ -387,7 +400,8 @@ class ModelWriter(ABC):
         if vocab_size > len(tokens):
             pad_count = vocab_size - len(tokens)
             for i in range(1, pad_count + 1):
-                tokens.append(f"[PAD{i}]")
+                pad_token = f"[PAD{i}]".encode()  # 🔄 转为 bytes
+                tokens.append(pad_token)
                 scores.append(-1000.0)
                 toktypes.append(SentencePieceTokenTypes.UNUSED)
 
@@ -412,9 +426,9 @@ class LlamaModelWriter(ModelWriter):
 
         # Apply to CodeLlama only (and ignore for Llama 3 with a vocab size of 128256)
         if self.hparams.get("vocab_size", 32000) == 32016:
-            special_vocab = gguf.SpecialVocab(self.tokenizer_dir,
-                                              load_merges=False,
-                                              special_token_types=['prefix', 'suffix', 'middle', 'eot'])
+            special_vocab = gguf.SpecialVocab(
+                self.tokenizer_dir, load_merges=False, special_token_types=("prefix", "suffix", "middle", "eot")
+            )
             special_vocab._set_special_token("prefix", 32007)
             special_vocab._set_special_token("suffix", 32008)
             special_vocab._set_special_token("middle", 32009)
@@ -424,9 +438,11 @@ class LlamaModelWriter(ModelWriter):
     def set_gguf_parameters(self) -> None:
         super().set_gguf_parameters()
         hparams = self.hparams
-        self.gguf_writer.add_uint32(f"{self.gguf_writer.arch}.vocab_size", hparams["vocab_size"])
-        self.gguf_writer.add_rope_dimension_count(hparams["hidden_size"] //  # type: ignore
-                                                  hparams["num_attention_heads"])
+        self.gguf_writer.add_uint32(f"{self.gguf_writer.arch}.vocab_size", hparams["vocab_size"])  # type: ignore[arg-type]
+        self.gguf_writer.add_rope_dimension_count(
+            hparams["hidden_size"]  # type: ignore
+            // hparams["num_attention_heads"]
+        )
 
         if self.hparams.get("rope_scaling") is not None and "factor" in self.hparams["rope_scaling"]:  # type: ignore
             if self.hparams["rope_scaling"].get("type") == "linear":  # type: ignore
@@ -436,13 +452,14 @@ class LlamaModelWriter(ModelWriter):
     # Same as super class, but permuting q_proj, k_proj
     def write_tensors(self) -> None:
         block_count = int(
-            self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer"))))
+            self.hparams.get("n_layers") or self.hparams.get("num_hidden_layers") or self.hparams.get("n_layer") or 0
+        )
         tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
         n_head = int(self.hparams.get("num_attention_heads"))  # type: ignore
         n_kv_head = int(self.hparams.get("num_key_value_heads"))  # type: ignore
 
         quant_info = self.parse_quant_info()
-        quant_spec_map: Dict[str, QuantSpec] = {}
+        quant_spec_map: dict[str, QuantSpec] = {}
         for name, data_torch in self.get_tensors():
             # we don't need these
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
@@ -458,38 +475,44 @@ class LlamaModelWriter(ModelWriter):
             raw_shape = None
             raw_dtype = None
             if name in quant_info:
-                quant_spec_map[name] = QuantSpec(tensor_name=name,
-                                                 tensor=data_torch,
-                                                 scales=None,
-                                                 zero_points=None,
-                                                 quant_type=self.get_quant_type_from_weight_quant(quant_info[name]))
+                quant_spec_map[name] = QuantSpec(
+                    tensor_name=name,
+                    tensor=data_torch,
+                    scales=None,
+                    zero_points=None,
+                    quant_type=self.get_quant_type_from_weight_quant(quant_info[name]),
+                )
                 continue
             if name.endswith("_scale"):
-                tensor_name = name[:-len("_scale")]
+                tensor_name = name[: -len("_scale")]
                 assert tensor_name in quant_spec_map, f"tensor : {tensor_name} has to be in quant_spec_map"
                 quant_spec = quant_spec_map[tensor_name]
                 quant_spec.scales = data_torch
                 if self.is_quant_spec_complete(quant_spec):
+                    assert quant_spec.quant_type is not None, f"quant_spec.quant_type is None for {tensor_name}"
                     data_torch = convert_to_gguf(
                         inpt=quant_spec.tensor,
                         scale=quant_spec.scales,
                         zero_point=quant_spec.zero_points,  # type: ignore
-                        gguf_type=quant_spec.quant_type)
+                        gguf_type=quant_spec.quant_type,
+                    )
                     raw_shape = quant_spec.tensor.shape
                     raw_dtype = quant_spec.quant_type
                     name = quant_spec.tensor_name
                 else:
                     continue
             if name.endswith("_zero_point"):
-                tensor_name = name[:-len("_zero_point")]
+                tensor_name = name[: -len("_zero_point")]
                 assert tensor_name in quant_spec_map, f"tensor : {tensor_name} has to be in quant_spec_map"
                 quant_spec_map[tensor_name].zero_points = data_torch
                 if self.is_quant_spec_complete(quant_spec):
+                    assert quant_spec.quant_type is not None, "quant_spec.quant_type must not be None"
                     data_torch = convert_to_gguf(
                         inpt=quant_spec.tensor,
                         scale=quant_spec.scales,  # type: ignore
                         zero_point=quant_spec.zero_points,  # type: ignore
-                        gguf_type=quant_spec.quant_type)
+                        gguf_type=quant_spec.quant_type,
+                    )
                     raw_shape = quant_spec.tensor.shape
                     raw_dtype = quant_spec.quant_type
                     name = quant_spec.tensor_name

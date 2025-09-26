@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Vision Model Quantization Using Quark FX Graph Mode
 ===================================================
 
@@ -23,7 +25,7 @@ In Quark, we take advantage of the ``fx.GraphModule``, Once we get the fully des
 
 **Utilize Graph information to perform fine-grained quantization.**
 
-- In `eager-mode quantization <https://pytorch.org/docs/stable/quantization.html#eager-mode-quantization>`_ method, that uses traditional ``nn.Module`` as input/output. And do the direct replacement on model’s component (e.g. ``nn.Conv2d`` to ``QuantizedConv2d``). This method can not recognize and quantize the Python inner operation (e.g. ``x = x + 10``), meaning this quantization method can only quant a small part of the model. Seems little possible to deploy on the demand hardware.
+- In `eager-mode quantization <https://pytorch.org/docs/stable/quantization.html#eager-mode-quantization>`_ method, that uses traditional ``nn.Module`` as input/output. And do the direct replacement on model's component (e.g. ``nn.Conv2d`` to ``QuantizedConv2d``). This method can not recognize and quantize the Python inner operation (e.g. ``x = x + 10``), meaning this quantization method can only quant a small part of the model. Seems little possible to deploy on the demand hardware.
 - In Quark Fx model quantization, we use the ``torch.fx.GraphModule`` as the inner interpretation. The ``fx.GraphModule`` contain every operation relationship in the computation graph. Quark Fx tool utilize this characteristics to parse the computation graph and insert the Quantizer at the proper place. Meaning the model can be fully quantized. The quantized model are more friendly to AMD NPU etc. device.
 
 
@@ -80,7 +82,7 @@ Some Key Tech Feature
 ^^^^^^^^^^^^^^^^^^^^^
 
 - **Quantization is realized by the Fakequantize**. In the forward pass, the tensor will be fake quantized in the QDQ manner, known as QDQ (Quantize-DeQuantize) model.
-- **Observer**: Typically, each Fakequantizer contains an observer, which is used to record the FP32 tensor value and use specific algorithms to compute the quantization parameter (e.g. scale, zero point). The scale and zero point, quant min, and quant max are used for quantization. In Quark Fx tool, two additoon types of observers are supported in QAT.
+- **Observer**: Typically, each Fakequantizer contains an observer, which is used to record the FP32 tensor value and use specific algorithms to compute the quantization parameter (e.g. scale, zero point). The scale and zero point, quant min, and quant max are used for quantization. In Quark Fx tool, two addition types of observers are supported in QAT.
   - **`LSQ <https://arxiv.org/abs/1902.08153>`_** adapts a float format scale that adjusts the scale during training.
   - **`TQT <https://arxiv.org/abs/1903.08066>`_** uses a pow-of-2 format scale and will adjust the scale during the training loss, which is more friendly for hardware deployment.
 
@@ -147,15 +149,16 @@ In this section, we give an overall method of using the Quark Fx quantization to
    .. code-block:: python
 
       validate(val_loader, quantized_model) # use the quantized_model to validate the accuracy
-      from quark.torch import ModelExporter
-      from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig
+      from quark.torch import export_onnx
       # Export to ONNX model
-      freezeded_model = quantizer.freeze(quantized_model.eval())
-      config = ExporterConfig(json_export_config=JsonExporterConfig())
-      exporter = ModelExporter(config=config, export_dir=args.export_dir)
+      frozen_model = quantizer.freeze(quantized_model.eval())
       # NOTE: using batch size 1 for better hardware deploy compile
       example_inputs = (torch.rand(1, 3, 224, 224),)
-      exporter.export_onnx_model(freezed_model, example_inputs[0])
+      export_onnx(
+          model=frozen_model,
+          output_dir=args.export_dir,
+          input_args=example_inputs[0]
+      )
 
 .. note::
    The above gives a brief workflow about the Quark Fx-Graph quantization, code can not be directly run.
@@ -222,7 +225,7 @@ As we quantize the entire model (containing the detection head), the training mo
 
 Detailed Experiments script
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below we share a list of recipies that about the vision task.
+Below we share a list of recipes that about the vision task.
 
 .. toctree::
    :maxdepth: 1

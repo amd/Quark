@@ -2,14 +2,21 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.shares.utils.log import ScreenLogger
+from typing import Any, Dict, List
+
 import numpy as np
 import onnx
-
 from onnx import onnx_pb as onnx_proto
-from quark.onnx.quant_utils import (COP_DOMAIN, QUANT_OP_TYPES, DEQUANT_OP_TYPES, FN_OP_TYPES, ONNXQuantizedModel,
-                                    infer_custom_op_shape)
-from typing import List, Dict, Any
+
+from quark.onnx.quant_utils import (
+    COP_DOMAIN,
+    DEQUANT_OP_TYPES,
+    FN_OP_TYPES,
+    QUANT_OP_TYPES,
+    ONNXQuantizedModel,
+    infer_custom_op_shape,
+)
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -17,8 +24,9 @@ NONLINEAR_OP_TYPE = ["Relu", "LeakyRelu", "PRelu"]
 QDQ_OP_TYPE = QUANT_OP_TYPES + DEQUANT_OP_TYPES
 
 
-def mixing_fn_kernel(model: onnx.ModelProto, target_op_type: List[str], process_type: str, fn_type: str,
-                     fn_attrs: Dict[str, Any]) -> Any:
+def mixing_fn_kernel(
+    model: onnx.ModelProto, target_op_type: list[str], process_type: str, fn_type: str, fn_attrs: dict[str, Any]
+) -> Any:
     parser = ONNXQuantizedModel(model)
 
     wgt_qdqs = []  # These weight QDQs will be replaced
@@ -84,7 +92,7 @@ def mixing_fn_kernel(model: onnx.ModelProto, target_op_type: List[str], process_
                 domain=COP_DOMAIN,
             )
             for k, v in fn_attrs.items():
-                if k == 'convert_to_bfloat_before_bfp':
+                if k == "convert_to_bfloat_before_bfp":
                     v = 0
                 elif k == "axis":
                     if node.op_type == "MatMul" or tensor_index == 2:
@@ -159,7 +167,7 @@ def mixing_fn_kernel(model: onnx.ModelProto, target_op_type: List[str], process_
     return parser.onnx_model.model
 
 
-def mixing_fn_postprocess(model: onnx.ModelProto, target_op_type: List[str], process_type: str) -> Any:
+def mixing_fn_postprocess(model: onnx.ModelProto, target_op_type: list[str], process_type: str) -> Any:
     parser = ONNXQuantizedModel(model)
 
     # step1. Fixed the issue that some quantized nodes with non-bfp
@@ -230,8 +238,9 @@ def mixing_fn_postprocess(model: onnx.ModelProto, target_op_type: List[str], pro
     return infer_custom_op_shape(parser.onnx_model.model)
 
 
-def mixing_fn(model: onnx.ModelProto, target_op_type: List[str], process_type: str, fn_type: str,
-              fn_attrs: Dict[str, Any]) -> Any:
+def mixing_fn(
+    model: onnx.ModelProto, target_op_type: list[str], process_type: str, fn_type: str, fn_attrs: dict[str, Any]
+) -> Any:
     """
     Mixing BFP or MX to a quantized model (usually quantized by BFloat16)
     :param model: the original quantized model

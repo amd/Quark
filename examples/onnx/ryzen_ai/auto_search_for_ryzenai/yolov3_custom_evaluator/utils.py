@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: MIT
 #
 
-import numpy as np
-import cv2
-import torch
-import time
-import torchvision
 import random
+import time
+
+import cv2
+import numpy as np
+import torch
+import torchvision
 
 
 def box_iou(box1, box2):
@@ -23,8 +24,7 @@ def box_iou(box1, box2):
 
 
 def plot_one_box(x, image, color=None, label=None, line_thickness=None):
-    tl = line_thickness or round(
-        0.002 * (image.shape[0] + image.shape[1]) / 2) + 1
+    tl = line_thickness or round(0.002 * (image.shape[0] + image.shape[1]) / 2) + 1
     color = color or [random.randint(0, 255) for _ in range(3)]
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
     cv2.rectangle(image, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
@@ -33,8 +33,7 @@ def plot_one_box(x, image, color=None, label=None, line_thickness=None):
         t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
         c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
         cv2.rectangle(image, c1, c2, color, -1, cv2.LINE_AA)
-        cv2.putText(image, label, (c1[0], c1[1] - 2), 0, tl / 3,
-                    [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+        cv2.putText(image, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
 
 
 def clip_coords(boxes, img_shape):
@@ -45,7 +44,6 @@ def clip_coords(boxes, img_shape):
 
 
 def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
-
     if ratio_pad is None:
         gain = max(img1_shape) / max(img0_shape)
         pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2
@@ -61,8 +59,7 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
 
 
 def xywh2xyxy(x):
-    y = torch.zeros_like(x) if isinstance(
-        x, torch.Tensor) else np.zeros_like(x)
+    y = torch.zeros_like(x) if isinstance(x, torch.Tensor) else np.zeros_like(x)
     y[:, 0] = x[:, 0] - x[:, 2] / 2
     y[:, 1] = x[:, 1] - x[:, 3] / 2
     y[:, 2] = x[:, 0] + x[:, 2] / 2
@@ -70,8 +67,7 @@ def xywh2xyxy(x):
     return y
 
 
-def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True,
-              scaleFill=False, scaleup=True):
+def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
     shape = img.shape[:2]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
@@ -97,19 +93,11 @@ def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True,
         img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(img, top, bottom, left, right,
-                             cv2.BORDER_CONSTANT, value=color)
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
     return img, ratio, (dw, dh)
 
 
-def non_max_suppression(
-        prediction,
-        conf_thres=0.1,
-        iou_thres=0.6,
-        multi_label=True,
-        classes=None,
-        agnostic=False):
-
+def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=True, classes=None, agnostic=False):
     merge = True
     min_wh, max_wh = 2, 4096
     time_limit = 10.0
@@ -131,17 +119,13 @@ def non_max_suppression(
 
         if multi_label:
             i, j = (x[:, 5:] > conf_thres).nonzero().t()
-            x = torch.cat((box[i], x[i, j + 5].unsqueeze(1),
-                           j.float().unsqueeze(1)), 1)
+            x = torch.cat((box[i], x[i, j + 5].unsqueeze(1), j.float().unsqueeze(1)), 1)
         else:
             conf, j = x[:, 5:].max(1)
-            x = torch.cat(
-                (box, conf.unsqueeze(1), j.float().unsqueeze(1)), 1)[
-                conf > conf_thres]
+            x = torch.cat((box, conf.unsqueeze(1), j.float().unsqueeze(1)), 1)[conf > conf_thres]
 
         if classes:
-            x = x[(j.view(-1, 1) == torch.tensor(classes,
-                                                 device=j.device)).any(1)]
+            x = x[(j.view(-1, 1) == torch.tensor(classes, device=j.device)).any(1)]
 
         n = x.shape[0]
         if not n:
@@ -150,7 +134,7 @@ def non_max_suppression(
         c = x[:, 5] * 0 if agnostic else x[:, 5]
         boxes, scores = x[:, :4].clone() + c.view(-1, 1) * max_wh, x[:, 4]
         i = torchvision.ops.boxes.nms(boxes, scores, iou_thres)
-        if merge and (1 < n < 3E3):
+        if merge and (1 < n < 3e3):
             try:
                 iou = box_iou(boxes[i], boxes) > iou_thres
                 weights = iou * scores[None]

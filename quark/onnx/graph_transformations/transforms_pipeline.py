@@ -5,26 +5,27 @@
 """Abstract Base Class for model transformations pipeline to a onnx model."""
 
 import abc
-import six
 from typing import Any, Dict, Optional
+
+import six
 from onnx import ModelProto
 
 
 @six.add_metaclass(abc.ABCMeta)
-class TransformsPipeline(object):
+class TransformsPipeline:
     """Wrapper of transforms to the model, apply in sequence.
     Transforms the original model to perform better during quantization.
     """
 
-    def __init__(self, configs: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, configs: dict[str, Any] | None = None) -> None:
         """Init.
 
         Args:
             configs: Dict objects containing the detailed configurations.
         """
-        self._configs: Optional[Dict[str, Any]] = configs
+        self._configs: dict[str, Any] | None = configs
 
-    def get_configs(self) -> Optional[Dict[str, Any]]:
+    def get_configs(self) -> dict[str, Any] | None:
         """Get the configurations.
 
         Args:
@@ -43,4 +44,4 @@ class TransformsPipeline(object):
         Returns:
             New onnx model based on `model` which has been transformed.
         """
-        raise NotImplementedError('Must be implemented in subclasses.')
+        raise NotImplementedError("Must be implemented in subclasses.")

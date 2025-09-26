@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: MIT
 #
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
-from quark.torch.algorithm.utils.utils import clear_memory
-from quark.torch.algorithm.utils.utils import get_device_map, set_device_map
-from quark.torch.pruning.config import Config
-from quark.torch.quantization.utils import set_op_by_name, get_op_by_name
 
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.utils.utils import clear_memory, get_device_map, set_device_map
+from quark.torch.pruning.config import Config
+from quark.torch.utils import getattr_recursive, setattr_recursive
 
 logger = ScreenLogger(__name__)
 
@@ -19,8 +19,12 @@ logger = ScreenLogger(__name__)
 def process_model_pruning(
     model: nn.Module,
     config: Config,
-    is_accelerate: Optional[bool],
+    is_accelerate: bool | None,
 ) -> nn.Module:
+    # Depth pruning do not need modification
+    # TODO
+    if config.algo_config.name != "osscar":  # type: ignore
+        return model
 
     logger.info("Pruning model start.")
     before_pruning_parameters = sum(p.numel() for p in model.parameters())
@@ -32,7 +36,7 @@ def process_model_pruning(
 
     pruned_model, pruned_intermediate_size = model_pruning_on_cpu(model, config)
 
-    if config.algo_config is not None and hasattr(config.algo_config, 'mlp_intermediate_size_name'):
+    if config.algo_config is not None and hasattr(config.algo_config, "mlp_intermediate_size_name"):
         pruned_model.config.__setattr__(config.algo_config.mlp_intermediate_size_name, pruned_intermediate_size)
 
     del model
@@ -41,17 +45,22 @@ def process_model_pruning(
     pruned_model = set_device_map(pruned_model, device_map)
 
     after_pruning_parameters = sum(p.numel() for p in pruned_model.parameters())
-    logger.info("#Param before pruning: {}, #Param after pruning: {}, Pruning Ratio = {:.4f}%".format(
-        before_pruning_parameters, after_pruning_parameters,
-        100.0 * after_pruning_parameters / before_pruning_parameters))
+    # TODO in the future
+    # if config.algo_config.name == "osscar":
+    #     after_pruning_parameters = sum(p.numel() for p in pruned_model.parameters())
+    # elif config.algo_config.name == "wanda":
+    #     after_pruning_parameters = sum(torch.count_nonzero(p) for p in pruned_model.parameters())
+    logger.info(
+        f"#Param before pruning: {before_pruning_parameters}, #Param after pruning: {after_pruning_parameters}, Pruning Ratio = {100.0 * after_pruning_parameters / before_pruning_parameters:.4f}%"
+    )
     logger.info("Pruning model end.")
 
     return pruned_model
 
 
-def prune_weights_tool(weights: torch.Tensor, bias: torch.Tensor,
-                       mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-
+def prune_weights_tool(
+    weights: torch.Tensor, bias: torch.Tensor, mask: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     indices_to_keep = torch.nonzero(~mask).squeeze()  # Find the indices to keep
 
     if weights.shape[0] == len(mask):
@@ -66,7 +75,8 @@ def prune_weights_tool(weights: torch.Tensor, bias: torch.Tensor,
         pruned_weights = weights[:, indices_to_keep]
     else:
         raise ValueError(
-            f"The shape of the weight tensor {weights.shape} does not match the shape of the mask {mask.shape}")
+            f"The shape of the weight tensor {weights.shape} does not match the shape of the mask {mask.shape}"
+        )
 
     if bias is not None and bias.shape[0] == len(mask):
         pruned_bias = bias[indices_to_keep]
@@ -94,14 +104,18 @@ def prune_layer(layer: nn.Module, zero_input_channels: torch.Tensor) -> nn.Modul
     return layer
 
 
-def model_pruning_on_cpu(model: nn.Module, config: Config) -> Tuple[nn.Module, int]:
-
-    if config.algo_config is not None and hasattr(config.algo_config, 'mlp_pruning_modules') and hasattr(
-            config.algo_config, 'mlp_pruning_ratio') and hasattr(
-                config.algo_config, 'mlp_intermediate_size_name') and hasattr(config.algo_config, 'mlp_scaling_layers'):
-
-        pruned_size = int((1 - config.algo_config.mlp_pruning_ratio) *
-                          model.config.__getattribute__(config.algo_config.mlp_intermediate_size_name))
+def model_pruning_on_cpu(model: nn.Module, config: Config) -> tuple[nn.Module, int]:
+    if (
+        config.algo_config is not None
+        and hasattr(config.algo_config, "mlp_pruning_modules")
+        and hasattr(config.algo_config, "mlp_pruning_ratio")
+        and hasattr(config.algo_config, "mlp_intermediate_size_name")
+        and hasattr(config.algo_config, "mlp_scaling_layers")
+    ):
+        pruned_size = int(
+            (1 - config.algo_config.mlp_pruning_ratio)
+            * model.config.__getattribute__(config.algo_config.mlp_intermediate_size_name)
+        )
 
         if pruned_size % 128 != 0:
             pruned_size = int(round(pruned_size / 128) * 128)
@@ -109,7 +123,6 @@ def model_pruning_on_cpu(model: nn.Module, config: Config) -> Tuple[nn.Module, i
         for name, module in model.named_modules():
             for mlp_pruning_module in config.algo_config.mlp_pruning_modules:
                 if mlp_pruning_module in name:
-
                     weights = module.weight.data.cpu()
                     zero_input_channels = torch.all(weights == 0, dim=0)
 
@@ -136,19 +149,20 @@ def model_pruning_on_cpu(model: nn.Module, config: Config) -> Tuple[nn.Module, i
 
                     pruned_layer = prune_layer(module, zero_input_channels)
 
-                    set_op_by_name(model, name, pruned_layer)
+                    setattr_recursive(model, name, pruned_layer)
 
                     for prev_name in config.algo_config.mlp_scaling_layers[mlp_pruning_module]:
-
                         prev_module_name = name.replace(mlp_pruning_module, prev_name)
 
-                        prev_pruned_module = prune_layer(get_op_by_name(model, prev_module_name), zero_input_channels)
+                        prev_pruned_module = prune_layer(
+                            getattr_recursive(model, prev_module_name), zero_input_channels
+                        )
 
                         logger.info(
                             f"Start pruning prev_layer {prev_module_name}, original out channel: {original_input_channel} -> pruned out channel {pruned_size}"
                         )
 
-                        set_op_by_name(model, prev_module_name, prev_pruned_module)
+                        setattr_recursive(model, prev_module_name, prev_pruned_module)
 
         return model, pruned_size
     else:

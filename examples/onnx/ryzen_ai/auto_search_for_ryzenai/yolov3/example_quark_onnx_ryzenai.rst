@@ -1,3 +1,5 @@
+.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 Auto-Search for Ryzen AI ONNX Model Quantization
 ================================================
 
@@ -39,7 +41,7 @@ The search space defines the range of potential quantization configurations that
 
 The search space can be configured manually or based on predefined templates.
 
-- **GPU setting**: For taking advantage of GPU resources, we could set GPU to do model optimization and inference. Specifically, set the 'OptimDevice' and 'InferDevice' to be the GPU number in the 'FastFinetune' item. In order to call the GPU smoothly, we need to insall onnxruntime-gpu after uninstalling onnxruntime.
+- **GPU setting**: For taking advantage of GPU resources, we could set GPU to do model optimization and inference. Specifically, set the 'OptimDevice' and 'InferDevice' to be the GPU number in the 'FastFinetune' item. In order to call the GPU smoothly, we need to install onnxruntime-gpu after uninstalling onnxruntime.
 
 .. code-block:: python
 

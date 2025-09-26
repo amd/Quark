@@ -5,23 +5,20 @@
 #pragma once
 
 #define ORT_API_MANUAL_INIT
-#include "onnxruntime_cxx_api.h"
 #include "onnxruntime_c_api.h"
+#include "onnxruntime_cxx_api.h"
 #undef ORT_API_MANUAL_INIT
 
-void to_bfp(const Ort::Value& tensor,
-                         int64_t bit_width,
-                         int64_t block_size,
-                         int64_t rounding_mode,
-                         Ort::Value& out,
-                         int64_t use_compiler_version_cpu_kernel);
+void to_bfp(
+  const Ort::Value &tensor, int64_t bit_width, int64_t block_size,
+  int64_t rounding_mode, Ort::Value &out,
+  int64_t use_compiler_version_cpu_kernel
+);
 
-void to_bfloat(Ort::Value& tensor);
+void to_bfloat(Ort::Value &tensor);
 
-void to_bfp_prime(const Ort::Value& tensor,
-                                   int64_t bit_width,
-                                   int64_t block_size,
-                                   int64_t sub_block_size,
-                                   int64_t sub_block_shift_bits,
-                                   int64_t rounding_mode,
-                                   Ort::Value& out);
+void to_bfp_prime(
+  const Ort::Value &tensor, int64_t bit_width, int64_t block_size,
+  int64_t sub_block_size, int64_t sub_block_shift_bits, int64_t rounding_mode,
+  Ort::Value &out
+);

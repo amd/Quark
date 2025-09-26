@@ -3,23 +3,27 @@
 # SPDX-License-Identifier: MIT
 #
 
-from sentencepiece import SentencePieceProcessor
-from quark.torch.export.gguf_export.api import convert_exported_model_to_gguf
-from unittest.mock import Mock
-from quark.torch.export.gguf_export.gguf_model_writer import LlamaModelWriter
-from typing import Tuple
-import torch
-import pytest
-import os
 import json
+import os
 import shutil
+from typing import Tuple
+from unittest.mock import Mock
 
-def generate_mock_tensors() -> Tuple[str, torch.Tensor]:
+import pytest
+import torch
+from sentencepiece import SentencePieceProcessor
+
+from quark.torch.export.gguf_export.api import convert_exported_model_to_gguf
+from quark.torch.export.gguf_export.gguf_model_writer import LlamaModelWriter
+
+
+def generate_mock_tensors() -> tuple[str, torch.Tensor]:
     return [
         ("model.layers.0.self_attn.q_proj.weight", torch.rand((32, 32), dtype=torch.float32)),
         ("model.layers.0.self_attn.q_proj.weight_scale", torch.ones((32, 1), dtype=torch.float32)),
-        ("model.layers.0.self_attn.q_proj.weight_zero_point", torch.zeros((32, 1), dtype=torch.float32))
+        ("model.layers.0.self_attn.q_proj.weight_zero_point", torch.zeros((32, 1), dtype=torch.float32)),
     ]
+
 
 SentencePieceProcessor.__init__ = Mock((), return_value=None)
 SentencePieceProcessor.vocab_size = Mock((), return_value=10)
@@ -53,14 +57,12 @@ def generate_llama_json():
             "attention_dropout": 0.0,
             "torch_dtype": "float16",
             "tie_word_embeddings": False,
-            "architectures": [
-                "LlamaForCausalLM"
-            ],
+            "architectures": ["LlamaForCausalLM"],
             "bos_token_id": 1,
             "eos_token_id": 2,
             "_name_or_path": "/group/ossmodelzoo/quark_torch/huggingface_pretrained_models/meta-llama/Llama-2-7b-hf",
             "transformers_version": "4.37.2",
-            "model_type": "llama"
+            "model_type": "llama",
         },
         "structure": {
             "model.layers.0.self_attn.q_proj": {
@@ -75,12 +77,12 @@ def generate_llama_json():
                     "ch_axis": 1,
                     "group_size": 32,
                     "round_method": "half_even",
-                    "scale_type": "float"
-                }
+                    "scale_type": "float",
+                },
             }
-        }
+        },
     }
-    with open(".tmp/llama.json", 'w') as f:
+    with open(".tmp/llama.json", "w") as f:
         json.dump(llama_json, f)
 
 
@@ -89,7 +91,7 @@ def prepare_files():
     if not os.path.exists(".tmp"):
         os.makedirs(".tmp")
     generate_llama_json()
-    with open(".tmp/tokenizer.model", 'w') as f:
+    with open(".tmp/tokenizer.model", "w") as f:
         f.write("")
 
     yield
@@ -97,7 +99,13 @@ def prepare_files():
 
 
 def test_gguf_api(prepare_files):
-    convert_exported_model_to_gguf(model_name="llama2", json_path=".tmp/llama.json", safetensor_path="", tokenizer_dir=".tmp", output_file_path="./.tmp/llama.gguf")
+    convert_exported_model_to_gguf(
+        model_name="llama2",
+        json_path=".tmp/llama.json",
+        safetensor_path="",
+        tokenizer_dir=".tmp",
+        output_file_path="./.tmp/llama.gguf",
+    )
 
 
 if __name__ == "__main__":

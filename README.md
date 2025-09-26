@@ -33,7 +33,7 @@
 | Supported Ops.         | `nn.Linear`, `nn.Conv2d`, `nn.ConvTranspose2d`, `nn.Embedding`, `nn.EmbeddingBag`,                                                  | Almost all ONNX ops,                                                                            |
 |                        | `nn.BatchNorm2d`, `nn.BatchNorm3d`, `nn.LeakyReLU`, `nn.AvgPool2d`, `nn.AdaptiveAvgPool2d`                                          | see [Full List](https://quark.docs.amd.com/latest/onnx/user_guide_supported_optype_datatype.html) |
 | Pre-Quant Optimization | SmoothQuant                                                                                                                         | QuaRot, SmoothQuant, CLE                                |
-| Quantization Algorithm | AWQ, GPTQ                                                                                                                           | AdaQuant, AdaRound, GPTQ, Bias Correction                                                                  |
+| Quantization Algorithm | AWQ, GPTQ, Qronos                                                                                                                   | AdaQuant, AdaRound, GPTQ, Bias Correction                                                                  |
 | Export Format          | ONNX, JSON-Safetensors, GGUF(Q4_1)                                                                                                  | N/A                                                                                       |
 | Operating  Systems     | Linux {ROCm, CUDA, CPU}, Windows {CPU}                                                                                              | Linux {ROCm, CUDA, CPU}, Windows {CUDA, CPU}                                                    |
 
@@ -45,7 +45,7 @@
 | LLM Post Training Quantization (PTQ)  | [Model Support](examples/torch/language_modeling/llm_ptq/example_quark_torch_llm_ptq.rst)         |
 | LLM Quantization Aware Training (QAT) | [Model Support](examples/torch/language_modeling/llm_qat/example_quark_torch_llm_qat.rst)         |
 | Vision Model Quantization             | [Model Support](examples/torch/vision/model_support.md)                                           |
-| Quark for ONNX                        | [Model Support](examples/onnx/model_support.md)
+| Quark for ONNX                        | [Model Support](examples/onnx/model_support.md)                                                   |
 
 ## Installation
 

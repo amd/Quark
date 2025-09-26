@@ -4,14 +4,11 @@
 #
 """Convert Custom QDQ to QDQ."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import argparse
+import os
+from typing import Any
 
 import onnx
-import os
-import argparse
-from typing import Any
 
 
 def convert_customqdq_to_qdq(model: onnx.ModelProto) -> Any:
@@ -20,10 +17,16 @@ def convert_customqdq_to_qdq(model: onnx.ModelProto) -> Any:
     :return: converted model
     """
     from onnxruntime.quantization.onnx_model import ONNXModel
+
     OpMapping = {"ExtendedQuantizeLinear": "QuantizeLinear", "ExtendedDequantizeLinear": "DequantizeLinear"}
     OpDomain = "com.microsoft"  # Q/DQ of this domain supports 16bit
-    OpQuantType = (onnx.TensorProto.INT8, onnx.TensorProto.UINT8, onnx.TensorProto.INT16, onnx.TensorProto.UINT16,
-                   onnx.TensorProto.INT32)
+    OpQuantType = (
+        onnx.TensorProto.INT8,
+        onnx.TensorProto.UINT8,
+        onnx.TensorProto.INT16,
+        onnx.TensorProto.UINT16,
+        onnx.TensorProto.INT32,
+    )
 
     onnx_model = ONNXModel(model)
 
@@ -36,8 +39,9 @@ def convert_customqdq_to_qdq(model: onnx.ModelProto) -> Any:
             node.op_type = OpMapping[node.op_type]
             node.domain = OpDomain
         else:
-            print(f"Skipped node {node.name} because its quant_type is"
-                  f" {zp_init.data_type}")  # type_to_name[zp_init.data_type]
+            print(
+                f"Skipped node {node.name} because its quant_type is {zp_init.data_type}"
+            )  # type_to_name[zp_init.data_type]
 
     return onnx_model.model
 
@@ -58,6 +62,7 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
 
     if has_customop:
         from quark.onnx.quant_utils import infer_custom_op_shape as infer_shape
+
         print("Infer tensor's shape to generate value info for custom ops")
         return infer_shape(model)
 
@@ -73,7 +78,7 @@ def run_main() -> None:
     FLAGS, uparsed = parser.parse_known_args()
 
     if not os.path.isfile(FLAGS.input_model):
-        print("Input model file '{}' does not exist!".format(FLAGS.input_model))
+        print(f"Input model file '{FLAGS.input_model}' does not exist!")
         print(
             "Usage: python -m quark.onnx.tools.convert_customqdq_to_qdq --input_model INPUT_MODEL_PATH --output_model OUTPUT_MODEL_PATH."
         )
@@ -83,9 +88,9 @@ def run_main() -> None:
     converted_model = convert_customqdq_to_qdq(model)
     converted_model = custom_ops_infer_shapes(converted_model)
     onnx.save(converted_model, FLAGS.output_model)
-    print('Conversion Finished!')
-    print('Converted model saved in: {}'.format(FLAGS.output_model))
+    print("Conversion Finished!")
+    print(f"Converted model saved in: {FLAGS.output_model}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_main()

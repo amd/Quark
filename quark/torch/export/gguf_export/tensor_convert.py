@@ -2,20 +2,21 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+from typing import Dict, List, Tuple, Union
+
 import numpy as np
 import torch
-from typing import Tuple, List, Dict, Union
-try:
+
+from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
+
+if is_gguf_available_and_version_0_6_0():
     from gguf import GGMLQuantizationType  # type: ignore
-except ImportError as e:
-    raise ImportError("please install gguf==0.6.0") from e
 
 
 def quantize_row_q4_1(inpt: torch.Tensor, scale: torch.Tensor, zero_point: torch.Tensor) -> torch.Tensor:
     block_size = 32
     assert inpt.size(-1) % block_size == 0
-    assert inpt.dtype == torch.float32 and scale.dtype == torch.float32 \
-        and zero_point.dtype == torch.float32
+    assert inpt.dtype == torch.float32 and scale.dtype == torch.float32 and zero_point.dtype == torch.float32
     origin_shape = inpt.shape
     inpt = inpt.reshape(-1, block_size)
     scale = scale.reshape(-1, 1)
@@ -26,8 +27,8 @@ def quantize_row_q4_1(inpt: torch.Tensor, scale: torch.Tensor, zero_point: torch
     scale_inverse = (1 / scale).masked_fill(scale == 0.0, 0)
 
     quant_inpt = torch.round((inpt - min_val) * scale_inverse).to(torch.uint8).clamp(0, 15)
-    quant_inpt_left_part = quant_inpt[:, :block_size // 2]
-    quant_inpt_right_part = quant_inpt[:, block_size // 2:]
+    quant_inpt_left_part = quant_inpt[:, : block_size // 2]
+    quant_inpt_right_part = quant_inpt[:, block_size // 2 :]
     data_part = quant_inpt_left_part + (quant_inpt_right_part << 4)
 
     scale = scale.to(torch.float16)
@@ -38,7 +39,7 @@ def quantize_row_q4_1(inpt: torch.Tensor, scale: torch.Tensor, zero_point: torch
     return torch.cat([scale_part, min_val_part, data_part], dim=-1).reshape(*origin_shape[:-1], -1)
 
 
-def dequantize_row_q4_1(quantized: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def dequantize_row_q4_1(quantized: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     block_size = 32
     assert quantized.size(-1) % (block_size // 2 + 4) == 0
 
@@ -67,14 +68,19 @@ def dequantize_row_q4_1(quantized: torch.Tensor) -> Tuple[torch.Tensor, torch.Te
 
     # Dequantize
     inpt = quant_inpt.to(torch.float32) * scale.to(torch.float32) + min_val.to(torch.float32)
-    return inpt.reshape(*origin_shape[:-1], -1), scale.reshape(*origin_shape[:-1],
-                                                               -1), zero_point.reshape(*origin_shape[:-1], -1)
+    return (
+        inpt.reshape(*origin_shape[:-1], -1),
+        scale.reshape(*origin_shape[:-1], -1),
+        zero_point.reshape(*origin_shape[:-1], -1),
+    )
 
 
-def convert_to_gguf(inpt: torch.Tensor,
-                    scale: torch.Tensor,
-                    zero_point: torch.Tensor,
-                    gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1) -> torch.Tensor:
+def convert_to_gguf(
+    inpt: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1,
+) -> torch.Tensor:
     inpt = inpt.to(torch.float32)
     scale = scale.to(torch.float32)
     zero_point = zero_point.to(torch.float32)
@@ -85,17 +91,18 @@ def convert_to_gguf(inpt: torch.Tensor,
 
 
 def convert_from_gguf(
-        inpt: torch.Tensor,
-        gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    inpt: torch.Tensor, gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if gguf_type == GGMLQuantizationType.Q4_1:
         return dequantize_row_q4_1(quantized=inpt)
     else:
         raise TypeError(f"gguf_type {gguf_type} is not supported yet")
 
 
-def build_quant_cfg(tensor_name: str,
-                    gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1) -> Dict[str, Union[str, int]]:
-    quant_cfg: Dict[str, Union[str, int]] = {}
+def build_quant_cfg(
+    tensor_name: str, gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1
+) -> dict[str, Union[str, int]]:
+    quant_cfg: dict[str, Union[str, int]] = {}
     if gguf_type == GGMLQuantizationType.Q4_1:
         quant_cfg["scale"] = tensor_name + "_scale"
         quant_cfg["zero_point"] = tensor_name + "_zero_point"
@@ -110,9 +117,12 @@ def build_quant_cfg(tensor_name: str,
         raise TypeError(f"gguf_type {gguf_type} is not supported yet")
 
 
-def gguf_shape(tensor_shape: List[int], gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1) -> List[int]:
+def gguf_shape(tensor_shape: list[int], gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1) -> list[int]:
     if gguf_type in [
-            GGMLQuantizationType.F32, GGMLQuantizationType.F16, GGMLQuantizationType.F64, GGMLQuantizationType.BF16
+        GGMLQuantizationType.F32,
+        GGMLQuantizationType.F16,
+        GGMLQuantizationType.F64,  # type: ignore[attr-defined]
+        GGMLQuantizationType.BF16,  # type: ignore[attr-defined]
     ]:
         return tensor_shape
     elif gguf_type == GGMLQuantizationType.Q4_1:

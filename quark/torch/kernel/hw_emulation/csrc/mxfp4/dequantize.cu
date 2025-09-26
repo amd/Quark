@@ -65,6 +65,9 @@ __global__ void dq_uint8_mxfp4_to_half_kernel(uint8_t* inp, scale_type* scales, 
 }
 
 void dq_uint8_mxfp4_to_half(torch::Tensor inp, torch::Tensor scales, torch::Tensor out, int group_size) {
+    at::DeviceGuard device_guard(inp.device());
+    TORCH_CHECK(inp.device() == scales.device(), "Expected inp and scales to be on the same device");
+    TORCH_CHECK(inp.device() == out.device(), "Expected inp and out to be on the same device");
     int numel = out.numel();
     int block_size;
 
@@ -106,6 +109,7 @@ void dq_uint8_mxfp4_to_half(torch::Tensor inp, torch::Tensor scales, torch::Tens
         }
     }
     else if (out.scalar_type() == at::ScalarType::BFloat16) {
+#if BFLOAT16_SUPPORTED
         if (scales.scalar_type() == at::ScalarType::BFloat16) {
             dq_uint8_mxfp4_to_half_kernel<__nv_bfloat16, __nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS><<<dimGrid, dimBlock, 0, stream>>>(
                 (uint8_t*) inp.data_ptr(),
@@ -123,6 +127,9 @@ void dq_uint8_mxfp4_to_half(torch::Tensor inp, torch::Tensor scales, torch::Tens
         else {
             TORCH_CHECK(false, "Wrong scale dtype in dq_uint8_mxfp4_to_half!");
         }
+#else
+        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
+#endif
     }
     else {
         TORCH_CHECK(false, "Wrong output dtype in dq_uint8_mxfp4_to_half!");

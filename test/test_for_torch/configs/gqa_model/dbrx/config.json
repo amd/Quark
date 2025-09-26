@@ -1,0 +1,36 @@
+{
+  "architectures": [
+    "DbrxForCausalLM"
+  ],
+  "attn_config": {
+    "clip_qkv": 4,
+    "kv_n_heads": 4,
+    "model_type": "",
+    "rope_theta": 50
+  },
+  "d_model": 12,
+  "emb_pdrop": 0.0,
+  "ffn_config": {
+    "ffn_hidden_size": 12,
+    "model_type": "",
+    "moe_jitter_eps": 0,
+    "moe_loss_weight": 0.05,
+    "moe_num_experts": 2,
+    "moe_top_k": 1,
+    "ffn_act_fn": {
+      "name": "silu"
+    }
+  },
+  "initializer_range": 0.02,
+  "max_seq_len": 32,
+  "model_type": "dbrx",
+  "n_heads": 12,
+  "n_layers": 1,
+  "output_router_logits": false,
+  "resid_pdrop": 0.0,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.40.0",
+  "use_cache": true,
+  "vocab_size": 12
+}

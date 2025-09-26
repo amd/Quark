@@ -7,6 +7,7 @@ import os
 
 from onnxruntime_genai.models.builder import create_model
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -27,6 +28,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+
 def main():
     args = parse_args()
 
@@ -39,6 +41,7 @@ def main():
     cache_dir = os.path.join(".", "cache_dir")
     # NOTE export to onnx model
     create_model(model_name, input_folder, output_folder, precision, execution_provider, cache_dir)
+
 
 if __name__ == "__main__":
     main()

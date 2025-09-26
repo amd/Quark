@@ -4,11 +4,11 @@
 #
 # type: ignore
 
+from enum import Enum
+
 import torch
 import triton
 import triton.language as tl
-
-from enum import Enum
 
 # Adopted and modified from
 # https://github.com/triton-lang/triton/blob/main/bench/triton_bench/numerics_details/mxfp.py
@@ -345,7 +345,7 @@ def axis_permute_order(ndim: int, axis: int, swizzle_axis: int | None = None) ->
             swizzle_axis = axis
         scale_permute_order[swizzle_axis], scale_permute_order[-2] = scale_permute_order[-2], scale_permute_order[swizzle_axis]
 
-    convert_order = [i for i, (a, b) in enumerate(zip(permute_order, scale_permute_order)) if a != b]
+    convert_order = [i for i, (a, b) in enumerate(zip(permute_order, scale_permute_order, strict=False)) if a != b]
     assert len(convert_order) == 0 or len(convert_order) == 2, "Exactly 0 or 1 swap should be required to transform permute_order to scale_permute_order."
     return permute_order, scale_permute_order, convert_order
 
@@ -613,7 +613,7 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
     padded_axis_shape = padded_src.size(-1)  # now divisible by 32
 
     # --- Compute per-group maximums for scale ---
-    # Set padded entries to -1 so they don’t affect the max.
+    # Set padded entries to -1 so they don't affect the max.
     abs_f = torch.abs(padded_src)
     abs_f = torch.where(valid_mask, abs_f, torch.tensor(-1.0, device=device, dtype=padded_src.dtype))
     # Reshape the last dimension into groups of 32.

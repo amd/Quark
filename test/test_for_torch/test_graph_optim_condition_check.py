@@ -7,50 +7,58 @@ import sys
 
 sys.path.append("..")
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
 from torch.jit import Final
 from torch.nn import functional as F
-from torch._export import capture_pre_autograd_graph
-# -------- init config -----
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
-from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-from quark.torch import ModelQuantizer
-from quark.torch.quantization.graph.processor.processor import prepare_quant_model
-from quark.shares.utils.testing_utils import torch_device
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                        qscheme=QSchemeType.per_tensor,
-                                        observer_cls=PerTensorMinMaxObserver,
-                                        symmetric=True,
-                                        scale_type=ScaleType.float,
-                                        round_method=RoundType.half_even,
-                                        is_dynamic=False)
-quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC,
-                                  output_tensors=INT8_PER_TENSOR_SPEC,
-                                  weight=INT8_PER_TENSOR_SPEC,
-                                  bias=INT8_PER_TENSOR_SPEC)
+from quark.shares.utils.testing_utils import torch_device
+from quark.torch import ModelQuantizer
+
+# -------- init config -----
+from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
+from quark.torch.quantization.graph.processor.processor import prepare_quant_model
+from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
+
+INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    dtype=Dtype.int8,
+    qscheme=QSchemeType.per_tensor,
+    observer_cls=PerTensorMinMaxObserver,
+    symmetric=True,
+    scale_type=ScaleType.float,
+    round_method=RoundType.half_even,
+    is_dynamic=False,
+)
+quant_config = QuantizationConfig(
+    input_tensors=INT8_PER_TENSOR_SPEC,
+    output_tensors=INT8_PER_TENSOR_SPEC,
+    weight=INT8_PER_TENSOR_SPEC,
+    bias=INT8_PER_TENSOR_SPEC,
+)
 quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 # ================== following aims to test conv's weight is not a pure attr node that save parameter
 class CondConv2d(nn.Module):
-    """ Conditionally Parameterized Convolution
-    """
-    __constants__ = ['in_channels', 'out_channels', 'dynamic_padding']
+    """Conditionally Parameterized Convolution"""
 
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size=3,
-                 stride=1,
-                 padding=0,
-                 dilation=1,
-                 groups=1,
-                 bias=False,
-                 num_experts=4):
+    __constants__ = ["in_channels", "out_channels", "dynamic_padding"]
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        stride=1,
+        padding=0,
+        dilation=1,
+        groups=1,
+        bias=False,
+        num_experts=4,
+    ):
         super(CondConv2d, self).__init__()
 
         self.in_channels = in_channels
@@ -70,10 +78,10 @@ class CondConv2d(nn.Module):
         self.weight = torch.nn.Parameter(torch.Tensor(self.num_experts, weight_num_param))
 
         if bias:
-            self.bias_shape = (self.out_channels, )
+            self.bias_shape = (self.out_channels,)
             self.bias = torch.nn.Parameter(torch.Tensor(self.num_experts, self.out_channels))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
     def forward(self, x, routing_weights):
         B, C, H, W = x.shape
@@ -88,23 +96,19 @@ class CondConv2d(nn.Module):
         # reshape instead of view to work with channels_last input
         x = x.reshape(1, B * C, H, W)
 
-        out = F.conv2d(x,
-                       weight,
-                       bias,
-                       stride=self.stride,
-                       padding=self.padding,
-                       dilation=self.dilation,
-                       groups=self.groups * B)
+        out = F.conv2d(
+            x, weight, bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups * B
+        )
         out = out.permute([1, 0, 2, 3]).view(B, self.out_channels, out.shape[-2], out.shape[-1])
         return out
 
 
 class TinyModel(nn.Module):
-    '''
+    """
     This model is particularly designed to test graph optimization function:
     If conv's weight is not a attr Node that save the Parameter,
     skip replace torch.ops.aten.conv2d -> QuantConv2d
-    '''
+    """
 
     def __init__(self):
         super().__init__()
@@ -131,26 +135,28 @@ class TinyModel(nn.Module):
 
 # NOTE: in this model conv2d_1's weight is not a ordinary node that save a single Parameters
 # in this case we do not perform torch.ops.aten.conv2d -> QuantConv2d
-'''
+"""
 sigmoid = torch.ops.aten.sigmoid.default(linear)
 _param_constant3 = self._param_constant3
 matmul = torch.ops.aten.matmul.default(sigmoid, _param_constant3)
 view = torch.ops.aten.view.default(matmul, [64, 32, 3, 3])
 reshape = torch.ops.aten.reshape.default(relu_, [1, 32, 54, 54])
 conv2d_1 = torch.ops.aten.conv2d.default(reshape, view)
-'''
+"""
 
 
 def test_graph_conv_weight_replace_condition():
     torch.cuda.empty_cache()
     float_model = TinyModel().to(torch_device).eval()
-    example_inputs = (torch.ones(1, 3, 14, 14).to(torch_device), )
+    example_inputs = (torch.ones(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
+    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+
     prepared_quant_model = prepare_quant_model(graph_model, quant_config)
     print("Finish test: test_graph_conv_weight_replace_condition")
     torch.cuda.empty_cache()
+
 
 # ======== following test when some operation is in CPU, however some operation may in GPU.
 # If not in same device, we will not (1) insert quantizer and (2) convert scalar to attr
@@ -191,8 +197,8 @@ def get_decomposed_rel_pos_bias(
     q: torch.Tensor,
     rel_pos_h: torch.Tensor,
     rel_pos_w: torch.Tensor,
-    q_size: Tuple[int, int],
-    k_size: Tuple[int, int],
+    q_size: tuple[int, int],
+    k_size: tuple[int, int],
 ) -> torch.Tensor:
     """
     Calculate decomposed Relative Positional Embeddings from :paper:`mvitv2`.
@@ -241,15 +247,15 @@ class Attention(nn.Module):
         num_heads=8,
         qkv_bias=True,
         qk_norm=False,
-        attn_drop=0.,
-        proj_drop=0.,
+        attn_drop=0.0,
+        proj_drop=0.0,
         norm_layer=nn.LayerNorm,
         use_rel_pos: bool = False,
-        input_size: Optional[Tuple[int, int]] = None,
-        rope: Optional[nn.Module] = None,
+        input_size: tuple[int, int] | None = None,
+        rope: nn.Module | None = None,
     ):
         super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
@@ -264,7 +270,7 @@ class Attention(nn.Module):
         self.use_rel_pos = use_rel_pos
         if self.use_rel_pos:
             assert rope is None
-            assert (input_size is not None), "Input size must be provided if using relative positional encoding."
+            assert input_size is not None, "Input size must be provided if using relative positional encoding."
             # initialize relative positional embeddings
             self.rel_pos_h = nn.Parameter(torch.zeros(2 * input_size[0] - 1, self.head_dim))
             self.rel_pos_w = nn.Parameter(torch.zeros(2 * input_size[1] - 1, self.head_dim))
@@ -295,7 +301,7 @@ class Attention(nn.Module):
                 k,
                 v,
                 attn_mask=attn_bias,
-                dropout_p=self.attn_drop.p if self.training else 0.,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
             )
         else:
             q = q * self.scale
@@ -313,7 +319,7 @@ class Attention(nn.Module):
 
 
 class TinyAttentionModel(nn.Module):
-    '''
+    """
     This model is particularly designed to test graph optimization function,
     If some operation is forced to run in the CPU,
     perform the device check to determine whether to convert scalars to tensors.
@@ -323,7 +329,7 @@ class TinyAttentionModel(nn.Module):
             then: 2 will not convert to torch.Tensor([2])
         2. if torch.ops.aten.mul.Tensor(tensor1, 2.0) # tensor1 is in GPU
             then: 2 will not convert to torch.Tensor([2])
-    '''
+    """
 
     def __init__(self):
         super().__init__()
@@ -353,9 +359,9 @@ class TinyAttentionModel(nn.Module):
         x = torch.flatten(x, 1)
         x = self.routing_fn(x)
         # NOTE test convert the scalar to attrs
-        x = x + int(1)
-        x = x * int(2)
-        x = x / float(2.0)
+        x = x + 1
+        x = x * 2
+        x = x / 2.0
         x = self.linear(x)
         return x
 
@@ -363,11 +369,13 @@ class TinyAttentionModel(nn.Module):
 def test_graph_scalar_convert_insert_quantizer_condition():
     torch.cuda.empty_cache()
     float_model = TinyAttentionModel().to(torch_device).eval()
-    example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device), )
+    example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
+    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
-    quantized_model = quantizer.quantize_model(graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)])
+    quantized_model = quantizer.quantize_model(
+        graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)]
+    )
     quantized_model(example_inputs[0])
     print("Finish test: test_graph_scalar_convert_insert_quantizer_condition")
     torch.cuda.empty_cache()
@@ -375,11 +383,11 @@ def test_graph_scalar_convert_insert_quantizer_condition():
 
 # ================ Test if conv + bn, but another layer use conv's output, then skip fold
 class TinyConvModel(nn.Module):
-    '''
+    """
     This model is particularly designed to test graph optimization function,
     if conv -> bn and conv -> another_layer
     then will not perform fold conv + bn.
-    '''
+    """
 
     def __init__(self):
         super().__init__()
@@ -409,12 +417,14 @@ class TinyConvModel(nn.Module):
 def test_graph_skip_fold_conv_bn_condition():
     torch.cuda.empty_cache()
     float_model = TinyConvModel().to(torch_device).eval()
-    example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device), )
+    example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
+    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
-    quantized_model = quantizer.quantize_model(graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)])
+    quantized_model = quantizer.quantize_model(
+        graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)]
+    )
     quantized_model(example_inputs[0])
     print("Finish test: test_graph_skip_fold_conv_bn_condition")
     torch.cuda.empty_cache()
@@ -422,11 +432,11 @@ def test_graph_skip_fold_conv_bn_condition():
 
 # =============== Test reshape param change ============
 class TinyReshapeParamChangeModel(nn.Module):
-    '''
+    """
     This model is particularly designed to test graph optimization function,
     If reshape params are all set, we can let the the first reshape param to -1.
     e.g reshape(tensor, [10, 64, 64]) to reshape(tensor, [-1, 64, 64])
-    '''
+    """
 
     def __init__(self):
         super().__init__()
@@ -448,12 +458,14 @@ class TinyReshapeParamChangeModel(nn.Module):
 def test_graph_reshape_param_change():
     torch.cuda.empty_cache()
     float_model = TinyReshapeParamChangeModel().to(torch_device).eval()
-    example_inputs = (torch.rand(4, 3, 112, 112).to(torch_device), )
+    example_inputs = (torch.rand(4, 3, 112, 112).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = capture_pre_autograd_graph(float_model, example_inputs)
+    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
-    quantized_model = quantizer.quantize_model(graph_model, [torch.rand(4, 3, 112, 112).to(torch_device) for _ in range(3)])
+    quantized_model = quantizer.quantize_model(
+        graph_model, [torch.rand(4, 3, 112, 112).to(torch_device) for _ in range(3)]
+    )
     quantized_model(example_inputs[0])
     print("Finish test: test_graph_reshape_param_change")
     torch.cuda.empty_cache()

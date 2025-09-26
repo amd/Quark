@@ -2,27 +2,28 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import copy
 import unittest
-import torch
-import torch.nn as nn
+from pathlib import Path
+
 import numpy as np
 import onnxruntime
-import copy
+import torch
+import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
+
 from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.custom_config import S16S8_ASWS_CONFIG, XINT8_CONFIG
 from quark.onnx.quantization.config.config import Config
-from pathlib import Path
+from quark.onnx.quantization.config.custom_config import S16S8_ASWS_CONFIG, XINT8_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array([3.0]).astype(np.float32)
 
 
 class DataReader(CalibrationDataReader):
-
     def __init__(self, input_tensor):
         self.data = [input_tensor]
-        self.input_name = 'input'
+        self.input_name = "input"
         self.index = 0
 
     def get_next(self):
@@ -37,7 +38,6 @@ class DataReader(CalibrationDataReader):
         self.index = 0
 
 
-
 class SimpleMulModel(nn.Module):
     def __init__(self):
         super(SimpleMulModel, self).__init__()
@@ -46,29 +46,27 @@ class SimpleMulModel(nn.Module):
     def forward(self, x):
         return x * self.weight
 
+
 def prepare_model(output_dir):
     torch.manual_seed(42)
     model = SimpleMulModel()
 
     dummy_input = torch.randn(1)
 
-    onnx_model_path = Path(output_dir, 'simple_mul_model.onnx').as_posix()
+    onnx_model_path = Path(output_dir, "simple_mul_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "simple_mul_model_quantized.onnx").as_posix()
 
-    torch.onnx.export(model,
-                      dummy_input,
-                      onnx_model_path,
-                      input_names=['input'],
-                      output_names=['output'],
-                      opset_version=17)
+    torch.onnx.export(
+        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+    )
 
-    print(f'Model has been saved to {onnx_model_path}')
+    print(f"Model has been saved to {onnx_model_path}")
     return onnx_model_path, onnx_quantized_model_path
 
 
 def prepare_config(tmp_config):
     config_copy = copy.deepcopy(tmp_config)
-    config_copy.extra_options['AlignEltwiseQuantType'] = True
+    config_copy.extra_options["AlignEltwiseQuantType"] = True
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
@@ -85,7 +83,7 @@ def prepare_quantizer(quant_config):
 
 def quantize_static(quantizer, input_model_path, output_model_path, data_reader):
     quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-    print('Quantized the ONNX model and saved it at:', output_model_path)
+    print("Quantized the ONNX model and saved it at:", output_model_path)
     return output_model_path
 
 
@@ -95,7 +93,7 @@ def infer_quantized_model(quantized_model_path):
     output_name = sess.get_outputs()[0].name
     input_data = input_tensor
     output = sess.run([output_name], {input_name: input_data})
-    print(f'Model output: {output}')
+    print(f"Model output: {output}")
     return output
 
 
@@ -123,5 +121,5 @@ class TestTensorQuantize(unittest.TestCase):
         self.assertEqual(output, golden)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

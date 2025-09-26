@@ -1,0 +1,11 @@
+{
+  "name": "gptq",
+  "inside_layer_modules": [
+    "up_proj",
+    "gate_proj",
+    "down_proj"
+  ],
+  "model_decoder_layers": "language_model.model.layers",
+  "block_size": 128,
+  "damp_percent": 0.01
+}

@@ -3,22 +3,24 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Optional, TypeVar, Tuple
-import torch
 from functools import reduce
+from typing import Optional, Tuple, TypeVar
+
+import torch
 from torch import Tensor
+
 from quark.torch.quantization.config.config import QuantizationSpec
-from quark.torch.quantization.config.type import QSchemeType
-from quark.torch.quantization.config.type import Dtype
+from quark.torch.quantization.config.type import Dtype, QSchemeType
+from quark.torch.quantization.constants import PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.utils import get_dtype_params
 
-T = TypeVar('T', bound='PackMethod')
+T = TypeVar("T", bound="PackMethod")
 
 
 def _pack(x: Tensor, n_bits: int) -> Tensor:
     return reduce(
         torch.bitwise_or,
-        [x[..., i::(8 // n_bits)] << (8 - (i + 1) * n_bits) for i in range(8 // n_bits)],
+        [x[..., i :: (8 // n_bits)] << (8 - (i + 1) * n_bits) for i in range(8 // n_bits)],
     )
 
 
@@ -30,8 +32,7 @@ def _unpack(x: Tensor, n_bits: int) -> Tensor:
 
 
 class PackMethod:
-
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         self.qscheme = qscheme
         self.dtype = dtype
         self.qparams_per_item = 1
@@ -39,39 +40,40 @@ class PackMethod:
     def pack(self, to_pack: torch.Tensor, reorder: bool) -> torch.Tensor:
         return to_pack
 
-    def unpack(self,
-               to_unpack: torch.Tensor,
-               reorder: bool,
-               origin_packed_axis_size: Optional[int] = None) -> torch.Tensor:
+    def unpack(
+        self, to_unpack: torch.Tensor, reorder: bool, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
         return to_unpack
 
     def transpose(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor
 
-    def _infer_scale_zero_point_shape(self,
-                                      unpacked_shape: Tuple[int, ...],
-                                      quantization_spec: QuantizationSpec,
-                                      legacy: bool = False,
-                                      custom_mode: str = "quark") -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    def _infer_scale_zero_point_shape(
+        self,
+        unpacked_shape: tuple[int, ...],
+        quantization_spec: QuantizationSpec,
+        legacy: bool = False,
+        custom_mode: str = "quark",
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         shape_list = list(unpacked_shape)
         if quantization_spec.qscheme == QSchemeType.per_tensor:
-            zero_point_shape: Tuple[int, ...] = ()
+            zero_point_shape: tuple[int, ...] = ()
             # TODO: del here safely
             # For per-tensor integer models, there used to be a bug in the export in quark<1.0 where serialized scale for per-tensor quantization would be of shape `torch.Size([1])` instead of the expected `torch.Size([])`.
             # if legacy and quantization_spec.dtype in INT_QUANT_DTYPES:
             #     scale_shape: Tuple[int, ...] = (1, )
             # else:
             #     scale_shape = ()
-            scale_shape: Tuple[int, ...] = ()
+            scale_shape: tuple[int, ...] = ()
         elif quantization_spec.qscheme == QSchemeType.per_channel:
             axis = quantization_spec.ch_axis
             assert axis is not None, "ch_axis should be specified for per_channel quantization"
-            scale_shape = (shape_list[axis], )
+            scale_shape = (shape_list[axis],)
             if shape_list[axis] % self.qparams_per_item != 0:
                 raise ValueError(
                     f"shape_list[axis]={shape_list[axis]} is not divisible by the packing size qparams_per_item={self.qparams_per_item}. Please open an issue."
                 )
-            zero_point_shape = (shape_list[axis] // self.qparams_per_item, )
+            zero_point_shape = (shape_list[axis] // self.qparams_per_item,)
         elif quantization_spec.qscheme == QSchemeType.per_group:
             if quantization_spec.group_size is None:
                 raise ValueError(
@@ -79,14 +81,16 @@ class PackMethod:
                 )
             if len(shape_list) != 2:
                 raise ValueError(
-                    "Per-group quantization is only supported for 2D tensors. Got a tensor with shape {shape_list}.")
+                    "Per-group quantization is only supported for 2D tensors. Got a tensor with shape {shape_list}."
+                )
             group_size = quantization_spec.group_size
             if quantization_spec.ch_axis in [1, -1]:
-                if not legacy and quantization_spec.dtype in [
-                        Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8, Dtype.int2
-                ]:
-                    scale_shape = (shape_list[-1] // group_size, shape_list[0])
-                elif legacy and custom_mode == "awq":
+                if (
+                    not legacy
+                    and quantization_spec.dtype in PER_GROUP_INT_TRANSPOSE_DTYPES
+                    or legacy
+                    and custom_mode == "awq"
+                ):
                     scale_shape = (shape_list[-1] // group_size, shape_list[0])
                 else:  # pragma: no cover
                     # PR #1070 added a transpose for the scale for uint4/int4 data types, whenever using per-group quantization.
@@ -100,38 +104,37 @@ class PackMethod:
 
         return scale_shape, zero_point_shape
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         return unpacked_shape
 
-    def infer_packed_shape(self,
-                           unpacked_shape: Tuple[int, ...],
-                           quantization_spec: QuantizationSpec,
-                           legacy: bool = False,
-                           custom_mode: str = "quark") -> Tuple[Tuple[int, ...], Tuple[int, ...], Tuple[int, ...]]:
+    def infer_packed_shape(
+        self,
+        unpacked_shape: tuple[int, ...],
+        quantization_spec: QuantizationSpec,
+        legacy: bool = False,
+        custom_mode: str = "quark",
+    ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
         packed_tensor_shape = self._infer_tensor_shape(unpacked_shape=unpacked_shape)
 
-        scale_shape, zero_point_shape = self._infer_scale_zero_point_shape(unpacked_shape=unpacked_shape,
-                                                                           quantization_spec=quantization_spec,
-                                                                           legacy=legacy,
-                                                                           custom_mode=custom_mode)
+        scale_shape, zero_point_shape = self._infer_scale_zero_point_shape(
+            unpacked_shape=unpacked_shape, quantization_spec=quantization_spec, legacy=legacy, custom_mode=custom_mode
+        )
 
         return packed_tensor_shape, scale_shape, zero_point_shape
 
 
 # TODO：Implement the pack func @hongwei
 class Pack_2_bits(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         super().__init__(qscheme, dtype)
 
     def pack(self, to_pack: torch.Tensor, reorder: bool) -> torch.Tensor:
         to_pack = self.transpose(to_pack)  # per_group quantization transposes the weight.
         return to_pack
 
-    def unpack(self,
-               to_unpack: torch.Tensor,
-               reorder: bool,
-               origin_packed_axis_size: Optional[int] = None) -> torch.Tensor:
+    def unpack(
+        self, to_unpack: torch.Tensor, reorder: bool, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
         to_unpack = self.transpose(to_unpack)
         return to_unpack
 
@@ -142,7 +145,7 @@ class Pack_2_bits(PackMethod):
             tensor = tensor.t().contiguous()
         return tensor
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         out_features, in_features = unpacked_shape
 
         if self.qscheme == "per_group":
@@ -153,9 +156,96 @@ class Pack_2_bits(PackMethod):
         return shape
 
 
-class Pack_4_bits(PackMethod):
+class Pack_3_bits(PackMethod):
+    """
+    Packs 8 INT3 values (3 bits each) into 3 bytes (24 bits):
 
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    - Byte 0: bits[7:0] = [v2[1:0], v1, v0]
+    - Byte 1: bits[15:8] = [v5[0], v4, v3, v2[2]]
+    - Byte 2: bits[23:16] = [v7, v6, v5[2:1]],
+
+    where vi_[j:k] represents bits j through k of value i.
+    """
+
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
+        super().__init__(qscheme, dtype)
+        self.qparams_per_item = 8
+
+    def pack(self, tensor: torch.Tensor, reorder: bool = True) -> torch.Tensor:
+        if tensor.numel() % 8 != 0:
+            raise NotImplementedError(
+                f"Currently the INT3 packing logic only supports input sizes that are multiples of 8. Got {tensor.numel()}"
+            )
+
+        input_shape = list(tensor.shape)
+        tensor = tensor.reshape(-1, 8)
+
+        # Mask to 3 bits for int3
+        if self.dtype == "int3":
+            tensor = tensor & 0b00000111
+
+        # convert for left shift operations
+        tensor = tensor.to(torch.uint32)
+        tensor = tensor.view(torch.int32)
+
+        # pack 8 values into 24 bits -> [v7, ..., v0]
+        packed_24bit = (
+            (tensor[..., 0] << 0)
+            | (tensor[..., 1] << 3)
+            | (tensor[..., 2] << 6)
+            | (tensor[..., 3] << 9)
+            | (tensor[..., 4] << 12)
+            | (tensor[..., 5] << 15)
+            | (tensor[..., 6] << 18)
+            | (tensor[..., 7] << 21)
+        )
+
+        byte0 = packed_24bit & 0b11111111  # byte0 = [v2[1:0], v1, v0]
+        byte1 = (packed_24bit >> 8) & 0b11111111  # byte1 = [v5[0], v4, v3, v2[2]]
+        byte2 = (packed_24bit >> 16) & 0b11111111  # byte2 = [v7, v6, v5[2:1]]
+
+        # stack bytes and convert to uint8
+        tensor = torch.stack([byte0, byte1, byte2], dim=-1).to(torch.uint8)
+
+        # calculate output shape: 8 values -> 3 bytes
+        input_shape[-1] = input_shape[-1] // 8 * 3
+        return tensor.reshape(input_shape)
+
+    def unpack(
+        self, tensor: torch.Tensor, reorder: bool = True, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
+        input_shape = list(tensor.shape)
+
+        # reshape to groups of 3 bytes
+        tensor = tensor.reshape(-1, 3)
+
+        # reconstruct packed 24 bit tensor
+        byte0 = tensor[..., 0].to(torch.int32)
+        byte1 = tensor[..., 1].to(torch.int32)
+        byte2 = tensor[..., 2].to(torch.int32)
+        packed_24bit = byte0 | (byte1 << 8) | (byte2 << 16)
+
+        # extract the 8 values using bit shifts
+        unpacked = torch.stack([(packed_24bit >> (i * 3)) & 0b00000111 for i in range(8)], dim=-1).to(torch.int8)
+
+        if self.dtype == "int3":
+            mask = (unpacked & 0b00000100).bool()
+            unpacked = torch.where(mask, unpacked | 0b11111000, unpacked)
+
+        # output shape: 3 bytes -> 8 values
+        input_shape[-1] = input_shape[-1] * 8 // 3
+
+        return unpacked.reshape(input_shape)
+
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
+        shape_list = list(unpacked_shape)
+        # 8 values -> 3 bytes
+        shape_list[-1] = shape_list[-1] // 8 * 3
+        return tuple(shape_list)
+
+
+class Pack_4_bits(PackMethod):
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         super().__init__(qscheme, dtype)
         self.qparams_per_item = 8
 
@@ -194,10 +284,9 @@ class Pack_4_bits(PackMethod):
 
         return packed
 
-    def unpack(self,
-               to_unpack: torch.Tensor,
-               reorder: bool = True,
-               origin_packed_axis_size: Optional[int] = None) -> torch.Tensor:
+    def unpack(
+        self, to_unpack: torch.Tensor, reorder: bool = True, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
         if to_unpack.ndim > 2:
             raise ValueError("Unpack: Only supports tensors with dimensions not greater than 2.")
 
@@ -246,7 +335,7 @@ class Pack_4_bits(PackMethod):
             tensor = tensor.t().contiguous()
         return tensor
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         shape_list = list(unpacked_shape)
         if self.qscheme == "per_group":
             # reverse the first dimennsion number to the last dimension number
@@ -256,8 +345,7 @@ class Pack_4_bits(PackMethod):
 
 
 class Pack_8_bits(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         super().__init__(qscheme, dtype)
 
     def pack(self, to_pack: torch.Tensor, reorder: bool) -> torch.Tensor:
@@ -268,10 +356,9 @@ class Pack_8_bits(PackMethod):
         else:
             return to_pack.to(torch.int8).contiguous()
 
-    def unpack(self,
-               to_unpack: torch.Tensor,
-               reorder: bool,
-               origin_packed_axis_size: Optional[int] = None) -> torch.Tensor:
+    def unpack(
+        self, to_unpack: torch.Tensor, reorder: bool, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
         to_unpack = self.transpose(to_unpack)
         return to_unpack.to(torch.int32).contiguous()
 
@@ -282,7 +369,7 @@ class Pack_8_bits(PackMethod):
             tensor = tensor.t().contiguous()
         return tensor
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         out_features, in_features = unpacked_shape
 
         if self.qscheme == "per_group":
@@ -294,8 +381,7 @@ class Pack_8_bits(PackMethod):
 
 
 class Pack_mxfp4(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         super().__init__(qscheme, dtype)
 
     def pack(self, tensor: torch.Tensor, reorder: bool, axis: int = -1) -> torch.Tensor:
@@ -305,7 +391,7 @@ class Pack_mxfp4(PackMethod):
 
         tensor = tensor.reshape(-1, 33)
         scale_part = torch.log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
-        element_part = (tensor[:, 1:] / (2.0**(127 - 1))).view(torch.int32)
+        element_part = (tensor[:, 1:] / (2.0 ** (127 - 1))).view(torch.int32)
         element_part = ((element_part >> 22) & 0x07) + ((element_part >> 28) & 0x08)
         element_part = element_part.to(torch.uint8)
 
@@ -319,11 +405,9 @@ class Pack_mxfp4(PackMethod):
         input_shape[-1] = input_shape[-1] // 33 * 17
         return ret.reshape(input_shape).transpose(axis, -1)
 
-    def unpack(self,
-               tensor: torch.Tensor,
-               reorder: bool,
-               origin_packed_axis_size: Optional[int] = None,
-               axis: int = -1) -> torch.Tensor:
+    def unpack(
+        self, tensor: torch.Tensor, reorder: bool, origin_packed_axis_size: int | None = None, axis: int = -1
+    ) -> torch.Tensor:
         input_shape = list(tensor.shape)
         input_shape[axis], input_shape[-1] = input_shape[-1], input_shape[axis]
         tensor = tensor.transpose(axis, -1)
@@ -332,10 +416,9 @@ class Pack_mxfp4(PackMethod):
         element_part = tensor[:, 1:]
 
         # Unpack the 4-bit values from each byte
-        unpacked = torch.zeros(element_part.shape[0],
-                               element_part.shape[1] * 2,
-                               dtype=torch.uint8,
-                               device=tensor.device)
+        unpacked = torch.zeros(
+            element_part.shape[0], element_part.shape[1] * 2, dtype=torch.uint8, device=tensor.device
+        )
         # using little endian to unpack the element_part,
         # for example, there is a torch.tensor([0x21, 0x43])
         # the unpacked tensor result should be torch.tensor([0x1, 0x2, 0x3, 0x4])
@@ -345,7 +428,7 @@ class Pack_mxfp4(PackMethod):
         # Convert back to int32 and restore the original scaling
         unpacked = unpacked.to(torch.int32)
         unpacked = ((unpacked & 0x07) << 22) | ((unpacked & 0x08) << 28)
-        unpacked = unpacked.view(torch.float32) * (2.0**(127 - 1))
+        unpacked = unpacked.view(torch.float32) * (2.0 ** (127 - 1))
 
         # Concatenate scale and element parts
         ret = torch.cat([2**scale_part, unpacked.reshape(scale_part.shape[0], -1)], dim=-1)
@@ -363,8 +446,7 @@ class Pack_mxfp4(PackMethod):
 
 
 class Pack_mxfp6(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str, e_bits: int, m_bits: int) -> None:
+    def __init__(self, qscheme: str | None, dtype: str, e_bits: int, m_bits: int) -> None:
         super().__init__(qscheme, dtype)
         self.e_bits = e_bits
         self.m_bits = m_bits
@@ -377,9 +459,9 @@ class Pack_mxfp6(PackMethod):
         tensor = tensor.reshape(-1, 33)
         scale_part = torch.log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
         fp6_ebias = (1 << (self.e_bits - 1)) - 1
-        element_part = (tensor[:, 1:] / (2.0**(127 - fp6_ebias))).view(torch.int32)
+        element_part = (tensor[:, 1:] / (2.0 ** (127 - fp6_ebias))).view(torch.int32)
         fp6_mbias = 23 - self.m_bits
-        element_part = ((element_part >> fp6_mbias) & 0x1f) + ((element_part >> 26) & 0x20)
+        element_part = ((element_part >> fp6_mbias) & 0x1F) + ((element_part >> 26) & 0x20)
         element_part = element_part.to(torch.uint8)
 
         element_part = element_part.reshape(-1, 8, 4)
@@ -398,7 +480,7 @@ class Pack_mxfp6(PackMethod):
         self,
         tensor: torch.Tensor,
         reorder: bool,
-        origin_packed_axis_size: Optional[int] = None,
+        origin_packed_axis_size: int | None = None,
         axis: int = -1,
     ) -> torch.Tensor:
         input_shape = list(tensor.shape)
@@ -423,8 +505,8 @@ class Pack_mxfp6(PackMethod):
         fp6_ebias = (1 << (self.e_bits - 1)) - 1
         fp6_mbias = 23 - self.m_bits
         element_part = element_part.to(torch.int32)
-        element_part = ((element_part & 0x1f) << fp6_mbias) | ((element_part & 0x20) << 26)
-        element_part = element_part.view(torch.float32) * (2.0**(127 - fp6_ebias))
+        element_part = ((element_part & 0x1F) << fp6_mbias) | ((element_part & 0x20) << 26)
+        element_part = element_part.view(torch.float32) * (2.0 ** (127 - fp6_ebias))
 
         # Apply scale and reshape
         ret = torch.cat([2**scale_part, element_part.reshape(scale_part.shape[0], -1)], dim=-1)
@@ -433,14 +515,13 @@ class Pack_mxfp6(PackMethod):
 
 
 class Pack_fp4(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str) -> None:
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
         super().__init__(qscheme, dtype)
         self.qparams_per_item = 2
 
     def pack(self, tensor: torch.Tensor, reorder: bool) -> torch.Tensor:
         input_shape = list(tensor.shape)
-        tensor = (tensor / (2.0**(127 - 1))).view(torch.int32)
+        tensor = (tensor / (2.0 ** (127 - 1))).view(torch.int32)
         tensor = ((tensor >> 22) & 0x07) + ((tensor >> 28) & 0x08)
         tensor = tensor.to(torch.uint8)
 
@@ -451,10 +532,7 @@ class Pack_fp4(PackMethod):
         tensor = (tensor[..., 1] << 4) + tensor[..., 0]
         return tensor
 
-    def unpack(self,
-               tensor: torch.Tensor,
-               reorder: bool,
-               origin_packed_axis_size: Optional[int] = None) -> torch.Tensor:
+    def unpack(self, tensor: torch.Tensor, reorder: bool, origin_packed_axis_size: int | None = None) -> torch.Tensor:
         # Unpack the 4-bit values from each byte
         original_shape = tensor.shape[:-1]
 
@@ -469,22 +547,21 @@ class Pack_fp4(PackMethod):
         # Convert back to int32 and restore the original scaling
         unpacked = unpacked.to(torch.int32)
         unpacked = ((unpacked & 0x07) << 22) | ((unpacked & 0x08) << 28)
-        unpacked = unpacked.view(torch.float32) * (2.0**(127 - 1))
+        unpacked = unpacked.view(torch.float32) * (2.0 ** (127 - 1))
 
         # Restore the original (-2, -3, ...) dimensions (if any)
         unpacked = unpacked.reshape(*original_shape, unpacked.shape[-1])
 
         return unpacked
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         shape_list = list(unpacked_shape)
         shape_list[-1] = shape_list[-1] // self.qparams_per_item
         return tuple(shape_list)
 
 
 class Pack_fp6(PackMethod):
-
-    def __init__(self, qscheme: Optional[str], dtype: str, e_bits: int, m_bits: int) -> None:
+    def __init__(self, qscheme: str | None, dtype: str, e_bits: int, m_bits: int) -> None:
         super().__init__(qscheme, dtype)
         self.e_bits = e_bits
         self.m_bits = m_bits
@@ -492,18 +569,49 @@ class Pack_fp6(PackMethod):
     def pack(self, tensor: torch.Tensor, reorder: bool) -> torch.Tensor:
         input_shape = list(tensor.shape)
         fp6_ebias = (1 << (self.e_bits - 1)) - 1
-        tensor = (tensor / (2.0**(127 - fp6_ebias))).view(torch.int32)
+        tensor = (tensor / (2.0 ** (127 - fp6_ebias))).view(torch.int32)
         fp6_mbias = 23 - self.m_bits
-        tensor = ((tensor >> fp6_mbias) & 0x1f) + ((tensor >> 26) & 0x20)
+        tensor = ((tensor >> fp6_mbias) & 0x1F) + ((tensor >> 26) & 0x20)
         tensor = tensor.to(torch.uint8)
 
         tensor = tensor.reshape(-1, 8, 4)
-        tensor_2bit = (tensor >> 4) & 0b11
-        tensor_2bit = _pack(tensor_2bit, 2)
 
-        tensor_4bit = tensor & 0b1111
-        tensor_4bit = _pack(tensor_4bit, 4)
-        tensor = torch.cat([tensor_2bit, tensor_4bit], dim=-1).reshape(-1, 24)
+        tensor = tensor.to(torch.uint32)
+        tensor = tensor.view(torch.int32)
+
+        combined = (tensor[..., 3] << 18) | (tensor[..., 2] << 12) | (tensor[..., 1] << 6) | tensor[..., 0]
+        combined = combined.unsqueeze(-1)
+
+        byte0 = (combined >> 16) & 0xFF
+        byte1 = (combined >> 8) & 0xFF
+        byte2 = combined & 0xFF
+
+        # From the original fp6 values [v0, v1, v2, v3], we get:
+        # byte0:
+        # |____________'____|
+        #     v3         v2
+        #     6b         2b
+        #
+        # byte1:
+        # |________'________|
+        #    v2       v1
+        #    4b       4b
+        #
+        # byte2:
+        # |_____'___________|
+        #    v1       v0
+        #    2b       6b
+
+        tensor = torch.cat([byte2, byte1, byte0], dim=-1).to(torch.uint8)
+
+        # And eventually get the packed `tensor` on 3 bytes:
+        #
+        # |_____'____________|_________'_________||___________'____|
+        #   v1      v0           v2        v1         v3        v2
+        #   2b      6b           4b        4b         6b        2b
+        #
+        # This layout is expected by the mfma_scale_f32_16x16x128_f8f6f4 instruction.
+
         input_shape[-1] = input_shape[-1] // 4 * 3
         return tensor.reshape(input_shape)
 
@@ -511,57 +619,76 @@ class Pack_fp6(PackMethod):
         self,
         tensor: torch.Tensor,
         reorder: bool,
-        origin_packed_axis_size: Optional[int] = None,
+        origin_packed_axis_size: int | None = None,
     ) -> torch.Tensor:
         input_shape = list(tensor.shape)
-        tensor = tensor.reshape(-1, 8, 3)
+        tensor = tensor.reshape(*tensor.shape[:-1], -1, 3)
 
-        # Unpack 2-bit and 4-bit portions
-        tensor_2bit = tensor[:, :, :1].reshape(-1, 8)
-        tensor_4bit = tensor[:, :, 1:].reshape(-1, 16)
+        # The packed `tensor` on 3 bytes (byte2, byte1, byte0):
+        #
+        # |_____'____________|_________'_________||___________'____|
+        #   v1      v0           v2        v1         v3        v2
+        #   2b      6b           4b        4b         6b        2b
 
-        tensor_2bit = _unpack(tensor_2bit, 2)
-        tensor_4bit = _unpack(tensor_4bit, 4)
+        byte2 = tensor[..., 0]
+        byte1 = tensor[..., 1]
+        byte0 = tensor[..., 2]
 
-        # Combine unpacked values
-        unpacked = torch.zeros(tensor_2bit.shape[0], 32, dtype=torch.uint8, device=tensor.device)
-        unpacked = ((tensor_2bit << 4) & 0x30) | (tensor_4bit & 0x0F)
+        val0 = byte2 & 0b00111111
 
-        # Convert back to float32 with proper scaling
+        val1_2b_low = byte2 >> 6
+        val1_4b_high = byte1 & 0b00001111
+
+        val2_4b_low = byte1 >> 4
+        val2_2b_high = byte0 & 0b00000011
+
+        val3 = byte0 >> 2
+
+        val1 = (val1_4b_high << 2) + val1_2b_low
+        val2 = (val2_2b_high << 4) + val2_4b_low
+
+        unpacked = torch.stack((val0, val1, val2, val3), dim=-1)
+
         fp6_ebias = (1 << (self.e_bits - 1)) - 1
         fp6_mbias = 23 - self.m_bits
         unpacked = unpacked.to(torch.int32)
-        unpacked = ((unpacked & 0x1f) << fp6_mbias) | ((unpacked & 0x20) << 26)
-        unpacked = unpacked.view(torch.float32) * (2.0**(127 - fp6_ebias))
+        unpacked = ((unpacked & 0x1F) << fp6_mbias) | ((unpacked & 0x20) << 26)
+        unpacked = unpacked.view(torch.float32) * (2.0 ** (127 - fp6_ebias))
 
         # Apply scale and reshape
         input_shape[-1] = input_shape[-1] * 4 // 3
         return unpacked.reshape(input_shape)
 
-    def _infer_tensor_shape(self, unpacked_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
         shape_list = list(unpacked_shape)
         shape_list[-1] = shape_list[-1] // 4 * 3
         return tuple(shape_list)
 
 
-def create_pack_method(qscheme: Optional[str], dtype: str, mx_element_dtype: Optional[str] = None) -> PackMethod:
-    if dtype == "int4" or dtype == "uint4":
-        return Pack_4_bits(qscheme, dtype)
-    elif dtype == "int2":
-        return Pack_2_bits(qscheme, dtype)
-    elif dtype == "int8" or dtype == "uint8":
-        return Pack_8_bits(qscheme, dtype)
-    elif dtype == "mx" and mx_element_dtype == "fp4":
-        return Pack_mxfp4(qscheme, dtype)
-    elif dtype == "mx" and mx_element_dtype in ["fp6_e2m3", "fp6_e3m2"]:
-        element_dtype = Dtype(mx_element_dtype)
-        e_bits, m_bits, _ = get_dtype_params(element_dtype)
-        return Pack_mxfp6(qscheme, dtype, e_bits, m_bits)
-    elif dtype == "fp4":
-        return Pack_fp4(qscheme, dtype)
-    elif dtype in ["fp6_e2m3", "fp6_e3m2"]:
-        element_dtype = Dtype(dtype)
-        e_bits, m_bits, _ = get_dtype_params(element_dtype)
+def create_pack_method(qscheme: str | None, dtype: str, mx_element_dtype: str | None = None) -> PackMethod:
+    if dtype == "mx":
+        if mx_element_dtype == "fp4":
+            return Pack_mxfp4(qscheme, dtype)
+        elif mx_element_dtype in ["fp6_e2m3", "fp6_e3m2"]:
+            element_dtype = Dtype.from_str(mx_element_dtype)
+            e_bits, m_bits, _ = get_dtype_params(element_dtype)
+            return Pack_mxfp6(qscheme, dtype, e_bits, m_bits)
+        else:
+            raise ValueError(f"Unsupported MX element dtype: {mx_element_dtype}")
+
+    if dtype in ["fp6_e2m3", "fp6_e3m2"]:
+        e_bits, m_bits, _ = get_dtype_params(dtype)
         return Pack_fp6(qscheme, dtype, e_bits, m_bits)
-    else:
-        return PackMethod(qscheme, dtype)
+
+    pack_methods = {
+        "int2": Pack_2_bits,
+        "int3": Pack_3_bits,
+        "int4": Pack_4_bits,
+        "uint4": Pack_4_bits,
+        "int8": Pack_8_bits,
+        "uint8": Pack_8_bits,
+        "fp4": Pack_fp4,
+    }
+
+    pack_class = pack_methods.get(dtype, PackMethod)
+    return pack_class(qscheme, dtype)

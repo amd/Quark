@@ -1,242 +1,326 @@
-
 #
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 
-import os
-import copy
 import argparse
+import copy
+import os
+
 import cv2
-import onnx
 import numpy as np
+import onnx
 from onnxruntime.quantization import CalibrationDataReader
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
-from quark.onnx.quantization.config import (Config, get_default_config)
-from quark.onnx.quant_utils import (PowerOfTwoMethod, ExtendedQuantType, ExtendedQuantFormat)
-from quark.onnx import auto_search
+
+from quark.onnx import ExtendedQuantFormat, ExtendedQuantType, PowerOfTwoMethod, auto_search
+from quark.onnx.quantization.config import Config, get_default_config
 
 
 class AutoSearchConfig_Default:
     # for s8s8 & s16s8 aaws/asws
     search_space: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt8, QuantType.QInt16,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt8,
+            QuantType.QInt16,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
             "CalibMovingAverage": [False, True],
             "CalibMovingAverageConstant": [0.01],
-        }
+        },
     }
 
     # for s8s8 aaws/asws
     search_space_s8s8: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt8,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt8,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
             "CalibMovingAverage": [False, True],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-        }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+        },
     }
 
     search_space_s8s8_advanced: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
         "activation_type": [QuantType.QInt8],
-        "weight_type": [QuantType.QInt8,],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False, True],
         "include_fast_ft": [False, True],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [1000],
-                'OptimAlgorithm': ['adaround'],
-                'LearningRate': [0.1],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-            }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [1000],
+                "OptimAlgorithm": ["adaround"],
+                "LearningRate": [0.1],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     search_space_s8s8_advanced2: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt8, QuantType.QInt16,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt8,
+            QuantType.QInt16,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False, True],
         "include_fast_ft": [False, True],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [5000],
-                'OptimAlgorithm': ['adaquant'],
-                'LearningRate': [1e-5,],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-            }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [5000],
+                "OptimAlgorithm": ["adaquant"],
+                "LearningRate": [
+                    1e-5,
+                ],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     # for s16s8 aaws/asws
     search_space_s16s8: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt16,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt16,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
             "CalibMovingAverage": [False, True],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-            'AlignEltwiseQuantType': [True]
-        }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+            "AlignEltwiseQuantType": [True],
+        },
     }
 
     search_space_s16s8_advanced: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt16,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt16,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False, True],
         "include_fast_ft": [False, True],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-            'AlignEltwiseQuantType': [True],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [1000],
-                'OptimAlgorithm': ['adaround'],
-                'LearningRate': [0.1],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-            }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+            "AlignEltwiseQuantType": [True],
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [1000],
+                "OptimAlgorithm": ["adaround"],
+                "LearningRate": [0.1],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     search_space_s16s8_advanced2: dict[str, any] = {
         "calibrate_method": [CalibrationMethod.MinMax, CalibrationMethod.Percentile],
-        "activation_type": [QuantType.QInt16,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QInt16,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "include_cle": [False, True],
         "include_fast_ft": [False, True],
         "extra_options": {
-            'ActivationSymmetric': [True, False],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [True, False],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'AlignSlice': [False],
-            'FoldRelu': [True],
-            'AlignConcat': [True],
-            'AlignEltwiseQuantType': [True],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [5000],
-                'OptimAlgorithm': ['adaquant'],
-                'LearningRate': [1e-5,],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-            }
+            "AlignSlice": [False],
+            "FoldRelu": [True],
+            "AlignConcat": [True],
+            "AlignEltwiseQuantType": [True],
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [5000],
+                "OptimAlgorithm": ["adaquant"],
+                "LearningRate": [
+                    1e-5,
+                ],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     # for XINT8
     search_space_XINT8: dict[str, any] = {
         "calibrate_method": [PowerOfTwoMethod.MinMSE],
-        "activation_type": [QuantType.QUInt8,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QUInt8,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "enable_npu_cnn": [True],
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
-            'ActivationSymmetric': [True,],
-        }
+            "ActivationSymmetric": [
+                True,
+            ],
+        },
     }
 
     search_space_XINT8_advanced: dict[str, any] = {
         "calibrate_method": [PowerOfTwoMethod.MinMSE],
-        "activation_type": [QuantType.QUInt8,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QUInt8,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "enable_npu_cnn": [True],
         "include_cle": [False, True],
         "include_fast_ft": [True],
         "extra_options": {
-            'ActivationSymmetric': [True,],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [
+                True,
+            ],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [1000],
-                'OptimAlgorithm': ['adaround'],
-                'LearningRate': [0.1,],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-        }
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [1000],
+                "OptimAlgorithm": ["adaround"],
+                "LearningRate": [
+                    0.1,
+                ],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     search_space_XINT8_advanced2: dict[str, any] = {
         "calibrate_method": [PowerOfTwoMethod.MinMSE],
-        "activation_type": [QuantType.QUInt8,],
-        "weight_type": [QuantType.QInt8,],
+        "activation_type": [
+            QuantType.QUInt8,
+        ],
+        "weight_type": [
+            QuantType.QInt8,
+        ],
         "enable_npu_cnn": [True],
         "include_cle": [False, True],
         "include_fast_ft": [True],
         "extra_options": {
-            'ActivationSymmetric': [True,],
-            'WeightSymmetric': [True],
-            "CalibMovingAverage": [False, True,],
+            "ActivationSymmetric": [
+                True,
+            ],
+            "WeightSymmetric": [True],
+            "CalibMovingAverage": [
+                False,
+                True,
+            ],
             "CalibMovingAverageConstant": [0.01],
-            'FastFinetune': {
-                'DataSize': [200,],
-                'NumIterations': [5000],
-                'OptimAlgorithm': ['adaquant'],
-                'LearningRate': [1e-5,],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
-        }
+            "FastFinetune": {
+                "DataSize": [
+                    200,
+                ],
+                "NumIterations": [5000],
+                "OptimAlgorithm": ["adaquant"],
+                "LearningRate": [
+                    1e-5,
+                ],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
 
     # for BF16
@@ -257,18 +341,18 @@ class AutoSearchConfig_Default:
         "include_cle": [False],
         "include_fast_ft": [True],
         "extra_options": {
-            'FastFinetune': {
-                'DataSize': [1000],
-                'FixedSeed': [1705472343],
-                'BatchSize': [2],
-                'NumIterations': [1000],
-                'LearningRate': [0.00001],
-                'OptimAlgorithm': ['adaquant'],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-                }
+            "FastFinetune": {
+                "DataSize": [1000],
+                "FixedSeed": [1705472343],
+                "BatchSize": [2],
+                "NumIterations": [1000],
+                "LearningRate": [0.00001],
+                "OptimAlgorithm": ["adaquant"],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
             }
+        },
     }
 
     #  for BFP16
@@ -280,14 +364,16 @@ class AutoSearchConfig_Default:
         "include_cle": [False],
         "include_fast_ft": [False],
         "extra_options": {
-            'BFPAttributes': [{
-                'bfp_method': "to_bfp",
-                'axis': 1,
-                'bit_width': 16,
-                'block_size': 8,
-                'rounding_mode': 2,
-            }]
-            }
+            "BFPAttributes": [
+                {
+                    "bfp_method": "to_bfp",
+                    "axis": 1,
+                    "bit_width": 16,
+                    "block_size": 8,
+                    "rounding_mode": 2,
+                }
+            ]
+        },
     }
 
     search_space_bfp16_advanced: dict[str, any] = {
@@ -298,32 +384,33 @@ class AutoSearchConfig_Default:
         "include_cle": [False],
         "include_fast_ft": [True],
         "extra_options": {
-            'BFPAttributes': [{
-                'bfp_method': "to_bfp",
-                'axis': 1,
-                'bit_width': 16,
-                'block_size': 8,
-                'rounding_mode': 2,
-            }],
-            'FastFinetune': {
-                'DataSize': [1000],
-                'FixedSeed': [1705472343],
-                'BatchSize': [2],
-                'NumIterations': [1000],
-                'LearningRate': [0.00001],
-                'OptimAlgorithm': ['adaquant'],
-                'OptimDevice': ['cuda:0'],
-                'InferDevice': ['cuda:0'],
-                'EarlyStop': [False],
-            }
-            }
+            "BFPAttributes": [
+                {
+                    "bfp_method": "to_bfp",
+                    "axis": 1,
+                    "bit_width": 16,
+                    "block_size": 8,
+                    "rounding_mode": 2,
+                }
+            ],
+            "FastFinetune": {
+                "DataSize": [1000],
+                "FixedSeed": [1705472343],
+                "BatchSize": [2],
+                "NumIterations": [1000],
+                "LearningRate": [0.00001],
+                "OptimAlgorithm": ["adaquant"],
+                "OptimDevice": ["cuda:0"],
+                "InferDevice": ["cuda:0"],
+                "EarlyStop": [False],
+            },
+        },
     }
-
 
     search_metric: str = "L2"
     search_algo: str = "grid_search"  # candidates: "grid_search", "random"
     search_evaluator = None
-    search_metric_tolerance: float = .60001
+    search_metric_tolerance: float = 0.60001
     search_cache_dir: str = "./"
     search_output_dir: str = "./"
     search_log_path: str = "./auto_search.log"
@@ -334,24 +421,24 @@ class AutoSearchConfig_Default:
         "time_limit": 1000000.0,  # unit: second
     }
 
+
 def get_model_input_name(input_model_path: str) -> str:
     model = onnx.load(input_model_path)
     model_input_name = model.graph.input[0].name
     return model_input_name
 
-class ImageDataReader(CalibrationDataReader):
 
+class ImageDataReader(CalibrationDataReader):
     def __init__(self, calibration_image_folder: str, input_name: str):
         self.enum_data = None
 
         self.input_name = input_name
 
-        self.data_list = self._preprocess_images(
-                calibration_image_folder)
+        self.data_list = self._preprocess_images(calibration_image_folder)
 
     def _preprocess_images(self, image_folder: str):
         data_list = []
-        img_names = [f for f in os.listdir(image_folder) if f.endswith('.png') or f.endswith('.jpg')]
+        img_names = [f for f in os.listdir(image_folder) if f.endswith(".png") or f.endswith(".jpg")]
         for name in img_names:
             input_image = cv2.imread(os.path.join(image_folder, name))
             # Resize the input image. Because the size of Resnet50 is 224.
@@ -404,10 +491,9 @@ def main(args: argparse.Namespace) -> None:
 
     # Create auto search instance
     auto_search_ins = auto_search.AutoSearch(
-        config = quant_config,
+        config=quant_config,
         auto_search_config=auto_search_config,
         model_input=args.input_model_path,
-        model_output=args.output_model_path,
         calibration_data_reader=calib_datareader,
     )
 
@@ -427,7 +513,21 @@ def main(args: argparse.Namespace) -> None:
     space11 = auto_search_ins.build_all_configs(auto_search_config.search_space_bfp16)
     space12 = auto_search_ins.build_all_configs(auto_search_config.search_space_bf16_advanced)
     space13 = auto_search_ins.build_all_configs(auto_search_config.search_space_bfp16_advanced)
-    auto_search_ins.all_configs = space1 + space2 + space3 + space4 + space5 + space6 + space7 + space8 + space9 + space10 + space11 + space12 + space13
+    auto_search_ins.all_configs = (
+        space1
+        + space2
+        + space3
+        + space4
+        + space5
+        + space6
+        + space7
+        + space8
+        + space9
+        + space10
+        + space11
+        + space12
+        + space13
+    )
 
     # Excute the auto search process
     auto_search_ins.search_model()
@@ -436,20 +536,25 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_model_path", help="Specify the input model to be quantized", required=True)
-    parser.add_argument("--output_model_path",
-                        help="Specify the path to save the quantized model",
-                        type=str,
-                        default='',
-                        required=False)
+    parser.add_argument(
+        "--output_model_path", help="Specify the path to save the quantized model", type=str, default="", required=False
+    )
     parser.add_argument("--calib_data_path", help="Specify the calibration data path for quantization", required=True)
-    parser.add_argument("--device",
-                        help="The device type of executive provider, it can be set to 'cpu', 'rocm' or 'cuda'",
-                        type=str,
-                        default="cpu")
+    parser.add_argument(
+        "--device",
+        help="The device type of executive provider, it can be set to 'cpu', 'rocm' or 'cuda'",
+        type=str,
+        default="cpu",
+    )
     parser.add_argument("--config", help="The configuration for quantization", type=str, default="S8S8_AAWS")
-    parser.add_argument("--auto_search_config", help="The configuration for auto search quantizaiton setting", type=str, default="default_auto_search")
-    parser.add_argument("--exclude_nodes", help="The names of excluding nodes", type=str, default='', required=False)
-    parser.add_argument('--save_as_external_data', action='store_true')
+    parser.add_argument(
+        "--auto_search_config",
+        help="The configuration for auto search quantizaiton setting",
+        type=str,
+        default="default_auto_search",
+    )
+    parser.add_argument("--exclude_nodes", help="The names of excluding nodes", type=str, default="", required=False)
+    parser.add_argument("--save_as_external_data", action="store_true")
 
     args = parser.parse_args()
 

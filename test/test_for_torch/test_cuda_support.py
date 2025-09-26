@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 import torch
+
 from quark.testing.common_utils import TestCase, skip_if_no_gpu
 
 
 class TestCudaInfoFromTorch(TestCase):
-
     @skip_if_no_gpu
     def test_get_cuda_info_from_server(self):
         torch.cuda.is_available()

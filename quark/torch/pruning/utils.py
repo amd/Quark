@@ -4,20 +4,19 @@
 #
 
 import copy
-import torch.nn as nn
 from typing import Optional
-from quark.torch.algorithm.utils.utils import clear_memory
-from quark.torch.pruning.config import Config
-from quark.torch.algorithm.utils.utils import get_device_map, set_device_map
+
+import torch.nn as nn
+
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.utils.utils import clear_memory, get_device_map, set_device_map
+from quark.torch.pruning.config import Config
 
 logger = ScreenLogger(__name__)
 
 
-def pre_process_tuning(model: nn.Module, config: Config, is_accelerate: Optional[bool]) -> nn.Module:
-
+def pre_process_tuning(model: nn.Module, config: Config, is_accelerate: bool | None) -> nn.Module:
     if config.blockwise_tuning_config is not None:
-
         device_map = get_device_map(model, is_accelerate)
 
         model.cpu()

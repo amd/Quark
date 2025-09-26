@@ -1,0 +1,7 @@
+{
+  "delete_layer_num": 3,
+  "model_decoder_layers": "model.layers",
+  "layer_norm_field": "model.norm",
+  "layer_num_field": "num_hidden_layers",
+  "save_gpu_memory": false
+}

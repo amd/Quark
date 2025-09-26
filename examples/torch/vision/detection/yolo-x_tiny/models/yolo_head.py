@@ -12,11 +12,13 @@
 
 import torch
 import torch.nn as nn
-from quark.torch.quantization.graph.ops.quant_stubs import QuantStub, DeQuantStub
+
+from quark.torch.quantization.graph.ops.quant_stubs import DeQuantStub, QuantStub
+
 from .network_blocks import BaseConv, DWConv
 
-class YOLOXHead(nn.Module):
 
+class YOLOXHead(nn.Module):
     def __init__(
         self,
         num_classes,
@@ -54,41 +56,48 @@ class YOLOXHead(nn.Module):
                     ksize=1,
                     stride=1,
                     act=act,
-                ))
+                )
+            )
             self.cls_convs.append(
-                nn.Sequential(*[
-                    Conv(
-                        in_channels=int(256 * width),
-                        out_channels=int(256 * width),
-                        ksize=3,
-                        stride=1,
-                        act=act,
-                    ),
-                    Conv(
-                        in_channels=int(256 * width),
-                        out_channels=int(256 * width),
-                        ksize=3,
-                        stride=1,
-                        act=act,
-                    ),
-                ]))
+                nn.Sequential(
+                    *[
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                    ]
+                )
+            )
             self.reg_convs.append(
-                nn.Sequential(*[
-                    Conv(
-                        in_channels=int(256 * width),
-                        out_channels=int(256 * width),
-                        ksize=3,
-                        stride=1,
-                        act=act,
-                    ),
-                    Conv(
-                        in_channels=int(256 * width),
-                        out_channels=int(256 * width),
-                        ksize=3,
-                        stride=1,
-                        act=act,
-                    ),
-                ]))
+                nn.Sequential(
+                    *[
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                    ]
+                )
+            )
             self.cls_preds.append(
                 nn.Conv2d(
                     in_channels=int(256 * width),
@@ -96,7 +105,8 @@ class YOLOXHead(nn.Module):
                     kernel_size=1,
                     stride=1,
                     padding=0,
-                ))
+                )
+            )
             self.reg_preds.append(
                 nn.Conv2d(
                     in_channels=int(256 * width),
@@ -104,7 +114,8 @@ class YOLOXHead(nn.Module):
                     kernel_size=1,
                     stride=1,
                     padding=0,
-                ))
+                )
+            )
             self.obj_preds.append(
                 nn.Conv2d(
                     in_channels=int(256 * width),
@@ -112,7 +123,8 @@ class YOLOXHead(nn.Module):
                     kernel_size=1,
                     stride=1,
                     padding=0,
-                ))
+                )
+            )
 
         self.use_l1 = False
         self.strides = strides
@@ -123,7 +135,7 @@ class YOLOXHead(nn.Module):
         output_t_s = []
         l1_loss_reg_output = []
 
-        for k, (cls_conv, reg_conv, x) in enumerate(zip(self.cls_convs, self.reg_convs, xin)):
+        for k, (cls_conv, reg_conv, x) in enumerate(zip(self.cls_convs, self.reg_convs, xin, strict=False)):
             x = self.stems[k](x)
             cls_x = x
             reg_x = x

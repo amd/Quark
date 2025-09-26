@@ -13,6 +13,9 @@
 // THE SOFTWARE.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//
+// Modifications Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+//
 
 #ifndef GSL_ALGORITHM_H
 #define GSL_ALGORITHM_H

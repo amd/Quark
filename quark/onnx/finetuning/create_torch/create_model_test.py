@@ -4,10 +4,10 @@
 #
 
 import sys
+
 import numpy as np
 import onnx
 import onnxruntime
-
 import torch
 
 from quark.onnx.finetuning.create_torch.create_model import TorchModel
@@ -28,7 +28,7 @@ def main() -> None:
 
     # Get input data
     so = onnxruntime.SessionOptions()
-    sess = onnxruntime.InferenceSession(model_path, so, providers=['CPUExecutionProvider'])
+    sess = onnxruntime.InferenceSession(model_path, so, providers=["CPUExecutionProvider"])
     input_name = sess.get_inputs()[0].name
     data_shape = sess.get_inputs()[0].shape
     print(f"model {model_path} input: name {input_name} shape {data_shape}")

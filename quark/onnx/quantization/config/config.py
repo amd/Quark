@@ -3,14 +3,21 @@
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for ONNX"""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Union, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from onnxruntime.quantization.calibrate import CalibrationMethod
-from onnxruntime.quantization.quant_utils import QuantType, QuantFormat
+from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
-from quark.onnx.quant_utils import (PowerOfTwoMethod, ExtendedQuantType, ExtendedQuantFormat)
+from quark.onnx.calibration import PowerOfTwoMethod
+from quark.onnx.quant_utils import ExtendedQuantFormat, ExtendedQuantType
+
+from .algorithm import AlgoConfig
+from .data_type import DataType
+from .spec import Int8Spec, QLayerConfig
 
 
 @dataclass(eq=True)
@@ -25,6 +32,81 @@ class Config:
     global_quant_config: QuantizationConfig
 
 
+# TODO: Move QConfig into quark/shares
+@dataclass(eq=True, init=False)
+class QConfig:
+    """
+    A class that defines quantization configuration at multiple levels (global, specific layers, specific operation types),
+    and provides flexibility for specifying algorithm settings.
+
+    :param QLayerConfig global_config: Global quantization configuration applied to all layers unless overridden.
+    :param Dict[DataType, List[str]] specific_layer_config: Dictionary mapping specific layer names to their quantization
+        configuration. Overrides ``global_config`` for those layers. Default is ``None``.
+    :param Dict[Optional[DataType], List[str]] layer_type_config: Dictionary mapping layer types (e.g., Conv, Gemm) to
+        quantization configurations. Overrides ``global_config`` for those operation types. Default is ``None``.
+    :param List[Union[str, List[Tuple[List[str]]]]] exclude: List of nodes or subgraphs excluded from quantization. Default is ``None``.
+    :param List[AlgoConfig] algo_config: Algorithm configuration(s), such as CLE, SmoothQuant,
+        or AdaRound. Can be a list of algorithm configurations. Default is ``None``.
+    :param bool use_external_data_format: Whether to use ONNX external data format when saving the quantized model.
+        Default is ``False``.
+        advanced customization and extension.
+    """
+
+    global_config: QLayerConfig = QLayerConfig(activation=Int8Spec(), weight=Int8Spec())
+    specific_layer_config: dict[DataType, list[str]] | None
+    layer_type_config: dict[DataType | None, list[str]] | None
+    exclude: list[Union[str, list[tuple[list[str]]]]] | None
+    algo_config: list[AlgoConfig] | None
+    use_external_data_format: bool
+
+    def __init__(
+        self,
+        global_config: QLayerConfig,
+        specific_layer_config: dict[DataType, list[str]] | None = None,
+        layer_type_config: dict[DataType | None, list[str]] | None = None,
+        exclude: list[Union[str, list[tuple[list[str]]]]] | None = None,
+        algo_config: list[AlgoConfig] | None = None,
+        use_external_data_format: bool = False,
+        **kwargs: dict[str, Any],
+    ):
+        self.global_config = global_config
+        self.specific_layer_config = specific_layer_config or {}
+        self.layer_type_config = layer_type_config or {}
+        self.exclude = exclude or []
+        self.algo_config = algo_config or []  # type: ignore
+        self.use_external_data_format = use_external_data_format
+        self.extra_options = kwargs
+
+    @staticmethod
+    def get_default_config(config_name: str) -> Config:
+        """
+        Retrieve the default quantization configuration by name.
+
+        This function looks up the provided `config_name` in the
+        `DefaultConfigMapping`. If a match is found, it returns a
+        `Config` object with the corresponding global quantization
+        configuration. Otherwise, it raises a ValueError.
+
+        Args:
+            config_name (str): The name of the default configuration
+            to look up like XINT8.
+
+        Returns:
+            Config: A configuration object containing the default
+            quantization settings.
+
+        Raises:
+            ValueError: If the provided `config_name` is not found
+            in `DefaultConfigMapping`.
+        """
+        from . import DefaultConfigMapping
+
+        if config_name in DefaultConfigMapping:
+            return Config(global_quant_config=DefaultConfigMapping[config_name])
+        else:
+            raise ValueError("The quantization config is invalid.")
+
+
 @dataclass(eq=True)
 class QuantizationConfig:
     """
@@ -34,6 +116,7 @@ class QuantizationConfig:
     :param Union[QuantFormat, ExtendedQuantType] quant_format: Format of quantization. Default is ``QuantFormat.QDQ``.
     :param Union[QuantType, ExtendedQuantType] activation_type: Type of quantization for activations. Default is ``QuantType.QInt8``.
     :param Union[QuantFormat, ExtendedQuantType] weight_type: Type of quantization for weights. Default is ``QuantType.QInt8``.
+    :param List[AlgoConfig] algorithms: List of algorithms like CLE, SmoothQuant and AdaRound. Default is ``None``.
     :param List[str] input_nodes: List of input nodes to be quantized. Default is ``[]``.
     :param List[str] output_nodes: List of output nodes to be quantized. Default is ``[]``.
     :param List[str] op_types_to_quantize: List of operation types to be quantized. Default is ``[]``.
@@ -63,21 +146,24 @@ class QuantizationConfig:
     :param Dict[str, Any] extra_options: Dictionary for additional options. Default is ``{}``.
     :param bool crypto_mode: Flag to enable crypto mode (the model information will be encrypted or hidden). Default is ``False``.
     """
+
     calibrate_method: Union[CalibrationMethod, PowerOfTwoMethod] = CalibrationMethod.MinMax
     quant_format: Union[QuantFormat, ExtendedQuantFormat] = QuantFormat.QDQ
     activation_type: Union[QuantType, ExtendedQuantType] = QuantType.QInt8
     weight_type: Union[QuantType, ExtendedQuantType] = QuantType.QInt8
 
-    input_nodes: List[str] = field(default_factory=list)
-    output_nodes: List[str] = field(default_factory=list)
-    op_types_to_quantize: List[str] = field(default_factory=list)
-    nodes_to_quantize: List[str] = field(default_factory=list)
-    extra_op_types_to_quantize: List[str] = field(default_factory=list)
-    nodes_to_exclude: List[str] = field(default_factory=list)
-    subgraphs_to_exclude: List[Tuple[List[str]]] = field(default_factory=list)
+    algorithms: list[AlgoConfig] | None = None
+
+    input_nodes: list[str] = field(default_factory=list)
+    output_nodes: list[str] = field(default_factory=list)
+    op_types_to_quantize: list[str] = field(default_factory=list)
+    nodes_to_quantize: list[str] = field(default_factory=list)
+    extra_op_types_to_quantize: list[str] = field(default_factory=list)
+    nodes_to_exclude: list[str] = field(default_factory=list)
+    subgraphs_to_exclude: list[tuple[list[str]]] = field(default_factory=list)
 
     specific_tensor_precision: bool = False
-    execution_providers: List[str] = field(default_factory=lambda: ['CPUExecutionProvider'])
+    execution_providers: list[str] = field(default_factory=lambda: ["CPUExecutionProvider"])
 
     per_channel: bool = False
     reduce_range: bool = False
@@ -103,4 +189,4 @@ class QuantizationConfig:
     ignore_warnings: bool = True
     log_severity_level: int = 1
 
-    extra_options: Dict[str, Any] = field(default_factory=dict)
+    extra_options: dict[str, Any] = field(default_factory=dict)

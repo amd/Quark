@@ -4,22 +4,29 @@
 #
 
 import math
+from typing import Any, List, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
+from torch.nn.common_types import _size_2_t
 from torch.nn.modules.utils import _pair
 from torch.nn.parameter import Parameter
-from torch.nn.common_types import _size_2_t
-from typing import Optional, List, Tuple, Any
 from typing_extensions import Self
-from .mixin import QuantMixin
+
 from quark.torch.quantization.config.config import QuantizationConfig
 
+from .mixin import QuantMixin
+
 __all__ = [
-    "QuantizedConvBatchNorm2d", "QuantConvTransposeBatchNorm2d", "update_bn_stats", "freeze_bn_stats", "fuse_conv_bn",
-    "clear_non_native_bias"
+    "QuantizedConvBatchNorm2d",
+    "QuantConvTransposeBatchNorm2d",
+    "update_bn_stats",
+    "freeze_bn_stats",
+    "fuse_conv_bn",
+    "clear_non_native_bias",
 ]
 _BN_CLASS_MAP = {
     2: nn.BatchNorm2d,
@@ -28,33 +35,44 @@ _BN_CLASS_MAP = {
 
 
 class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
-
     _version = 2
 
     def __init__(
-            self,
-            # ConvNd args
-            in_channels: int,
-            out_channels: int,
-            kernel_size: Tuple[int, ...],
-            stride: Tuple[int, ...],
-            padding: Tuple[int, ...],
-            dilation: Tuple[int, ...],
-            transposed: bool,
-            output_padding: Tuple[int, ...],
-            groups: int,
-            bias: bool,
-            padding_mode: str,
-            # BatchNormNd args
-            dim: int = 2,
-            eps: float = 1e-05,
-            momentum: float = 0.1,
-            freeze_bn_stats: bool = False,
-            # quant args
-            quant_config: QuantizationConfig = QuantizationConfig(),
+        self,
+        # ConvNd args
+        in_channels: int,
+        out_channels: int,
+        kernel_size: tuple[int, ...],
+        stride: tuple[int, ...],
+        padding: tuple[int, ...],
+        dilation: tuple[int, ...],
+        transposed: bool,
+        output_padding: tuple[int, ...],
+        groups: int,
+        bias: bool,
+        padding_mode: str,
+        # BatchNormNd args
+        dim: int = 2,
+        eps: float = 1e-05,
+        momentum: float = 0.1,
+        freeze_bn_stats: bool = False,
+        # quant args
+        quant_config: QuantizationConfig = QuantizationConfig(),
     ):
-        nn.modules.conv._ConvNd.__init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation,
-                                         transposed, output_padding, groups, False, padding_mode)
+        nn.modules.conv._ConvNd.__init__(
+            self,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            transposed,
+            output_padding,
+            groups,
+            False,
+            padding_mode,
+        )
 
         self.bn_frozen = freeze_bn_stats if self.training else True
         self.dim = dim
@@ -62,9 +80,9 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         # TODO haoliang
         self.init_quantizer(quant_config, self.weight.device)
         if bias:
-            self.bias = Parameter(torch.Tensor(out_channels))
+            self.bias: Parameter | None = Parameter(torch.Tensor(out_channels))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
         self.reset_bn_parameters()
 
         # this needs to be called after reset_bn_parameters,
@@ -92,34 +110,34 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             bound = 1 / math.sqrt(float(fan_in))
             init.uniform_(self.bias, -bound, bound)
 
-    def batch_stats(self, x: torch.Tensor, bias: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def batch_stats(self, x: torch.Tensor, bias: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Get the batch mean and variance of x and updates the BatchNorm's running mean and average.
 
-      Args:
-        x (torch.Tensor): input batch.
-        bias (torch.Tensor): the bias that is to be applied to the batch.
+        Args:
+          x (torch.Tensor): input batch.
+          bias (torch.Tensor): the bias that is to be applied to the batch.
 
-      Returns:
-        (mean, variance)
+        Returns:
+          (mean, variance)
 
-      Note:
-        In case of `nn.Linear`, x may be of shape (N, C, L) or (N, L)
-        where N is batch size, C is number of channels, L is the features size.
-        The batch norm computes the stats over C in the first case or L on the second case.
-        The batch normalization layer is
-        (`nn.BatchNorm1d`)
+        Note:
+          In case of `nn.Linear`, x may be of shape (N, C, L) or (N, L)
+          where N is batch size, C is number of channels, L is the features size.
+          The batch norm computes the stats over C in the first case or L on the second case.
+          The batch normalization layer is
+          (`nn.BatchNorm1d`)
 
-        In case of `nn.Conv2d`, x is of shape (N, C, H, W)
-        where H,W are the image dimensions, and the batch norm computes the stats over C.
-        The batch normalization layer is
-        (`nn.BatchNorm2d`)
+          In case of `nn.Conv2d`, x is of shape (N, C, H, W)
+          where H,W are the image dimensions, and the batch norm computes the stats over C.
+          The batch normalization layer is
+          (`nn.BatchNorm2d`)
 
-        In case of `nn.Conv3d`, x is of shape (N, C, D, H, W)
-        where H,W are the image dimensions, D is additional channel dimension,
-        and the batch norm computes the stats over C.
-        The batch normalization layer is
-        (`nn.BatchNorm3d`)
-    """
+          In case of `nn.Conv3d`, x is of shape (N, C, D, H, W)
+          where H,W are the image dimensions, D is additional channel dimension,
+          and the batch norm computes the stats over C.
+          The batch normalization layer is
+          (`nn.BatchNorm3d`)
+        """
         assert self.bn.num_batches_tracked is not None
         channel_size = self.bn.num_features
         self.bn.num_batches_tracked.add_(1)
@@ -140,7 +158,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             momentum = self.bn.momentum
             if momentum is None:
                 # momentum is None - we compute a cumulative moving average
-                momentum = 1. / float(self.bn.num_batches_tracked)
+                momentum = 1.0 / float(self.bn.num_batches_tracked)
             if self.bn.running_mean is not None:
                 self.bn.running_mean.mul_(1 - momentum).add_(momentum * biased_batch_mean)
             if self.bn.running_var is not None:
@@ -180,8 +198,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             elif self.dim == 3 and self.transposed:
                 weight = np.multiply(weight.transpose(2, 3, 4, 0, 1), scale).transpose(3, 4, 0, 1, 2)
             else:
-                raise RuntimeError('Unsupported combinations: (dim={}, transposed={})'.format(
-                    self.dim, self.transposed))
+                raise RuntimeError(f"Unsupported combinations: (dim={self.dim}, transposed={self.transposed})")
             self.weight.copy_(torch.from_numpy(weight))
 
             bias = self.bias.detach().cpu().numpy() if self.bias is not None else 0
@@ -201,7 +218,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
 
     def clear_non_native_bias(self) -> None:
         if self.bias is None:
-            print('[WARNING] No bias to unmerge')
+            print("[WARNING] No bias to unmerge")
             return
 
         with torch.no_grad():
@@ -220,15 +237,15 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
     def broadcast_correction(self, c: torch.Tensor) -> torch.Tensor:
         """Broadcasts a correction factor to the output for elementwise operations.
 
-    Two tensors are "broadcastable" if the following rules hold:
-      - Each tensor has at least one dimension.
-      - When iterating over the dimension sizes, starting at the trailing
-        dimension, the dimension sizes must either be equal,
-        one of them is 1, or one of them does not exist.
-    """
+        Two tensors are "broadcastable" if the following rules hold:
+          - Each tensor has at least one dimension.
+          - When iterating over the dimension sizes, starting at the trailing
+            dimension, the dimension sizes must either be equal,
+            one of them is 1, or one of them does not exist.
+        """
         expected_output_dim = self.dim + 2
         view_fillers_dim = expected_output_dim - c.dim() - 1
-        view_filler = (1, ) * view_fillers_dim
+        view_filler = (1,) * view_fillers_dim
         expected_view_shape = c.shape + view_filler
         return c.view(*expected_view_shape)
 
@@ -239,17 +256,17 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
 
         expected_weight_dim = self.dim + 2
         view_fillers_dim = expected_weight_dim - c.dim()
-        view_filler = (1, ) * view_fillers_dim
+        view_filler = (1,) * view_fillers_dim
         expected_view_shape = c.shape + view_filler
         return c.view(*expected_view_shape)
 
-    def forward(self, x: torch.Tensor, output_size: Optional[List[int]] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, output_size: list[int] | None = None) -> torch.Tensor:
         """
-    See https://arxiv.org/pdf/1806.08342.pdf section 3.2.2.
-    bn(conv(x)) = (conv(x) - E(conv(x))) * gamma / std(conv(x)) + beta
-                = (x*W + B - E(x*W + B)) * gamma / sqrt(E((x*W + B - E(x*W + B))^2)) + beta
-                = (x*W - E(x*W)) * gamma / std(x*W) + beta
-    """
+        See https://arxiv.org/pdf/1806.08342.pdf section 3.2.2.
+        bn(conv(x)) = (conv(x) - E(conv(x))) * gamma / std(conv(x)) + beta
+                    = (x*W + B - E(x*W + B)) * gamma / sqrt(E((x*W + B - E(x*W + B))^2)) + beta
+                    = (x*W - E(x*W)) * gamma / std(x*W) + beta
+        """
         x = self.get_quant_input(x)
         gamma, beta = self.bn.weight, self.bn.bias
         if self.conv_bn_fused:
@@ -262,9 +279,11 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             with torch.no_grad():
                 batch_mean, batch_var = self.batch_stats(self._conv_forward(x, self.weight, None), self.bias)
                 recip_sigma_batch = torch.rsqrt(batch_var + self.bn.eps)
-                running_sigma = torch.sqrt(self.bn.running_var +
-                                           self.bn.eps) if self.bn.running_var is not None else torch.tensor(
-                                               1, device=self.weight.device)
+                running_sigma = (
+                    torch.sqrt(self.bn.running_var + self.bn.eps)
+                    if self.bn.running_var is not None
+                    else torch.tensor(1, device=self.weight.device)
+                )
 
             w_corrected = self.weight * self.broadcast_correction_weight(gamma / running_sigma)
             w_quantized = self.get_quant_weight(w_corrected)
@@ -277,9 +296,11 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             y.mul_(recip_c).add_(bias_quantized)
         else:
             with torch.no_grad():
-                recip_running_sigma = torch.rsqrt(self.bn.running_var +
-                                                  self.bn.eps) if self.bn.running_var is not None else torch.tensor(
-                                                      1, device=self.weight.device)
+                recip_running_sigma = (
+                    torch.rsqrt(self.bn.running_var + self.bn.eps)
+                    if self.bn.running_var is not None
+                    else torch.tensor(1, device=self.weight.device)
+                )
             w_corrected = self.weight * self.broadcast_correction_weight(gamma * recip_running_sigma)
             w_quantized = self.get_quant_weight(w_corrected)
 
@@ -289,33 +310,37 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             y = self._conv_forward(x, w_quantized, bias_quantized)
         return self.get_quant_output(y)
 
-    def get_fused_float_param(self) -> Tuple[torch.nn.Parameter, torch.nn.Parameter]:
+    def get_fused_float_param(self) -> tuple[torch.nn.Parameter, torch.nn.Parameter]:
         if self.conv_bn_fused:
             if self.bias is None:
                 raise ValueError(
-                    f'{self.__class__.__name__} \'s bias should not be None under conv_bn_fused, please check')
+                    f"{self.__class__.__name__} 's bias should not be None under conv_bn_fused, please check"
+                )
             return torch.nn.Parameter(self.weight, self.weight.requires_grad), torch.nn.Parameter(
-                self.bias, self.bias.requires_grad)
+                self.bias, self.bias.requires_grad
+            )
 
         gamma, beta = self.bn.weight, self.bn.bias
         with torch.no_grad():
-            recip_running_sigma = torch.rsqrt(self.bn.running_var +
-                                              self.bn.eps) if self.bn.running_var is not None else torch.tensor(
-                                                  1, device=self.weight.device)
+            recip_running_sigma = (
+                torch.rsqrt(self.bn.running_var + self.bn.eps)
+                if self.bn.running_var is not None
+                else torch.tensor(1, device=self.weight.device)
+            )
             w_corrected = self.weight * self.broadcast_correction_weight(gamma * recip_running_sigma)
 
             mean_corrected = self.bn.running_mean if self.bias is None else self.bn.running_mean - self.bias
             # mean_corrected = self.bn.running_mean - (self.bias if self.bias is not None else 0)
             bias_corrected = beta - gamma * mean_corrected * recip_running_sigma
-        return torch.nn.Parameter(w_corrected,
-                                  w_corrected.requires_grad), torch.nn.Parameter(bias_corrected,
-                                                                                 bias_corrected.requires_grad)
+        return torch.nn.Parameter(w_corrected, w_corrected.requires_grad), torch.nn.Parameter(
+            bias_corrected, bias_corrected.requires_grad
+        )
 
     def train(self, mode: bool = True) -> Self:
         """Batchnorm's training behavior is using the self.training flag. Prevent
-    changing it if BN is frozen. This makes sure that calling `model.train()`
-    on a model with a frozen BN will behave properly.
-    """
+        changing it if BN is frozen. This makes sure that calling `model.train()`
+        on a model with a frozen BN will behave properly.
+        """
         self.training = mode
         if not self.bn_frozen:
             for module in self.children():
@@ -327,8 +352,9 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         return True
 
     @classmethod
-    def from_float(cls, conv: nn.Module, bn: nn.Module, quant_config: Optional[QuantizationConfig],
-                   **kwargs: Any) -> nn.Module:
+    def from_float(
+        cls, conv: nn.Module, bn: nn.Module, quant_config: QuantizationConfig | None, **kwargs: Any
+    ) -> nn.Module:
         """Create a qat module from a float module.
         Args:
             conv: The float module to be quantized.
@@ -350,7 +376,8 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
             bn.eps,
             bn.momentum,
             False,
-            quant_config)  # type: ignore
+            quant_config,
+        )  # type: ignore
         convbn.weight = conv.weight
         convbn.bias = conv.bias
         convbn.bn.weight = bn.weight
@@ -364,17 +391,17 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
 
 class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
     """A QuantizedConvBatchNorm2d module is a module fused from
-    Conv2d and BatchNorm2d attached with FakeQuantizer modules for weight and
-    batchnorm stuffs used in quantization aware training.
+        Conv2d and BatchNorm2d attached with FakeQuantizer modules for weight and
+        batchnorm stuffs used in quantization aware training.
 
-    We combined the interface of :class:`torch.nn.Conv2d` and
-    :class:`torch.nn.BatchNorm2d`.
+        We combined the interface of :class:`torch.nn.Conv2d` and
+        :class:`torch.nn.BatchNorm2d`.
 
-    Implementation details: https://arxiv.org/pdf/1806.08342.pdf section 3.2.2
+        Implementation details: https://arxiv.org/pdf/1806.08342.pdf section 3.2.2
 
-    Similar to :class:`torch.nn.Conv2d`, with FakeQuantizer modules initialized
-    to default.
-#     """
+        Similar to :class:`torch.nn.Conv2d`, with FakeQuantizer modules initialized
+        to default.
+    #"""
 
     def __init__(
         self,
@@ -387,13 +414,13 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
         dilation: _size_2_t = 1,
         groups: int = 1,
         bias: bool = True,
-        padding_mode: str = 'zeros',
+        padding_mode: str = "zeros",
         # BatchNorm2d args
         eps: float = 1e-05,
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: Optional[QuantizationConfig] = QuantizationConfig()
+        quant_config: QuantizationConfig | None = QuantizationConfig(),
     ) -> None:
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
@@ -417,56 +444,82 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
             eps,
             momentum,
             freeze_bn_stats,
-            quant_config)
+            quant_config,
+        )
 
-    def _conv_forward(self,
-                      input: torch.Tensor,
-                      weight: torch.Tensor,
-                      bias: Optional[torch.Tensor] = None,
-                      output_size: Optional[List[int]] = None) -> torch.Tensor:
+    def _conv_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None = None,
+        output_size: list[int] | None = None,
+    ) -> torch.Tensor:
         assert output_size is None
-        if self.padding_mode != 'zeros':
-            return F.conv2d(F.pad(input, self._reversed_padding_repeated_twice, mode=self.padding_mode), weight, bias,
-                            self.stride, _pair(0), self.dilation, self.groups)
+        if self.padding_mode != "zeros":
+            return F.conv2d(
+                F.pad(input, self._reversed_padding_repeated_twice, mode=self.padding_mode),
+                weight,
+                bias,
+                self.stride,
+                _pair(0),
+                self.dilation,
+                self.groups,
+            )
         return F.conv2d(input, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
 
 class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
-
     def __init__(
-            self,
-            # transposeconv
-            in_channels: int,
-            out_channels: int,
-            kernel_size: Tuple[int, ...],
-            stride: Tuple[int, ...],
-            padding: Tuple[int, ...],
-            output_padding: Tuple[int, ...],
-            groups: int,
-            bias: bool,
-            dilation: Tuple[int, ...],
-            padding_mode: str,
-            # BatchNormNd args
-            dim: int = 2,
-            eps: float = 1e-05,
-            momentum: float = 0.1,
-            freeze_bn_stats: bool = False,
-            # quant config
-            quant_config: QuantizationConfig = QuantizationConfig(),
+        self,
+        # transposeconv
+        in_channels: int,
+        out_channels: int,
+        kernel_size: tuple[int, ...],
+        stride: tuple[int, ...],
+        padding: tuple[int, ...],
+        output_padding: tuple[int, ...],
+        groups: int,
+        bias: bool,
+        dilation: tuple[int, ...],
+        padding_mode: str,
+        # BatchNormNd args
+        dim: int = 2,
+        eps: float = 1e-05,
+        momentum: float = 0.1,
+        freeze_bn_stats: bool = False,
+        # quant config
+        quant_config: QuantizationConfig = QuantizationConfig(),
     ):
-
-        super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, True, output_padding,
-                         groups, bias, padding_mode, dim, eps, momentum, freeze_bn_stats, quant_config)
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            True,
+            output_padding,
+            groups,
+            bias,
+            padding_mode,
+            dim,
+            eps,
+            momentum,
+            freeze_bn_stats,
+            quant_config,
+        )
 
         self._transpose_fn = [F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d][dim - 1]
 
-    def _conv_forward(self,
-                      input: torch.Tensor,
-                      weight: torch.Tensor,
-                      bias: Optional[torch.Tensor] = None,
-                      output_size: Optional[List[int]] = None) -> torch.Tensor:
-        if self.padding_mode != 'zeros':
-            raise ValueError(f'Only `zeros` padding mode is supported for {self.__class__.__name__}')
+    def _conv_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None = None,
+        output_size: list[int] | None = None,
+    ) -> torch.Tensor:
+        if self.padding_mode != "zeros":
+            raise ValueError(f"Only `zeros` padding mode is supported for {self.__class__.__name__}")
         num_spatial_dims = self.dim
         output_padding = self._output_padding(
             input,
@@ -475,7 +528,8 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
             self.padding,  # type: ignore[arg-type]
             self.kernel_size,  # type: ignore[arg-type]
             num_spatial_dims,
-            self.dilation)  # type: ignore[arg-type]
+            self.dilation,
+        )  # type: ignore[arg-type]
 
         return self._transpose_fn(
             input,
@@ -485,17 +539,33 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
             self.padding,  # type: ignore[arg-type]
             output_padding,
             self.groups,
-            self.dilation)
+            self.dilation,
+        )
 
     @classmethod
-    def from_float(cls, conv: nn.Module, bn: nn.Module, quant_config: Optional[QuantizationConfig],
-                   **kwargs: Any) -> nn.Module:
+    def from_float(
+        cls, conv: nn.Module, bn: nn.Module, quant_config: QuantizationConfig | None, **kwargs: Any
+    ) -> nn.Module:
         """Create a qat module from a float module."""
         dim = len(conv.weight.shape) - 2  # in_channel, out_channel, [H, W, D] (1/2/3)
         quant_config = QuantizationConfig() if quant_config is None else quant_config
-        convbn = cls(conv.in_channels, conv.out_channels, conv.kernel_size, conv.stride, conv.padding,
-                     conv.output_padding, conv.groups, conv.bias is not None, conv.dilation, conv.padding_mode, dim,
-                     bn.eps, bn.momentum, False, quant_config)
+        convbn = cls(
+            conv.in_channels,
+            conv.out_channels,
+            conv.kernel_size,
+            conv.stride,
+            conv.padding,
+            conv.output_padding,
+            conv.groups,
+            conv.bias is not None,
+            conv.dilation,
+            conv.padding_mode,
+            dim,
+            bn.eps,
+            bn.momentum,
+            False,
+            quant_config,
+        )
         convbn.weight = conv.weight
         convbn.bias = conv.bias
         convbn.bn.weight = bn.weight
@@ -508,7 +578,6 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
 
 
 class QuantConvTransposeBatchNorm2d(_ConvTransposeBnNd):
-
     def __init__(
         self,
         # conv config
@@ -521,32 +590,45 @@ class QuantConvTransposeBatchNorm2d(_ConvTransposeBnNd):
         groups: int = 1,
         bias: bool = True,
         dilation: _size_2_t = 1,
-        padding_mode: str = 'zeros',
+        padding_mode: str = "zeros",
         # BatchNorm2d args
         dim: int = 2,
         eps: float = 1e-05,
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: Optional[QuantizationConfig] = QuantizationConfig()
+        quant_config: QuantizationConfig | None = QuantizationConfig(),
     ) -> None:
-
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
         output_padding = _pair(output_padding)
         quant_config = QuantizationConfig() if quant_config is None else quant_config
-        super(QuantConvTransposeBatchNorm2d,
-              self).__init__(in_channels, out_channels, kernel_size, stride, padding, output_padding, groups, bias,
-                             dilation, padding_mode, dim, eps, momentum, freeze_bn_stats, quant_config)
+        super(QuantConvTransposeBatchNorm2d, self).__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            output_padding,
+            groups,
+            bias,
+            dilation,
+            padding_mode,
+            dim,
+            eps,
+            momentum,
+            freeze_bn_stats,
+            quant_config,
+        )
 
     def broadcast_correction_weight(self, c: torch.Tensor) -> torch.Tensor:
         """Broadcasts a correction factor to the weight."""
         if c.dim() != 1:
             raise ValueError("Correction factor needs to have a single dimension")
         # weight.shape: [in_channels, out_channels // groups, *kernel_size]
-        expected_view_shape = (1, ) + c.shape + (1, ) * 2
+        expected_view_shape = (1,) + c.shape + (1,) * 2
         return c.view(*expected_view_shape)
 
 

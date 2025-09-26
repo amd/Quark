@@ -2,7 +2,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from dataclasses import is_dataclass, fields
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 
@@ -12,7 +12,8 @@ def dataclass_pretty_string(dataclass_inst: Any, indent: int = 0) -> str:
     """
     if not is_dataclass(dataclass_inst):
         raise RuntimeError(
-            "The function `dataclass_pretty_string` is meant to be called on dataclass class instances only.")
+            "The function `dataclass_pretty_string` is meant to be called on dataclass class instances only."
+        )
 
     s = f"{dataclass_inst.__class__.__name__}(\n"
     for f in fields(dataclass_inst):
@@ -26,7 +27,7 @@ def dataclass_pretty_string(dataclass_inst: Any, indent: int = 0) -> str:
                 s += "    " * (indent + 2) + f"{dataclass_pretty_string(sub_dataclass, indent=indent + 2)},\n"
             s += "    " * (indent + 1) + "],\n"
         elif isinstance(field_value, str):
-            s += "    " * (indent + 1) + f"{f.name}=\"{field_value}\",\n"
+            s += "    " * (indent + 1) + f'{f.name}="{field_value}",\n'
         else:
             s += "    " * (indent + 1) + f"{f.name}={field_value},\n"
     s += "    " * indent + ")"

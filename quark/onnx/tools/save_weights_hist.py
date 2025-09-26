@@ -2,21 +2,23 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-'''
+"""
 A tool for show the weights distribution for model
 
     Example : python -m quark.onnx.tools.save_weights_hist --input_model [INPUT_MODEL_PATH] --output [OUTPUT_PATH] --perchannel
 
-'''
+"""
 
 import argparse
-import onnx
-import numpy as np
-import matplotlib.pyplot as plt
-import os
 import logging
-from quark.shares.utils.log import ScreenLogger
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import onnx
 from tqdm import tqdm
+
+from quark.shares.utils.log import ScreenLogger
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +53,9 @@ def main(model_path: str, output_dir: str, perchannel: bool = False) -> None:  #
         weight_array = onnx.numpy_helper.to_array(initializer)
 
         # Assume the weight array has a shape of (out_channels , ...)
-        if weight_array.ndim >= 2 and perchannel:  # Ensure the tensor has at least two dimensions and perchannel is True
+        if (
+            weight_array.ndim >= 2 and perchannel
+        ):  # Ensure the tensor has at least two dimensions and perchannel is True
             out_channels = weight_array.shape[0]
 
             # Calculate the maximum and minimum values of the weights
@@ -62,17 +66,17 @@ def main(model_path: str, output_dir: str, perchannel: bool = False) -> None:  #
             plt.figure(figsize=(12, 6))
             channels = np.arange(out_channels)
 
-            plt.vlines(channels, oc_min_values, oc_max_values, colors='b', linewidth=2, label='Min-Max Values')
+            plt.vlines(channels, oc_min_values, oc_max_values, colors="b", linewidth=2, label="Min-Max Values")
 
-            plt.title(f'{tensor_name} per_channel Max and Min Values per Channel')
-            plt.xlabel('Channel')
-            plt.ylabel('Value')
+            plt.title(f"{tensor_name} per_channel Max and Min Values per Channel")
+            plt.xlabel("Channel")
+            plt.ylabel("Value")
             plt.legend()
 
             plt.tight_layout()
             # Clear the current figure
             # Log the save information
-            output_path = os.path.join(output_dir, f'{tensor_name}_per_channel.png')
+            output_path = os.path.join(output_dir, f"{tensor_name}_per_channel.png")
             # Save the histogram
             plt.savefig(output_path)
             plt.clf()
@@ -87,14 +91,14 @@ def main(model_path: str, output_dir: str, perchannel: bool = False) -> None:  #
             min_weight = np.min(weights)
             logger.debug(f"Tensor {tensor_name} - Max value: {max_weight}, Min value: {min_weight}")
             bins = np.linspace(min_weight, max_weight, 129)
-            plt.hist(weights, bins=bins, edgecolor='black')
+            plt.hist(weights, bins=bins, edgecolor="black")
 
             # Add title and labels
-            plt.title(f'{tensor_name}')
-            plt.xlabel('Values')
-            plt.ylabel('Frequency')
+            plt.title(f"{tensor_name}")
+            plt.xlabel("Values")
+            plt.ylabel("Frequency")
 
-            output_path = os.path.join(output_dir, f'{tensor_name}.png')
+            output_path = os.path.join(output_dir, f"{tensor_name}.png")
             plt.savefig(output_path)
             plt.clf()
             plt.close()
@@ -108,10 +112,10 @@ def main(model_path: str, output_dir: str, perchannel: bool = False) -> None:  #
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Generate histograms for each weight tensor in an ONNX model')
-    parser.add_argument('--input_model', type=str, required=True, help='Path to the input ONNX model file')
-    parser.add_argument('--output', type=str, help='Directory to save the histograms')
-    parser.add_argument('--perchannel', action='store_true', help='Whether to generate histograms per channel')
+    parser = argparse.ArgumentParser(description="Generate histograms for each weight tensor in an ONNX model")
+    parser.add_argument("--input_model", type=str, required=True, help="Path to the input ONNX model file")
+    parser.add_argument("--output", type=str, help="Directory to save the histograms")
+    parser.add_argument("--perchannel", action="store_true", help="Whether to generate histograms per channel")
 
     args = parser.parse_args()
     main(args.input_model, args.output, args.perchannel)

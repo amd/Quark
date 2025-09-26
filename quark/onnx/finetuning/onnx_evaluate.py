@@ -3,14 +3,16 @@
 # SPDX-License-Identifier: MIT
 #
 
-from quark.shares.utils.log import ScreenLogger, log_errors
+from pathlib import Path
+from typing import Any, List, Union
+
 import numpy as np
 import onnx
 import onnxruntime
 
-from pathlib import Path
-from typing import Union, List, Any
-from quark.onnx.quant_utils import (register_custom_ops_library, CachedDataReader, create_infer_session_for_onnx_model)
+from quark.onnx.calibration import CachedDataReader
+from quark.onnx.quant_utils import create_infer_session_for_onnx_model, register_custom_ops_library
+from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -23,16 +25,16 @@ def create_session(onnx_model: Union[str, Path, onnx.ModelProto]) -> onnxruntime
     """
     so = onnxruntime.SessionOptions()
 
-    providers: List[str] = []
-    if 'ROCMExecutionProvider' in onnxruntime.get_available_providers():
-        providers.append('ROCMExecutionProvider')
-        register_custom_ops_library(so, device='ROCM')
-    elif 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-        providers.append('CUDAExecutionProvider')
-        register_custom_ops_library(so, device='CUDA')
+    providers: list[str] = []
+    if "ROCMExecutionProvider" in onnxruntime.get_available_providers():
+        providers.append("ROCMExecutionProvider")
+        register_custom_ops_library(so, device="ROCM")
+    elif "CUDAExecutionProvider" in onnxruntime.get_available_providers():
+        providers.append("CUDAExecutionProvider")
+        register_custom_ops_library(so, device="CUDA")
     else:
-        register_custom_ops_library(so, device='CPU')
-    providers.append('CPUExecutionProvider')
+        register_custom_ops_library(so, device="CPU")
+    providers.append("CPUExecutionProvider")
 
     # Note that we disabled all the graph optimizations because we found that ort
     # turns the QDQ into QOP to accelerate the inference, but this process leads
@@ -42,10 +44,12 @@ def create_session(onnx_model: Union[str, Path, onnx.ModelProto]) -> onnxruntime
     return create_infer_session_for_onnx_model(onnx_model, sess_options=so, providers=providers)
 
 
-def inference_model(onnx_model: Union[str, Path, onnx.ModelProto],
-                    data_reader: CachedDataReader,
-                    data_num: Union[int, None] = None,
-                    output_index: Union[int, None] = None) -> List[List[np.ndarray[Any, Any]]]:
+def inference_model(
+    onnx_model: Union[str, Path, onnx.ModelProto],
+    data_reader: CachedDataReader,
+    data_num: Union[int, None] = None,
+    output_index: Union[int, None] = None,
+) -> list[list[np.ndarray[Any, Any]]]:
     """
     Run the onnx model and feeding it with the data from the cached data reader.
     :param onnx_model: the proto or the path of the onnx model
@@ -57,7 +61,7 @@ def inference_model(onnx_model: Union[str, Path, onnx.ModelProto],
     session = create_session(onnx_model)
     data_reader.reset_iter()
 
-    results: List[Any] = []
+    results: list[Any] = []
 
     while True:
         input_dict = data_reader.get_next()
@@ -74,7 +78,7 @@ def inference_model(onnx_model: Union[str, Path, onnx.ModelProto],
 
 
 @log_errors
-def average_L2(float_results: List[List[np.ndarray[Any, Any]]], quant_results: List[List[np.ndarray[Any, Any]]]) -> Any:
+def average_L2(float_results: list[list[np.ndarray[Any, Any]]], quant_results: list[list[np.ndarray[Any, Any]]]) -> Any:
     """
     Calculate the average L2 distance between the float model and the quantized model.
     :param float_results: the result of the float model
@@ -96,7 +100,8 @@ def average_L2(float_results: List[List[np.ndarray[Any, Any]]], quant_results: L
     for i in range(0, data_num):
         for j in range(0, out_num):
             l2_distance = np.linalg.norm(
-                np.array(float_results[i][j]).astype(np.float32) - np.array(quant_results[i][j]).astype(np.float32))
+                np.array(float_results[i][j]).astype(np.float32) - np.array(quant_results[i][j]).astype(np.float32)
+            )
             l2_distances.append(l2_distance)
 
     return np.mean(l2_distances).item()
