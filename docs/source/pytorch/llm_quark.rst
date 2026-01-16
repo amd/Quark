@@ -11,4 +11,3 @@ Language Model Optimization
    example_quark_torch_llm_qat
    example_quark_torch_llm_eval
    tutorial_rotation
-   tutorial_quarot

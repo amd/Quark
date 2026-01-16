@@ -17,14 +17,13 @@ Environment Setup
 Calibration
 -----------
 
-In the quantization workflow, calibration adjusts the model's weights and activation values based on a small amount of input data to improve quantization accuracy. When using AMD GPUs, you might accelerate the calibration process with `ROCMExecutionProvider`, and also you can use `CUDAExecutionProvider` for NVIDIA GPUs. The following is an example configuration:
+In the quantization workflow, calibration adjusts the model's weights and input_tensors values based on a small amount of input data to improve quantization accuracy. When using AMD GPUs, you might accelerate the calibration process with `ROCMExecutionProvider`, and also you can use `CUDAExecutionProvider` for NVIDIA GPUs. The following is an example configuration:
 
 .. code-block:: python
 
-    from quark.onnx.quantization.config.config import QConfig
-    from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+    from quark.onnx import QConfig, QLayerConfig, XInt8Spec
 
-    config = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    config = QConfig(global_config=QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec()),
                     ExecutionProviders=['ROCMExecutionProvider'])
 
 
@@ -41,9 +40,7 @@ Here is an example configuration for the `adaround` optimization algorithm:
 
 .. code-block:: python
 
-    from quark.onnx.quantization.config.config import QConfig
-    from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
-    from quark.onnx.quantization.config.algorithm import AdaRoundConfig
+    from quark.onnx import QConfig, QLayerConfig, XInt8Spec, AdaRoundConfig
 
     algo_confs = [AdaRoundConfig(optim_device="cuda:0", # Use GPU 0 in PyTorch training
                             infer_device="cuda:0",  # Use GPU 0 for ONNX inference
@@ -51,9 +48,9 @@ Here is an example configuration for the `adaround` optimization algorithm:
                             num_iterations=1000,
                             learning_rate=0.1)]
     extra_info = {'UseRandomData': True, "EnableNPUCnn": True}
-    config = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    config = QConfig(global_config=QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec()),
                            algo_config=algo_confs,
-                           **extra_info)
+                           extra_options=extra_info)
 
 
 .. note::

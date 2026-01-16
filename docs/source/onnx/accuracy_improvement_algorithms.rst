@@ -12,5 +12,6 @@ AMD Quark for ONNX provides several techniques to improve the accuracy for quant
    accuracy_algorithms/cle.rst
    accuracy_algorithms/ada.rst
    accuracy_algorithms/sq.rst
+   ../tutorials/onnx/accuracy_improvement/bfp/onnx_bfp_tutorial.ipynb
+   ../tutorials/onnx/accuracy_improvement/gptq/onnx_gptq_tutorial.ipynb
    accuracy_algorithms/quarot.rst
-   example_quark_onnx_gptq.rst

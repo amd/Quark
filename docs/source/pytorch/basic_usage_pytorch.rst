@@ -24,7 +24,7 @@ We start by specifying the model we want to quantize. For this PyTorch example, 
 .. code-block:: python
 
    from transformers import AutoModelForCausalLM, AutoTokenizer
-   model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
+   model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", torch_dtype="auto")
    model.eval()
    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
 
@@ -66,7 +66,7 @@ This approach provides a granular API to handle diverse quantization scenarios a
 .. code-block:: python
 
    from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-   from quark.torch.quantization.config.config import Config, QuantizationConfig
+   from quark.torch.quantization.config.config import QConfig, QLayerConfig
    from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
    from quark.torch.quantization import Int8PerTensorSpec
    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(observer_method="min_max",
@@ -75,8 +75,8 @@ This approach provides a granular API to handle diverse quantization scenarios a
                                          round_method="half_even",
                                          is_dynamic=False).to_quantization_spec()
 
-   DEFAULT_W_INT8_PER_TENSOR_CONFIG = QuantizationConfig(weight=DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
-   quant_config = Config(global_quant_config=DEFAULT_W_INT8_PER_TENSOR_CONFIG)
+   DEFAULT_W_INT8_PER_TENSOR_CONFIG = QLayerConfig(weight=DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
+   quant_config = QConfig(global_quant_config=DEFAULT_W_INT8_PER_TENSOR_CONFIG)
 
 3.2. LLM Template Configuration (Large Language Models)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

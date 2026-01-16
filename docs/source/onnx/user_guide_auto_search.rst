@@ -192,8 +192,7 @@ Example Configuration:
 
     from quark.onnx.auto_search import AutoSearch
     from quark.onnx.auto_search import AutoSearchConfig
-    from quark.onnx import PowerOfTwoMethod
-    from onnxruntime.quantization.calibrate import CalibrationMethod
+    from quark.onnx import PowerOfTwoMethod, CalibrationMethod
 
     auto_search_config = AutoSearchConfig
     auto_search_config.search_space = {
@@ -237,6 +236,7 @@ Conclusion
 ----------
 
 The Automatic Search for model quantization provides a systematic approach to explore different quantization configurations in search of the best-performing model. By leveraging intelligent search algorithms and efficient evaluation processes, this approach can significantly improve the accuracy and efficiency of model quantization, making it easier to deploy optimized models in real-world applications.
+Please refer to the Quark Auto Search Tutorial `example <../tutorials/onnx/auto_search/onnx_auto_search_tutorial>`.
 
 FAQ
 ---

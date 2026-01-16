@@ -40,10 +40,9 @@ for ONNX.
 
 .. code-block:: python
 
-   from quark.onnx.quantization.config.config import QConfig
-   from quark.onnx.quantization.config.spec import QLayerConfig, BFP16Spec,
+   from quark.onnx import QConfig, QLayerConfig, BFP16Spec
 
-   config = QConfig(global_config=QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()))
+   config = QConfig(global_config=QLayerConfig(input_tensors=BFP16Spec(), weight=BFP16Spec()))
 
 
 .. note:: When inferring with ONNX Runtime, we need to register the custom op's so (Linux) or dll (Windows) file in the ORT session options.
@@ -74,12 +73,10 @@ If you want to further improve the effectiveness of BFP16 quantization after app
 
 .. code-block:: python
 
-   from quark.onnx.quantization.config.config import QConfig
-   from quark.onnx.quantization.config.spec import QLayerConfig, BFP16Spec,
-   from quark.onnx.quantization.config.algorithm import AdaQuantConfig
+   from quark.onnx import QConfig, QLayerConfig, BFP16Spec, AdaQuantConfig
 
    algo_conf = [AdaQuantConfig(num_iterations=100, learning_rate=1e-6, batch_size=5, data_size=100, early_stop=True)]
-   config = QConfig(global_config=QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()), algo_config=algo_conf)
+   config = QConfig(global_config=QLayerConfig(input_tensors=BFP16Spec(), weight=BFP16Spec()), algo_config=algo_conf)
 
 
 
@@ -88,4 +85,4 @@ If you want to further improve the effectiveness of BFP16 quantization after app
 Example
 -------
 
-An example of quantizing a model using the BFP16 quantization is :doc:`available here <example_quark_onnx_BFP>`.
+An example of quantizing a model using the BFP16 quantization is :doc:`available here <../tutorials/onnx/accuracy_improvement/bfp/onnx_bfp_tutorial>`.

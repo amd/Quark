@@ -46,26 +46,11 @@ Here is a simple example of how to enable MX quantization with MXINT8 in AMD Qua
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, MXInt8Spec, ModelQuantizer
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QMX,
-                                     weight_type=ExtendedQuantType.QMX,
-                                     extra_options={
-                                       'MXAttributes': {
-                                         'element_dtype': 'int8',
-                                         'axis': 1,
-                                         'block_size': 32,
-                                         'rounding_mode': 2,
-                                       },
-                                     })
+   quant_config = QConfig(global_config=QLayerConfig(activation=MXInt8Spec(), weight=MXInt8Spec()))
 
-   config = Config(global_quant_config=quant_config)
-
-   quantizer = ModelQuantizer(config)
+   quantizer = ModelQuantizer(quant_config)
 
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
@@ -101,35 +86,12 @@ Here is a simple example code which is fast finetuning a MXINT8 model:
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, MXInt8Spec, ModelQuantizer, AdaQuantConfig
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QMX,
-                                     weight_type=ExtendedQuantType.QMX,
-                                     include_fast_ft=True,
-                                     extra_options={
-                                       'MXAttributes': {
-                                         'element_dtype': 'int8',
-                                         'axis': 1,
-                                         'block_size': 32,
-                                         'rounding_mode': 2,
-                                       },
-                                       'FastFinetune': {
-                                         'DataSize': 100,
-                                         'FixedSeed': 1705472343,
-                                         'BatchSize': 2,
-                                         'NumIterations': 1000,
-                                         'LearningRate': 0.00001,
-                                         'OptimAlgorithm': 'adaquant',
-                                         'OptimDevice': 'cpu',
-                                         'InferDevice': 'cpu',
-                                         'EarlyStop': True,
-                                       },
-                                     })
-   config = Config(global_quant_config=quant_config)
+   adaquant_algo = AdaQuantConfig(learning_rate=0.00001, num_iterations=1000)
+
+   quant_config = QConfig(global_config=QLayerConfig(activation=MXInt8Spec(), weight=MXInt8Spec()),
+                          algo_config=[adaquant_algo])
 
 .. note::
 
@@ -138,4 +100,4 @@ Here is a simple example code which is fast finetuning a MXINT8 model:
 Example
 -------
 
-An example of quantizing a model using the Microscaling quantization is :doc:`available here <example_quark_onnx_MX>`.
+An example of quantizing a model using the Microscaling quantization is :doc:`available here <../tutorials/onnx/accuracy_improvement/MX/onnx_MX_tutorial>`.

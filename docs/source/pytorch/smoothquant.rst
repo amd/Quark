@@ -88,7 +88,7 @@ It is possible to verify the idea that SmoothQuant helps lower the output quanti
 
         from quark.torch import ModelQuantizer
         from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-        from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig, SmoothQuantConfig
+        from quark.torch.quantization.config.config import QConfig, QTensorConfig, QLayerConfig, SmoothQuantConfig
         from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
         in_feat = 32 * 128
@@ -134,7 +134,7 @@ It is possible to verify the idea that SmoothQuant helps lower the output quanti
             res_orig = model(inp)
 
         # Quantize the model using smoothquant.
-        quant_spec = QuantizationSpec(
+        quant_spec = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=PerTensorMinMaxObserver,
@@ -145,8 +145,8 @@ It is possible to verify the idea that SmoothQuant helps lower the output quanti
             ch_axis=None,
             group_size=None
         )
-        global_config = QuantizationConfig(weight=quant_spec, input_tensors=quant_spec)
-        quant_config = Config(global_quant_config=global_config)
+        global_config = QLayerConfig(weight=quant_spec, input_tensors=quant_spec)
+        quant_config = QConfig(global_quant_config=global_config)
 
         pre_quant_optimization = SmoothQuantConfig(
             scaling_layers=[{"prev_op": "layer_norm", "layers": ["lin1"], "inp": "lin1"}],
@@ -166,7 +166,7 @@ It is possible to verify the idea that SmoothQuant helps lower the output quanti
             res_quant_smooth = quant_model_smooth(inp)
 
         # Quantize the model without using smoothquant.
-        quant_config = Config(global_quant_config=global_config)
+        quant_config = QConfig(global_quant_config=global_config)
 
         quantizer = ModelQuantizer(quant_config)
 
@@ -210,7 +210,7 @@ The implementation of SmoothQuant in AMD Quark is designed for LLM models. One n
 
 .. code-block:: python
 
-    from quark.torch.quantization.config.config import SmoothQuantConfig, Config
+    from quark.torch.quantization.config.config import SmoothQuantConfig, QConfig
 
     smoothquant_config = SmoothQuantConfig(
         scaling_layers=[{"prev_op": "layer_norm", "layers": ["lin1"], "inp": "lin1"}],
@@ -220,7 +220,7 @@ The implementation of SmoothQuant in AMD Quark is designed for LLM models. One n
     )
 
     # There may be several pre-quantization optimization, hence the list.
-    quant_config = Config(..., pre_quant_opt_config=[smoothquant_config])
+    quant_config = QConfig(..., pre_quant_opt_config=[smoothquant_config])
 
 The key ``scaling_layers`` is a list of dictionaries, each dictionary corresponding to one linear module in the model to apply SmoothQuant on, with:
 

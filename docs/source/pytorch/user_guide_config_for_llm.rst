@@ -48,6 +48,11 @@ The following table shows the quantization schemes supported by :py:class:`.LLMT
 |                 | - Per-tensor quantization       | - AMD MI350 GPU        |
 |                 | - Static quantization           | - AMD MI355 GPU        |
 +-----------------+---------------------------------+------------------------+
+| ptpc_fp8        | - FP8 E4M3 format               | - AMD MI300 GPU        |
+|                 | - Weight: Per-channel static    | - AMD MI350 GPU        |
+|                 | - Activation: Per-token dynamic | - AMD MI355 GPU        |
+|                 | - Optimized for vLLM inference  |                        |
++-----------------+---------------------------------+------------------------+
 | mxfp4           | - OCP MXFP4 format              | - AMD MI350 GPU        |
 |                 | - Per-group quantization        | - AMD MI355 GPU        |
 |                 | - Group size 32                 |                        |
@@ -176,7 +181,7 @@ You can register custom quantization schemes for use with templates:
 
 .. code-block:: python
 
-    from quark.torch.quantization.config.config import Int8PerTensorSpec, QuantizationConfig
+    from quark.torch.quantization.config.config import Int8PerTensorSpec, QLayerConfig
     from quark.torch import LLMTemplate
 
     # Create custom quantization specification
@@ -189,7 +194,7 @@ You can register custom quantization schemes for use with templates:
     ).to_quantization_spec()
 
     # Create and register custom scheme
-    global_config = QuantizationConfig(weight=quant_spec)
+    global_config = QLayerConfig(weight=quant_spec)
     LLMTemplate.register_scheme("custom_int8_wo", config=global_config)
 
     # Get a specific template

@@ -34,7 +34,7 @@ The ``quantize_quark.py`` script, that we will use, is found in a sub-directory 
 Quark UINT4 Quantization with AWQ
 ---------------------------------
 
-**Quantization Configuration**: AWQ / Group 128 / Asymmetric / FP16 activations
+**Quantization Configuration**: AWQ / Group 128 / Asymmetric / FP16 input_tensors
 
 Use the following command to quantize the model:
 
@@ -42,7 +42,7 @@ Use the following command to quantize the model:
 
     python3 quantize_quark.py --model_dir <llama checkpoint folder> \
                               --output_dir <quantized safetensor output dir> \
-                              --quant_scheme w_uint4_per_group_asym \
+                              --quant_scheme uint4_wo_128 \
                               --num_calib_data 128 \
                               --quant_algo awq \
                               --dataset pileval_for_awq_benchmark \
@@ -55,15 +55,21 @@ This will generate a directory containing the safe tensors at the specified ``<q
 
 .. note::
 
-    To include the ``lm_head`` layer in the quantization process, add the ``--exclude_layers`` flag. This overrides the default behavior of excluding the ``lm_head`` layer.
+    **About ``--exclude_layers``:**
+
+    - By default, certain layers (like ``lm_head``) are automatically excluded from quantization based on the model type.
+    - To include all layers in quantization (exclude nothing), use ``--exclude_layers`` without any arguments.
+    - To specify custom layers to exclude, use ``--exclude_layers "layer1" "layer2"`` (supports wildcards like ``"*down_proj*"``).
+
+    Example: ``--exclude_layers`` (includes lm_head in quantization)
 
 .. note::
 
-    To quantize the model for BF16 activations, use the ``--data_type bfloat16`` flag.
+    To quantize the model for BF16 input_tensors, use the ``--data_type bfloat16`` flag.
 
 .. note::
 
-    To specify a group size other than 128, such as 32, use the ``--group_size 32`` flag.
+    To specify a group size other than 128, such as 32, use ``--quant_scheme uint4_wo_32`` instead of ``--quant_scheme uint4_wo_128``. Available group sizes are 32, 64, and 128 (e.g., ``uint4_wo_32``, ``uint4_wo_64``, ``uint4_wo_128``).
 
 
 (Optional) Quark UINT4 Quantization with Different Group Sizes per Layer
@@ -76,7 +82,7 @@ For example, to quantize the model with 32 group size for lm_head, while 128 gro
 
     python3 quantize_quark.py --model_dir <llama checkpoint folder> \
                               --output_dir <quantized safetensor output dir> \
-                              --quant_scheme w_uint4_per_group_asym \
+                              --quant_scheme uint4_wo_128 \
                               --num_calib_data 128 \
                               --quant_algo awq \
                               --dataset pileval_for_awq_benchmark \
@@ -84,8 +90,7 @@ For example, to quantize the model with 32 group size for lm_head, while 128 gro
                               --model_export hf_format \
                               --data_type float16 \
                               --exclude_layers \
-                              --group_size 128 \
-                              --group_size_per_layer lm_head 32
+                              --layer_quant_scheme lm_head uint4_wo_32
 
 .. note::
 
@@ -117,7 +122,7 @@ To export the quantized model to ONNX format, run the following command:
 
 .. note::
 
-    The activation data type of the ONNX model depends on the combination of the ``-p`` (precision) and ``-e`` (execution provider) flags. For example:
+    The input_tensors data type of the ONNX model depends on the combination of the ``-p`` (precision) and ``-e`` (execution provider) flags. For example:
 
-    - Using ``-p int4 -e dml`` will generate an ONNX model with float16 activations prepared for the DirectML execution provider for hybrid (NPU + iGPU) flow.
-    - To generate an ONNX model with float32 activations for NPU flow, use the ``-p int4 -e cpu`` flag.
+    - Using ``-p int4 -e dml`` will generate an ONNX model with float16 input_tensors prepared for the DirectML execution provider for hybrid (NPU + iGPU) flow.
+    - To generate an ONNX model with float32 input_tensors for NPU flow, use the ``-p int4 -e cpu`` flag.

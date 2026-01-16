@@ -10,7 +10,7 @@ Power-of-Two Scales (Xint8) Quantization
 Introduction
 ------------
 
-XINT8 is a specialized INT8 quantization configuration for Ryzen AI NPU. It uses symmetric INT8 activation, weight and bias quantization with power-of-two scales. XINT8 is optimized for peak performance on the Ryzen AI NPU, fully leveraging its acceleration capabilities. However, due to the constraints of symmetric quantization and power-of-two scaling, some models may experience accuracy loss. This guide explains how to quantize a float model using the XINT8 configuration and provides strategies to improve its accuracy.
+XINT8 is a specialized INT8 quantization configuration for Ryzen AI NPU. It uses symmetric INT8 input_tensors, weight and bias quantization with power-of-two scales. XINT8 is optimized for peak performance on the Ryzen AI NPU, fully leveraging its acceleration capabilities. However, due to the constraints of symmetric quantization and power-of-two scaling, some models may experience accuracy loss. This guide explains how to quantize a float model using the XINT8 configuration and provides strategies to improve its accuracy.
 
 How to Quantize a Float Model with XINT8 Config
 -----------------------------------------------
@@ -27,8 +27,7 @@ As the Figure 1 shows, you can refer to codes below:
 .. code-block:: python
 
 
-   from quark.onnx.quantization.config import QConfig
-   from quark.onnx import ModelQuantizer
+   from quark.onnx import ModelQuantizer, QConfig
 
     # Define model paths
     # Path to the float model to be quantized
@@ -125,8 +124,7 @@ If the accuracy of xint8 quantized model can not meet your target, you can impro
 
 .. code-block:: python
 
-   from quark.onnx.quantization import QConfig
-   from quark.onnx import ModelQuantizer
+   from quark.onnx import ModelQuantizer, QConfig
 
    quantization_config = QConfig.get_default_config("XINT8_ADAROUND_CONFIG")
    quantizer = ModelQuantizer(config)
@@ -136,8 +134,7 @@ If the accuracy of xint8 quantized model can not meet your target, you can impro
 
 .. code-block:: python
 
-   from quark.onnx.quantization import QConfig
-   from quark.onnx import ModelQuantizer
+   from quark.onnx import ModelQuantizer, QConfig
 
    quantization_config = QConfig.get_default_config("XINT8_ADAQUANT_CONFIG")
    quantizer = ModelQuantizer(config)

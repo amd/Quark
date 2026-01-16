@@ -42,29 +42,11 @@ MX9 in AMD Quark for ONNX.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, MX9Spec, ModelQuantizer
 
-   quant_config = QuantizationConfig(calibrate_method=CalibrationMethod.MinMax,
-                                     quant_format=ExtendedQuantFormat.QDQ,
-                                     activation_type=ExtendedQuantType.QBFP,
-                                     weight_type=ExtendedQuantType.QBFP,
-                                     extra_options={
-                                       'BFPAttributes': {
-                                           'bfp_method': "to_bfp_prime",
-                                           'axis': 1,
-                                           'bit_width': 16,
-                                           'block_size': 16,
-                                           'sub_block_size': 2,
-                                           'sub_block_shift_bits': 1,
-                                           'rounding_mode': 2,
-                                       },
-                                     })
+   quant_config = QConfig(global_config=QLayerConfig(activation=MX9Spec(), weight=MX9Spec()))
 
-   config = Config(global_quant_config=quant_config)
-
-   quantizer = ModelQuantizer(config)
+   quantizer = ModelQuantizer(quant_config)
 
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
@@ -96,40 +78,12 @@ If you want to further improve the effectiveness of MX9 quantization after apply
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantFormat, ExtendedQuantType
-   from onnxruntime.quantization.calibrate import CalibrationMethod
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, MX9Spec, ModelQuantizer, AdaQuantConfig
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFP,
-       include_fast_ft=True,
-       extra_options={
-          'BFPAttributes': {
-                              'bfp_method': "to_bfp_prime",
-                              'axis': 1,
-                              'bit_width': 16,
-                              'block_size': 16,
-                              'sub_block_size': 2,
-                              'sub_block_shift_bits': 1,
-                              'rounding_mode': 2,
-                           },
-           'FastFinetune': {
-                              'DataSize': 100,
-                              'FixedSeed': 1705472343,
-                              'BatchSize': 2,
-                              'NumIterations': 1000,
-                              'LearningRate': 0.00001,
-                              'OptimAlgorithm': 'adaquant',
-                              'OptimDevice': 'cpu',
-                              'InferDevice': 'cpu',
-                              'EarlyStop': True,
-                           },
-       }
-   )
-   config = Config(global_quant_config=quant_config)
+   adaquant_algo = AdaQuantConfig(learning_rate=0.00001, num_iterations=1000)
+
+   quant_config = QConfig(global_config=QLayerConfig(activation=MX9Spec(), weight=MX9Spec()),
+                          algo_config=[adaquant_algo])
 
 .. note::
 
@@ -138,4 +92,4 @@ If you want to further improve the effectiveness of MX9 quantization after apply
 Examples
 --------
 
-An example of quantizing a model using the Microscaling quantization is :doc:`available here <example_quark_onnx_MX>`.
+An example of quantizing a model using the Microscaling quantization is :doc:`available here <../tutorials/onnx/accuracy_improvement/MX/onnx_MX_tutorial>`.

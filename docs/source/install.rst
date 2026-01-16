@@ -36,14 +36,25 @@ We need to install a C++ compiler for ONNX, such as ``g++``. In an Ubuntu enviro
 
    sudo apt install build-essential
 
-Next we will install PyTorch, CMake, and Quark itself.
+Next we will install PyTorch and Quark itself.
 We've selected the CPU wheel of PyTorch here so that Quark will run on laptops without GPUs, which is slower, but fine for trying out Quark.
 We will install Quark from PyPI, which will pull in required dependencies.
 
 .. code-block:: bash
 
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-   pip install "cmake<4.0" amd-quark
+
+Next, if you are using the ONNX-to-ONNX flow in Quark, please install ONNX Runtime. We recommend using an ONNX Runtime version ≥ 1.20.1 and ≤ 1.22.2 for compatibility.
+
+.. code-block:: bash
+
+   pip install "onnxruntime>=1.20.1,<=1.22.2"
+
+Next, if you are using the OnnxRuntime Gen AI (OGA) Flow for LLM models, please install ONNX Runtime Gen AI.
+
+.. code-block:: bash
+
+   pip install onnxruntime-genai
 
 That's it! You should now be able to move on to the *Getting started* guides in the side bar to try different workflows in Quark.
 You can return to this guide later when you'd like to try a more advanced set up, for example, a new conda environment with a PyTorch
@@ -143,6 +154,54 @@ If neither of these combinations is available on your system, you may install wi
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 
+Install ONNX Runtime
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ONNX Runtime version >=1.20.1 and <=1.22.2 is required.
+
+Windows
+"""""""
+.. note::
+   ROCm support on Windows is under active development and will be made available in a future release.
+
+To install **ONNX Runtime with CUDA** 12.X GPU support, in a Python environment using ``pip``:
+
+.. code-block:: bash
+
+   pip install onnxruntime-gpu
+
+If CUDA is not available, install ONNX Runtime without GPU support:
+
+.. code-block:: bash
+
+   pip install onnxruntime
+
+
+Linux
+"""""
+.. note::
+
+   The commands below assume **ROCm 6.4.4**, but for a different ROCm version or further options, consult the `ONNX Runtime <https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-rocm>`__ install guide.
+
+To install **ONNX Runtime with ROCm 6.4.4** GPU support, in a Python environment using ``pip``:
+
+.. code-block:: bash
+
+   pip install onnxruntime-rocm
+
+To install **ONNX Runtime with CUDA** 12.X GPU support:
+
+.. code-block:: bash
+
+   pip install onnxruntime-gpu
+
+If neither of these combinations is available on your system, you may install without GPU support:
+
+.. code-block:: bash
+
+   pip install onnxruntime
+
+
 Install a C++ Compiler
 ^^^^^^^^^^^^^^^^^^^^^^
 
@@ -165,21 +224,6 @@ Linux
 On Ubuntu the ``g++`` compiler is installed with the ``build-essential`` package.
 Note that while many versions of C++ compiler may work, we currently only confirm support for g++ version 13.3,
 which installs with the ``build-essential`` package on Ubuntu 24.04.
-
-
-Install CMake
-^^^^^^^^^^^^^
-
-You will need `CMake <https://cmake.org/>`__ installed on your ``PATH``.
-One option here is to install it into your Python environment with:
-
-.. note::
-
-   The AMD Quark package takes dependency on `ONNX Simplifier <https://github.com/daquexian/onnx-simplifier>`__ which is currently not supported on Python 3.12. Thus, a build from source is required with CMake 3.x.
-
-.. code-block:: bash
-
-   pip install "cmake<4.0"
 
 
 Install Quark
@@ -288,12 +332,27 @@ To invoke this compilation now, and check if it is successful, run the following
 
    python -c "import quark.onnx.operators.custom_ops"
 
+Please note that ``ROCM_PATH`` or ``CUDA_HOME`` needs to be set to the local installation directory on the server (typically under ``/opt/rocm``
+or ``/usr/local/cuda`` on Linux) for building GPU version library. This allows the compiler to locate the necessary header files.
+
+Setting logging level (Optional)
+--------------------------------
+
+It is possible to control the logging level used by AMD Quark with the environment variable ``QUARK_LOG_LEVEL``:
+
+- ``QUARK_LOG_LEVEL=debug``: Display all logs (useful for debugging).
+- ``QUARK_LOG_LEVEL=info``: Display logs of level info and above (default).
+- ``QUARK_LOG_LEVEL=warning``: Display logs of level warning and above.
+- ``QUARK_LOG_LEVEL=error``: Display logs of level error and above.
+- ``QUARK_LOG_LEVEL=critical``: Display logs of level critical only.
+
 
 Previous Versions of AMD Quark
 ------------------------------
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
+-  `quark_0.11.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.zip>`__
 -  `quark_0.10.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.10.zip>`__
 -  `quark_0.9.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.9.zip>`__
 -  `quark_0.8.2.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.8.2.zip>`__

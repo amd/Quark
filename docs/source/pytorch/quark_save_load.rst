@@ -32,7 +32,7 @@ Example of Saving in FX-graph Mode
 
 .. code:: python
 
-   from quark.torch.export.api import save_params
+   from quark.torch import save_params
    save_params(model,
                model_type=model_type,
                args=example_inputs,
@@ -59,5 +59,5 @@ Example of Loading in FX-graph Mode
 
 .. code:: python
 
-   from quark.torch.quantization.api import load_params
+   from quark.torch import load_params
    model = load_params(pth_path=model_file_path, quant_mode=QuantizationMode.fx_graph_mode)

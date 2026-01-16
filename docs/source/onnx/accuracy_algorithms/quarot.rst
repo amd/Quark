@@ -3,18 +3,15 @@
 QuaRot
 ======
 
-QuaRot is proposed to harmonize the outliers within the activations before MatMul/Gemm. The main idea for QuaRot is to insert Hadamard transformation pairs into activations, hence projecting activations to the Hadamard domain. This projection can make discrete energy concentrated, or make concentrated energy discrete. Due to the discrete distribution of activation, the distribution after the Hadamard transform becomes more concentrated, thereby mitigating the outlier situation and relieving activation quantization error. Experiments show that using the QuaRot technique can improve the PTQ accuracy of LLMs like Llama-2, especially for models with a large number of outliers in the activation.
+QuaRot is proposed to harmonize the outliers within the input_tensors before MatMul/Gemm. The main idea for QuaRot is to insert Hadamard transformation pairs into input_tensors, hence projecting input_tensors to the Hadamard domain. This projection can make discrete energy concentrated, or make concentrated energy discrete. Due to the discrete distribution of input_tensors, the distribution after the Hadamard transform becomes more concentrated, thereby mitigating the outlier situation and relieving input_tensors quantization error. Experiments show that using the QuaRot technique can improve the PTQ accuracy of LLMs like Llama-2, especially for models with a large number of outliers in the input_tensors.
 
 Here is a simple example showing how to apply the QuaRot algorithm on an A8W8 (Activation-8bit-Weight-8bit) quantization.
 
 .. code-block:: python
 
-    from quark.onnx import ModelQuantizer
-    from quark.onnx.quantization.config import QConfig
-    from quark.onnx.quantization.config.spec import QLayerConfig, UInt8Spec, Int8Spec
-    from quark.onnx.quantization.config.algorithm import QuarotConfig
+    from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, UInt8Spec, Int8Spec, QuarotConfig
 
-    quant_config = QLayerConfig(activation=UInt8Spec(), weight=Int8Spec())
+    quant_config = QLayerConfig(input_tensors=UInt8Spec(), weight=Int8Spec())
 
     quarot_config = QuarotConfig(
                        r_matrix_dim=4096,

@@ -46,7 +46,7 @@ Each Quark workflow (PyTorch and ONNX) possesses its own set of features, data t
 | Symmetric          | Symmetric / Asymmetric                          | Symmetric / Asymmetric                        |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
 | Calibration method | MinMax / Percentile / MSE                       | MinMax / Percentile / MinMSE /                |
-|                    |                                                 | Entropy / NonOverflow                         |
+|                    |                                                 | Entropy / NonOverflow / LayerwisePercentile   |
 +--------------------+-------------------------------------------------+-----------------------------------------------+
 | Scale Type         | Float32 / Float16                               | Float32 / Float16                             |
 +--------------------+-------------------------------------------------+-----------------------------------------------+

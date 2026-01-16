@@ -95,7 +95,7 @@ While Quark ONNX provides a granular API to handle diverse quantization scenario
 
 .. code-block:: python
 
-    from quark.onnx.quantization import QConfig
+    from quark.onnx import QConfig
 
     # Set up quantization with a specified configuration
     # For example, use "A8W8" for Ryzen AI INT8 quantization

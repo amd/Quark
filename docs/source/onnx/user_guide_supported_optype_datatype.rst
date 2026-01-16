@@ -206,7 +206,7 @@ For models in Float16, we recommend setting ``convert_fp16_to_fp32`` to True. Th
    )
 
 .. note::
-    When using ``convert_fp16_to_fp32`` in quark.onnx, it requires onnxsim to simplify the ONNX model. Ensure that onnxsim is installed by using ``python -m pip install onnxsim``.
+    When using ``convert_fp16_to_fp32`` in quark.onnx, it requires onnxslim to simplify the ONNX model. Ensure that onnxslim is installed by using ``python -m pip install onnxslim``.
 
 Supported Op Type
 -----------------

@@ -31,7 +31,7 @@ Here is an example of how to export to Hugging Face format (safetensors format) 
 .. code-block:: python
 
    from quark.torch import ModelQuantizer, export_safetensors
-   from quark.torch.quantization.config.config import Int8PerTensorSpec, QuantizationConfig, Config
+   from quark.torch.quantization.config.config import Int8PerTensorSpec, QLayerConfig, QConfig
 
    from transformers import AutoModelForCausalLM
 
@@ -43,10 +43,10 @@ Here is an example of how to export to Hugging Face format (safetensors format) 
       is_dynamic=False
    ).to_quantization_spec()
 
-   global_quant_config = QuantizationConfig(weight=quant_spec)
-   quant_config = Config(global_quant_config=global_quant_config)
+   global_quant_config = QLayerConfig(weight=quant_spec)
+   quant_config = QConfig(global_quant_config=global_quant_config)
 
-   model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
+   model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", torch_dtype="auto")
 
    quantizer = ModelQuantizer(quant_config)
    quantized_model = quantizer.quantize_model(model, dataloader=None)

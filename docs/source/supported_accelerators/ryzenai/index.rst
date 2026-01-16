@@ -37,7 +37,7 @@ To help you get started, we also have examples at the :ref:`ONNX Examples <ryzen
 
    Quick Start for Ryzen AI <tutorial_quick_start_for_ryzenai.rst>
    Best Practice for Ryzen AI in AMD Quark ONNX <ryzen_ai_best_practice.rst>
-   Auto-Search for Ryzen AI ONNX Model Quantization <../../onnx/example_quark_onnx_ryzenai>
+   Auto-Search for Ryzen AI ONNX Model Quantization <../../tutorials/onnx/ryzen_ai/resnet50/onnx_ryzen_ai_resnet50_tutorial>
    Quantizing LLMs for ONNX Runtime GenAI <tutorial_uint4_oga>
    FP32/FP16 to BF16 Model Conversion <tutorial_convert_fp32_or_fp16_to_bf16.rst>
    Power-of-Two Scales (XINT8) Quantization <tutorial_xint8_quantize.rst>

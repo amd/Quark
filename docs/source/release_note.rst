@@ -3,6 +3,279 @@
 Release Notes
 =============
 
+Release 0.11
+------------
+
+AMD Quark for PyTorch
+^^^^^^^^^^^^^^^^^^^^^
+
+AMD Quark 0.11 is tested against PyTorch 2.9, and compatible with upstream ``transformers==4.57``.
+
+Fused ``"rotation"`` and ``"quarot"`` algorithms in a single interface
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The pre-quantization algorithms "rotation" and "quarot" are fused together into a single rotation algorithm. It can be configured using :py:class:`.RotationConfig`. By default, only ``R1`` rotation is applied, corresponding to the previous ``quant_algo="rotation"`` behavior.
+
+Quark Torch Quantization Config Refactor
+""""""""""""""""""""""""""""""""""""""""
+
+-  The quantization configuration classes have been renamed for better clarity and consistency:
+
+   -  ``QuantizationSpec`` is deprecated in favor of :py:class:`.QTensorConfig`.
+   -  ``QuantizationConfig`` is deprecated in favor of :py:class:`QLayerConfig`.
+   -  ``Config`` is deprecated in favor of :py:class:`QConfig`.
+
+-  The deprecated class names (``QuantizationSpec``, ``QuantizationConfig``, ``Config``) are still available as aliases for backward compatibility, but will be removed in a future release.
+
+-  Before Refactor:
+
+   .. code-block:: python
+
+      from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+
+      quant_spec = QuantizationSpec(dtype=Dtype.int8, ...)
+      quant_config = QuantizationConfig(weight=quant_spec, ...)
+      config = Config(global_quant_config=quant_config, ...)
+
+-  After Refactor:
+
+   .. code-block:: python
+
+      from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
+
+      quant_spec = QTensorConfig(dtype=Dtype.int8, ...)
+      quant_config = QLayerConfig(weight=quant_spec, ...)
+      config = QConfig(global_quant_config=quant_config, ...)
+
+
+``quark torch-llm-ptq`` CLI Refactor and Simplification
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The CLI has been significantly refactored to use the new ``LLMTemplate`` interface and remove redundant features:
+-  Removed model-specific algorithm configuration files (e.g., ``awq_config.json``, ``gptq_config.json``, ``smooth_config.json``). Algorithm configurations are now automatically handled by ``LLMTemplate``.
+-  Removed unnecessary CLI arguments, retaining only a dozen or so essential arguments.
+-  Simplified export: The CLI now only exports to Hugging Face safetensors format.
+-  Simplified evaluation: Evaluation now uses perplexity (PPL) on wikitext-2 dataset instead of the previous multi-task evaluation framework.
+
+Code Organization and Examples Refactor
+"""""""""""""""""""""""""""""""""""""""
+Moved common utilities to ``quark.torch.utils``:
+
+-  ``model_preparation.py`` and ``data_preparation.py`` are now available in ``quark.torch.utils`` for easier reuse across examples and applications.
+-  ``module_replacement`` utilities are now located in ``quark.torch.utils.module_replacement``.
+
+Moved LLM evaluation code to ``quark.contrib``:
+
+-  The ``llm_eval`` module has been moved to ``quark.contrib.llm_eval`` and ``examples/contrib/llm_eval``.
+-  Perplexity evaluation (``ppl_eval``) is now shared between CLI and examples via ``quark.contrib.llm_eval``.
+
+Reorganized example scripts:
+
+-  Removed model-specific algorithm configuration files (e.g., ``awq_config.json``, ``gptq_config.json``, ``smooth_config.json``). Algorithm configurations are now automatically handled by ``LLMTemplate``.
+
+Extended ``quantize_quark.py`` example script and ``quark torch-llm-ptq`` CLI with new features:
+
+- Support for custom model templates and quantization schemes registration (example script only).
+- Support for per-layer quantization scheme configuration via ``--layer_quant_scheme`` argument.
+- Support for custom algorithm configurations via ``--quant_algo_config_file`` argument (example script only).
+- Simplified quantization scheme naming, directly use the built-in scheme names (see breaking changes below).
+
+Setting log level with ``QUARK_LOG_LEVEL``
+""""""""""""""""""""""""""""""""""""""""""
+
+Logging level can now be set with the environment variable ``QUARK_LOG_LEVEL``, e.g. ``QUARK_LOG_LEVEL=debug`` or ``QUARK_LOG_LEVEL=warning`` or ``QUARK_LOG_LEVEL=error`` or ``QUARK_LOG_LEVEL=critical``.
+
+Support for online rotations (online hadamard transform)
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The rotation algorithm supports online rotations, such that:
+
+.. math::
+
+   y = xRR^TW
+
+where :math:`x` is the input activation, :math:`W` the weight, and :math:`R` an orthogonal matrix (e.g. hadamard transform). With the quantization operator :math:`\mathcal{Q}` added, this becomes :math:`\mathcal{Q}(xR) \times \mathcal{Q}(WR)^T`. The activation quantization :math:`\mathcal{Q}(xR)` is done **online**, that is the rotation is applied during inference and is not fused in a preceding layer.
+
+Online rotations can be enabled using ``online_r1_rotation=True`` in :py:class:`.RotationConfig`. Please refer to its documentation and to `the user guide <https://quark.docs.amd.com/latest/pytorch/tutorial_rotation.html>`_ for more details.
+
+Support for rotation / SmoothQuant scales fine-tuning (SpinQuant/OSTQuant)
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+We support fine-tuning joint rotations and smoothing scales as a non-destructive transformation :math:`O = DR`, where :math:`R` is an orthogonal matrix and :math:`D` is a diagonal matrix (SmoothQuant scales), such that:
+
+.. math::
+
+   y &= xOO^{-1}W \\
+   &= xDRR^TD^{-1}W^T \\
+   &= xDR \times (WD^{-1}R)^T \\
+   &= ... x'R \times (WD^{-1}R)^T
+
+The support is well tested for ``llama``, ``qwen3``, ``qwen3_moe`` and ``gpt_oss`` architectures.
+
+Rotation fine-tuning and online rotations are compatible with other algorithms as GPTQ or Qronos.
+
+Please refer to the documentation of :py:class:`.RotationConfig`, `the example <https://github.com/amd/Quark/tree/release/0.11/examples/torch/language_modeling/rotation>`_ and `the user guide <https://quark.docs.amd.com/latest/pytorch/tutorial_rotation.html>`_ for more details.
+
+Minor changes and bug fixes
+"""""""""""""""""""""""""""
+
+- Fix memory duplication and OOM issues when loading ``gpt_oss`` models for quantization.
+- :py:meth:`.ModelQuantizer.freeze` behavior is changed to permanently quantize weights. Weights are still in high precision, but QDQ (quantize + dequantize) is run on them. This allows to avoid to rerun QDQ on static weights at each subsequent call.
+- ``scaled_fake_quantize`` operator, which is used for QDQ, is now by default compiled with ``torch.compile``, allowing significant speedups depending on the quantization scheme (1x - 8x).
+- An efficient MXFP4 dynamic quantization kernel is used for activations when quantizing models, fusing scale computation and QDQ operations.
+- Batching support is fixed in ``lm-evaluation-harness`` integration in the examples, correctly passing the user-provided ``--eval_batch_size``.
+- CPU/GPU communication is removed in quantization observers, allowing for faster quantization and runtime during e.g. the evaluation of models.
+
+Deprecations and breaking changes
+"""""""""""""""""""""""""""""""""
+
+- Quantization scheme names in ``examples/torch/language_modeling/llm_ptq/quantize_quark.py`` and ``quark torch-llm-ptq`` CLI have been simplified and renamed:
+
+   -  ``w_int4_per_group_sym`` is deprecated in favor of ``int4_wo_32``, ``int4_wo_64``, ``int4_wo_128`` (depending on group size).
+   -  ``w_uint4_per_group_asym`` is deprecated in favor of ``uint4_wo_32``, ``uint4_wo_64``, ``uint4_wo_128`` (depending on group size).
+   -  ``w_int8_a_int8_per_tensor_sym`` is deprecated in favor of ``int8``.
+   -  ``w_fp8_a_fp8`` is deprecated in favor of ``fp8``.
+   -  ``w_mxfp4_a_mxfp4`` is deprecated in favor of ``mxfp4``.
+   -  ``w_mxfp4_a_fp8`` is deprecated in favor of ``mxfp4_fp8``.
+   -  ``w_mxfp6_e3m2_a_mxfp6_e3m2`` is deprecated in favor of ``mxfp6_e3m2``.
+   -  ``w_mxfp6_e2m3_a_mxfp6_e2m3`` is deprecated in favor of ``mxfp6_e2m3``.
+   -  ``w_bfp16_a_bfp16`` is deprecated in favor of ``bfp16``.
+   -  ``w_mx6_a_mx6`` is deprecated in favor of ``mx6``.
+
+- The ``--group_size`` and ``--group_size_per_layer`` arguments in ``examples/torch/language_modeling/llm_ptq/quantize_quark.py`` and ``quark torch-llm-ptq`` CLI have been removed. Group size is now embedded in the scheme name (e.g., ``int4_wo_32``, ``int4_wo_64``, ``int4_wo_128``).
+
+- The ``--layer_quant_scheme`` argument format in ``examples/torch/language_modeling/llm_ptq/quantize_quark.py`` and ``quark torch-llm-ptq`` CLI has changed to repeated arguments with pattern and scheme pairs (e.g., ``--layer_quant_scheme lm_head int8 --layer_quant_scheme '*down_proj' fp8``).
+
+- The token counter used count the number of tokens seen by each expert during calibration is now disabled by default, and requires the environment variable ``QUARK_COUNT_OBSERVED_SAMPLES=1``.
+
+- The export format ``"quark_format"`` is removed, following deprecation in AMD Quark 0.10. Additionally, ``quark.torch.export.api.ModelExporter`` and ``quark.torch.export.api.ModelImporter`` are removed, please refer to the `0.10 release notes <https://quark.docs.amd.com/latest/release_note.html#release-0-10>`_ and to `the documentation <https://quark.docs.amd.com/latest/pytorch/export/quark_export.html>`_ for the current API.
+
+AMD Quark for ONNX
+^^^^^^^^^^^^^^^^^^
+
+New Features
+""""""""""""
+
+-  Auto Search Pro
+
+    -  Hierarchical Search: Support for conditional and nested hyperparameter trees for advanced search strategies.
+    -  Custom Objectives: Support custom evaluation logic that perfectly aligns with specific needs.
+    -  Sampler Flexibility: Various samplers ('TPE', 'Grid Search', etc) are available .
+    -  Parallel search: Take advantage of parallelization to run multiple searches simultaneously, reducing time to solution.
+    -  Checkpoint: Resume interrupted hyperparameter optimization from the last checkpoint.
+    -  Visualization: View real-time visualizations that show your optimization performance and feature importance, making it easier to interpret results.
+    -  Output Saving: Automatically save the best configuration, study database, and generated plots for your analysis.
+
+-  Latency and memory usage profiling
+
+    -  Latency Profiling: Each quantization stage performs specific operations that contribute to the overall quantization pipeline, and their individual latency are reported in the profiling results.
+    -  Memory profiling
+
+        -  CPU Memory Profiling: By wrapping the Python script with mprof, we can record detailed memory traces during execution.
+        -  ROCM GPU Memory Profiling:  For workflows involving ROCMExecutionProvider or any GPU-based quantization step, Quark ONNX offers a lightweight tool to monitor ROCm GPU memory usage in real time.
+
+- ONNX Adapter: It is a graph transformation tool that can perform graph transformation of preprocessing like constant folding, operator fusion, removal of redundant nodes, streamlining input and output nodes, and optimizing the graph structure.
+
+   - Support 20 preprocessing features
+
+      - Convert BatchNormalization operations to Conv operations.
+      - Convert Clip operations to Relu operations.
+      - Convert models from FP16 to FP32.
+      - Convert models from NCHW to NHWC.
+      - Convert opset version of models.
+      - Convert ReduceMean operations to GlobalAveragePool operations.
+      - Convert Split operations to Slice operations.
+      - Duplicate initializers for shared Bias.
+      - Duplicate initializers for shared ones.
+      - Fix shapes for models with dynamic shapes.
+      - Fold BatchNormalization operations.
+      - Fold BatchNormalization operations after Concat operations.
+      - Fuse Gelu operations.
+      - Fuse InstanceNormalization operations.
+      - Fuse LpNormalization operations.
+      - Fuse LayerNormalization operations.
+      - Optimize models with ONNXRuntime.
+      - Remove initializers from model inputs.
+      - Simplify models with OnnxSlim.
+      - Split GlobalAveragePool operations.
+
+Enhancements
+""""""""""""
+
+-  Support Python3.12 for Quark ONNX and remove dependency on CMake < 4.0.
+
+-  Enhance tensor-wise mixed precision for integer quantization data types
+
+    - Enable the option ``TensorQuantOverrides`` to replace original ``MixedPrecisionTensor``.
+    - Add support for setting per-tensor or per-channel quantization.
+    - Add support for setting symmetric or asymmetric quantization.
+    - Add support for setting more parameters, such as scale, zero_point and etc.
+    - Prioritize the mixed precision setting when there are multiple settings on the same tensor.
+
+-  Refactor the codebase to make the quantizer easier to maintain and more reliable in operation
+
+-  Replace ONNX Simplifier with OnnxSlim in preprocessing process before quantization.
+
+-  Allow specific inputs or outputs to be converted from NCHW to NHWC.
+
+-  Refactor the import paths
+
+   - Before refactor:
+
+     .. code-block:: python
+
+        from quark.onnx import ModelQuantizer
+        from quark.onnx.quantization import QConfig
+        from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec
+        from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig
+
+        quantization_config = QConfig(
+            # This is a global quantization configuration example using Int8 for activation, weight and bias. If the quantization for the bias is not specified, it will automatically follow the same quantization as the weights.
+            global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+            # For example, quantize the activation, weight, and bias of the two specified nodes using Int16.
+            specific_layer_config={Int16: ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
+            # For example, quantize the activation, weight, and bias of the all MatMul nodes using Int16 and exclude all Gemm nodes to quantize.
+            layer_type_config={Int16: ["MatMul"], None: ["Gemm"]},
+        )
+
+   - After refactor:
+
+     .. code-block:: python
+
+        # All configurations are now imported uniformly from quark.onnx
+        from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, Int8Spec, CLEConfig, AdaRoundConfig
+
+        quantization_config = QConfig(
+            # Rename activation to input_tensors in QLayerConfig
+            global_config=QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec()),
+            # Compared to before, it is now to specify the quantization for each tensor of a node.
+            # For example, keep the input_tensors as Int8, quantize the weight and bias using Int16 for two specified nodes.
+            specific_layer_config={QLayerConfig(weight=Int16Spec(), bias=Int16Spec()): ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
+            # Compared to before, it is now to specify the quantization for each tensor of all nodes of specific operation types.
+            # For example, keep the input_tensors and bias as Int8, only quantize the weight using Int16 for all MatMul nodes and exclude all Gemm nodes to quantize.
+            layer_type_config={QLayerConfig(weight=Int16Spec()): ["MatMul"], None: ["Gemm"]},
+        )
+
+-  Reduce the memory consumption of the default mode of MinMSE to prevent OOM
+
+-  Significantly speedup the calibration process using parallel computation
+
+-  Fixed seed for Fast Finetune
+
+Documentation:
+""""""""""""""
+
+-  Removed ONNXRuntime dependency from Quark for simplified environment setup.
+
+Bug fixes and minor improvements
+""""""""""""""""""""""""""""""""
+
+-  Fixed percentile value selection for LayerwisePercentile
+
+-  Fixed the out-of-bounds axis issue when weight or bias is a scalar in BFP and MX quantization
+
+-  Fixed bug for replacing clip with ReLU operator.
+
 Release 0.10
 ------------
 
@@ -10,7 +283,7 @@ Release 0.10
 
    -  New Features
 
-      - Support PyTorch 2.7.1 and 2.8.0.
+      - Support PyTorch 2.7.1.
       - Support for int3 quantization and exporting of models.
       - Support the AWQ algorithm with Gemma3 and Phi4.
       - Support Qronos advanced quantization algorithm.
@@ -59,7 +332,8 @@ Release 0.10
          -  Advanced-Fastft Search: Supports continuous search spaces, advanced algorithms (e.g., TPE), and parallel execution for faster, smarter searching.
          -  Joint-Parameter Search: Combines coupled parameters into a unified space to avoid ineffective configurations and improve search quality.
 
-      -  Added support for ONNX 1.19 and ONNXRuntime 1.22.1
+      -  Added support for ONNX 1.19
+      -  Added support for ONNXRuntime 1.22.2
       -  Added optimized weight-scale calculation with the MinMSE method to improve quantization accuracy.
       -  Accelerated calibration with multi-process support, covering algorithms such as MinMSE, Percentile, Entropy, Distribution, and LayerwisePercentile.
       -  Added progress bars for Percentile, Entropy, Distribution, and LayerwisePercentile algorithms.
@@ -258,7 +532,7 @@ Release 0.10
            quantization_config = QConfig(
                global_config=int8_config,
                specific_layer_config={Int16: ["/layer.0/Conv_0", "/layer.11/Conv_2"]},
-               layer_type_config={Int16: ["MatMul"] None: ["Gemm"]},
+               layer_type_config={Int16: ["MatMul"], None: ["Gemm"]},
                exclude=["/layer.2/Conv_1", "^/Conv/.*", (["start_node_1", "start_node_2"], ["end_node_1", "end_node_2"])],
                algo_config=[cle_algo, adaround_algo],
                use_external_data_format=False,

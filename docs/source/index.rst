@@ -51,7 +51,7 @@ Key Features
    - **Post-Training Quantization (PTQ):** Quantize pre-trained models without the need for retraining data.
    - **Flexible Quantization Strategies:** Choose from symmetric/asymmetric, weight-only/static/dynamic quantization, and various quantization levels (per tensor/channel) to fine-tune performance and accuracy trade-offs.
    - **Extensive Data Type Support:** Quantize models using a wide range of data types, including `uint32`, `int32`, `float16`, `bfloat16`, `int16`, `uint16`, `int8`, `uint8`, `int4` `uint4`, `int3`, Block Floating Point (typical `BFP16`), and `Microscaling (MX)` data types with `int8`, `fp8_e4m3fn`, `fp8_e5m2`, `fp4`, `fp6_e3m2`, and `fp6_e2m3` elements.
-   - **Configurable Calibration Methods:** Optimize quantization accuracy with `MinMax`, `Entropy`, `Percentile`, `NonOverflow` and `MinMSE` calibration methods.
+   - **Configurable Calibration Methods:** Optimize quantization accuracy with `MinMax`, `Entropy`, `Distribution`, `Percentile`, `MinMSE` and `LayerwisePercentile` calibration methods.
 * **Advanced Capabilities:**
    - **Multiple Deployment Targets:** Target a variety of hardware platforms, including `NPU_CNN`, `NPU_Transformer`, and `CPU`.
    - **Cutting-Edge Algorithms:** Leverage state-of-the-art algorithms like `QuaRot`, `SmoothQuant`, `CLE`, `BiasCorrection`, `AdaQuant`, `AdaRound`, and `GPTQ` achieving optimal performance for demanding tasks.
@@ -63,20 +63,20 @@ Key Features
    :caption: Release Notes
    :maxdepth: 1
 
-   Release Information <release_note.rst>
+   Release Information <release_note>
 
 .. toctree::
    :hidden:
    :caption: Getting Started with AMD Quark
    :maxdepth: 1
 
-   Introduction to Quantization <intro.rst>
-   Installation <install.rst>
-   Getting started: Introduction <basic_usage.rst>
-   Getting started: Quark for ONNX <onnx/basic_usage_onnx.rst>
-   Getting started: Quark for PyTorch <pytorch/basic_usage_pytorch.rst>
-   PyTorch Examples <pytorch/pytorch_examples.rst>
-   ONNX Examples <onnx/onnx_examples.rst>
+   Introduction to Quantization <intro>
+   Installation <install>
+   Getting started: Introduction <basic_usage>
+   Getting started: Quark for ONNX <onnx/basic_usage_onnx>
+   Getting started: Quark for PyTorch <pytorch/basic_usage_pytorch>
+   PyTorch Examples <pytorch/pytorch_examples>
+   ONNX Examples <onnx/onnx_examples>
 
 .. supported-accelerators:
 .. toctree::
@@ -84,8 +84,8 @@ Key Features
    :caption: Supported accelerators
    :maxdepth: 1
 
-   AMD Ryzen AI <supported_accelerators/ryzenai/index.rst>
-   AMD Instinct <supported_accelerators/mi_gpus/index.rst>
+   AMD Ryzen AI <supported_accelerators/ryzenai/index>
+   AMD Instinct <supported_accelerators/mi_gpus/index>
 
 .. _advanced-quark-features-pytorch:
 .. toctree::
@@ -93,26 +93,27 @@ Key Features
    :caption: Advanced AMD Quark Features for PyTorch
    :maxdepth: 1
 
-   Configuring PyTorch Quantization for Large Language Models <pytorch/user_guide_config_for_llm.rst>
-   Configuring PyTorch Quantization from Scratch <pytorch/user_guide_config_description.rst>
+   Configuring PyTorch Quantization for Large Language Models <pytorch/user_guide_config_for_llm>
+   Configuring PyTorch Quantization from Scratch <pytorch/user_guide_config_description>
    Save and Load Quantized Models <pytorch/quark_save_load>
-   Exporting Quantized Models <pytorch/export/quark_export.rst>
-   Best Practices for Post-Training Quantization (PTQ) <pytorch/quark_torch_best_practices.rst>
-   Debugging quantization Degradation <pytorch/debug.rst>
-   Language Model Optimization <pytorch/llm_quark.rst>
-   Activation/Weight Smoothing (SmoothQuant) <pytorch/smoothquant.rst>
+   Exporting Quantized Models <pytorch/export/quark_export>
+   Best Practices for Post-Training Quantization (PTQ) <pytorch/quark_torch_best_practices>
+   Debugging quantization Degradation <pytorch/debug>
+   Language Model Optimization <pytorch/llm_quark>
+   Activation/Weight Smoothing (SmoothQuant) <pytorch/smoothquant>
    Auto SmoothQuant <tutorials/torch/auto_smoothquant_document_and_example>
-   Activation-aware Weight Quantization (AWQ) <pytorch/awq_document.rst>
-   Block Floating Point 16 <pytorch/tutorial_bfp16.rst>
-   Extensions <pytorch/extensions.rst>
-   Using MX (Microscaling) <pytorch/adv_mx.rst>
-   Two Level Quantization Formats <pytorch/adv_two_level.rst>
+   Activation-aware Weight Quantization (AWQ) <pytorch/awq_document>
+   Block Floating Point 16 <pytorch/tutorial_bfp16>
+   Extensions <pytorch/extensions>
+   Using MX (Microscaling) <pytorch/adv_mx>
+   Two Level Quantization Formats <pytorch/adv_two_level>
 
 .. _advanced-quark-features-onnx:
 .. toctree::
    :hidden:
    :caption: Advanced Quark Features for ONNX
    :maxdepth: 1
+
 
    Configuring ONNX Quantization <onnx/user_guide_config_description.rst>
    Data and OP Types <onnx/user_guide_supported_optype_datatype.rst>
@@ -124,11 +125,13 @@ Key Features
    Microexponents (MX) <onnx/tutorial_microexponents_quantization.rst>
    Accuracy Improvement Algorithms <onnx/accuracy_improvement_algorithms.rst>
    Automatic Search for Model Quantization <onnx/user_guide_auto_search.rst>
+   Automatic Search Pro for Model Quantization <onnx/user_guide_auto_search_pro.rst>
+   Latency and Memory profiling <onnx/tutorial_profiling.rst>
    Using ONNX Model Inference and Saving Input Data in NPY Format <onnx/config/user_guide_onnx_model_inference_save_input_npy>
-   Optional Utilities <onnx/optional_utilities.rst>
-   Tools <onnx/tools.rst>
+   Optional Utilities <onnx/optional_utilities>
+   Tools <onnx/tools>
 
-.. WARNING: The Jupyter Notebooks `.. toctree::` entry is defined at docs/source/jupyter_notebook_index.rst
+.. WARNING: The Jupyter Notebooks `.. toctree::` entry is defined at docs/source/jupyter_notebook_index
 ..          and post-processed by a Sphinx extension at `docs/source/_ext/quark_jupyter_notebook_build.py`
 ..          to either 1) execute the jupyter notebooks and add the both jupyter notebooks and their outputs to the documentation when QUARK_SPHINX_BUILD_SKIP_TUTORIALS is not set
 ..          or 2) convert the jupyter notebooks into rst and only add the notebook code as part of the documentation otherwise (fast build)
@@ -139,7 +142,14 @@ Key Features
    :caption: Third-party contributions
    :maxdepth: 1
 
-   Introduction and guidelines <intro_contrib.rst>
+   Introduction and guidelines <intro_contrib>
+
+.. toctree::
+   :hidden:
+   :caption: Experimental Features
+   :maxdepth: 1
+
+   Quark CLI <quark_cli>
 
 .. toctree::
    :hidden:
@@ -154,8 +164,8 @@ Key Features
    :caption: Troubleshooting and Support
    :maxdepth: 1
 
-   PyTorch FAQ <pytorch/pytorch_faq.rst>
-   ONNX FAQ <onnx/onnx_faq.rst>
+   PyTorch Troubleshooting <pytorch/pytorch_troubleshooting>
+   ONNX Troubleshooting <onnx/onnx_troubleshooting>
 
 .. toctree::
    :hidden:

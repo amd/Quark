@@ -26,7 +26,7 @@ Outlier layers can significantly degrade accuracy during quantization. Excluding
    cd Quark/examples/torch/language_modeling/llm_ptq/
    exclude_layers="*lm_head *layers.0.mlp.down_proj"
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_fp8_a_fp8 \
+                             --quant_scheme fp8 \
                              --exclude_layers $exclude_layers \
 
 Apply Quantization Algorithms
@@ -42,8 +42,7 @@ AWQ determines optimal scaling factors for smooth through grid search and is wid
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_uint4_per_group_asym \
-                             --group_size 128 \
+                             --quant_scheme uint4_wo_128 \
                              --dataset pileval_for_awq_benchmark \
                              --quant_algo awq
 
@@ -54,7 +53,7 @@ This method is primarily used for low-bit weight-only quantization (for example,
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_uint4_per_group_asym \
+                             --quant_scheme uint4_wo_128 \
                              --dataset wikitext_for_gptq_benchmark \
                              --quant_algo gptq
 
@@ -65,7 +64,7 @@ SmoothQuant reduces activation outliers by shifting the quantization challenge f
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_int8_a_int8_per_tensor_sym \
+                             --quant_scheme int8 \
                              --quant_algo smoothquant
 
 - **AutoSmoothQuant**
@@ -75,18 +74,20 @@ AutoSmoothQuant enhances SmoothQuant by automatically selecting the optimal :mat
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_int8_a_int8_per_tensor_sym \
+                             --quant_scheme int8 \
                              --dataset pileval_for_awq_benchmark \
                              --quant_algo autosmoothquant
 
 - **Rotation**
 
-QuaRot employs an online Hadamard transform in its algorithm, requiring kernel support for hardware deployment. Inspired by QuaRot and QServer, AMD Quark introduces the "Rotation" method, which enhances accuracy without requiring kernel modifications.
+QuaRot employs an online Hadamard transform in its algorithm, requiring kernel support for hardware deployment. Inspired by QuaRot and QServer, AMD Quark introduces the "Rotation" method, which by default only applies the fused ``R1`` rotation, requiring no specific kernel for deployment.
+
+This default behavior can be configured and largely modified according to the :py:class:`.RotationConfig`.
 
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir meta-llama/Llama-3.1-8B-Instruct \
-                             --quant_scheme w_int8_a_int8_per_tensor_sym \
+                             --quant_scheme int8 \
                              --quant_algo rotation
 
 Try Different Quantization Schemes

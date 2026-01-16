@@ -99,11 +99,9 @@ If the accuracy of bfloat16 model can not meet your target, you can improve bflo
 
 .. code:: python
 
-   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat
-   from quark.onnx.quantization.config.spec import QLayerConfig, BFloat16Spec, CalibMethod
-   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaQuantConfig
+   from quark.onnx import ModelQuantizer, ExtendedQuantType, ExtendedQuantFormat, QLayerConfig, BFloat16Spec, CalibMethod, CLEConfig, AdaQuantConfig
 
-   activation_spec = BFloat16Spec(calibration_method=CalibMethod.MinMax)
+   input_tensors_spec = BFloat16Spec(calibration_method=CalibMethod.MinMax)
    weight_spec = BFloat16Spec(calibration_method=CalibMethod.MinMax)
    algo_conf = [CLEConfig(), AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
    extra_info = {
@@ -111,6 +109,8 @@ If the accuracy of bfloat16 model can not meet your target, you can improve bflo
        'QuantizeAllOpTypes': True,
        'ForceQuantizeNoInputCheck': True,
    }
-   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
+
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, extra_options=extra_info)
+
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)

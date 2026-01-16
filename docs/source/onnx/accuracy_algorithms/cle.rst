@@ -9,12 +9,9 @@ Here is a simple example showing how to apply the CLE algorithm on an A8W8 (Acti
 
 .. code-block:: python
 
-    from quark.onnx import ModelQuantizer
-    from quark.onnx.quantization.config import QConfig
-    from quark.onnx.quantization.config.spec import QLayerConfig, UInt8Spec, Int8Spec
-    from quark.onnx.quantization.config.algorithm import CLEConfig
+    from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, UInt8Spec, Int8Spec, CLEConfig
 
-    quant_config = QLayerConfig(activation=UInt8Spec(), weight=Int8Spec())
+    quant_config = QLayerConfig(input_tensors=UInt8Spec(), weight=Int8Spec())
 
     cle_config = CLEConfig(cle_steps=1, cle_scale_append_bias=True)
 
@@ -38,9 +35,4 @@ Here we only list a few important and commonly used arguments, please refer to t
 Example
 =======
 
-.. note::
-
-   For information on accessing AMD Quark ONNX examples, refer to :doc:`Accessing ONNX Examples <../onnx_examples>`.
-   This example and the relevant files are available at ``/onnx/accuracy_improvement/cle``
-
-This :doc:`example <../example_quark_onnx_cle>` demonstrates quantizing a resnet152 model using the AMD Quark ONNX quantizer.
+This :doc:`example <../../tutorials/onnx/accuracy_improvement/cle/onnx_cle_tutorial>` demonstrates quantizing a resnet152 model using the AMD Quark ONNX quantizer.

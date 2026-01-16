@@ -104,8 +104,7 @@ Example Code:
 .. code-block:: python
 
    import onnxruntime
-   from quark.onnx import ModelQuantizer
-   from quark.onnx.quantization.config.config import QConfig
+   from quark.onnx import ModelQuantizer, QConfig
 
    input_model_path = "path/to/your/resnet50.onnx"
    output_model_path = "path/to/your/resnet50_quantized.onnx"
@@ -127,21 +126,18 @@ Example Code:
 .. code-block:: python
 
    import onnxruntime
-   from quark.onnx import ModelQuantizer
-   from quark.onnx.quantization.config.config import QConfig
-   from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
-   from quark.onnx.quantization.config.algorithm import CLEConfig
+   from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, XInt8Spec, CLEConfig
 
    input_model_path = "path/to/your/resnet50.onnx"
    output_model_path = "path/to/your/resnet50_quantized.onnx"
 
-   activation_spec = XInt8Spec()
+   input_tensors_spec = XInt8Spec()
    weight_spec = XInt8Spec()
    algo_confs = [CLEConfig()]
    extra_info = {'UseRandomData': True, "EnableNPUCnn": True}
-   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
+   config = QConfig(global_config=QLayerConfig(input_tensors=input_tensors_spec, weight=weight_spec),
                            algo_config=algo_confs,
-                           **extra_info)
+                           extra_options=extra_info)
 
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, calibration_data_reader=None)

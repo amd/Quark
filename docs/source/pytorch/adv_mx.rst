@@ -28,7 +28,7 @@ Follow the steps in the :doc:`installation guide <../install>`.
 .. code-block:: python
 
    from transformers import AutoModelForCausalLM, AutoTokenizer
-   model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b", token=<hf_token>)
+   model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b", torch_dtype="auto", token=<hf_token>)
    model.eval()
    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b", token=<hf_token>)
 
@@ -43,13 +43,13 @@ Replace all instances of ``<hf_token>`` with the token.
 
 .. code-block:: python
 
-   from quark.torch.quantization.config.config import Config, OCP_MXFP8E4M3Spec, QuantizationConfig
+   from quark.torch.quantization.config.config import QConfig, OCP_MXFP8E4M3Spec, QLayerConfig
 
    mxfp8_spec = OCP_MXFP8E4M3Spec(is_dynamic=False,
                                   ch_axis=-1).to_quantization_spec()
 
-   mxfp8_config = QuantizationConfig(weight=mxfp8_spec)
-   quant_config = Config(global_quant_config=mxfp8_config)
+   mxfp8_config = QLayerConfig(weight=mxfp8_spec)
+   quant_config = QConfig(global_quant_config=mxfp8_config)
 
 For OCP MX quantization, which always uses per-group quantization with group size 32, helper classes are available to instantiate the necessary tensor quantization spec:
 

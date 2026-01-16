@@ -111,7 +111,7 @@ Sometimes after deploying the quantized model, it is necessary to compare the si
 .. code-block:: python
 
    # This function dumps the simulation results of the quantized model,
-   # including weights and activation results.
+   # including weights and input_tensors results.
    quark.onnx.dump_model(
        model,
        dump_data_reader=None,
@@ -130,7 +130,7 @@ Sometimes after deploying the quantized model, it is necessary to compare the si
 .. note::
    The `batch_size` of the `dump_data_reader` is better set to 1 for DPU debugging.
 
-Dump results of each FixNeuron node (including weights and activation) are generated in ``output_dir`` after the command is successfully executed.
+Dump results of each FixNeuron node (including weights and input_tensors) are generated in ``output_dir`` after the command is successfully executed.
 
 For each quantized node, results are saved in \*.bin and \*.txt formats (\* represents the output name of the node). If ``dump_float`` is set to True, the output of all the nodes is saved in \*_float.bin and \*_float.txt (\* represents the output name of the node), which might require a lot of storage space.
 

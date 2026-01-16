@@ -26,12 +26,9 @@ Here is a simple example showing how to apply the AdaRound algorithm on an A8W8 
 
 .. code-block:: python
 
-    from quark.onnx import ModelQuantizer
-    from quark.onnx.quantization.config import QConfig
-    from quark.onnx.quantization.config.spec import QLayerConfig, UInt8Spec, Int8Spec
-    from quark.onnx.quantization.config.algorithm import AdaRoundConfig
+    from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, UInt8Spec, Int8Spec, AdaRoundConfig
 
-    quant_config = QLayerConfig(activation=UInt8Spec(), weight=Int8Spec())
+    quant_config = QLayerConfig(input_tensors=UInt8Spec(), weight=Int8Spec())
 
     adaround_config = AdaRoundConfig(
                       batch_size=1,
@@ -103,9 +100,9 @@ Examples
 AdaRound
 ~~~~~~~~
 
-This :doc:`example <../example_quark_onnx_adaround>` demonstrates quantizing a mobilenetv2_050.lamb_in1k model using the AMD Quark ONNX quantizer.
+This :doc:`example <../../tutorials/onnx/accuracy_improvement/adaround/onnx_adaround_tutorial>` demonstrates quantizing a mobilenetv2_050.lamb_in1k model using the AMD Quark ONNX quantizer.
 
 AdaQuant
 ~~~~~~~~
 
-This :doc:`example <../example_quark_onnx_adaquant>` demonstrates quantizing a mobilenetv2_050.lamb_in1k model using the AMD Quark ONNX quantizer.
+This :doc:`example <../../tutorials/onnx/accuracy_improvement/adaquant/onnx_adaquant_tutorial>` demonstrates quantizing a mobilenetv2_050.lamb_in1k model using the AMD Quark ONNX quantizer.

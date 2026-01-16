@@ -18,37 +18,38 @@ Here is a simple example of how to enable BF16 quantization.
 
 .. code:: python
 
-   from quark.onnx.quantization.config.config import QConfig
-   from quark.onnx.quantization.config.spec import QLayerConfig, BFloat16Spec, CalibMethod
+   from quark.onnx import QConfig, QLayerConfig, BFloat16Spec, CalibMethod
 
-   activation_spec = BFloat16Spec()
+   input_tensors_spec = BFloat16Spec()
    weight_spec = BFloat16Spec()
-   activation_spec.set_calibration_method(CalibMethod.MinMax)
+   input_tensors_spec.set_calibration_method(CalibMethod.MinMax)
    weight_spec.set_calibration_method(CalibMethod.MinMax)
-   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec), BF16QDQToCast=True)
+
+   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec), extra_options={"BF16QDQToCast": True})
 
    quantizer = ModelQuantizer(config)
 
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
 The BF16 quantization in the previous example inserts a custom Q/DQ pair for each tensor, which
-converts the model weights and activations from FP32 to BF16 directly, just as most frameworks do.
+converts the model weights and input_tensors from FP32 to BF16 directly, just as most frameworks do.
 
 In fact, BF16 has the same range as FP32, but with only 7 bits for the mantissa, it sacrifices
 precision. This means small differences between numbers can disappear, which can amplify
 numerical instability and cause overflow problems.
 
 To address the overflow issue in BF16 quantization, you can apply calibration and re-scale
-weights and activations to better align with dynamic range and utilize the dense numeric
+weights and input_tensors to better align with dynamic range and utilize the dense numeric
 area near zero of BF16. To enable this, set ``WeightScaled`` or ``ActivationScaled``
 in extra options if you are seeing overflow issues.
 
 .. code:: python
 
-    activation_spec = BFloat16Spec()
+    input_tensors_spec = BFloat16Spec()
     weight_spec = BFloat16Spec()
+
     config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
-                 WeightScaled=True, ActivationScaled=True,)
+                     extra_options={"WeightScaled": True, "ActivationScaled": True},)
 
 .. note::
     When inference with ONNXRuntime, you need to register the custom OPs so(Linux) or dll(Windows) file in the ORT session options.
@@ -81,10 +82,10 @@ There is no explicit rounding in BF16 quantization, so only AdaQuant can be used
 
 .. code:: python
 
-    from quark.onnx.quantization.config.algorithm import AdaQuantConfig
+    from quark.onnx import AdaQuantConfig
 
-    activation_spec = BFloat16Spec()
+    input_tensors_spec = BFloat16Spec()
     weight_spec = BFloat16Spec()
     algo_conf = [AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
-    config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
+    config = QConfig(global_config=QLayerConfig(input_tensors=input_tensors_spec, weight=weight_spec),
                     algo_config=algo_conf)

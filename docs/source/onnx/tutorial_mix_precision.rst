@@ -34,7 +34,11 @@ Granularity refers to the level at which precision can be controlled within a mo
 
 - **Element-wise Granularity**
 
-Element-wise mixed precision allows assigning different numeric precision levels to activations and weights at the individual computation level. For example: INT8 Weights for efficient storage and computation and INT16 Activation to preserve dynamic range.
+Element-wise mixed precision allows assigning different numeric precision levels to activations, weight and bias. For example, assign INT16 to activation to preserve dynamic range, INT8 to weight for efficient storage and computation and INT32 to bias for precision and overflow safety.
+
+- **OpType-wise Granularity**
+
+In practical use, it is sometimes possible to specify a certain precision for a specific operator type, in which case several layers of the same operator type will use the same precision. For example, in an INT8 quantized model, specifying all 'Softmax' layers as INT16.
 
 - **Layer-wise Granularity**
 
@@ -42,7 +46,7 @@ Different layers of a neural network can have varying levels of sensitivity to q
 
 - **Tensor-wise Granularity**
 
-Tensor-wise mixed precision enables assigning different precision levels to individual tensors within a layer. For example, in an INT8 quantized model, specifying any sensitive tensor as INT16.
+Tensor-wise mixed precision enables assigning different precision levels to individual tensors within a layer. For example, in an INT8 quantized model, specifying a convolution layer's input as INT16.
 
 2. **Support for Various Data Types**
 
@@ -71,202 +75,103 @@ Supports all the Microscaling data types, including MXINT8, MXFP8_E4M3, MXFP8_E5
 How to Enable Mixed Precision in AMD Quark for ONNX?
 ----------------------------------------------------
 
-Here, BF16 mixed with BFP16 is used as an example to illustrate how to build configurations for mixed precision quantization.
+Here, Int8 mixed with Int16 is used as an example to illustrate how to build configurations for mixed precision quantization.
 In fact, you can mix any two other data types equally.
 
 - **Element-wise**
 
-In this configuration, BFP16 is assigned to activations and BFloat16 to weights. Here the BFP16 quantization is
-executed by custom operator named "BFPQuantizeDequantize", whose default attributes make it work on BFP16 mode.
-
-.. note::
-
-    In this documentation, old APIs such as **Config**, **QuantizationConfig**, etc. will be replaced with the new APIs in the next release.
+In this configuration, Int16 is assigned to activations and Int8 to weights.
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, CalibrationMethod, ExtendedQuantFormat, ExtendedQuantType
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, Int16Spec, Int8Spec, ModelQuantizer
 
    # Build the configuration
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFloat16,
-   )
-   config = Config(global_quant_config=quant_config)
+   global_config = QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec())
+   quant_config = QConfig(global_config=global_config)
 
    # Create an ONNX quantizer
-   quantizer = ModelQuantizer(config)
+   quantizer = ModelQuantizer(quant_config)
 
    # Quantize the ONNX model. Users need to provide the input model path, output model path,
    # and a data reader for calibration.
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
 
-You can also assign BFloat16 to activations while BFP16 to weights as follows:
+- **OpType-wise**
+
+In this configuration, Int16 is assigned to the 'Softmax' operator.
 
 .. code-block:: python
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFloat16,
-       weight_type=ExtendedQuantType.QBFP,
-   )
+   from quark.onnx import QConfig, QLayerConfig, Int16Spec, Int8Spec, ModelQuantizer
+
+   global_config = QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec())
+   layer_type_config = {QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec(), biast=Int16Spec(), output_tensors=Int16Spec()): ['Softmax']}
+   quant_config = QConfig(global_config=global_config, layer_type_config=layer_type_config)
+
 
 - **Layer-wise**
 
-This is one of the common configurations for deploying models on hardware devices, where the computationally intensive layers are quantized into BFP16 to maintain accuracy while improving computational efficiency, and the remaining layers are quantized into BFloat16.
-
-
-.. code-block:: python
-
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFloat16,
-       weight_type=ExtendedQuantType.QBFloat16,
-       include_auto_mp=True,
-       extra_options={
-           "AutoMixprecision": {
-               "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
-               "TargetQuantType": ExtendedQuantType.QBFP,
-           },
-       },
-   )
-
-At this point, there are many tensors on the precision boundary whose consumers have different precision from the producers.
-Some backend compilers require that two types of quantization nodes exist simultaneously on these tensors, such as inserting
-a BFP node for BFP16 and custom QDQ pair for BF16 onto the same tensor. In this case, you can enable the ``DualQuantNodes`` option.
+This is one of the common configurations for deploying models on hardware devices, where the sensitive layers are quantized into Int16 to maintain accuracy, and the remaining layers are quantized into Int8.
 
 .. code-block:: python
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFloat16,
-       weight_type=ExtendedQuantType.QBFloat16,
-       include_auto_mp=True,
-       extra_options={
-           "AutoMixprecision": {
-               "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
-               "TargetQuantType": ExtendedQuantType.QBFP,
-               "DualQuantNodes": True,
-           },
-       },
-   )
+   from quark.onnx import QConfig, QLayerConfig, Int16Spec, Int8Spec, ModelQuantizer
 
-And we can also mix BF16 with MXINT8 as shown below. Please note that for other Microscaling data formats, you need to set MXAttributes
-to the parameter "extra_options", see the Microscaling tutorial for details.
+   global_config = QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec())
+   specific_layer_config = {QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec(), biast=Int16Spec(), output_tensors=Int16Spec()): ['/model/conv_1', '/model/gemm_1']}
+   quant_config = QConfig(global_config=global_config, specific_layer_config=specific_layer_config)
 
-.. code-block:: python
-
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFloat16,
-       weight_type=ExtendedQuantType.QBFloat16,
-       include_auto_mp=True,
-       extra_options={
-           "AutoMixprecision": {
-               "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],
-               "TargetQuantType": ExtendedQuantType.QMX,
-           },
-       },
-   )
 
 - **Tensor-wise**
 
-Certain tensors in a neural network are particularly sensitive to quantization, including weight and activation tensors. Applying
-appropriate precision for these sensitive tensors can help maintain model accuracy while reaping the benefits of quantization.
-Therefore, after identifying these tensors through sensitivity analysis, you can set the precision separately for these tensors.
+Certain tensors in a neural network are particularly sensitive to quantization, including activation, weight and even bias tensors. Applying appropriate precision for these sensitive tensors can help maintain model accuracy while reaping the benefits of quantization. Therefore, after identifying these tensors through sensitivity analysis, you can set the precision separately for them.
 
 .. code-block:: python
 
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFP,
-       specific_tensor_precision=True,
-       extra_options={
-           # MixedPrecisionTensor is a dictionary in which the key is data type and the value
-           # is a list of the names of sensitive tensors.
-           "MixedPrecisionTensor": {
-               ExtendedQuantType.QBFloat16: ['weight_tensor_name', 'activation_tensor_name'],
-           },
-       },
-   )
+   from quark.onnx import QConfig, QLayerConfig, Int16Spec, Int8Spec, ModelQuantizer, QuantType
 
-You can also assign more data types to more tensors as needed, for example:
+   global_config = QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec())
+   extra_options = { 'TensorQuantOverrides': { '/model/conv_1/output_0': [ { 'quant_type': QuantType.Int16 } ], }, }
+   quant_config = QConfig(global_config=global_config, extra_options=extra_options)
 
-.. code-block:: python
-
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QBFP,
-       weight_type=ExtendedQuantType.QBFP,
-       specific_tensor_precision=True,
-       extra_options={
-           # MixedPrecisionTensor is a dictionary in which the key is data type and the value
-           # is a list of the names of sensitive tensors.
-           "MixedPrecisionTensor": {
-               ExtendedQuantType.QBFloat16: ['weight_tensor_name1', 'activation_tensor_name1'],
-               ExtendedQuantType.QInt16: ['weight_tensor_name2', 'activation_tensor_name2'],
-           },
-       },
-   )
+It is worth mentioning that, aside from the basic element-wise configuration, other mixed precision configurations can be combined in any manner. For example, you can use combinations like "Element-wise + OpType-wise + Layer-wise" or "Element-wise + OpType-wise + Layer-wise + Tensor-wise". However, if a single tensor is assigned different levels of precision in the combined configuration, the setting of the smaller granularity will override the one of larger granularity.
 
 Automatic Mixed Precision based on Sensitivity Analysis
 --------------------------------------------------------
 
-The previous examples are manually specified mixed precision, but in the practical applications automatically identifying sensitive layers and then
-applying mixed precision becomes more critical.
+The previous examples are manually specified mixed precision, but in the practical applications automatically identifying sensitive layers and then applying mixed precision becomes more critical.
 
 AMD Quark for ONNX supports automatic mixed precision as follows:
 
 **Step 1** Sensitivity analysis. This step can involve profiling the model with a new precision settings and measuring the impact on accuracy.
 
-**Step 2** Sort layers by sensitivity. Layers that show significant accuracy degradation when quantized are deemed "sensitive" and are kept at higher
-precision. Less sensitive parts can be quantized more aggressively to lower precision without significant impact on overall model performance.
+**Step 2** Sort layers by sensitivity. Layers that show significant accuracy degradation when quantized are deemed "sensitive" and are kept at higher precision. Less sensitive parts can be quantized more aggressively to lower precision without significant impact on overall model performance.
 
 **Step 3** Perform mixed precision operations. Perform layer by layer until reach the accuracy target which is specified by users.
 
-We provide two types of accuracy target: general L2 Norm metric and Top1 metric specific to image classification models. Here is a simple example of
-how to use the L2 Norm metric to achieve automatic mixed precision:
+We provide two types of accuracy target: general L2 Norm metric and Top1 metric specific to image classification models. Here is a simple example of how to use the L2 Norm metric to achieve automatic mixed precision:
 
 .. code-block:: python
 
-   from quark.onnx import ModelQuantizer, CalibrationMethod, QuantType, ExtendedQuantFormat, ExtendedQuantType
-   from quark.onnx.quantization.config.config import Config, QuantizationConfig
+   from quark.onnx import QConfig, QLayerConfig, Int8Spec, Int16Spec, ModelQuantizer, AutoMixprecisionConfig
+
+   auto_mixprecision_algo = AutoMixprecisionConfig(target_op_type=["Conv", "ConvTranspose", "Gemm", "MatMul"],
+                                                   act_target_quant_type=Int8,
+                                                   weight_target_quant_type=Int16,
+                                                   output_index=0,
+                                                   l2_target=0.1)
 
    # Build the configuration
-   quant_config = QuantizationConfig(
-       calibrate_method=CalibrationMethod.MinMax,
-       quant_format=ExtendedQuantFormat.QDQ,
-       activation_type=ExtendedQuantType.QInt16,
-       weight_type=QuantType.QInt8,
-       include_auto_mp=True,
-       extra_options={
-           'AutoMixprecision': {
-               "TargetOpType": ["Conv", "ConvTranspose", "Gemm", "MatMul"],  # The operation types to perform mixed precision
-               "ActTargetQuantType": QuantType.QInt8,  # The activation input of insensitive layers will be assign to this precision
-               "WeightTargetQuantType": QuantType.QInt8,  # The weight input of insensitive layers will be assign to this precision
-               "OutputIndex": 0,  # The index of outputs for evaluating accuracy indicator
-               "L2Target": 0.1,  # If L2 is less than this value after assigning a new precision to a certain layer, the process continues
-           },
-       },
-   )
-   config = Config(global_quant_config=quant_config)
+   quant_config = QConfig(global_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec()),
+                          algo_config=[auto_mixprecision_algo])
 
    # Create an ONNX quantizer
-   quantizer = ModelQuantizer(config)
+   quantizer = ModelQuantizer(quant_config)
 
    # Quantize the ONNX model. Users need to provide the input model path, output model path,
    # and a data reader for calibration.
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
-For a detailed example of using Top1 metric for mixed precision, refer to the :doc:`Mixed Precision Example <example_quark_onnx_mixed_precision>`.
+For a detailed example of using Top1 metric for mixed precision, refer to the :doc:`Mixed Precision Example <../tutorials/onnx/accuracy_improvement/mixed_precision/onnx_mixed_precision_tutorial>`.

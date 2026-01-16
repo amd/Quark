@@ -11,6 +11,10 @@ On all GPUs supported by PyTorch, quantized models can be evaluated using fake q
 
     As an example, AMD Instinct MI300 supports ``float8`` compute, which means that linear layers quantized in ``float8`` for both the activation and weights may use ``float8 @ float8 -> float16`` computation.
 
+    AMD Instinct MI325 also supports ``float8`` compute similar to MI300, enabling efficient ``float8 @ float8 -> float16`` computation for quantized models.
+
+    AMD Instinct MI355 supports both ``float8`` and ``mxfp4`` (Microscaling FP4) compute, providing additional flexibility for ultra-low precision quantization with ``mxfp4 @ mxfp4`` computation.
+
     On the other hand, Instinct MI210 and Instinct MI250 GPUs (CDNA2 architecture) do not support ``float8`` computations, and only ``QDQ`` can be used for this specific ``dtype`` and hardware.
 
 Below are some references on how you can leverage Quark to seamlessly run accelerated quantized models on AMD Instinct GPUs:

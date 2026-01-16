@@ -12,11 +12,11 @@ Introduction
 
 A8W8 and A16W8 are two commonly used quantization configurations for the Ryzen AI NPU.
 
-    A8W8: Uses symmetric INT8 activation, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
+    A8W8: Uses symmetric INT8 input_tensors, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
 
-    A16W8: Uses symmetric INT16 activation, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
+    A16W8: Uses symmetric INT16 input_tensors, symmetric INT8 weight, and symmetric INT32 bias quantization with float scales.
 
-As the activation bit width increases, the quantized model's accuracy improves. This means A16W8 generally offers better accuracy than A8W8. However, A8W8 provides better performance compared to A16W8.
+As the input_tensors bit width increases, the quantized model's accuracy improves. This means A16W8 generally offers better accuracy than A8W8. However, A8W8 provides better performance compared to A16W8.
 
 Please choose the appropriate quantization configuration based on your specific needs. This guide explains how to quantize a float model using the A8W8 or A16W8 configuration and provides strategies to improve accuracy.
 
@@ -35,8 +35,7 @@ As the Figure 1 shows, you can refer to codes below:
 .. code-block:: python
 
 
-   from quark.onnx.quantization import QConfig
-   from quark.onnx import ModelQuantizer
+   from quark.onnx import ModelQuantizer, QConfig
 
     # Define model paths
     # Path to the float model to be quantized
@@ -133,10 +132,9 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
 
 .. code:: python
 
-   from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec, CalibMethod
-   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig, AdaQuantConfig
+   from quark.onnx import QLayerConfig, Int8Spec, CalibMethod, CLEConfig, AdaRoundConfig, AdaQuantConfig
 
-   activation_spec = Int8Spec(calibration_method=CalibMethod.MinMax)  # Replace with Int16Spec when using A16W8
+   input_tensors_spec = Int8Spec(calibration_method=CalibMethod.MinMax)  # Replace with Int16Spec when using A16W8
    weight_spec = Int8Spec(calibration_method=CalibMethod.MinMax)
    algo_conf = [CLEConfig(), AdaRoundConfig(num_iterations=1000, learning_rate=0.1)]
    extra_info = {
@@ -146,7 +144,9 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
        'AlignConcat': True,
        'AlignEltwiseQuantType': True,
    }
-   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
+
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, extra_options=extra_info)
+
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)
 
@@ -154,10 +154,9 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
 
 .. code:: python
 
-   from quark.onnx.quantization.config.spec import QLayerConfig, Int8Spec, CalibMethod
-   from quark.onnx.quantization.config.algorithm import CLEConfig, AdaRoundConfig, AdaQuantConfig
+   from quark.onnx import QLayerConfig, Int8Spec, CalibMethod, CLEConfig, AdaRoundConfig, AdaQuantConfig
 
-   activation_spec = Int8Spec(calibration_method=CalibMethod.MinMax) # Replace with Int16Spec when using A16W8
+   input_tensors_spec = Int8Spec(calibration_method=CalibMethod.MinMax) # Replace with Int16Spec when using A16W8
    weight_spec = Int8Spec(calibration_method=CalibMethod.MinMax)
    algo_conf = [CLEConfig(), AdaQuantConfig(num_iterations=1000, learning_rate=1e-6)]
    extra_info = {
@@ -167,6 +166,8 @@ If the accuracy of A8W8/A16W8 quantized model can not meet your target, you can 
        'AlignConcat': True,
        'AlignEltwiseQuantType': True,
    }
-   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, **extra_info)
+
+   config = QConfig(QLayerConfig(activation=activation_spec, weight=weight_spec), algo_config=algo_conf, extra_options=extra_info)
+
    quantizer = ModelQuantizer(config)
    quantizer.quantize_model(input_model_path, output_model_path, data_reader)

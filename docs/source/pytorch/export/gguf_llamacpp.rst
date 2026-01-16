@@ -8,7 +8,7 @@ Introduction
 
 `Quark <https://quark.docs.amd.com/latest/>`__ is a deep learning model quantization toolkit for quantizing models from PyTorch, ONNX, and other frameworks. It provides easy-to-use APIs for quantization and more advanced features than native frameworks. Quark supports multiple hardware backends and a variety of data types with state-of-the-art quantization algorithms integrated, such as AWQ, SmoothQuant, GPTQ, and more.
 
-After quantization, Quark can export the quantized model in different formats. Quark has already implemented :doc:`ONNX exporting <quark_export_onnx>` and :doc:`Quark Format <quark_export_quark>`. Now we introduce GGUF exporting in this tutorial. Thanks to this feature, you can obtain both high accuracy with Quark and high performance with GGML-based frameworks like ``llama.cpp``.
+After quantization, Quark can export the quantized model in different formats. Quark has already implemented :doc:`ONNX exporting <quark_export_onnx>` and :doc:`Hugging Face Safetensors Format <quark_export_hf>`. Now we introduce GGUF exporting in this tutorial. Thanks to this feature, you can obtain both high accuracy with Quark and high performance with GGML-based frameworks like ``llama.cpp``.
 
 What Is GGUF
 ------------
@@ -50,26 +50,26 @@ There's a handy API named ``ModelQuantizer`` in Quark. After initializing quanti
 
    # 1. Set model
    from transformers import AutoModelForCausalLM, AutoTokenizer
-   model = AutoModelForCausalLM.from_pretrained("llama2-7b")
+   model = AutoModelForCausalLM.from_pretrained("llama2-7b", torch_dtype="auto")
    model.eval()
    tokenizer = AutoTokenizer.from_pretrained("llama2-7b")
 
    # 2. Set quantization configuration
    from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-   from quark.torch.quantization.config.config import Config, QuantizationSpec, QuantizationConfig
+   from quark.torch.quantization.config.config import QConfig, QTensorConfig, QLayerConfig
    from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-   DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(dtype=Dtype.uint4,
-                                                       observer_cls=PerChannelMinMaxObserver,
-                                                       symmetric=False,
-                                                       scale_type=ScaleType.float,
-                                                       round_method=RoundType.half_even,
-                                                       qscheme=QSchemeType.per_group,
-                                                       ch_axis=0,
-                                                       is_dynamic=False,
-                                                       group_size=32)
+   DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QTensorConfig(dtype=Dtype.uint4,
+                                                     observer_cls=PerChannelMinMaxObserver,
+                                                     symmetric=False,
+                                                     scale_type=ScaleType.float,
+                                                     round_method=RoundType.half_even,
+                                                     qscheme=QSchemeType.per_group,
+                                                     ch_axis=0,
+                                                     is_dynamic=False,
+                                                     group_size=32)
 
-   DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
-   quant_config = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG)
+   DEFAULT_W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
+   quant_config = QConfig(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG)
 
    # 3. Define calibration dataloader (still need this step for weight only and dynamic quantization)
    from torch.utils.data import DataLoader

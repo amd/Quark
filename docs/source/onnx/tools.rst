@@ -191,7 +191,7 @@ For some models that are mixed precision such as A18W8 and A8W8 mixed, use the `
 Convert a U16U8 Quantized Model to a U8U8 Model
 -----------------------------------------------
 
-Convert a U16U8 (activations are quantized by UINT16 and weights by UINT8) to a U8U8 model without calibration.
+Convert a U16U8 (input_tensors are quantized by UINT16 and weights by UINT8) to a U8U8 model without calibration.
 
 Use the ``convert_u16u8_to_u8u8`` tool to do the conversion:
 

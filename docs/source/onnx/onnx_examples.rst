@@ -19,7 +19,7 @@ The example folder is in amd_quark.zip.
                   + ...
                + onnx # HERE ARE THE ONNX EXAMPLES
                   + image_classification
-                  + language_models
+                  + object_detection
                   + ...
             + ...
 
@@ -30,20 +30,19 @@ ONNX Examples in AMD Quark for This Release
    :caption: Improving Model Accuracy
    :maxdepth: 1
 
-   Block Floating Point (BFP) <example_quark_onnx_BFP>
-   MX Formats <example_quark_onnx_MX>
-   Fast Finetune AdaRound <example_quark_onnx_adaround>
-   Fast Finetune AdaQuant <example_quark_onnx_adaquant>
-   Cross-Layer Equalization (CLE) <example_quark_onnx_cle>
-   Layer-wise Percentile <example_quark_onnx_layerwise_percentile>
-   GPTQ <example_quark_onnx_gptq>
-   Mixed Precision <example_quark_onnx_mixed_precision>
-   Smooth Quant <example_quark_onnx_smoothquant>
+   Block Floating Point (BFP) <../tutorials/onnx/accuracy_improvement/bfp/onnx_bfp_tutorial>
+   MX Formats <../tutorials/onnx/accuracy_improvement/MX/onnx_MX_tutorial>
+   Fast Finetune AdaRound <../tutorials/onnx/accuracy_improvement/adaround/onnx_adaround_tutorial>
+   Fast Finetune AdaQuant <../tutorials/onnx/accuracy_improvement/adaquant/onnx_adaquant_tutorial>
+   Cross-Layer Equalization (CLE) <../tutorials/onnx/accuracy_improvement/cle/onnx_cle_tutorial>
+   Layer-wise Percentile <../tutorials/onnx/accuracy_improvement/layerwise/onnx_layerwise_tutorial>
+   GPTQ <../tutorials/onnx/accuracy_improvement/gptq/onnx_gptq_tutorial>
+   Mixed Precision <../tutorials/onnx/accuracy_improvement/mixed_precision/onnx_mixed_precision_tutorial>
+   Smooth Quant <../tutorials/onnx/accuracy_improvement/smooth_quant/onnx_smooth_quant_tutorial>
    QuaRot <example_quark_onnx_quarot>
-   Auto-Search for General Yolov3 ONNX Model Quantization <example_quark_onnx_auto_search>
-   Auto-Search for Ryzen AI Yolo-nas ONNX Model Quantization <example_quark_onnx_ryzenai_yolonas>
-   Auto-Search for Ryzen AI Resnet50 ONNX Model Quantization <example_ryzenai_autosearch_resnet50>
-   Auto-Search for Ryzen AI Yolov3 ONNX Quantization with Custom Evaluator <example_quark_onnx_ryzenai_yolov3_custom_evaluator>
+   Auto-Search for Ryzen AI Yolov8 ONNX Model Quantization <../tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_yolov8/onnx_ryzen_ai_auto_search_yolov8_tutorial>
+   Auto-Search for Ryzen AI MobileNetv2-50 ONNX Quantization with Custom Evaluator <../tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_mobilenetv2_50_custom_evaluator/onnx_ryzen_ai_auto_search_mobilenetv2_50_tutorial>
+   Auto-Search for Ryzen AI Resnet50 ONNX Model Quantization <../tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_resnet50/onnx_ryzen_ai_auto_search_resnet50_tutorial>
 
 .. toctree::
    :caption: Dynamic Quantization
@@ -56,7 +55,8 @@ ONNX Examples in AMD Quark for This Release
    :caption: Image Classification
    :maxdepth: 1
 
-   Quantizing a ResNet50-v1-12 Model <example_quark_onnx_image_classification>
+   Quantizing a ResNet50-v1-12 Model <../tutorials/onnx/image_classification/onnx_image_classification_tutorial>
+   Quantizing a Huggingface TIMM Model <../tutorials/onnx/huggingface_timm/onnx_huggingface_timm_tutorial>
 
 .. toctree::
    :caption: Language Models
@@ -75,24 +75,12 @@ ONNX Examples in AMD Quark for This Release
    :caption: Crypto Mode
    :maxdepth: 1
 
-   Quantizing a ResNet50 model in crypto mode <example_quark_onnx_crypto_mode>
+   Quantizing a ResNet50 model in crypto mode <../tutorials/onnx/crypto_mode/onnx_crypto_mode_tutorial>
 
 .. _ryzenai_onnx_examples:
 .. toctree::
    :caption: Ryzen AI Quantization
    :maxdepth: 1
 
-   Best Practice for Quantizing an Image Classification Model <image_classification_example_quark_onnx_ryzen_ai_best_practice>
-   Best Practice for Quantizing an Object Detection Model  <object_detection_example_quark_onnx_ryzen_ai_best_practice>
-
-.. toctree::
-   :caption: Hugging Face TIMM Models
-   :maxdepth: 1
-
-   Hugging Face TIMM Quantization <hugging_face_timm_quantization>
-
-.. toctree::
-   :caption: Yolo_nas and Yolox Models
-   :maxdepth: 1
-
-   Yolo_nas and Yolox Quantization <example_quark_onnx_yolo_quantization>
+   Best Practice for Quantizing an Image Classification Model <../tutorials/onnx/ryzen_ai/resnet50/onnx_ryzen_ai_resnet50_tutorial>
+   Best Practice for Quantizing an Object Detection Model  <../tutorials/onnx/ryzen_ai/yolov8/onnx_ryzen_ai_yolov8_tutorial>

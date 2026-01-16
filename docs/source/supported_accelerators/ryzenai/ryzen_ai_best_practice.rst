@@ -45,7 +45,7 @@ Quantization
 
 - **XINT8**
 
-XINT8 uses symmetric INT8 activation and weights quantization with power-of-two scales. Typically, the calibration method uses MinMSE. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
+XINT8 uses symmetric INT8 input_tensors and weights quantization with power-of-two scales. Typically, the calibration method uses MinMSE. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
 
 .. code-block:: bash
 
@@ -56,7 +56,7 @@ XINT8 uses symmetric INT8 activation and weights quantization with power-of-two 
 
 - **A8W8**
 
-A8W8 uses symmetric INT8 activation and weights quantization with float scales. Typically, the calibration method uses MinMax. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
+A8W8 uses symmetric INT8 input_tensors and weights quantization with float scales. Typically, the calibration method uses MinMax. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
 
 .. code-block:: bash
 
@@ -67,7 +67,7 @@ A8W8 uses symmetric INT8 activation and weights quantization with float scales. 
 
 - **A16W8**
 
-A16W8 uses symmetric INT16 activation and symmetric INT8 weights quantization with float scales. Typically, the calibration method uses MinMax.
+A16W8 uses symmetric INT16 input_tensors and symmetric INT8 weights quantization with float scales. Typically, the calibration method uses MinMax.
 
 .. code-block:: bash
 
