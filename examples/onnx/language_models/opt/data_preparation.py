@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import torch
 from datasets import load_dataset
@@ -176,7 +176,7 @@ def get_calib_dataloader_to_dict(
 
 def get_calib_dataloader(
     dataset_name: str, **kwargs: Any
-) -> Union[DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]]:
+) -> DataLoader[torch.Tensor] | DataLoader[list[dict[str, torch.Tensor]]] | DataLoader[dict[str, torch.Tensor]]:
     if dataset_name in ["pileval", "cnn_dailymail"]:
         return get_calib_dataloader_to_tensor(dataset_name, **kwargs)
     elif dataset_name in ["pileval_for_awq_benchmark", "wikitext_for_gptq_benchmark"]:

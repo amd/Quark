@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import abc
 import inspect
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable
 
 from torch.fx.graph_module import GraphModule
 

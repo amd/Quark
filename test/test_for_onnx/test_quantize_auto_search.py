@@ -15,11 +15,10 @@ import numpy as np
 import onnxruntime
 import torch
 import torch.nn as nn
-from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
 
-from quark.onnx import ModelQuantizer, PowerOfTwoMethod
-from quark.onnx.auto_search import (
+from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod
+from quark.onnx.quantization.auto_search.auto_search_v1 import (
     AutoSearch,
     AutoSearchConfig,
     SearchSpace,
@@ -31,7 +30,6 @@ from quark.onnx.auto_search import (
     split_config_levels,
     ssim_metric,
 )
-from quark.onnx.quantization.config.config import Config
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -133,7 +131,13 @@ def prepare_model(output_dir):
     onnx_model_path = Path(output_dir, "double_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "double_conv_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

@@ -53,11 +53,11 @@ constexpr T narrow(U u) noexcept {
   GSL_SUPPRESS(p.2)     // don't rely on undefined behavior
   const T t = gsl::narrow_cast<T>(
     u
-  );  // While this is technically undefined behavior in some cases (i.e.,
-      // if the source value is of floating-point type and cannot fit into
-      // the destination integral type), the resultant behavior is benign on
-      // the platforms that we target (i.e., no hardware trap
-      // representations are hit).
+  );  // While this is technically undefined behavior in some cases (i.e., if
+      // the source value is of floating-point type and cannot fit into the
+      // destination integral type), the resultant behavior is benign on the
+      // platforms that we target (i.e., no hardware trap representations are
+      // hit).
 
   if (static_cast<U>(t) != u ||
       (is_different_signedness && ((t < T{}) != (u < U{})))) {

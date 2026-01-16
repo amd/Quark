@@ -1,23 +1,19 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import os
 
 import numpy as np
+import onnx
+from onnx import numpy_helper
+from onnxslim import slim
 
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
-try:
-    import onnx
-    from onnx import numpy_helper
-    from onnxsim import simplify
-except ModuleNotFoundError as e:
-    logger.error(str(e))
-    raise ModuleNotFoundError("Please install onnx package if exporting onnx graph. " + str(e)) from e
 
 __all__ = [
     "convert_model_to_uint4_int4",
@@ -83,7 +79,7 @@ def _contain_uint16_or_int16_quant(onnx_graph: str) -> bool:
     target_data_type = ["int16", "uint16"]
     model = onnx.load(onnx_graph)
     try:
-        model, check = simplify(model)
+        model = slim(model)
         initializers = {init.name: init for init in model.graph.initializer}
 
         for node in model.graph.node:
@@ -131,7 +127,7 @@ def change_opset_version(onnx_path: str, opset_version: int = 21) -> None:
     onnx_model = onnx.load(onnx_path)
     old_opset_version = onnx_model.opset_import[0].version if onnx_model.opset_import[0].domain == "" else None
     if old_opset_version is not None and old_opset_version < opset_version:
-        model_simp, check = simplify(onnx_model)
+        model_simp = slim(onnx_model)
         # step3: optimization, change the op_set to 21 or higher
         from onnx import version_converter
 
@@ -166,8 +162,8 @@ def fold_quantizers_for_bias(model_path: str) -> None:
     # Load the model and simplify
     model = onnx.load(model_path)
     try:
-        model, check = simplify(model)
-    except Exception as e:
+        model = slim(model)
+    except Exception:
         logger.warning("During fold bias, simplify onnx model failed, skip fold_quantizers_for_bias")
         return
 
@@ -274,7 +270,7 @@ def fold_quantizers_for_bias(model_path: str) -> None:
         graph.initializer.remove(name_to_initializer[each_init_name])
 
     bias_quant_node_num = len(target_bias_quant_node)
-    model_simp, check = simplify(model)
+    model_simp = slim(model)
     onnx.save_model(model_simp, model_path)
     logger.info(
         f"As bias is int32 quant, fold bias QuantizeLinear to DequantizeLinear for better onnxruntime, total convert: {bias_quant_node_num}"

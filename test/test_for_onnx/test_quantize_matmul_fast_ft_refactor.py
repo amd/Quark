@@ -11,10 +11,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.algorithm import AdaRoundConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+from quark.onnx import AdaRoundConfig, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor_x = np.array(
@@ -93,12 +90,17 @@ def prepare_model(output_dir):
     model = SimpleConvModel()
 
     dummy_input_x = torch.randn(1, 3, 4, 4)
-    dummy_input_y = torch.randn(4, 4)
 
     onnx_model_path = Path(output_dir, "simple_matmul_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "simple_matmul_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input_x, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input_x,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

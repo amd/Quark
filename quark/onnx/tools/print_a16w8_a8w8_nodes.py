@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -7,7 +7,6 @@ Print names and quantity of A16W8 and A8W8 Conv ConvTranspose and Gemm.
 """
 
 from argparse import ArgumentParser, Namespace
-from typing import List, Tuple
 
 import onnx
 from onnxruntime.quantization.onnx_model import ONNXModel
@@ -77,7 +76,7 @@ def a16w8_a8w8_nodes(input_model_path: str) -> tuple[list[str], list[str]]:
 
         return int8_node_name_list, int16_node_name_list
 
-    except Exception as e:
+    except Exception:
         return [], []
 
 

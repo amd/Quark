@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -25,7 +25,7 @@ from quark.torch.quantization.observer.observer import (
     PerTensorPowOf2MinMSEObserver,
 )
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, StaticScaledFakeQuantize
 
 # from torch.ao.quantization.pt2e.utils import _get_node_name_to_scope
 logger = ScreenLogger(__name__)
@@ -348,7 +348,7 @@ def _clear_all_observered_tensor(model: torch.fx.GraphModule) -> None:
 
 def _enable_observer(model: torch.fx.GraphModule, enable: bool = True) -> None:
     for module in model.modules():
-        if isinstance(module, ScaledFakeQuantize):
+        if isinstance(module, StaticScaledFakeQuantize):
             if enable is True:
                 module.enable_observer()
             else:

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -21,40 +21,46 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# type: ignore
+from typing import Any
 
-import os
 import torch
-import warnings
-from torch.library import Library, impl
-from types import ModuleType
-from typing import Any, List, Optional
-from torch import ops  # type: ignore[attr-defined]
-from .hw_emulation import hw_emulation_interface
-from .hw_emulation.extensions import kernel_ext
-from torch.autograd import Function
-from typing import Any, Union
-from torch.onnx._internal import jit_utils
-from torch.onnx import errors, symbolic_helper
 import torch._C._onnx as _C_onnx
+from packaging import version
+from torch import ops  # type: ignore[attr-defined]
+from torch.autograd import Function
+from torch.distributed._tensor import Replicate, Shard
 from torch.distributed._tensor.placement_types import DTensorSpec
-from torch.distributed._tensor import distribute_tensor, DTensor, Replicate, Shard
+from torch.onnx import errors, symbolic_helper
+
+from quark.shares.utils.log import ScreenLogger
+from quark.torch.kernel import mx
+from quark.torch.kernel.hw_emulation.extensions import kernel_ext
+from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_int_per_channel_affine
+from quark.torch.utils import QUARK_TORCH_COMPILE_MODE
+
+logger = ScreenLogger(__name__)
 
 try:
     from torch.distributed._tensor.experimental import register_sharding
+
     register_sharding_exist = True
-except ImportError as e:
+except ImportError:
     register_sharding_exist = False
-    warnings.warn(
-        "Quark tensor parallelism requires PyTorch >= 2.5 because `register_sharding` "
-        "was only introduced in PyTorch 2.5. "
-        "Please upgrade PyTorch to 2.5 or later to enable full functionality.", UserWarning)
+    logger.warning(
+        "Quark tensor parallelism requires PyTorch >= 2.5 because `register_sharding` was only introduced in PyTorch 2.5. Please upgrade PyTorch to 2.5 or later to enable full functionality."
+    )
+
+
+# PyTorch 2.9 made some TorchScript APIs private
+if version.parse(torch.__version__) >= version.parse("2.9"):
+    from torch.onnx._internal.torchscript_exporter import jit_utils
+else:
+    from torch.onnx._internal import jit_utils
 
 
 class QuantE4M3Function(Function):
-
     @staticmethod
-    def forward(ctx: Any, inputs: torch.Tensor, scale: Union[float, None] = None) -> Any:  # type: ignore
+    def forward(ctx: Any, inputs: torch.Tensor, scale: float | None = None) -> Any:  # type: ignore
         if scale is None:
             return ops.quark.quant_fp8_e4m3(inputs)
         else:
@@ -66,9 +72,8 @@ class QuantE4M3Function(Function):
 
 
 class DequantE4M3Function(Function):
-
     @staticmethod
-    def forward(ctx: Any, inputs: torch.Tensor, scale: Union[float, None] = None) -> Any:  # type: ignore
+    def forward(ctx: Any, inputs: torch.Tensor, scale: float | None = None) -> Any:  # type: ignore
         if scale is None:
             return ops.quark.dequant_fp8_e4m3(inputs)
         else:
@@ -84,9 +89,8 @@ dequant_fp8_e4m3 = DequantE4M3Function.apply
 
 
 class QuantE5M2Function(Function):
-
     @staticmethod
-    def forward(ctx: Any, inputs: torch.Tensor, scale: Union[float, None] = None) -> Any:  # type: ignore
+    def forward(ctx: Any, inputs: torch.Tensor, scale: float | None = None) -> Any:  # type: ignore
         if scale is None:
             return ops.quark.quant_fp8_e5m2(inputs)
         else:
@@ -98,9 +102,8 @@ class QuantE5M2Function(Function):
 
 
 class DequantE5M2Function(Function):
-
     @staticmethod
-    def forward(ctx: Any, inputs: torch.Tensor, scale: Union[float, None] = None) -> Any:  # type: ignore
+    def forward(ctx: Any, inputs: torch.Tensor, scale: float | None = None) -> Any:  # type: ignore
         if scale is None:
             return ops.quark.dequant_fp8_e5m2(inputs)
         else:
@@ -115,6 +118,22 @@ quant_fp8_e5m2 = QuantE5M2Function.apply
 dequant_fp8_e5m2 = DequantE5M2Function.apply
 
 
+class MXFP4DynamicFakeQuantizeFunction(Function):
+    def forward(ctx: Any, x: torch.Tensor, fake_quantizer: Any, scale_calculation_mode: str) -> torch.Tensor:
+        if x.dtype == torch.float16 or x.dtype == torch.bfloat16:
+            return mx.qdq_mxfp4(x, scale_calculation_mode=scale_calculation_mode)
+        else:
+            return fake_quantizer.fake_quantize(x)  # type: ignore
+
+    @staticmethod
+    def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
+        return grad_outputs, None, None
+
+
+def mxfp4_dynamic_fake_quantize(x: torch.Tensor, fake_quantizer: Any, scale_calculation_mode: str) -> torch.Tensor:
+    return MXFP4DynamicFakeQuantizeFunction.apply(x, fake_quantizer, scale_calculation_mode)
+
+
 class ScaledFakeQuantizeFunction(Function):
     if register_sharding_exist:
 
@@ -124,22 +143,24 @@ class ScaledFakeQuantizeFunction(Function):
             quant_dtype: str,
             inputs: torch.Tensor,
             scale: torch.Tensor,
-            zero_point: Optional[torch.Tensor],
-            axis: Optional[int],
-            group_size: Optional[int],
-            quant_min: Union[int, float],
-            quant_max: Union[int, float],
-            round_mode: Optional[int],
-            qscheme: Optional[str],
-        ):
+            zero_point: torch.Tensor | None,
+            axis: int | None,
+            group_size: int | None,
+            quant_min: int | float,
+            quant_max: int | float,
+            round_mode: int | None,
+            qscheme: str | None,
+        ) -> list[Any]:
             dim = 1
 
             acceptable_shardings = []
 
-            acceptable_shardings.append((
-                [Shard(dim)],
-                [Shard(dim), Replicate(), Replicate()],
-            ))
+            acceptable_shardings.append(
+                (
+                    [Shard(dim)],
+                    [Shard(dim), Replicate(), Replicate()],
+                )
+            )
 
             for sharding_dim in range(inputs.ndim):
                 if sharding_dim != dim:
@@ -152,21 +173,41 @@ class ScaledFakeQuantizeFunction(Function):
             return acceptable_shardings
 
     @staticmethod
-    def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor,
-                zero_point: Optional[torch.Tensor], axis: Optional[int], group_size: Optional[int],
-                quant_min: Union[int, float], quant_max: Union[int, float], round_mode: Optional[int],
-                qscheme: Optional[str], mx_element_dtype: Optional[str]) -> torch.Tensor:
-
+    def forward(
+        ctx: Any,
+        quant_dtype: str,
+        inputs: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor | None,
+        axis: int | None,
+        group_size: int | None,
+        quant_min: int | float,
+        quant_max: int | float,
+        round_mode: int | None,
+        qscheme: str | None,
+        mx_element_dtype: str | None,
+    ) -> torch.Tensor:
         # Default value setting
         zero_point = zero_point if zero_point is not None else torch.Tensor([])  # Set illegal value for zero_point
         axis = axis if axis is not None else 1  # Set same default value as ONNX QuantLinear
         group_size = group_size if group_size is not None else 1  # Set same default value as ONNX QuantLinear
         round_mode = round_mode if round_mode is not None else -1  # Set illegal value for round_mode
-        qscheme = qscheme if qscheme is not None else 'None'
-        mx_element_dtype = 'None' if mx_element_dtype is None else mx_element_dtype
+        qscheme = qscheme if qscheme is not None else "None"
+        mx_element_dtype = "None" if mx_element_dtype is None else mx_element_dtype
 
-        return ops.quark.scaled_fake_quantize(quant_dtype, inputs, scale, zero_point, axis, group_size, quant_min,
-                                              quant_max, round_mode, qscheme, mx_element_dtype)
+        return ops.quark.scaled_fake_quantize(
+            quant_dtype,
+            inputs,
+            scale,
+            zero_point,
+            axis,
+            group_size,
+            quant_min,
+            quant_max,
+            round_mode,
+            qscheme,
+            mx_element_dtype,
+        )
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
@@ -174,40 +215,50 @@ class ScaledFakeQuantizeFunction(Function):
 
     @staticmethod
     @symbolic_helper.parse_args("s", "v", "v", "v", "i", "i", "i", "i", "i", "s", "s")
-    def symbolic(g: jit_utils.GraphContext,
-                 quant_dtype: str,
-                 inputs: torch.Tensor,
-                 scale: torch.Tensor,
-                 zero_point: torch.Tensor = None,
-                 axis: int = None,
-                 group_size: int = None,
-                 quant_min: int = None,
-                 quant_max: int = None,
-                 round_mode: Union[int, None] = None,
-                 qscheme: Union[str, None] = None,
-                 mx_element_dtype: Union[str, None] = None) -> torch.Value:
-
-        if quant_dtype == 'mx':
+    def symbolic(
+        g: jit_utils.GraphContext,
+        quant_dtype: str,
+        inputs: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        axis: int,
+        group_size: int,
+        quant_min: int,
+        quant_max: int,
+        round_mode: int | None = None,
+        qscheme: str | None = None,
+        mx_element_dtype: str | None = None,
+    ) -> torch.Value:
+        if quant_dtype == "mx":
             raise NotImplementedError("Exporting MX datatypes to ONNX is not supported yet.")  # pragma: no cover
-        if quant_dtype in ['mx6', 'mx9']:
+        if quant_dtype in ["mx6", "mx9"]:
             raise NotImplementedError(
-                "Exporting MX6 or MX9 datatypes to ONNX is not supported yet.")  # pragma: no cover
+                "Exporting MX6 or MX9 datatypes to ONNX is not supported yet."
+            )  # pragma: no cover
 
-        if quant_dtype == 'fp8_e4m3':
+        if quant_dtype == "fp8_e4m3":
             zero_point = torch.tensor(0, dtype=torch.float8_e4m3fn)
             quantized = g.op("QuantizeLinear", inputs, scale, zero_point, axis_i=axis)
             return g.op("DequantizeLinear", quantized, scale, zero_point, axis_i=axis)
-        elif quant_dtype == 'fp8_e5m2':
+        elif quant_dtype == "fp8_e5m2":
             zero_point = torch.tensor(0, dtype=torch.float8_e5m2)
             quantized = g.op("QuantizeLinear", inputs, scale, zero_point, axis_i=axis)
             return g.op("DequantizeLinear", quantized, scale, zero_point, axis_i=axis)
         elif quant_dtype in ["int4", "uint4", "int8", "uint8", "int16", "uint16", "int32"]:
-            if (quant_min, quant_max) not in [(0, 255), (-128, 127), (-8, 7), (0, 15), (-32768, 32767),
-                                              (-2147483648, 2147483647), (0, 65535)]:
+            if (quant_min, quant_max) not in [
+                (0, 255),
+                (-128, 127),
+                (-8, 7),
+                (0, 15),
+                (-32768, 32767),
+                (-2147483648, 2147483647),
+                (0, 65535),
+            ]:
                 raise errors.SymbolicValueError(
                     "For (quant_min, quant_max), ONNX allows only (0, 255), (-128, 127), (-8, 7) and (0, 15). "
-                    f"Got ({quant_min}, {quant_max})", )
-            '''
+                    f"Got ({quant_min}, {quant_max})",
+                )
+            """
             As quark torch export to: QuantizeLinear -> DequantizeLinear  format
                 QuantizeLinear has less range quant range compare with DequantizeLinear
                     op_set 19: only support: int8, uint8, float8e5m2 etc.
@@ -225,7 +276,7 @@ class ScaledFakeQuantizeFunction(Function):
             As a result:
                 quant_min == 0
 
-            '''
+            """
             # NOTE torch export default op_set 19, need further change to 21>= so that can onnxruntime if int16/uint16
             if quant_min == -32768 and quant_max == 32767:  # int16
                 zero_point = g.op("Cast", zero_point, to_i=_C_onnx.TensorProtoDataType.INT16)
@@ -249,7 +300,7 @@ class ScaledFakeQuantizeFunction(Function):
             quant_torch_dtype = {
                 "bfloat16": _C_onnx.TensorProtoDataType.BFLOAT16,
                 "float16": _C_onnx.TensorProtoDataType.FLOAT16,
-                "float32": _C_onnx.TensorProtoDataType.FLOAT
+                "float32": _C_onnx.TensorProtoDataType.FLOAT,
             }.get(quant_dtype)
             quantized = g.op("Cast", inputs, to_i=quant_torch_dtype)
             return g.op("Cast", quantized, to_i=dequant_torch_dtype)
@@ -259,23 +310,28 @@ class ScaledFakeQuantizeFunction(Function):
 
 scaled_fake_quantize = ScaledFakeQuantizeFunction.apply
 
+scaled_fake_quantize_compiled = torch.compile(scaled_fake_quantize, mode=QUARK_TORCH_COMPILE_MODE, fullgraph=True)
+
 
 class NonScaledFakeQuantizeFunction(Function):
-
     @staticmethod
-    def forward(ctx: Any,
-                input_tensor: torch.Tensor,
-                quant_dtype: str,
-                mx_element_dtype: str,
-                axis: int,
-                block_size: int,
-                scale_calculation_mode: str = "even") -> torch.Tensor:
-        return ops.quark.non_scaled_fake_quantize(input_tensor=input_tensor,
-                                                  quant_dtype=quant_dtype,
-                                                  mx_element_dtype=mx_element_dtype,
-                                                  axis=axis,
-                                                  block_size=block_size,
-                                                  scale_calculation_mode=scale_calculation_mode)
+    def forward(
+        ctx: Any,
+        input_tensor: torch.Tensor,
+        quant_dtype: str,
+        mx_element_dtype: str,
+        axis: int,
+        block_size: int,
+        scale_calculation_mode: str = "even",
+    ) -> torch.Tensor:
+        return ops.quark.non_scaled_fake_quantize(
+            input_tensor=input_tensor,
+            quant_dtype=quant_dtype,
+            mx_element_dtype=mx_element_dtype,
+            axis=axis,
+            block_size=block_size,
+            scale_calculation_mode=scale_calculation_mode,
+        )
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
@@ -299,22 +355,24 @@ class ScaledRealQuantizeFunction(Function):
             quant_dtype: str,
             inputs: torch.Tensor,
             scale: torch.Tensor,
-            zero_point: Optional[torch.Tensor],
-            axis: Optional[int],
-            group_size: Optional[int],
-            quant_min: Union[int, float],
-            quant_max: Union[int, float],
-            round_mode: Optional[int],
-            qscheme: Optional[str],
-        ):
+            zero_point: torch.Tensor | None,
+            axis: int | None,
+            group_size: int | None,
+            quant_min: int | float,
+            quant_max: int | float,
+            round_mode: int | None,
+            qscheme: str | None,
+        ) -> list[Any]:
             dim = 1
 
             acceptable_shardings = []
 
-            acceptable_shardings.append((
-                [Shard(dim)],
-                [Shard(dim), Replicate(), Replicate()],
-            ))
+            acceptable_shardings.append(
+                (
+                    [Shard(dim)],
+                    [Shard(dim), Replicate(), Replicate()],
+                )
+            )
 
             for sharding_dim in range(inputs.ndim):
                 if sharding_dim != dim:
@@ -327,20 +385,29 @@ class ScaledRealQuantizeFunction(Function):
             return acceptable_shardings
 
     @staticmethod
-    def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero_point: Union[torch.Tensor,
-                                                                                                         None],
-                axis: Union[int, None], group_size: Union[int, None], quant_min: Union[int, float],
-                quant_max: Union[int, float], round_mode: Union[int, None], qscheme: Union[str, None]) -> torch.Tensor:
-
+    def forward(
+        ctx: Any,
+        quant_dtype: str,
+        inputs: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor | None,
+        axis: int | None,
+        group_size: int | None,
+        quant_min: int | float,
+        quant_max: int | float,
+        round_mode: int | None,
+        qscheme: str | None,
+    ) -> torch.Tensor:
         # Default value setting
         zero_point = zero_point if zero_point is not None else torch.Tensor([])  # Set illegal value for zero_point
         axis = axis if axis is not None else 1  # Set same default value as ONNX QuantLinear
         group_size = group_size if group_size is not None else 1  # Set same default value as ONNX QuantLinear
         round_mode = round_mode if round_mode is not None else -1  # Set illegal value for round_mode
-        qscheme = qscheme if qscheme is not None else 'None'
+        qscheme = qscheme if qscheme is not None else "None"
 
-        return ops.quark.scaled_real_quantize(quant_dtype, inputs, scale, zero_point, axis, group_size, quant_min,
-                                              quant_max, round_mode, qscheme)
+        return ops.quark.scaled_real_quantize(
+            quant_dtype, inputs, scale, zero_point, axis, group_size, quant_min, quant_max, round_mode, qscheme
+        )
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
@@ -351,11 +418,10 @@ scaled_real_quantize = ScaledRealQuantizeFunction.apply
 
 
 class NonScaledRealQuantizeFunction(Function):
-
     @staticmethod
-    def forward(ctx: Any, input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int,
-                block_size: int) -> torch.Tensor:
-
+    def forward(
+        ctx: Any, input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int, block_size: int
+    ) -> torch.Tensor:
         return ops.quark.non_scaled_real_quantize(input_tensor, quant_dtype, mx_element_dtype, axis, block_size)
 
     @staticmethod
@@ -370,15 +436,24 @@ class DeQuantizeFunction(Function):
     if register_sharding_exist:
 
         @register_sharding(ops.quark.dequantize.default)
-        def custom_dequantize_sharding(quant_dtype: str, inputs: DTensorSpec, scale: DTensorSpec,
-                                       zero_point: DTensorSpec, axis: int, group_size: int, qscheme: str):
+        def custom_dequantize_sharding(
+            quant_dtype: str,
+            inputs: DTensorSpec,
+            scale: DTensorSpec,
+            zero_point: DTensorSpec,
+            axis: int,
+            group_size: int,
+            qscheme: str,
+        ) -> list[Any]:
             dim = 0
 
             acceptable_shardings = []
-            acceptable_shardings.append((
-                [Shard(dim)],
-                [Shard(dim), Replicate(), Replicate()],
-            ))
+            acceptable_shardings.append(
+                (
+                    [Shard(dim)],
+                    [Shard(dim), Replicate(), Replicate()],
+                )
+            )
 
             for sharding_dim in range(inputs.ndim):
                 if sharding_dim != dim:
@@ -391,15 +466,21 @@ class DeQuantizeFunction(Function):
             return acceptable_shardings
 
     @staticmethod
-    def forward(ctx: Any, quant_dtype: str, inputs: torch.Tensor, scale: torch.Tensor, zero_point: Union[torch.Tensor,
-                                                                                                         None],
-                axis: Union[int, None], group_size: Union[int, None], qscheme: Union[str, None]) -> torch.Tensor:
-
+    def forward(
+        ctx: Any,
+        quant_dtype: str,
+        inputs: torch.Tensor,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor | None,
+        axis: int | None,
+        group_size: int | None,
+        qscheme: str | None,
+    ) -> torch.Tensor:
         # Default value setting
         zero_point = zero_point if zero_point is not None else torch.Tensor([])  # Set illegal value for zero_point
         axis = axis if axis is not None else 1  # Set same default value as ONNX QuantLinear
         group_size = group_size if group_size is not None else 1  # Set same default value as ONNX QuantLinear
-        qscheme = qscheme if qscheme is not None else 'None'
+        qscheme = qscheme if qscheme is not None else "None"
 
         return ops.quark.dequantize(quant_dtype, inputs, scale, zero_point, axis, group_size, qscheme)
 
@@ -412,27 +493,34 @@ dequantize = DeQuantizeFunction.apply
 
 
 class TQTQuantize(Function):
-
     @staticmethod
     def forward(  # type: ignore
-            ctx: Any, inputs: torch.Tensor, log_threshold: torch.Tensor, zero_point: torch.Tensor, domain: torch.Tensor,
-            round_mode: int) -> Any:
-        scale = 2**(torch.ceil(log_threshold)) / domain
+        ctx: Any,
+        inputs: torch.Tensor,
+        log_threshold: torch.Tensor,
+        zero_point: torch.Tensor,
+        domain: torch.Tensor,
+        round_mode: int,
+    ) -> Any:
+        scale = 2 ** (torch.ceil(log_threshold)) / domain
         quant_max = domain - 1
         quant_min = -domain
         ctx.save_for_backward(inputs, scale, quant_max, quant_min, log_threshold)
         if kernel_ext is not None and inputs.device != torch.device("cpu"):
-            return kernel_ext.fake_quantize_per_tensor_affine(inputs, scale, zero_point, quant_min, quant_max,
-                                                              round_mode)
+            return kernel_ext.fake_quantize_per_tensor_affine(
+                inputs, scale, zero_point, quant_min, quant_max, round_mode
+            )
         else:
-            return torch.fake_quantize_per_tensor_affine(inputs, scale, zero_point, int(quant_min.item()),
-                                                         int(quant_max.item()))
+            return torch.fake_quantize_per_tensor_affine(
+                inputs, scale, zero_point, int(quant_min.item()), int(quant_max.item())
+            )
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:  # type: ignore # pragma: no cover
         inputs, scale, quant_max, quant_min, log_threshold = ctx.saved_tensors
-        grad_inputs, grad_log_threshold = kernel_ext.tqt_backward(inputs, scale, quant_max, quant_min, log_threshold,
-                                                                  grad_outputs)
+        grad_inputs, grad_log_threshold = kernel_ext.tqt_backward(
+            inputs, scale, quant_max, quant_min, log_threshold, grad_outputs
+        )
         return grad_inputs, grad_log_threshold, None, None, None
 
 
@@ -440,28 +528,30 @@ tqt_quantize = TQTQuantize.apply
 
 
 class LSQQuantize(Function):
-
     @staticmethod
     def forward(
-            ctx: Any,  # type: ignore
-            x: torch.tensor,
-            scale: torch.tensor,
-            zero_point: torch.tensor,
-            grad_factor: float,
-            quant_min: int,
-            quant_max: int,
-            ch_axis: Optional[int] = None,
-            rounding_key: int = 8) -> Any:
+        ctx: Any,  # type: ignore
+        x: torch.tensor,
+        scale: torch.tensor,
+        zero_point: torch.tensor,
+        grad_factor: float,
+        quant_min: int,
+        quant_max: int,
+        ch_axis: int | None = None,
+        rounding_key: int = 8,
+    ) -> Any:
         ctx.save_for_backward(x, scale, zero_point)
         ctx.others = quant_min, quant_max, ch_axis, grad_factor
 
         if ch_axis is not None:
             # Per channel
-            result = hw_emulation_interface.fake_quantize_int_per_channel_affine(x, scale, zero_point, ch_axis,
-                                                                                 quant_min, quant_max, rounding_key)
+            result = fake_quantize_int_per_channel_affine(
+                x, scale, zero_point, ch_axis, quant_min, quant_max, rounding_key
+            )
         else:
-            result = kernel_ext.fake_quantize_per_tensor_affine(x, scale, zero_point, quant_min, quant_max,
-                                                                rounding_key)
+            result = kernel_ext.fake_quantize_per_tensor_affine(
+                x, scale, zero_point, quant_min, quant_max, rounding_key
+            )
         return result
 
     @staticmethod
@@ -483,8 +573,11 @@ class LSQQuantize(Function):
         is_ge_min_and_le_max = torch.ones(is_lt_min.shape, device=is_lt_min.device) - is_lt_min - is_gt_max
 
         grad_x = is_ge_min_and_le_max * grad_output
-        grad_scale = ((is_lt_min * quant_min + is_gt_max * quant_max + is_ge_min_and_le_max *
-                       (rounded_scaled_x - scaled_x)) * grad_output * grad_factor)
+        grad_scale = (
+            (is_lt_min * quant_min + is_gt_max * quant_max + is_ge_min_and_le_max * (rounded_scaled_x - scaled_x))
+            * grad_output
+            * grad_factor
+        )
         # For channel-only tensor like conv2d's bias we don't do sum computation.
         if dims:
             # torch.sum() will return a scalar tensor if the computation is performed

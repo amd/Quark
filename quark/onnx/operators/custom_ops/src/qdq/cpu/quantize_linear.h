@@ -19,8 +19,8 @@ namespace quark_onnx {
   template <typename T>                                                        \
   struct QuantizeLinearApply {                                                 \
     void op(                                                                   \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,      \
-      const InT *input, const InT *scale, T *output, const T *zero_point       \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,      \
+      const InT* input, const InT* scale, T* output, const T* zero_point       \
     ) {                                                                        \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                    \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) {   \
@@ -48,8 +48,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct QuantizeLinearApplyFp8 {                                            \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const InT *input, const InT *scale, T *output, const T *               \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const InT* input, const InT* scale, T* output, const T*                \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -68,8 +68,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct QuantizeLinearApplyFp16 {                                           \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const InT *input, const InT *scale, T *output, const T *zero_point     \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const InT* input, const InT* scale, T* output, const T* zero_point     \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -90,8 +90,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct QuantizeLinearApplyBf16 {                                           \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const InT *input, const InT *scale, T *output, const T *zero_point     \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const InT* input, const InT* scale, T* output, const T* zero_point     \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -112,8 +112,8 @@ namespace quark_onnx {
   template <typename T>                                                       \
   struct DequantizeLinearApply {                                              \
     void op(                                                                  \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,     \
-      const T *input, const OutT *scale, OutT *output, const T *zero_point    \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,     \
+      const T* input, const OutT* scale, OutT* output, const T* zero_point    \
     ) {                                                                       \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                   \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) {  \
@@ -135,8 +135,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct DequantizeLinearApplyFp8 {                                          \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const T *input, const OutT *scale, OutT *output, const T *             \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const T* input, const OutT* scale, OutT* output, const T*              \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -156,8 +156,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct DequantizeLinearApplyFp16 {                                         \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const T *input, const OutT *scale, OutT *output, const T *zero_point   \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const T* input, const OutT* scale, OutT* output, const T* zero_point   \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -179,8 +179,8 @@ namespace quark_onnx {
   template <typename T>                                                      \
   struct DequantizeLinearApplyBf16 {                                         \
     void op(                                                                 \
-      void *stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
-      const T *input, const OutT *scale, OutT *output, const T *zero_point   \
+      void* stream, int64_t N, int64_t broadcast_dim, int64_t block_size,    \
+      const T* input, const OutT* scale, OutT* output, const T* zero_point   \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \

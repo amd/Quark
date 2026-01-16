@@ -18,8 +18,8 @@ from quark.torch.quantization.config.config import (
     Config,
     GPTQConfig,
     Int2PerGroupSpec,
-    QuantizationConfig,
-    QuantizationSpec,
+    QLayerConfig,
+    QTensorConfig,
 )
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
@@ -29,12 +29,12 @@ from quark.torch.quantization.observer.observer import (
 )
 
 INT2_PER_GROUP_ASYM_SPEC = Int2PerGroupSpec(
-    symmetric=False, scale_type="float", round_method="half_even", ch_axis=1, is_dynamic=False, group_size=128
+    symmetric=False, ch_axis=1, is_dynamic=False, group_size=128
 ).to_quantization_spec()
 
-DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG = QuantizationConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
+DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG = QLayerConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
 
-INT4_PER_CHANNEL_SPEC = QuantizationSpec(
+INT4_PER_CHANNEL_SPEC = QTensorConfig(
     dtype=Dtype.int4,
     observer_cls=PerChannelMinMaxObserver,
     symmetric=True,
@@ -44,9 +44,9 @@ INT4_PER_CHANNEL_SPEC = QuantizationSpec(
     ch_axis=0,
     is_dynamic=False,
 )
-DEFAULT_W_INT4_PER_CHANNEL_CONFIG = QuantizationConfig(weight=INT4_PER_CHANNEL_SPEC)
+DEFAULT_W_INT4_PER_CHANNEL_CONFIG = QLayerConfig(weight=INT4_PER_CHANNEL_SPEC)
 
-DEFAULT_UINT4_PER_GROUP_ASYM_NEG_ONE_GROUPSIZE_SPEC = QuantizationSpec(
+DEFAULT_UINT4_PER_GROUP_ASYM_NEG_ONE_GROUPSIZE_SPEC = QTensorConfig(
     dtype=Dtype.uint4,
     observer_cls=PerGroupMinMaxObserver,
     symmetric=False,
@@ -58,9 +58,9 @@ DEFAULT_UINT4_PER_GROUP_ASYM_NEG_ONE_GROUPSIZE_SPEC = QuantizationSpec(
     group_size=-1,
 )
 
-DEFAULT_GPTQ_NEG_ONE_GROUPSIZE_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_NEG_ONE_GROUPSIZE_SPEC)
+DEFAULT_GPTQ_NEG_ONE_GROUPSIZE_CONFIG = QLayerConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_NEG_ONE_GROUPSIZE_SPEC)
 
-DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QTensorConfig(
     dtype=Dtype.uint4,
     observer_cls=PerGroupMinMaxObserver,
     symmetric=False,
@@ -72,11 +72,11 @@ DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
     group_size=128,
 )
 
-DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
+DEFAULT_W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
 
 
 def MXFP4_SPEC(is_dynamic):
-    return QuantizationSpec(
+    return QTensorConfig(
         dtype=Dtype.fp4,
         observer_cls=PerBlockMXObserver,
         symmetric=None,
@@ -91,7 +91,7 @@ def MXFP4_SPEC(is_dynamic):
     )
 
 
-DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG = QuantizationConfig(
+DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG = QLayerConfig(
     input_tensors=MXFP4_SPEC(True), weight=MXFP4_SPEC(False), output_tensors=MXFP4_SPEC(True)
 )
 
@@ -142,7 +142,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
             )
             model.eval()
         else:
-            model = AutoModelForCausalLM.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
             model.eval()
             model = model.to(torch_device)
     else:

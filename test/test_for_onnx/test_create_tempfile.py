@@ -6,7 +6,7 @@ import os
 import unittest
 from pathlib import Path
 
-from quark.onnx.quant_utils import create_tmp_dir, update_tmp_dir
+from quark.onnx.utils.system_utils import create_tmp_dir, update_tmp_dir
 
 
 class TestCreateTmpDir(unittest.TestCase):

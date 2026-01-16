@@ -1,0 +1,45 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "/xclbin/stx/unet_vae_combined.xclbin"
+    op_namespaces: "sdxlt"
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+    - mha_to_mha_noqdq_bfp
+    - concat_to_concat_noqdq
+    - conv_to_conv3x3_bfp_noqdq
+    - conv_to_conv1x1_bfp_noqdq
+    - nhwc_conv_to_conv
+    - nhwc_conv_to_transpose_conv
+    - gelu_to_gelu_noqdq
+    - layernorm_to_layernorm_bfp_noqdq
+    # must be before matmul and gemm passes
+    #- sigmoid_to_silu_bfp_noqdq
+    - add_to_elwadd_bfp_noqdq
+
+    - bfp_matmul_noqdq.matmul_to_matmul_transpose_noqdq
+    - bfp_matmul_noqdq.matmul_add_split_to_2x_matmul_noqdq
+    - bfp_matmul_noqdq.matmul_add_to_matmul_noqdq
+    - bfp_matmul_noqdq.matmul_to_matmul_noqdq
+    - add_to_elwadd_noqdq
+    - add_to_broadcastadd_noqdq
+    - mul_to_elwmul_bfp_noqdq
+    - groupnorm_to_groupnorm_bfp_noqdq
+    - groupnorm_to_groupnorm_noqdq
+    - resize_to_nni_noqdq
+    - nhwc_resize_to_nni_noqdq
+    - split_to_slice_noqdq
+    - gemm_block_to_gemm_noqdq_bfp
+    # - gemm_to_gemm_noqdq_bfp
+    # must be after conv and matmul passes
+    - float_to_bfp16ebs8
+    - simplify_casts
+    - remove_reshapes
+    - remove_parallel_casts
+    - remove_parallel_casts_bfp16
+    # must be after remove_parallel_casts_bfp16
+    - simplify_bfps

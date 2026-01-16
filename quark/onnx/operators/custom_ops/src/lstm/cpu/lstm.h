@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
@@ -66,9 +66,9 @@ short round_short(double x) {
 
 // Define vector-based versions of functions
 void vmul_x(
-  int ite, const std::vector<std::vector<short>> &a,
-  const std::vector<std::vector<short>> &b, unsigned char shft,
-  std::vector<int> &y, int input_len, int hidden_len
+  int ite, const std::vector<std::vector<short>>& a,
+  const std::vector<std::vector<short>>& b, unsigned char shft,
+  std::vector<int>& y, int input_len, int hidden_len
 ) {
   for (int i = 0; i < hidden_len * 4; i++) {
     long long sum = 0;
@@ -81,8 +81,8 @@ void vmul_x(
 }
 
 void vmul_h(
-  const std::vector<short> &a, const std::vector<std::vector<short>> &b,
-  unsigned char shft, std::vector<int> &y, int hidden_len
+  const std::vector<short>& a, const std::vector<std::vector<short>>& b,
+  unsigned char shft, std::vector<int>& y, int hidden_len
 ) {
   for (int i = 0; i < hidden_len * 4; i++) {
     long long sum = 0;
@@ -94,7 +94,7 @@ void vmul_h(
 }
 
 void scal_int_vec(
-  const std::vector<int> &a, short b, unsigned char shft, std::vector<int> &c,
+  const std::vector<int>& a, short b, unsigned char shft, std::vector<int>& c,
   int hidden_len
 ) {
   for (int i = 0; i < hidden_len * 4; i++) {
@@ -115,8 +115,8 @@ short scal_short(int a, unsigned short sc, short zp, unsigned char shft) {
 }
 
 void reshape_row_maj(
-  int n_row, int n_col, const unsigned short *xx_i,
-  std::vector<std::vector<short>> &yy_o
+  int n_row, int n_col, const unsigned short* xx_i,
+  std::vector<std::vector<short>>& yy_o
 ) {
   for (int i = 0; i < n_row; i++) {
     for (int j = 0; j < n_col; j++) {
@@ -127,8 +127,8 @@ void reshape_row_maj(
 }
 
 void reshape_col_maj(
-  int n_row, int n_col, const unsigned short *xx_i,
-  std::vector<std::vector<short>> &yy_o
+  int n_row, int n_col, const unsigned short* xx_i,
+  std::vector<std::vector<short>>& yy_o
 ) {
   for (int i = 0; i < n_row; i++) {
     for (int j = 0; j < n_col; j++) {
@@ -138,14 +138,14 @@ void reshape_col_maj(
   }
 }
 
-void reshape_vec(int n, const unsigned short *xx_i, std::vector<short> &yy_o) {
+void reshape_vec(int n, const unsigned short* xx_i, std::vector<short>& yy_o) {
   for (int i = 0; i < n; i++) {
     int xx = static_cast<int>(xx_i[i]) - 32768;
     yy_o[i] = xx;
   }
 }
 
-int params_float_to_fix(double x_float, short &x_fix) {
+int params_float_to_fix(double x_float, short& x_fix) {
   int a = 15 - std::ceil(std::log2(std::fabs(x_float)));
   double s = (1 << a);
   s *= x_float;
@@ -154,18 +154,18 @@ int params_float_to_fix(double x_float, short &x_fix) {
 }
 
 void get_params(
-  const std::vector<std::vector<short>> &w,
-  const std::vector<std::vector<short>> &wb,
-  const std::vector<std::vector<short>> &r,
-  const std::vector<std::vector<short>> &rb, int input_len, int hidden_len,
-  int blen, const std::vector<short> &bx, const std::vector<short> &bh,
-  const std::vector<short> &bxb, const std::vector<short> &bhb, float x_scale,
+  const std::vector<std::vector<short>>& w,
+  const std::vector<std::vector<short>>& wb,
+  const std::vector<std::vector<short>>& r,
+  const std::vector<std::vector<short>>& rb, int input_len, int hidden_len,
+  int blen, const std::vector<short>& bx, const std::vector<short>& bh,
+  const std::vector<short>& bxb, const std::vector<short>& bhb, float x_scale,
   float w_scale, float r_scale, float b_scale, float y_scale, float x_zerop,
-  float w_zerop, float r_zerop, float b_zerop, float y_zerop, short &qx,
-  short &qh, short &qa, short &qb, std::vector<int> &qc, std::vector<int> &qcb,
-  unsigned short &ohs, unsigned short &ohz, unsigned char &xw_shft,
-  unsigned char &xwq_shft, unsigned char &hr_shft, unsigned char &hrq_shft,
-  unsigned char &xs_shft, unsigned char &hs_shft, unsigned char &oh_shft
+  float w_zerop, float r_zerop, float b_zerop, float y_zerop, short& qx,
+  short& qh, short& qa, short& qb, std::vector<int>& qc, std::vector<int>& qcb,
+  unsigned short& ohs, unsigned short& ohz, unsigned char& xw_shft,
+  unsigned char& xwq_shft, unsigned char& hr_shft, unsigned char& hrq_shft,
+  unsigned char& xs_shft, unsigned char& hs_shft, unsigned char& oh_shft
 ) {
   // Derive parameters
   // Scaling factor for floating-point conversion
@@ -227,11 +227,11 @@ void get_params(
 }
 
 void lstm_core(
-  std::vector<std::vector<short>> &y, const std::vector<std::vector<short>> &x,
-  const std::vector<std::vector<short>> &w,
-  const std::vector<std::vector<short>> &r, int seq_len, int input_len,
+  std::vector<std::vector<short>>& y, const std::vector<std::vector<short>>& x,
+  const std::vector<std::vector<short>>& w,
+  const std::vector<std::vector<short>>& r, int seq_len, int input_len,
   int hidden_len, short qx, short qh, short qa, short qb,
-  const std::vector<int> &qc, unsigned short ohs, short ohz,
+  const std::vector<int>& qc, unsigned short ohs, short ohz,
   unsigned char xw_shft, unsigned char xwq_shft, unsigned char hr_shft,
   unsigned char hrq_shft, unsigned char xs_shft, unsigned char hs_shft,
   unsigned char oh_shft
@@ -290,8 +290,8 @@ void lstm_core(
 }
 
 void lstm(
-  unsigned short *y_o, const unsigned short *x_i, unsigned short *w_i,
-  const unsigned short *r_i, const unsigned short *b_i, float x_scale,
+  unsigned short* y_o, const unsigned short* x_i, unsigned short* w_i,
+  const unsigned short* r_i, const unsigned short* b_i, float x_scale,
   float w_scale, float r_scale, float b_scale, float y_scale,
   unsigned short x_zerop_i, unsigned short w_zerop_i, unsigned short r_zerop_i,
   unsigned short b_zerop_i, unsigned short y_zerop_i, int seq_len,

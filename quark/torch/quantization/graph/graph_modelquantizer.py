@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark FX model Quantization API for PyTorch."""
 
 import types
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable
 
 import torch
 import torch.fx
@@ -22,7 +22,7 @@ from quark.torch import export_onnx
 
 # quark part
 from quark.torch.quantization.api import ModelQuantizer  # TODO still inherit
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 
 # Step 3 pre_quant_optimize
 from quark.torch.quantization.graph.optimization.model_optimization import (
@@ -42,7 +42,7 @@ from quark.torch.quantization.graph.processor.pre_check_befor_quant import pre_q
 
 # Step 5 PTQ/QAT/Other algom
 # Step 6 post quant optimize
-# Step 7 optmize before export
+# Step 7 optimize before export
 from quark.torch.quantization.graph.processor.processor import (
     annotate,
     freeze_model,
@@ -64,16 +64,16 @@ FxGraphQuantizer defines the overall quantization pipeline,
 
 
 class FxGraphQuantizer(ModelQuantizer):
-    def __init__(self, config: Config, multi_device: bool = False) -> None:
+    def __init__(self, config: QConfig, multi_device: bool = False) -> None:
         super().__init__(config, multi_device=multi_device)  # in init will check the config automatically
 
     # Step 1 prepare the fx graph module
     def _prepare_fx_model(
         self,
-        model: Union[nn.Module, ONNXModel, GraphModule],
+        model: nn.Module | ONNXModel | GraphModule,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         return get_fx_model(model, args, kwargs, dynamic_shapes)
 
@@ -108,9 +108,9 @@ class FxGraphQuantizer(ModelQuantizer):
     def _ptq_qat_algo(
         self,
         model: GraphModule,
-        calibdata: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        calibdata: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
         trainer: Callable[[GraphModule], GraphModule] | None = None,
     ) -> GraphModule:
@@ -128,7 +128,7 @@ class FxGraphQuantizer(ModelQuantizer):
         # TODO optimization for post quantization
         return model
 
-    # Step 7 optmize before export
+    # Step 7 optimize before export
     def _optimization_before_export(self, model: GraphModule) -> GraphModule:
         model = self.freeze(model=model)
         model = post_quant_optimize(model=model, hw_constrain=True)  # type: ignore [arg-type]
@@ -136,10 +136,10 @@ class FxGraphQuantizer(ModelQuantizer):
 
     def _prepare_quantizable_model(
         self,
-        model: Union[nn.Module, ONNXModel, GraphModule] | None,
+        model: nn.Module | ONNXModel | GraphModule | None,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         # Step 1 prepare the fx graph module
         fx_graph_model = self._prepare_fx_model(model, args, kwargs, dynamic_shapes)
@@ -162,13 +162,13 @@ class FxGraphQuantizer(ModelQuantizer):
 
     def quantize_model(  # type: ignore [override]
         self,
-        model: Union[nn.Module, ONNXModel, GraphModule] | None,
+        model: nn.Module | ONNXModel | GraphModule | None,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
-        calibdata: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
+        calibdata: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
         trainer: Callable[[GraphModule], GraphModule] | None = None,
     ) -> GraphModule:

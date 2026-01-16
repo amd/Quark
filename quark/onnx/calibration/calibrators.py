@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Modifications copyright(c) 2023 Advanced Micro Devices,Inc. All rights reserved.
+# Modifications copyright(c) 2025 Advanced Micro Devices,Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # -------------------------------------------------------------------------
@@ -11,13 +11,15 @@
 
 import copy
 import os
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Sequence
 
 import numpy as np
 import onnx
 import onnxruntime
+from joblib import Parallel, delayed  # type: ignore
 from onnx import numpy_helper
 from onnxruntime.quantization.calibrate import CalibraterBase, CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.calibrate import HistogramCalibrater as OrtHistogramCalibrater
@@ -25,7 +27,9 @@ from onnxruntime.quantization.calibrate import MinMaxCalibrater as OrtMinMaxCali
 from onnxruntime.quantization.quant_utils import QuantType
 from tqdm import tqdm
 
-from quark.onnx.quant_utils import ExtendedQuantType, create_tmp_dir
+from quark.onnx.quantization.quant_utils import ExtendedQuantType
+from quark.onnx.utils.file_utils import save_quantized_info
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .collectors import OverridedHistogramCollector, PowOfTwoCollector
@@ -61,7 +65,7 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         symmetric: bool = False,
@@ -154,14 +158,15 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
         if self.use_external_data_format:
-            self.infer_session = onnxruntime.InferenceSession(
+            self.infer_session = create_infer_session_for_onnx_model(
                 self.augmented_model_path,
                 sess_options=sess_options,
                 providers=self.execution_providers,
+                use_external_data_format=self.use_external_data_format,
             )
         else:
-            self.infer_session = onnxruntime.InferenceSession(
-                self.model.SerializeToString(),
+            self.infer_session = create_infer_session_for_onnx_model(
+                self.model,
                 sess_options=sess_options,
                 providers=self.execution_providers,
             )
@@ -190,7 +195,7 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
@@ -253,14 +258,15 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
         if self.use_external_data_format:
-            self.infer_session = onnxruntime.InferenceSession(
+            self.infer_session = create_infer_session_for_onnx_model(
                 self.augmented_model_path,
                 sess_options=sess_options,
                 providers=self.execution_providers,
+                use_external_data_format=self.use_external_data_format,
             )
         else:
-            self.infer_session = onnxruntime.InferenceSession(
-                self.model.SerializeToString(),
+            self.infer_session = create_infer_session_for_onnx_model(
+                self.model,
                 sess_options=sess_options,
                 providers=self.execution_providers,
             )
@@ -281,17 +287,24 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         input_names_set = {node_arg.name for node_arg in self.infer_session.get_inputs()}
         output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
 
-        data_size = len(data_reader)
-        assert data_size, "The data reader should implement the '__len__' method to provide the data size."
+        try:
+            data_size = len(data_reader)
+        except NotImplementedError:
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
 
+        onnx_infer_time = []
+        numpy_stat_time = []
         for _ in tqdm(range(data_size)):
+            collect_data_start_time = time.perf_counter()
             self.intermediate_outputs = []
 
             inputs = data_reader.get_next()
+
             if not inputs:
                 break
 
             outputs = self.infer_session.run(None, inputs)
+            collect_data_onnx_infer_time = time.perf_counter()
 
             fixed_outputs = []
             for output_index, output in enumerate(outputs):
@@ -314,7 +327,27 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
 
             clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
 
+            collect_data_acquired_data_time = time.perf_counter()
             self.collector.collect(clean_merged_dict)
+            collect_data_end_time = time.perf_counter()
+
+            onnx_infer_time.append(collect_data_onnx_infer_time - collect_data_start_time)
+            numpy_stat_time.append(collect_data_end_time - collect_data_acquired_data_time)
+
+        onnx_infer_time_sum = np.sum(onnx_infer_time)
+        numpy_stat_time_sum = np.sum(numpy_stat_time)
+        save_quantized_info(
+            [
+                ["", "", "calibration collect data (onnx inference)", onnx_infer_time_sum],
+                ["", "", "calibration collect data (numpy statistics)", numpy_stat_time_sum],
+            ]
+        )
+        logger.info(
+            f"Quark_latency_profiler: calibration collect data (onnx inference) time consumed: {onnx_infer_time_sum:1f}s"
+        )
+        logger.info(
+            f"Quark_latency_profiler: calibration collect data (numpy statistics) time consumed: {numpy_stat_time_sum:1f}"
+        )
 
         if len(self.intermediate_outputs) == 0:
             raise ValueError("No data is collected.")
@@ -357,7 +390,7 @@ class MinMaxCalibrater(OverridedMinMaxCalibrater):
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         symmetric: bool = False,
@@ -401,7 +434,7 @@ class EntropyCalibrater(OverridedHistogramCalibrater):
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
@@ -442,7 +475,7 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
@@ -485,7 +518,7 @@ class DistributionCalibrater(OverridedHistogramCalibrater):
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
@@ -527,11 +560,11 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
-        activation_type: Union[QuantType, ExtendedQuantType] = QuantType.QInt8,
+        activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
         method: PowerOfTwoMethod = PowerOfTwoMethod.MinMSE,
         symmetric: bool = True,
         minmse_mode: str = "All",
@@ -571,6 +604,10 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         self.worker_num = worker_num
         self.quantized_tensor_type = quantized_tensor_type
 
+        if minmse_mode == "MostCommon" and symmetric and optimize_mem:
+            logger.warning("No need to optimize memory for MinMSE of MostCommon mode.")
+            self.optimize_mem = False
+
     def augment_graph(self) -> None:
         """
         make all quantization_candidates op type nodes as part of the graph output.
@@ -597,19 +634,61 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         """
         MinMSE Calibrator collects operators' tensors.
         """
+
+        def get_clean_merged_dict(intermediate_outputs: list[Any]) -> dict[Any, Any]:
+            output_dicts_list = [
+                dict(zip(output_names, intermediate_output, strict=False))
+                for intermediate_output in intermediate_outputs
+            ]
+
+            merged_dict: dict[Any, Any] = {}
+            for d in output_dicts_list:
+                for k, v in d.items():
+                    merged_dict.setdefault(k, []).append(v)
+
+            clean_merged_dict: dict[Any, Any] = merged_dict
+            if self.tensors_to_calibrate is not None:
+                clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
+
+            return clean_merged_dict
+
+        if not self.collector:
+            self.collector = PowOfTwoCollector(
+                activation_type=self.activation_type,
+                method=self.method,
+                symmetric=self.symmetric,
+                minmse_mode=self.minmse_mode,
+                percentile=self.percentile,
+                optimize_mem=self.optimize_mem,
+                worker_num=self.worker_num,
+                quantized_tensor_type=self.quantized_tensor_type,
+            )
+
         input_names_set = {node_arg.name for node_arg in self.infer_session.get_inputs()}
         output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
 
-        cache_dir = os.path.dirname(self.augmented_model_path)  # For caching tensors
+        try:
+            data_size = len(data_reader)
+        except NotImplementedError:
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
 
-        while True:
+        cache_dir = os.path.dirname(self.augmented_model_path)  # For caching tensors
+        cache_capacity = 0
+
+        pbar = tqdm(range(data_size))
+        for _ in pbar:
             inputs = data_reader.get_next()
             if not inputs:
                 break
             outputs = self.infer_session.run(None, inputs)
 
             fixed_outputs: list[Any] = []
+
+            cached_mem = 0
             for output_index, output in enumerate(outputs):
+                output = output.astype(np.float16)  # To reduce memory consumption
+                cached_mem += output.nbytes
+
                 if not self.optimize_mem:
                     # Copy np.ndarray only for graph outputs that are also graph inputs to workaround bug:
                     # https://github.com/microsoft/onnxruntime/issues/21922
@@ -625,36 +704,23 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
                         np.save(f, output)
                     fixed_outputs.append(file_path)
 
-            self.intermediate_outputs.append(fixed_outputs)
+            if self.collector.is_mostcommon:
+                clean_merged_dict = get_clean_merged_dict([fixed_outputs])
+                self.collector.collect(clean_merged_dict)
+                cache_capacity = cached_mem
+            else:
+                self.intermediate_outputs.append(fixed_outputs)
+                cache_capacity += cached_mem
+
+            pbar.set_description(f"Cached {cache_capacity / (1024**3):.2f}GB")
+
+        if self.collector.is_mostcommon:
+            return None
 
         if len(self.intermediate_outputs) == 0:
             raise ValueError("No data is collected.")
 
-        output_dicts_list = [
-            dict(zip(output_names, intermediate_output, strict=False))
-            for intermediate_output in self.intermediate_outputs
-        ]
-
-        merged_dict: dict[Any, Any] = {}
-        for d in output_dicts_list:
-            for k, v in d.items():
-                merged_dict.setdefault(k, []).append(v)
-
-        clean_merged_dict: dict[Any, Any] = merged_dict
-        if self.tensors_to_calibrate is not None:
-            clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
-
-        if not self.collector:
-            self.collector = PowOfTwoCollector(
-                activation_type=self.activation_type,
-                method=self.method,
-                symmetric=self.symmetric,
-                minmse_mode=self.minmse_mode,
-                percentile=self.percentile,
-                optimize_mem=self.optimize_mem,
-                worker_num=self.worker_num,
-                quantized_tensor_type=self.quantized_tensor_type,
-            )
+        clean_merged_dict = get_clean_merged_dict(self.intermediate_outputs)
 
         self.collector.collect(clean_merged_dict)
 
@@ -679,14 +745,15 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
         if self.use_external_data_format:
-            self.infer_session = onnxruntime.InferenceSession(
+            self.infer_session = create_infer_session_for_onnx_model(
                 self.augmented_model_path,
                 sess_options=sess_options,
                 providers=self.execution_providers,
+                use_external_data_format=self.use_external_data_format,
             )
         else:
-            self.infer_session = onnxruntime.InferenceSession(
-                self.model.SerializeToString(),
+            self.infer_session = create_infer_session_for_onnx_model(
+                self.model,
                 sess_options=sess_options,
                 providers=self.execution_providers,
             )
@@ -709,11 +776,12 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
     :param str lwp_mtric: A str value which is use to judge the percentile's metric. One of ['mae', 'mse']. Defaults to ``"mae"``.
     :param int activation_bitwidth: Bitwidth for activations. Defaults to ``8``.
     :param List[float] percentile_candidates: Percentile candidates. Defaults to ``[99.99, 99.999, 99.9999]``.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     """
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         op_types_to_calibrate: Sequence[str] | None = None,
         augmented_model_path: str = "augmented_model.onnx",
         use_external_data_format: bool = False,
@@ -725,6 +793,7 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         lwp_metric: str = "mae",
         activation_bitwidth: int = 8,
         percentile_candidates: list[float] = [99.99, 99.999, 99.9999],
+        optimize_mem: bool = True,
     ):
         super().__init__(
             model_input,
@@ -746,6 +815,7 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         self.q_min = 0
         self.q_max = 2**self.activation_bitwidth - 1
         self.percentile_candidates = percentile_candidates
+        self.optimize_mem = optimize_mem
 
     def collect_data(self, data_reader: CalibrationDataReader) -> None:
         # Initialize the collector
@@ -760,8 +830,15 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
                 worker_num=self.worker_num,
             )
 
-        data_size = len(data_reader)
-        assert data_size, "The data reader should implement the '__len__' method to provide the data size."
+        try:
+            data_size = len(data_reader)
+        except NotImplementedError:
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
+
+        lwp_cache_dir = os.path.dirname(self.augmented_model_path)
+        lwp_cache_files = []
+
+        intermdiate_dict: dict[str, Any] = {}
 
         for _ in tqdm(range(data_size)):
             self.intermediate_outputs = []
@@ -778,10 +855,28 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
                 for intermediate_output in self.intermediate_outputs
             ]
 
+            if self.optimize_mem:
+                # To save memory, each time we cache the output to a file in appending style,
+                # note that the content in the list will be file paths instead of numpy arrays
+                output_names_dict = {}
+                output_names_idxs = []
+                for i in range(len(output_names)):
+                    output_names_dict[output_names[i]] = i
+                    output_names_idxs.append(i)
+
+                for output_index, output in zip(output_names_idxs, self.intermediate_outputs[0], strict=False):
+                    file_path = os.path.join(lwp_cache_dir, f"output{output_index}_data.npz")
+                    with open(file_path, "ab") as f:
+                        np.save(f, output)
+                    if file_path not in lwp_cache_files:
+                        lwp_cache_files.append(file_path)
+
             merged_dict: dict[str, Any] = {}
             for d in output_dicts_list:
                 for k, v in d.items():
                     merged_dict.setdefault(k, []).append(v)
+                    if not self.optimize_mem and k in self.tensors_to_calibrate:
+                        intermdiate_dict.setdefault(k, []).append(v)
 
             clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
 
@@ -789,6 +884,14 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
 
         if len(self.intermediate_outputs) == 0:
             raise ValueError("No data is collected.")
+        elif self.optimize_mem:
+            # To measure how much disk space has been occupied
+            total_size = 0
+            for file_path in lwp_cache_files:
+                total_size += os.path.getsize(file_path)
+            logger.info(
+                f"{len(lwp_cache_files)} tensors consumed {total_size / (1024**3):.2f}GB of disk space for caching."
+            )
 
         self.clear_collected_data()
 
@@ -800,12 +903,30 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             tensors_ranges_percentiles.append(temp_ranges)
 
         baseline_tensors_range = tensors_ranges_percentiles[0]
-        for key in baseline_tensors_range.keys():
+
+        def cal_layers_minmax(key: str) -> None:
+            """
+            Compute layer min-max values by finding the optimal percentile for a given tensor.
+            This function evaluates different percentile candidates for a tensor and selects
+            the one that minimizes the quantization error (MSE or MAE). It updates the
+            minmax_dict and percentile_dict with the best values found.
+            :param key: The tensor name/key to compute min-max values for.
+            """
             min_metric_value = 1000000.0
             for idx in range(len(tensors_ranges_percentiles)):
                 temp_value = tensors_ranges_percentiles[idx][key]
                 q_min, q_max = self.q_min, self.q_max
-                temp_tensor = np.array(clean_merged_dict[key]).reshape(-1)
+                if self.optimize_mem:
+                    temp_tensor = []
+                    temp_path = os.path.join(lwp_cache_dir, f"output{output_names_dict[key]}_data.npz")
+                    # attention to .npz data read method
+                    with open(temp_path, "rb") as f:
+                        for _ in range(data_size):
+                            arr = np.load(f)
+                            temp_tensor.append(arr)
+                    temp_tensor = np.array(temp_tensor).reshape(-1)
+                else:
+                    temp_tensor = np.array(intermdiate_dict[key]).reshape(-1)
                 temp_scale = (temp_value[1] - temp_value[0]) / (q_max - q_min)
                 # Preventing spills of scale value
                 temp_scale = temp_scale + 1e-6
@@ -822,6 +943,14 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
                     self.minmax_dict[key] = temp_value
                     self.percentile_dict[key] = self.percentile_candidates[idx]
 
+        if self.worker_num > 1:
+            Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(cal_layers_minmax)(key) for key in tqdm(baseline_tensors_range)
+            )
+        else:
+            for key in tqdm(baseline_tensors_range):
+                cal_layers_minmax(key)
+
     def compute_data(self) -> TensorsData:
         """
         Compute the min-max range of tensor
@@ -837,13 +966,13 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
 
 @log_errors
 def create_calibrator_power_of_two(
-    model_input: Union[str, Path, onnx.ModelProto],
+    model_input: str | Path | onnx.ModelProto,
     op_types_to_calibrate: Sequence[str] | None = None,
     augmented_model_path: str = "augmented_model.onnx",
-    activation_type: Union[QuantType, ExtendedQuantType] = QuantType.QInt8,
+    activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
     calibrate_method: PowerOfTwoMethod = PowerOfTwoMethod.NonOverflow,
     use_external_data_format: bool = False,
-    execution_providers: Union[list[str], None] = ["CPUExecutionProvider"],
+    execution_providers: list[str] | None = ["CPUExecutionProvider"],
     quantized_tensor_type: dict[Any, Any] = {},
     extra_options: dict[str, Any] = {},
 ) -> Any:
@@ -909,12 +1038,12 @@ def create_calibrator_power_of_two(
 
 @log_errors
 def create_calibrator_float_scale(
-    model_input: Union[str, Path, onnx.ModelProto],
+    model_input: str | Path | onnx.ModelProto,
     op_types_to_calibrate: Sequence[str] | None = None,
     augmented_model_path: str = "augmented_model.onnx",
-    calibrate_method: Union[CalibrationMethod, LayerWiseMethod] = CalibrationMethod.MinMax,
+    calibrate_method: CalibrationMethod | LayerWiseMethod = CalibrationMethod.MinMax,
     use_external_data_format: bool = False,
-    execution_providers: Union[list[str], None] = ["CPUExecutionProvider"],
+    execution_providers: list[str] | None = ["CPUExecutionProvider"],
     extra_options: dict[str, Any] = {},  # noqa: B006
 ) -> Any:
     """
@@ -1005,6 +1134,7 @@ def create_calibrator_float_scale(
             if "percentile_candidates" not in extra_options
             else extra_options["percentile_candidates"]
         )
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = LayerWisePercentileCalibrater(
             model_input,
             op_types_to_calibrate,
@@ -1017,6 +1147,7 @@ def create_calibrator_float_scale(
             lwp_metric=lwp_metric,
             activation_bitwidth=activation_bitwidth,
             percentile_candidates=percentile_candidates,
+            optimize_mem=optimize_mem,
         )
 
     if calibrator:
@@ -1026,63 +1157,3 @@ def create_calibrator_float_scale(
         return calibrator
 
     raise ValueError(f"Unsupported calibration method {calibrate_method}")
-
-
-def calibrate_model(
-    model_input: Union[str, Path, onnx.ModelProto],
-    calib_data_reader: CalibrationDataReader,
-    op_types_to_calibrate: Sequence[str] | None = None,
-    activation_type: QuantType = QuantType.QInt8,
-    calibrate_method: Union[CalibrationMethod, LayerWiseMethod, PowerOfTwoMethod] = CalibrationMethod.MinMax,
-    use_external_data_format: bool = False,
-    execution_providers: Union[list[str], None] = ["CPUExecutionProvider"],
-    quantized_tensor_type: dict[Any, Any] = {},
-    calib_extra_options: dict[str, Any] = {},
-) -> TensorsData:
-    """
-    Calling the calibrator to calibrate activation tensors.
-
-    :param Union[str, Path, onnx.ModelProto] model_input: ONNX model to calibrate.
-    :param CalibrationDataReader data_reader: Data reader for model calibration.
-    :param Optional[Sequence[str]] op_types_to_calibrate: List of operator types to calibrate. Defaults to ``None``, which indicates that all float32/float16 tensors are calibrated.
-    :param QuantType activation_type: The quantization type of activation. Default is QuantType.QInt8.
-    :param Union[CalibrationMethod, LayerWiseMethod, PowerOfTwoMethod] calibrate_method: Calibration method to use (MinMax, Entropy, Percentile, Distribution, NonOverflow or MinMSE).
-    :param bool use_external_data_format: Whether to use external data format for large models.
-    :param Union[List[str], None] execution_providers: List of execution providers for ONNX Runtime.
-    :param Dict[str, Any] calib_extra_options: Additional options for calibrator configuration.
-
-    :return: Data range for each quantizing tensor.
-    """
-
-    with create_tmp_dir("quark_onnx.calib.") as quant_tmp_dir:
-        if isinstance(calibrate_method, PowerOfTwoMethod):
-            calibrator = create_calibrator_power_of_two(
-                model_input,
-                op_types_to_calibrate,
-                augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
-                activation_type=activation_type,
-                calibrate_method=calibrate_method,
-                use_external_data_format=use_external_data_format,
-                execution_providers=execution_providers,
-                quantized_tensor_type=quantized_tensor_type,
-                extra_options=calib_extra_options,
-            )
-        else:
-            calibrator = create_calibrator_float_scale(
-                model_input,
-                op_types_to_calibrate,
-                augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
-                calibrate_method=calibrate_method,
-                use_external_data_format=use_external_data_format,
-                execution_providers=execution_providers,
-                extra_options=calib_extra_options,
-            )
-        logger.info(
-            f"Data collection of {calibrate_method} in progress. Runtime will depend on your model and data size."
-        )
-
-        calibrator.collect_data(calib_data_reader)
-        tensors_range = calibrator.compute_data()
-        del calibrator
-
-        return tensors_range

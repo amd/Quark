@@ -1,12 +1,12 @@
 #
-# Copyright(c) 2024 Advanced Micro Devices,Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.nn as nn
@@ -279,7 +279,7 @@ class OsscarProcessor(BaseAlgoProcessor):
 
                 def add_batch(name: str) -> Callable[[torch.nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
                     def tmp(_: nn.Module, inp: tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
-                        osscar[name].add_batch(inp[0].data, out.data)
+                        osscar[name].add_batch(inp[0].data, out.data)  # noqa
 
                     return tmp
 
@@ -327,6 +327,6 @@ class OsscarProcessor(BaseAlgoProcessor):
             del layer
             del osscar
             del layer_inputs
-            layer_inputs, layer_outputs = layer_outputs, []
+            layer_inputs, layer_outputs = layer_outputs, []  # noqa
             clear_memory()
         self.model.config.use_cache = forward_pass_use_cache

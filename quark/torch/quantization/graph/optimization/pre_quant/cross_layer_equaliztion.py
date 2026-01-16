@@ -1,8 +1,8 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import torch
 from torch.fx import Node

@@ -4,8 +4,10 @@
 #
 import os
 import re
+import shutil
 import subprocess
-from typing import List
+import time
+from pathlib import Path
 
 import pytest
 import torch
@@ -38,26 +40,43 @@ def detect_architecture_from_binary(binary_path: str):
 @require_torch_hip
 @require_linux
 def test_compile_kernel_rocm():
-    os.environ.pop("PYTORCH_ROCM_ARCH", None)
     is_cuda_runtime = 0
     extra_cuda_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
     extra_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
     extra_cuda_cflags.extend(["-O2"])
-    kernel_name = "test_kernel_ext"
 
-    compile_kernel(kernel_name, None, extra_cuda_cflags, extra_cflags)
+    os.environ.pop("PYTORCH_ROCM_ARCH", None)
+    kernel_dir = "test_kernel_ext_singlearch"
+    compile_dir = Path(_get_build_directory(kernel_dir, False))
+    if compile_dir.exists() and compile_dir.is_dir():
+        shutil.rmtree(compile_dir, ignore_errors=True)
 
-    compile_dir = _get_build_directory(kernel_name, False)
-    detected_architectures = set()
-    regex = re.compile(r"--offload-arch=(\w+)")
-    with open(compile_dir + "/build.ninja") as file:
-        detected_architectures = {match for line in file for match in regex.findall(line)}
+    start = time.time()
+    compile_kernel(kernel_dir, None, extra_cuda_cflags, extra_cflags)
+    single_arch_compile_time = time.time() - start
 
-    binary_architectures = detect_architecture_from_binary(compile_dir + "/*.so")
+    offload_archs_single = set()
+    with open(Path(compile_dir, "build.ninja")) as file:
+        logs = file.read().rstrip()
+        offload_archs_single = set(re.findall(r"gfx\d+[a-zA-Z]*(?=[,\s])", logs))
 
-    assert binary_architectures == detected_architectures, (
-        "Kernels are compiled for more than just the user architectures!"
-    )
+    os.environ["PYTORCH_ROCM_ARCH"] = "gfx90a,gfx942,gfx906"
+    kernel_dir = "test_kernel_ext_multiarch"
+    compile_dir = Path(_get_build_directory(kernel_dir, False))
+    if compile_dir.exists() and compile_dir.is_dir():
+        shutil.rmtree(compile_dir, ignore_errors=True)
+
+    start = time.time()
+    compile_kernel(kernel_dir, None, extra_cuda_cflags, extra_cflags)
+    multi_arch_compile_time = time.time() - start
+
+    offload_archs_multi = set()
+    with open(Path(compile_dir, "build.ninja")) as file:
+        logs = file.read().rstrip()
+        offload_archs_multi = set(re.findall(r"gfx\d+[a-zA-Z]*(?=[,\s])", logs))
+
+    assert len(offload_archs_multi - offload_archs_single) == 2
+    assert single_arch_compile_time < 0.6 * multi_arch_compile_time
 
 
 @pytest.mark.parametrize("scale", [1.0, 2.0, 0.5])
@@ -141,11 +160,12 @@ def ref_mxfp4_qdq(x, scale):
     return scale * round_ref(x / scale)
 
 
-def test_mxfp4_fused_qdq():
+@pytest.mark.parametrize("float_dtype", [torch.bfloat16, torch.float16])
+def test_mxfp4_fused_qdq(float_dtype: torch.dtype):
     hidden_size = 128
     num_tokens = 1
 
-    inp = torch.rand(num_tokens, hidden_size, dtype=torch.float16, device="cuda") - 0.5
+    inp = torch.rand(num_tokens, hidden_size, dtype=float_dtype, device="cuda") - 0.5
 
     # Force scale to be 1.
     for i in range(128 // 32):
@@ -160,7 +180,7 @@ def test_mxfp4_fused_qdq():
         assert ref_mxfp4_qdq(inp_clone[0, i].item(), 2**0) == val.item()
 
     # Force scale to be [2**2, 2**3, 2**(-1), 2**(-2)].
-    inp = torch.rand(num_tokens, hidden_size, dtype=torch.float16, device="cuda") - 0.5
+    inp = torch.rand(num_tokens, hidden_size, dtype=float_dtype, device="cuda") - 0.5
 
     inp[:, :32] = (torch.rand(32) - 0.5) * 2 * 17.4
     inp[:, 12] = 17.4
@@ -258,6 +278,7 @@ def test_mxfp4_fused_qdq_match_quark(
         if inplace:
             # not supported
             return
+
         inp_kernel = mx_kernel.qdq_mxfp4_triton(inp_kernel, "even")
 
     for i in range(hidden_size // 32):
@@ -344,7 +365,6 @@ def test_mxfp4_dequant_kernel_match_quark(
         scale = scale.to(float_dtype)
     else:
         scale = weight_quantizer.scale
-
     w_qdq = weight_quantizer(w_mxfp4).to(float_dtype)
 
     out = torch.zeros(shape, device=device, dtype=float_dtype)

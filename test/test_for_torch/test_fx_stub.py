@@ -16,7 +16,7 @@ from quark.shares.utils.testing_utils import torch_device, use_temporary_directo
 from quark.torch import ModelQuantizer
 
 # from quark.torch.quantization.graph.export.onnx import *
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
 from quark.torch.quantization.graph.ops.quant_stubs import DeQuantStub, QuantStub
@@ -33,7 +33,7 @@ from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 TEST_TOPIC = "torch FX graph mode quantization, partly quant model"
 
 logger = ScreenLogger(__name__)
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -42,13 +42,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_config = QuantizationConfig(
+quant_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 """
 utils function
 """
@@ -156,8 +156,8 @@ def test_torch_quant_stub(tmpdir: str):
     out_opt_fx_graph = graph_model(example_inputs[0])
     assert torch.allclose(out_fp32, out_opt_fx_graph)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -185,7 +185,7 @@ def test_torch_quant_stub(tmpdir: str):
                 freeze_graph_module = quantizer.freeze(quantized_model.eval())
                 freeze_graph_module(*example_inputs)
                 onnx_dir = tmpdir + "/module_part_quant.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, onnx_dir)
+                torch.onnx.export(freeze_graph_module, example_inputs, onnx_dir, dynamo=False)
                 assert onnx_contains_op_num(onnx_dir, "Conv") == 6
                 assert onnx_contains_op_num(onnx_dir, "ConvTranspose") == 6
                 assert onnx_contains_op_num(onnx_dir, "Gemm") == 1

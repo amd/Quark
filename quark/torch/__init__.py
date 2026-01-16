@@ -1,15 +1,18 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from quark.torch.quantization.api import ModelQuantizer
-from quark.torch.quantization.api import load_params
+from quark.torch.export.api import (
+    export_gguf,
+    export_onnx,
+    export_safetensors,
+    import_model_from_safetensors,
+    save_params,
+)
 from quark.torch.pruning.api import ModelPruner
-from quark.torch.export.api import ModelExporter, ModelImporter, export_safetensors, export_onnx, export_gguf, import_model_from_safetensors
-from quark.torch.export.api import save_params
+from quark.torch.quantization.api import ModelQuantizer, load_params
 from quark.torch.quantization.config.template import LLMTemplate
-
 
 __all__ = [
     "ModelQuantizer",
@@ -23,7 +26,6 @@ __all__ = [
     "import_model_from_safetensors",
     # LLM Template for quantization config
     "LLMTemplate",
-    # Legacy classes (deprecated)
-    "ModelExporter",
-    "ModelImporter",
 ]
+
+# dummy change to trigger a new CI build

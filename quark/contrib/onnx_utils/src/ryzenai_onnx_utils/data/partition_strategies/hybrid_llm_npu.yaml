@@ -1,0 +1,52 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: ""
+    op_namespaces: "hybrid"
+    # set to "" or remove to use BF16 weights
+    is_bfp16: "weights"
+    npu_jit: true
+    # flag to enable logits prune
+    prune_logits: "lmhead"
+    # delete unpacked NPU weights
+    npu_only: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+# NOTE: any new passes that you add here may need to be added to the
+# hybrid_llm.gitignore file
+passes:
+    - fastgelu_to_gelu
+    # - initializers_to_bfloat16
+    - normalize_gqa
+    - normalize_matmulnbits
+    - hybrid_llm_skipsimplifiedlayernorm
+    - hybrid_llm_ssmlp
+    - hybrid_llm_gqa
+    - hybrid_llm_qkv_matmul
+    - hybrid_llm_qkv_lrn_matmul
+    - hybrid_llm_sln
+    - hybrid_llm_gqo:
+        attributes:
+            cast_kv_cache: false
+    - hybrid_llm_kv_cache_to_bf16
+    - hybrid_llm_matmulnbits
+    - hybrid_llm_conv
+    - hybrid_llm_gqa_rotary_dim
+    # convert any new ops
+    - initializers_to_float16
+    # this must be enabled for now for renaming the op_type
+    - hybrid_llm_add_npu_weights
+    - simplify_casts
+    # - hybrid_llm_add_cast_attributes
+    - hybrid_llm_add_empty_cast_attributes
+    - hybrid_llm_prune_logits
+    - hybrid_llm_prune_logits_matmulnbits
+    - simplify_matmulnbits
+    - hybrid_llm_cast_logits
+    - hybrid_llm_prune_validate
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_jit

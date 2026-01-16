@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
@@ -8,15 +8,14 @@ import json
 from pathlib import Path
 from typing import Any, ClassVar, Iterable, Protocol, runtime_checkable
 
+import torch
+
 from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
 from quark.shares.utils.log import ScreenLogger
 
-logger = ScreenLogger(__name__)
-
-import torch
-
 if is_gguf_available_and_version_0_6_0():
     import gguf  # type: ignore
+logger = ScreenLogger(__name__)
 
 ADDED_TOKENS_FILE = "added_tokens.json"
 FAST_TOKENIZER_FILE = "tokenizer.json"

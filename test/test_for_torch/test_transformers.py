@@ -7,7 +7,10 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.import_utils import is_transformers_version_higher_or_equal
+from quark.shares.utils.import_utils import (
+    is_transformers_version_higher_or_equal,
+    is_transformers_version_lower,
+)
 from quark.shares.utils.testing_utils import skip_if_amd_quark_nightly_wheel_is_installed
 
 """
@@ -73,6 +76,11 @@ and logits before export are saved identically:
 def test_transformers_load(model_id: str):
     if not is_transformers_version_higher_or_equal("4.49"):
         pytest.skip("This test requires Quark support in Transformers")
+
+    if is_transformers_version_higher_or_equal("4.57") and is_transformers_version_lower("4.58"):
+        pytest.skip(
+            "Quark integration in transformers==4.57 is broken => needs either transformers<4.57 or transformers>4.57"
+        )
 
     # We use attn_implementation="eager" here as the asset reference logits were originally computed without SDPA.
     model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation="eager")

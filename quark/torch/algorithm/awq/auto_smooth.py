@@ -9,10 +9,9 @@
 from __future__ import annotations
 
 import functools
-import inspect
 import typing
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -32,36 +31,18 @@ from quark.torch.algorithm.utils.prepare import (
 )
 from quark.torch.algorithm.utils.utils import clear_memory, get_num_attn_heads_from_model
 from quark.torch.kernel import mx
-from quark.torch.quantization import OCP_MXFP4Spec
-from quark.torch.quantization.debug import QUARK_ALGO_DEBUG
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
-from quark.torch.quantization.utils import assert_no_nan
-from quark.torch.utils.torch_utils import get_op_name
+from quark.torch.utils import QUARK_ALGO_DEBUG, assert_no_nan, get_op_name
+
+from .utils import align_attention_mask_with_input
 
 if typing.TYPE_CHECKING:
-    from quark.torch.quantization.config.config import QuantizationSpec
+    from quark.torch.quantization.config.config import QTensorConfig
 
 logger = ScreenLogger(__name__)
 
 CPU = torch.device("cpu")
 CUDA = torch.device("cuda")
-
-
-def is_mxfp4_spec(qspec: QuantizationSpec) -> bool:
-    """
-    Check if the given quantization spec is an OCP_MXFP4Spec.
-    """
-    # TODO: Only used to dispatch to more efficient mxfp4 qdq kernel.
-    # The efficiency of observer + fake quant should be improved.
-    if qspec.scale_calculation_mode is None:
-        return False
-    mxfp4_spec = OCP_MXFP4Spec(
-        ch_axis=-1, is_dynamic=True, scale_calculation_mode=qspec.scale_calculation_mode
-    ).to_quantization_spec()
-    dynamic_mxfp4_spec = OCP_MXFP4Spec(
-        ch_axis=-1, is_dynamic=False, scale_calculation_mode=qspec.scale_calculation_mode
-    ).to_quantization_spec()
-    return qspec in (mxfp4_spec, dynamic_mxfp4_spec)
 
 
 class AutoSmoothQuantProcessor(BaseAlgoProcessor):
@@ -149,8 +130,10 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
                 inp = inp.to(next(layer.parameters()).device)
         # get output as next layer's input
 
-        output = layer(self.inps[0], **self.module_kwargs)
-        self.inps = [output[0]] if isinstance(output, tuple) else [output]
+        outputs = []
+        for in_data in self.inps:
+            outputs.append(layer(in_data, **self.module_kwargs))
+        self.inps = [output[0] if isinstance(output, tuple) else output for output in outputs]
 
         for h in handles:
             h.remove()
@@ -187,10 +170,7 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
 
         # [STEP 2]: Compute output of module
         with torch.no_grad():
-            forward_params = inspect.signature(module2inspect.forward).parameters
-            filtered_kwargs = {
-                k: v for k, v in kwargs.items() if k in forward_params
-            }  # the parameters of module2inspect may or may not be the same as the decoder, so need it
+            filtered_kwargs = align_attention_mask_with_input(module2inspect, kwargs, inp)
             fp16_output = module2inspect(inp, **filtered_kwargs)
             if isinstance(fp16_output, tuple):
                 fp16_output = fp16_output[0]
@@ -235,10 +215,7 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
             x_q = self.pseudo_quantize_tensor(x_scale, fc, False, False)
 
             # W * X
-            forward_params = inspect.signature(
-                module2inspect.forward
-            ).parameters  # the parameters of module2inspect may or may not be the same as the decoder, so need it
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in forward_params}
+            filtered_kwargs = align_attention_mask_with_input(module2inspect, kwargs, x_q)
             int_w_output = module2inspect(x_q, **filtered_kwargs)
             if isinstance(int_w_output, tuple):
                 int_w_output = int_w_output[0]
@@ -285,12 +262,13 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
         if quantizer is None:
             return w
 
-        qspec: QuantizationSpec = quantizer.quant_spec
-        if is_mxfp4_spec(qspec) and not get_scale_zp:
-            # TODO: Make observer + fake as efficient as this.
+        qspec: QTensorConfig = quantizer.quant_spec
+        if qspec.is_ocp_mxfp4() and not get_scale_zp:
+            # TODO: `observer` + `scaled_fake_quantize` should be made roughly
+            # as fast as this, however there is currently no interface to fuse
+            # the two at the moment as `mx.qdq_mxfp4` is doing.
             assert qspec.scale_calculation_mode is not None
             w_q = mx.qdq_mxfp4(w, qspec.scale_calculation_mode)
-
         else:
             for module in linear_layer.modules():
                 if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):

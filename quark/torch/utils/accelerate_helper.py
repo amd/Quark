@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Literal, Union
 
 import torch
 import torch.nn as nn
 
 from quark.shares.utils.import_utils import is_accelerate_available
-from quark.torch.utils import getattr_recursive, setattr_recursive
+from quark.torch.utils.torch_utils import getattr_recursive, setattr_recursive
 
 if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook
@@ -45,7 +45,7 @@ def untie_parameters(model: nn.Module) -> nn.Module:
 
 
 class OffloadParameter:
-    def __init__(self, module_list: Union[nn.Module, list[nn.Module]]):
+    def __init__(self, module_list: nn.Module | list[nn.Module]):
         if isinstance(module_list, nn.Module):
             self.module_list: list[nn.Module] = [module_list]
         else:
@@ -65,7 +65,7 @@ def offload_to_weights_map(
     weights_map: Union["PrefixedDataset", dict[str, torch.Tensor], "OffloadedWeightsLoader"],
     key: str,
     value: torch.Tensor,
-    offload_device: Union[torch.device, Literal["disk"]] | None = None,
+    offload_device: torch.device | Literal["disk"] | None = None,
 ) -> None:
     if not is_accelerate_available():
         raise ImportError(
@@ -107,7 +107,7 @@ def update_offload_parameter(
     module: torch.nn.Module,
     name: str,
     data: torch.Tensor,
-    offload_device: Union[torch.device, Literal["disk"]] | None = None,
+    offload_device: torch.device | Literal["disk"] | None = None,
 ) -> None:
     param: torch.nn.Parameter = getattr(module, name)
     if param.device != torch.device("meta") and data is not param.data:

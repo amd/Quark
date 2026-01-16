@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
@@ -14,13 +14,13 @@
 #endif
 
 void tqt_backward_kernel(
-  const int N, float *x, float *scale, float *quant_min, float *quant_max,
-  float *grad_logt, float *grad_output
+  const int N, float* x, float* scale, float* quant_min, float* quant_max,
+  float* grad_logt, float* grad_output
 );
 
 std::vector<at::Tensor> tqt_backward(
-  at::Tensor &x, at::Tensor &scale, at::Tensor &quant_max,
-  at::Tensor &quant_min, at::Tensor &logt, at::Tensor &grad_output
+  at::Tensor& x, at::Tensor& scale, at::Tensor& quant_max,
+  at::Tensor& quant_min, at::Tensor& logt, at::Tensor& grad_output
 ) {
 #ifdef USE_CUDA
   if (x.device().is_cpu()) {

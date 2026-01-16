@@ -157,27 +157,27 @@ struct Float8E4M3FN {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-  explicit ORT_HOST_DEVICE Float8E4M3FN(const __nv_fp8_e4m3 &value) {
-    val = *reinterpret_cast<const unsigned char *>(&value);
+  explicit ORT_HOST_DEVICE Float8E4M3FN(const __nv_fp8_e4m3& value) {
+    val = *reinterpret_cast<const unsigned char*>(&value);
   }
   explicit ORT_HOST_DEVICE operator __nv_fp8_e4m3() const {
-    return *reinterpret_cast<const __nv_fp8_e4m3 *>(&val);
+    return *reinterpret_cast<const __nv_fp8_e4m3*>(&val);
   }
 #endif
 };
 
 inline ORT_HOST_DEVICE bool operator==(
-  const Float8E4M3FN &left, const Float8E4M3FN &right
+  const Float8E4M3FN& left, const Float8E4M3FN& right
 ) {
   return left.val == right.val;
 }
 inline ORT_HOST_DEVICE bool operator!=(
-  const Float8E4M3FN &left, const Float8E4M3FN &right
+  const Float8E4M3FN& left, const Float8E4M3FN& right
 ) {
   return left.val != right.val;
 }
 inline ORT_HOST_DEVICE bool operator<(
-  const Float8E4M3FN &left, const Float8E4M3FN &right
+  const Float8E4M3FN& left, const Float8E4M3FN& right
 ) {
   return left.val < right.val;
 }
@@ -197,7 +197,7 @@ inline Float8E4M3FN operator"" _f8e4m3fnp8(long double v) {
 #endif
 
 inline void Float8E4M3FNToFloat(
-  const Float8E4M3FN *blf, float *flt, size_t size
+  const Float8E4M3FN* blf, float* flt, size_t size
 ) {
   auto src = blf;
   auto d = flt;
@@ -207,7 +207,7 @@ inline void Float8E4M3FNToFloat(
 }
 
 inline void FloatToFloat8E4M3FN(
-  const float *flt, Float8E4M3FN *blf, size_t size, bool saturate
+  const float* flt, Float8E4M3FN* blf, size_t size, bool saturate
 ) {
   auto src = flt;
   auto d = blf;
@@ -341,17 +341,17 @@ struct Float8E4M3FNUZ {
 };
 
 inline ORT_HOST_DEVICE bool operator==(
-  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+  const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right
 ) {
   return left.val == right.val;
 }
 inline ORT_HOST_DEVICE bool operator!=(
-  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+  const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right
 ) {
   return left.val != right.val;
 }
 inline ORT_HOST_DEVICE bool operator<(
-  const Float8E4M3FNUZ &left, const Float8E4M3FNUZ &right
+  const Float8E4M3FNUZ& left, const Float8E4M3FNUZ& right
 ) {
   return left.val < right.val;
 }
@@ -371,7 +371,7 @@ inline Float8E4M3FNUZ operator"" _f8e4m3fnuzp8(long double v) {
 #endif
 
 inline void Float8E4M3FNUZToFloat(
-  const Float8E4M3FNUZ *blf, float *flt, size_t size
+  const Float8E4M3FNUZ* blf, float* flt, size_t size
 ) {
   auto src = blf;
   auto d = flt;
@@ -381,7 +381,7 @@ inline void Float8E4M3FNUZToFloat(
 }
 
 inline void FloatToFloat8E4M3FNUZ(
-  const float *flt, Float8E4M3FNUZ *blf, size_t size, bool saturate
+  const float* flt, Float8E4M3FNUZ* blf, size_t size, bool saturate
 ) {
   auto src = flt;
   auto d = blf;
@@ -516,27 +516,27 @@ struct Float8E5M2 {
   inline ORT_HOST_DEVICE operator float() const { return ToFloat(); }
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11080
-  ORT_HOST_DEVICE Float8E5M2(const __nv_fp8_e5m2 &value) {
-    val = *reinterpret_cast<const unsigned char *>(&value);
+  ORT_HOST_DEVICE Float8E5M2(const __nv_fp8_e5m2& value) {
+    val = *reinterpret_cast<const unsigned char*>(&value);
   }
   explicit ORT_HOST_DEVICE operator __nv_fp8_e5m2() const {
-    return *reinterpret_cast<const __nv_fp8_e5m2 *>(&val);
+    return *reinterpret_cast<const __nv_fp8_e5m2*>(&val);
   }
 #endif
 };
 
 inline ORT_HOST_DEVICE bool operator==(
-  const Float8E5M2 &left, const Float8E5M2 &right
+  const Float8E5M2& left, const Float8E5M2& right
 ) {
   return left.val == right.val;
 }
 inline ORT_HOST_DEVICE bool operator!=(
-  const Float8E5M2 &left, const Float8E5M2 &right
+  const Float8E5M2& left, const Float8E5M2& right
 ) {
   return left.val != right.val;
 }
 inline ORT_HOST_DEVICE bool operator<(
-  const Float8E5M2 &left, const Float8E5M2 &right
+  const Float8E5M2& left, const Float8E5M2& right
 ) {
   return left.val < right.val;
 }
@@ -555,7 +555,7 @@ inline Float8E5M2 operator"" _f8e5m2fnp8(long double v) {
 
 #endif
 
-inline void Float8E5M2ToFloat(const Float8E5M2 *blf, float *flt, size_t size) {
+inline void Float8E5M2ToFloat(const Float8E5M2* blf, float* flt, size_t size) {
   auto src = blf;
   auto d = flt;
   for (; size != 0; ++src, ++d, --size) {
@@ -564,7 +564,7 @@ inline void Float8E5M2ToFloat(const Float8E5M2 *blf, float *flt, size_t size) {
 }
 
 inline void FloatToFloat8E5M2(
-  const float *flt, Float8E5M2 *blf, size_t size, bool saturate
+  const float* flt, Float8E5M2* blf, size_t size, bool saturate
 ) {
   auto src = flt;
   auto d = blf;
@@ -690,17 +690,17 @@ struct Float8E5M2FNUZ {
 };
 
 inline ORT_HOST_DEVICE bool operator==(
-  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+  const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right
 ) {
   return left.val == right.val;
 }
 inline ORT_HOST_DEVICE bool operator!=(
-  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+  const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right
 ) {
   return left.val != right.val;
 }
 inline ORT_HOST_DEVICE bool operator<(
-  const Float8E5M2FNUZ &left, const Float8E5M2FNUZ &right
+  const Float8E5M2FNUZ& left, const Float8E5M2FNUZ& right
 ) {
   return left.val < right.val;
 }
@@ -720,7 +720,7 @@ inline Float8E5M2FNUZ operator"" _f8e5m2fnuzp8(long double v) {
 #endif
 
 inline void Float8E5M2FNUZToFloat(
-  const Float8E5M2FNUZ *blf, float *flt, size_t size
+  const Float8E5M2FNUZ* blf, float* flt, size_t size
 ) {
   auto src = blf;
   auto d = flt;
@@ -730,7 +730,7 @@ inline void Float8E5M2FNUZToFloat(
 }
 
 inline void FloatToFloat8E5M2FNUZ(
-  const float *flt, Float8E5M2FNUZ *blf, size_t size, bool saturate
+  const float* flt, Float8E5M2FNUZ* blf, size_t size, bool saturate
 ) {
   auto src = flt;
   auto d = blf;

@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 #pragma once
@@ -11,48 +11,48 @@
 
 struct Buffer {
   Buffer(size_t size);
-  void *get_data_ptr();
+  void* get_data_ptr();
   void release();
 
  private:
-  char *data_;
+  char* data_;
 };
 
 struct BFPFixNeuronKernel {
   BFPFixNeuronKernel(
-    const OrtApi &ort_api, const OrtKernelInfo *info, std::string bfp_method,
+    const OrtApi& ort_api, const OrtKernelInfo* info, std::string bfp_method,
     int64_t axis, int64_t bit_width, int64_t block_size, int64_t rounding_mode,
     int64_t sub_block_size, int64_t sub_block_shift_bits,
     int64_t convert_to_bfloat_before_bfp,
     int64_t use_compiler_version_cpu_kernel
   );
   ~BFPFixNeuronKernel();
-  void Compute(OrtKernelContext *context);
+  void Compute(OrtKernelContext* context);
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
-  OrtStatusPtr ComputeV2(OrtKernelContext *context) { return nullptr; }
+  OrtStatusPtr ComputeV2(OrtKernelContext* context) { return nullptr; }
 #endif
 
   Ort::Value transpose(
-    OrtKernelContext *context, Ort::Value &input, int from, int to
+    OrtKernelContext* context, Ort::Value& input, int from, int to
   );
 
   void create_transpose_op(size_t num_dims, int from, int to);
 
-  Ort::Value pad(OrtKernelContext *context, Ort::Value &input, int block_size);
+  Ort::Value pad(OrtKernelContext* context, Ort::Value& input, int block_size);
 
   void create_pad_op();
 
   Ort::Value slice(
-    OrtKernelContext *context, Ort::Value &input, size_t last_dim
+    OrtKernelContext* context, Ort::Value& input, size_t last_dim
   );
 
   void create_slice_op();
 
-  Ort::Value do_bfp(Ort::Value &input);
+  Ort::Value do_bfp(Ort::Value& input);
 
  private:
-  const OrtApi &ort_;
+  const OrtApi& ort_;
   Ort::KernelInfo info_copy_{nullptr};
   Ort::Op op_transpose_{nullptr};
   bool op_transpose_init_ = false;
@@ -73,12 +73,12 @@ struct BFPFixNeuronKernel {
   int64_t use_compiler_version_cpu_kernel_ = 0;
 };
 
-template <const char *OpName, int OpVersion>
+template <const char* OpName, int OpVersion>
 struct BFPFixNeuron
   : Ort::CustomOpBase<BFPFixNeuron<OpName, OpVersion>, BFPFixNeuronKernel> {
   explicit BFPFixNeuron() {}
 
-  void *CreateKernel(const OrtApi &api, const OrtKernelInfo *info) const {
+  void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     Ort::InitApi(&api);
 
     std::string bfp_method;
@@ -93,13 +93,13 @@ struct BFPFixNeuron
 
     // It has two steps to get attribute with string datatype
     // Step1. Get the string length
-    const char *attribute_name = "bfp_method";
+    const char* attribute_name = "bfp_method";
     size_t str_len;
     auto status = api.KernelInfoGetAttribute_string(
       info, attribute_name, nullptr, &str_len
     );
     // Step2. Get the string content
-    char *str_ptr = (char *)malloc(str_len);
+    char* str_ptr = (char*)malloc(str_len);
     status = api.KernelInfoGetAttribute_string(
       info, attribute_name, str_ptr, &str_len
     );
@@ -141,19 +141,19 @@ struct BFPFixNeuron
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
   OrtStatusPtr CreateKernelV2(
-    const OrtApi &api, const OrtKernelInfo *info, void **op_kernel
+    const OrtApi& api, const OrtKernelInfo* info, void** op_kernel
   ) const {
     return nullptr;
   };
-  OrtStatusPtr KernelComputeV2(OrtKernelContext *context) const {
+  OrtStatusPtr KernelComputeV2(OrtKernelContext* context) const {
     return nullptr;
   };
 #endif
 
-  const char *GetName() const { return OpName; };
+  const char* GetName() const { return OpName; };
   int GetVersion() const { return OpVersion; };
 
-  const char *GetExecutionProviderType() const {
+  const char* GetExecutionProviderType() const {
 #ifdef NO_GPU
     return "CPUExecutionProvider";
 #elif defined(USE_ROCM)
@@ -177,7 +177,7 @@ struct BFPFixNeuron
 
 #if ORT_API_VERSION >= 17
   // A function that will be called by SetShapeInferFn to get shape info
-  static Ort::Status InferOutputShape(Ort::ShapeInferContext &ctx) {
+  static Ort::Status InferOutputShape(Ort::ShapeInferContext& ctx) {
     auto input_count = ctx.GetInputCount();
     if (input_count < 1) {
       return Ort::Status(

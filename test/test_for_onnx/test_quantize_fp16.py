@@ -11,13 +11,12 @@ import onnx
 import onnxruntime as ort
 import torch
 import torch.nn as nn
-from onnx import TensorProto, helper
+from onnx import TensorProto, helper, numpy_helper
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quant_utils import convert_fp16_scale_to_fp32
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
+from quark.onnx.quantization.quant_utils import convert_fp16_scale_to_fp32
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 fp16_input_tensor = np.array(
@@ -49,7 +48,7 @@ fp16_input_cast_tensor = np.array([1]).astype(np.float16)
 
 fp16_golden_output = np.array([[-0.5093]], dtype=np.float16)
 
-fp16_cast_golden_output = np.array([[1.0]], dtype=np.float16)
+fp16_cast_golden_output = np.array([[2.0]], dtype=np.float16)
 
 
 class DataReader(CalibrationDataReader):
@@ -99,14 +98,24 @@ def prepare_cast_model(output_dir):
     cast_node = helper.make_node(
         "Cast",
         inputs=["input"],
-        outputs=["output"],
+        outputs=["cast_output"],
         to=TensorProto.FLOAT16,
+    )
+
+    const_tensor = numpy_helper.from_array(np.array([1.0], dtype=np.float16), name="const")
+
+    add_node = helper.make_node(
+        "Add",
+        inputs=["cast_output", "const"],
+        outputs=["output"],
     )
 
     input_tensor = helper.make_tensor_value_info("input", TensorProto.FLOAT16, [1])
     output_tensor = helper.make_tensor_value_info("output", TensorProto.FLOAT16, [1])
 
-    graph = helper.make_graph([cast_node], "CastGraph", [input_tensor], [output_tensor])
+    graph = helper.make_graph(
+        [cast_node, add_node], "CastGraph", [input_tensor], [output_tensor], initializer=[const_tensor]
+    )
 
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10)
     onnx.save(model, onnx_model_path)
@@ -146,7 +155,13 @@ def prepare_model(output_dir):
     onnx_model_path = Path(output_dir, "double_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "double_conv_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

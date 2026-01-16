@@ -7,7 +7,7 @@
 # Licensed under the MIT License. See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-from typing import Any, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -31,9 +31,7 @@ from onnxruntime.quantization.quant_utils import (
 )
 from onnxruntime.quantization.registry import CreateOpQuantizer
 
-from quark.shares.utils.log import ScreenLogger
-
-from ..quant_utils import (
+from quark.onnx.quantization.quant_utils import (
     ONNX_BFP_QTYPES_LIST,
     ONNX_FP_QTYPES_LIST,
     ONNX_TYPE_TO_NP_TYPE,
@@ -45,7 +43,9 @@ from ..quant_utils import (
     get_qmin_qmax_for_qType,
     get_tensor_type_from_qType,
     quantize_data,
+    save_and_reload_model_with_shape_infer,
 )
+from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -98,7 +98,24 @@ class ONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         )
 
 
-class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
+class ExtendedONNXQuantizer(OrtONNXQuantizer):  # type: ignore
+    """This class inherits from the official onnxruntime ONNXQuantizer and expand the QOP quantization to support for power-of-2 scale.
+
+    :param onnx.ModelProto model: ONNX model to calibrate.
+    :param bool per_channel: Quantize weights per channel.
+    :param bool reduce_range: Quantize weights with 7-bits. It may improve the accuracy for some models running on non-VNNI machine, especially for per-channel mode.
+    :param QuantizationMode mode: Quantization mode, the default is QuantizationMode.QLinearOps.
+    :param bool static: The flag of static quantization.
+    :param QuantType weight_type: The quantization type of weight.
+    :param QuantType activation_type: The quantization type of activation.
+    :param TensorsData tensors_range: Data range for all quantizing tensors.
+    :param list[str] nodes_to_quantize: List of nodes names to quantize. When this list is not None only the nodes in this list.
+    :param list[str] nodes_to_exclude: List of nodes names to exclude. The nodes in this list will be excluded from quantization when it is not None.
+    :param list[str] op_types_to_quantize: Specify the types of operators to quantize. It quantizes all supported operators by default.
+    :param CalibrationMethod calibrate_method: Calibration method to use.
+    :param Optional[dict[str, Any]] extra_options: Extra options for the quantizer.
+    """
+
     def __init__(
         self,
         model: ModelProto,
@@ -106,18 +123,16 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         reduce_range: bool,
         mode: QuantizationMode.QLinearOps,
         static: bool,
-        weight_qType: Union[QuantType, ExtendedQuantType],
-        activation_qType: Union[QuantType, ExtendedQuantType],
+        weight_qType: QuantType | ExtendedQuantType,
+        activation_qType: QuantType | ExtendedQuantType,
         tensors_range: Any,
         nodes_to_quantize: list[str],
         nodes_to_exclude: list[str],
         op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: dict[Any, Any] = {},
         extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
-        self.quantized_tensor_type = quantized_tensor_type
         OrtONNXQuantizer.__init__(
             self,
             model,
@@ -134,8 +149,6 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
             extra_options=None,
         )
         if not model_has_infer_metadata(model):
-            from onnxruntime.quantization.quant_utils import save_and_reload_model_with_shape_infer
-
             model = save_and_reload_model_with_shape_infer(model)
         self.value_infos = {vi.name: vi for vi in model.graph.value_info}
         self.value_infos.update({ot.name: ot for ot in model.graph.output})
@@ -375,7 +388,7 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         if input_name in self.quantized_value_map:
             input_scale_name = self.quantized_value_map[input_name].scale_name
         elif input_name in self.quantization_params:
-            _, input_scale_name, _, _, _ = self._get_quantization_params(input_name)
+            _, input_scale_name, *_ = self._get_quantization_params(input_name)
         else:
             raise ValueError(f"Expected {input_name} to be in quantized value map for static quantization")
 
@@ -595,7 +608,7 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         # Update packed weight, zero point, and scale initializers
         weight_data = tensor_proto_to_array(weight)
 
-        _, _, zero_point, scale, q_weight_data = quantize_data(
+        *_, zero_point, scale, q_weight_data = quantize_data(
             data=weight_data.flatten(),
             qType=qType,
             symmetric=self.is_weight_symmetric,
@@ -661,7 +674,7 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
     def quantize_weight_per_channel(
         self,
         weight_name: str,
-        weight_qType: Union[QuantType, ExtendedQuantType],
+        weight_qType: QuantType | ExtendedQuantType,
         channel_axis: Any,
         method: Any,
         reduce_range: bool = True,
@@ -756,54 +769,43 @@ class VitisONNXQuantizer(OrtONNXQuantizer):  # type: ignore
 
     def calculate_quantization_params(self) -> Any:
         if self.tensors_range is None:
-            return
+            return None
+
         self.adjust_tensor_ranges()
 
         quantization_params = {}
-
         for tensor_name in self.tensors_range:
             td = self.tensors_range[tensor_name]
-
             if not isinstance(td, TensorData):
                 raise TypeError(f"Unexpected type {type(td)} for {tensor_name!r}.")
 
+            quant_type = self.activation_qType
             quant_overrides = self.tensor_quant_overrides.get_per_tensor_overrides(tensor_name, default_val={})
 
-            quant_type = self.activation_qType
+            symmetric = quant_overrides.get("symmetric", self.is_activation_symmetric)
             if "quant_type" in quant_overrides:
                 quant_type = quant_overrides["quant_type"].tensor_type
+                if quant_type in ONNX_FP_QTYPES_LIST + ONNX_BFP_QTYPES_LIST:
+                    symmetric = quant_overrides.get("symmetric", True)
 
             if "scale" in quant_overrides and "zero_point" in quant_overrides:
                 zero, scale = quant_overrides["zero_point"], quant_overrides["scale"]
-
-            quant_type = self.activation_qType
-            if tensor_name in self.quantized_tensor_type:
-                quant_type = get_tensor_type_from_qType(self.quantized_tensor_type[tensor_name])
-                logger.info(
-                    f"The type of tensor {tensor_name} is {self.quantized_tensor_type[tensor_name]}: using specific tensor precision"
-                )
-
-            rmin = quant_overrides.get("rmin", td.range_value[0])
-            rmax = quant_overrides.get("rmax", td.range_value[1])
-            if quant_type in ONNX_FP_QTYPES_LIST:
-                qmin, qmax = get_qmin_qmax_for_qType(quant_type)
-                zero, scale = compute_scale_zp_fp(
-                    rmin, rmax, qmin, qmax, quant_type, self.calibrate_method, self.is_activation_symmetric
-                )
-                quantization_params[tensor_name] = QuantizationParams(
-                    zero_point=zero, scale=scale, quant_type=quant_type
-                )
             else:
-                symmetric = self.is_activation_symmetric
+                rmin = quant_overrides.get("rmin", td.range_value[0])
+                rmax = quant_overrides.get("rmax", td.range_value[1])
+                reduce_range = quant_overrides.get("reduce_range", False)
 
-                qmin, qmax = get_qmin_qmax_for_qType(quant_type, symmetric=symmetric)
+                if quant_type in ONNX_FP_QTYPES_LIST + ONNX_BFP_QTYPES_LIST:
+                    qmin, qmax = get_qmin_qmax_for_qType(quant_type, reduce_range=reduce_range)
+                    zero, scale = compute_scale_zp_fp(
+                        rmin, rmax, qmin, qmax, quant_type, self.calibrate_method, symmetric
+                    )
+                else:
+                    qmin, qmax = get_qmin_qmax_for_qType(quant_type, reduce_range=reduce_range, symmetric=symmetric)
+                    zero, scale = compute_scale_zp(
+                        rmin, rmax, qmin, qmax, quant_type, self.calibrate_method, symmetric, self.use_power_of_2_scale
+                    )
 
-                zero, scale = compute_scale_zp(
-                    rmin, rmax, qmin, qmax, quant_type, self.calibrate_method, symmetric, self.use_power_of_2_scale
-                )
-
-                quantization_params[tensor_name] = QuantizationParams(
-                    zero_point=zero, scale=scale, quant_type=quant_type
-                )
+            quantization_params[tensor_name] = QuantizationParams(zero_point=zero, scale=scale, quant_type=quant_type)
 
         return quantization_params

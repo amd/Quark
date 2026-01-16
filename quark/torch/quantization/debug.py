@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,7 +9,7 @@ import os
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Any, Collection, Iterable, Iterator
 
 import numpy as np
 import torch
@@ -19,10 +19,10 @@ from tqdm import tqdm
 
 from quark.shares.utils.import_utils import is_matplotlib_available, is_transformers_available
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize, StaticScaledFakeQuantize
 
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
@@ -36,13 +36,6 @@ SAVE_ACTIVATIONS_HISTOGRAM = os.environ.get("QUARK_DEBUG_ACT_HIST", None) == "1"
 DEBUG_INPUT_PICKLE = os.environ.get("QUARK_DEBUG_INPUT_PICKLE", None)
 
 QUARK_DEBUG = os.environ.get("QUARK_DEBUG", "0") == "1"
-QUARK_GRAPH_DEBUG = os.environ.get("QUARK_GRAPH_DEBUG", "0") == "1"
-
-# Selects the Q/DQ/QDQ implementation to use with mxfp4.
-# Available: "hip", "triton". Default is "hip".
-QUARK_MXFP4_IMPL = os.environ.get("QUARK_MXFP4_IMPL", "hip")
-
-QUARK_ALGO_DEBUG = os.environ.get("QUARK_ALGO_DEBUG", "0") == "1"
 
 
 def weight_stats_hook(
@@ -168,7 +161,7 @@ def activation_stats_hook(
 
 def distribution_plot(
     histogram: tuple[np.ndarray, np.ndarray],  # type: ignore[type-arg]
-    save_path: Union[str, Path],
+    save_path: str | Path,
     title: str,
 ) -> None:
     """
@@ -188,7 +181,7 @@ def distribution_plot(
     plt.savefig(save_path, dpi=300)
 
 
-def barplot(labels: Collection[str], values: Iterable[float], name: str, log_dir: Union[str, Path]) -> None:
+def barplot(labels: Collection[str], values: Iterable[float], name: str, log_dir: str | Path) -> None:
     """
     Plots and saves a bar plot summary of values, each value having a label. This is useful to plot a summary of e.g. quantization error over many layers.
     """
@@ -314,20 +307,17 @@ def summarize_activation(stats: dict[str, Any], log_dir: Path) -> None:
             l1_errors_ref_output[name] = np.mean(tensor_stats["l1_ref_output"])
 
     # Plot the summary of relative error of input tensor of FakeQuantizeBase compared to reference input tensor (non-quantized model).
-    labels = [
-        key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_errors_ref_input.keys()
-    ]
+    labels = [key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_errors_ref_input]
     barplot(labels, l1_errors_ref_input.values(), name="summary_ref_input_error", log_dir=log_dir)
 
     # Plot the summary of relative error of output tensor of FakeQuantizeBase compared to reference output tensor (non-quantized model).
     labels = [
-        key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o")
-        for key in l1_errors_ref_output.keys()
+        key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_errors_ref_output
     ]
     barplot(labels, l1_errors_ref_output.values(), name="summary_ref_output_error", log_dir=log_dir)
 
     # Plot the summary of relative error of output tensor of FakeQuantizeBase compared to its input tensor.
-    labels = [key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_io_error.keys()]
+    labels = [key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_io_error]
     barplot(labels, l1_io_error.values(), name="summary_io_quantization_error", log_dir=log_dir)
 
     if SAVE_ACTIVATIONS_HISTOGRAM:
@@ -378,12 +368,10 @@ def insert_stats_hooks(model: nn.Module, stats: dict[str, Any], log_dir: Path) -
 
 def collect_quantization_statistics(
     model: nn.Module,
-    dataloader: Union[
-        DataLoader[torch.Tensor],
-        DataLoader[list[dict[str, torch.Tensor]]],
-        DataLoader[dict[str, torch.Tensor]],
-        DataLoader[list["BatchFeature"]],
-    ]
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
+    | DataLoader[list["BatchFeature"]]
     | None,
     stats: dict[str, Any],
     log_dir: Path,
@@ -475,7 +463,7 @@ def collect_quantization_statistics(
 
 class QuantizerStatsHelper:
     def __init__(self, quantizer: ScaledFakeQuantize, quantizer_type: str, module_name: str, summary: dict[str, Any]):
-        assert isinstance(quantizer, ScaledFakeQuantize)
+        assert isinstance(quantizer, StaticScaledFakeQuantize)
         self.quantizer = quantizer
         summary[quantizer_type] = {}
         self.summary = summary[quantizer_type]
@@ -547,7 +535,7 @@ SCALE_STATS_FILE = "scale_stats.json"
 CHECK_MODULE = QuantLinear
 
 
-def check_scale_stats(model: nn.Module, config: Config) -> None:
+def check_scale_stats(model: nn.Module, config: QConfig) -> None:
     """
     Check the scale of the model's quantizer.
     """

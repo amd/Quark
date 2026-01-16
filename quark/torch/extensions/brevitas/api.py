@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization API for Brevitas."""
@@ -30,7 +30,10 @@ try:
 except ModuleNotFoundError:
     has_brevitas = False
 
-from typing import Any, Dict, Optional, Tuple, Union
+from importlib.metadata import version
+from typing import Any
+
+from packaging.version import Version
 
 from quark.shares.utils.log import ScreenLogger
 
@@ -41,9 +44,6 @@ logger.warning(
     "You are using the Brevitas-Quark API which is experimental and may be subject to change. Production code should not rely on it."
 )
 
-from importlib.metadata import version
-
-from packaging.version import Version
 
 # update this version to whatever brevitas version we expect
 expected_brevitas_version = Version("0.10.3")
@@ -69,8 +69,8 @@ class ModelQuantizer:
     https://github.com/Xilinx/brevitas/tree/master/src/brevitas_examples/imagenet_classification/ptq
 
     Example usage:
-        weight_spec = QuantizationSpec()
-        global_config = QuantizationConfig(weight=weight_spec)
+        weight_spec = QTensorConfig()
+        global_config = QLayerConfig(weight=weight_spec)
         config = Config(global_quant_config=global_config)
         quantizer = ModelQuantizer(config)
         quant_model = quantizer.quantize_model(model, calib_dataloader)
@@ -78,8 +78,8 @@ class ModelQuantizer:
 
     @classmethod
     def _parse_bias_quant_spec(
-        cls, spec: Union[brevitas_config.QuantizationSpec, None]
-    ) -> Union[brevitas.quant.scaled_int.IntBias, None]:
+        cls, spec: brevitas_config.QTensorConfig | None
+    ) -> brevitas.quant.scaled_int.IntBias | None:
         if spec is None:
             return None
 
@@ -88,7 +88,7 @@ class ModelQuantizer:
     @classmethod
     def _parse_activation_quant_spec(
         cls,
-        spec: Union[brevitas_config.QuantizationSpec, None],
+        spec: brevitas_config.QTensorConfig | None,
         force_symmetric: bool = False,
         force_per_tensor: bool = False,
     ) -> Any:
@@ -115,7 +115,7 @@ class ModelQuantizer:
         return quant
 
     @classmethod
-    def _parse_weight_quant_spec(cls, spec: Union[brevitas_config.QuantizationSpec, None]) -> Any:
+    def _parse_weight_quant_spec(cls, spec: brevitas_config.QTensorConfig | None) -> Any:
         if spec is None:
             return None
 
@@ -175,7 +175,6 @@ class ModelQuantizer:
             "in_proj_input_quant": None,
             "in_proj_bias_quant": bias_quant,
             "packed_in_proj": True,
-            "out_proj_bias_quant": bias_quant,
             "softmax_input_quant": None,
             "out_proj_weight_quant": weight_quant,
             "out_proj_input_quant": cls._parse_activation_quant_spec(config.global_quant_config.input_tensors),
@@ -257,7 +256,7 @@ class ModelExporter:
     def __init__(self, export_path: str) -> None:
         self.export_path = export_path
 
-    def export_onnx_model(self, model: torch.nn.Module, args: Union[torch.Tensor, tuple[torch.Tensor]]) -> None:
+    def export_onnx_model(self, model: torch.nn.Module, args: torch.Tensor | tuple[torch.Tensor]) -> None:
         """
         Exports a model to onnx.
 

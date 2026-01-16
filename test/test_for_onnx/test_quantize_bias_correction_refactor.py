@@ -9,10 +9,7 @@ import onnxruntime
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization import BiasCorrectionConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+from quark.onnx import BiasCorrectionConfig, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(

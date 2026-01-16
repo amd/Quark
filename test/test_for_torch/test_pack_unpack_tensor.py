@@ -7,7 +7,7 @@ import pytest
 import torch
 
 import quark.torch.kernel  # noqa
-from quark.torch.utils.pack import create_pack_method
+from quark.torch.utils import create_pack_method
 
 torch.manual_seed(42)
 

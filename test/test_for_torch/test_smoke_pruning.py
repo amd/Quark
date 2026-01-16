@@ -156,7 +156,7 @@ def get_llm_model(model_name="facebook/opt-125m", multi_gpu=False):
         )
         model.eval()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         model.eval()
         model = model.to(torch_device)
     return model

@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # from packaging import version
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from onnxruntime.quantization.onnx_model import ONNXModel
@@ -25,7 +25,7 @@ class GraphImporter:
         model: Any,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         pass
 
@@ -46,7 +46,7 @@ class ONNXImporter(GraphImporter):
         model: ONNXModel,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         # if not self._pre_check(model, args, kwargs):
         #     raise ValueError("This Model ******* need check")  # TODO
@@ -70,7 +70,7 @@ class TorchModuleImporter(GraphImporter):
         model: Module,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         if not self._pre_check(model, args, kwargs):
             raise ValueError("This torch.nn.Module is not supported please check")
@@ -98,7 +98,7 @@ class FXModuleImporter(GraphImporter):
         model: GraphModule,
         args: tuple[Any],
         kwargs: dict[str, Any] | None = None,
-        dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+        dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
     ) -> GraphModule:
         if not self._pre_check(model, args, kwargs):
             raise ValueError("This fx model not supported")
@@ -109,7 +109,7 @@ def get_fx_model(
     model: Any,
     args: tuple[Any],
     kwargs: dict[str, Any] | None = None,
-    dynamic_shapes: Union[dict[str, Any], tuple[Any]] | None = None,
+    dynamic_shapes: dict[str, Any] | tuple[Any] | None = None,
 ) -> GraphModule:
     model_importer: GraphImporter
     if isinstance(model, GraphModule):

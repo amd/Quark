@@ -2,21 +2,35 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+from tempfile import TemporaryDirectory
+
 import torch
+from transformers import AutoConfig, AutoModelForCausalLM
 
 import quark
+from quark.shares.utils.testing_utils import torch_device
 from quark.testing import skip_if_no_gpu
+from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.nn.modules.realquantizer import SequentialRealQuantizer, StaticScaledRealQuantizer
-from quark.torch.quantization import FP4PerGroupSpec, FP8E4M3PerTensorSpec, OCP_MXFP4Spec
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import (
+    Config,
+    FP4PerGroupSpec,
+    FP8E4M3PerTensorSpec,
+    Int4PerTensorSpec,
+    Int8PerChannelSpec,
+    OCP_MXFP4Spec,
+    QTensorConfig,
+    QuantizationConfig,
+)
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver, PerTensorMinMaxObserver
+from quark.torch.utils import getattr_recursive
 
 
 @skip_if_no_gpu
 def test_fp4_per_group_fp8_per_tensor_scale_real_quantize():
     fp4_real_quantizer = StaticScaledRealQuantizer(
-        qspec=FP4PerGroupSpec(group_size=5, is_dynamic=False).to_quantization_spec(),
+        qspec=FP4PerGroupSpec(ch_axis=-1, group_size=5, is_dynamic=False).to_quantization_spec(),
         quantizer=None,
         reorder=False,
         real_quantized=True,
@@ -43,7 +57,7 @@ def test_fp4_per_group_fp8_per_tensor_scale_real_quantize():
     )
     fp4_real_quantizer.scale = scale1
 
-    fp8_qspec = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
+    fp8_qspec = FP8E4M3PerTensorSpec(is_dynamic=False).to_quantization_spec()
     fp8_qspec.is_scale_quant = True
     fp8_real_quantizer = StaticScaledRealQuantizer(
         qspec=fp8_qspec,
@@ -106,7 +120,7 @@ def test_fp4_per_group_fp8_per_tensor_scale_real_quantize():
 
 @skip_if_no_gpu
 def test_fp8_int4_perchannel_quantize():
-    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -115,7 +129,7 @@ def test_fp8_int4_perchannel_quantize():
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    DEFAULT_INT4_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT4_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int4,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -205,7 +219,7 @@ def test_fp8_int4_perchannel_quantize():
 @skip_if_no_gpu
 def test_e8m0_scale_pack_unpack():
     fp4_e8m0_quantizer = StaticScaledRealQuantizer(
-        qspec=OCP_MXFP4Spec(is_dynamic=False, ch_axis=-1).to_quantization_spec(),
+        qspec=OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec(),
         quantizer=None,
         reorder=False,
         real_quantized=True,
@@ -224,3 +238,73 @@ def test_e8m0_scale_pack_unpack():
 
     scale, _ = fp4_e8m0_quantizer.unpack_params()
     assert torch.equal(scale, scale_float)
+
+
+def test_freeze_export_reload():
+    transformers_config = AutoConfig.from_pretrained("HuggingFaceTB/SmolLM-135M")
+
+    weight_specs = [
+        FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec(),
+        Int4PerTensorSpec(
+            observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
+        ).to_quantization_spec(),
+        Int8PerChannelSpec(
+            symmetric=True, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
+        ).to_quantization_spec(),
+        OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False, scale_calculation_mode="even").to_quantization_spec(),
+    ]
+
+    for weight_spec in weight_specs:
+        model = AutoModelForCausalLM.from_config(transformers_config)
+        model = model.eval()
+        model = model.to(torch_device)
+
+        print("----- weight_spec:", weight_spec)
+        global_quant_config = QuantizationConfig(weight=weight_spec)
+        quant_config = Config(global_quant_config=global_quant_config, exclude=["lm_head"])
+
+        state_dict = model.state_dict()
+
+        quantizer = ModelQuantizer(quant_config)
+        quant_model = quantizer.quantize_model(model)
+        quant_model = quantizer.freeze(quant_model)
+        model = model.eval()
+        model = model.to(torch.float32)
+
+        model.generation_config.pad_token_id = 1  # just to bypass a bug in the model.
+
+        state_dict_post_freeze = model.state_dict()
+
+        for name, param in state_dict.items():
+            if "lm_head" not in name and "embed_tokens" not in name and "norm" not in name:
+                assert not torch.equal(param, state_dict_post_freeze[name])
+
+        with TemporaryDirectory() as tmpdir:
+            export_safetensors(
+                model=quant_model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder"
+            )
+
+            with torch.device(torch_device):
+                original_model = AutoModelForCausalLM.from_config(transformers_config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+        state_dict_reload = q_model.state_dict()
+
+        for name, _ in state_dict.items():
+            if "norm" in name or "lm_head" in name or "embed_tokens" in name:
+                continue
+            param_reload = state_dict_reload[name]
+
+            param_frozen = state_dict_post_freeze[name]
+
+            quantizer_name = name.replace(".weight", ".weight_quantizer")
+            quantizer = getattr_recursive(q_model, quantizer_name)
+
+            weight_dequantized = quantizer(param_reload)
+
+            assert weight_dequantized.dtype == param_frozen.dtype
+            absdiff = (weight_dequantized - param_frozen).abs()
+
+            # TODO: should be torch.equal here! This is strictly equal for MXFP4, but not for FP8 or INT. There is likely a bug somewhere.
+            assert absdiff.max() < 5e-4

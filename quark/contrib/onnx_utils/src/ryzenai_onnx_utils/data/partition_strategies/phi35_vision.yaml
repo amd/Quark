@@ -1,0 +1,40 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    # multiple xclbins for SDMatmul and SDConv. xclbins will be merged into one later
+    xclbins: "/xclbin/stx/phi3_5.xclbin"
+    op_namespaces: "phi3.5"
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+# conv
+    - sd15.conv_to_sd_conv2d
+    - sd15.sdconv
+# gemm
+    - sd15.matmul_add_to_sd_gemm
+    # - sd15.sdgemm
+# matmulnbits
+    - phi3_5.matmulnbits_to_sd_matmulnbits
+    # - phi3_5.matmulnbits
+# mha
+    - sd15.mha_to_sd_mha
+# layernorm
+    - sd15.layernorm_to_sd_layernorm
+# gelu
+    - sd15.gelu_to_sd_gelu
+# add
+    - sd15.add_to_sd_add
+# concat
+    - sd15.concat_to_sd_concat
+# set preemption and fastpm attr for sd nodes
+    - sd15.set_preemption_fastpm_attr_for_sd_nodes
+# below are the passes to simplify the graph
+    - simplify_casts
+    - remove_reshapes
+    - remove_parallel_casts
+# DD part
+    - dd.dynamic_sd_nodes_to_dd
+    # - dd.single_noqdq_to_dd

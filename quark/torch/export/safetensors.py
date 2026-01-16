@@ -1,22 +1,18 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Union
+from typing import TYPE_CHECKING, Optional
 
 import torch
-from torch import nn
 
-from quark.shares.utils.import_utils import is_accelerate_available, is_safetensors_available, is_transformers_available
+from quark.shares.utils.import_utils import is_safetensors_available, is_transformers_available
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.export.utils import (
-    _build_quantized_model,
-    _convert_quantized_model,
-    _handle_multi_device_loading,
-    _untie_parameters,
+    get_state_dict_for_export,
 )
 
 if TYPE_CHECKING and is_transformers_available():
@@ -31,65 +27,24 @@ logger = ScreenLogger(__name__)
 
 
 def export_hf_model(
-    model: "PreTrainedModel", export_dir: Union[str, Path], tokenizer: Optional["PreTrainedTokenizer"] = None
+    model: "PreTrainedModel", export_dir: str | Path, tokenizer: Optional["PreTrainedTokenizer"] = None
 ) -> None:
     """
     This function is used to export models in Hugging Face safetensors format.
     """
 
     logger.info("Start exporting huggingface_format quantized model ...")
+
+    state_dict = get_state_dict_for_export(model)
+
     # Save model to safetensors.
-    model.save_pretrained(export_dir)  # type: ignore[attr-defined]
+    model.save_pretrained(export_dir, state_dict=state_dict)  # type: ignore[attr-defined]
 
     # Optionally, save the tokenizer from the original model.
     if tokenizer is not None:
         tokenizer.save_pretrained(export_dir)
 
     logger.info(f"hf_format quantized model exported to {export_dir} successfully.")
-
-
-def import_hf_model(
-    model_importer: "ModelImporter",  # type: ignore [name-defined]
-    model: nn.Module,
-    model_info_dir: str,
-) -> nn.Module:
-    """
-    Load the model file, perform preprocessing and post-processing, load weights into the model.
-    """
-    if not is_safetensors_available():
-        raise ImportError(
-            "The function `import_hf_model` requires the package `safetensors` to be installed, but it was not found. Please install `safetensors`."
-        )
-    checkpoint_weights = _load_weights_from_safetensors(model_info_dir)
-
-    model_config = model_importer.get_model_config()
-    model = _build_quantized_model(model, model_config, checkpoint_weights)
-
-    if is_accelerate_available():
-        _untie_parameters(model, checkpoint_weights)
-    # The module here is qparamlinear, the float module has been removed, the internal weight is already a quantized dtype like fp8 and is assigned to each GPU or meta by device.
-    model_state_dict = model.state_dict()
-
-    # In case we are loading the quantized weights into a model that is not on meta device,
-    # we re-use the original device the weights were placed on, as `assign=True` is used later.
-    # This is helpful e.g. in case the original model was dispatched to multiple
-    # devices ahead of time with `accelerate`.
-    for name, param in model_state_dict.items():
-        if name not in checkpoint_weights:
-            raise ValueError(f"The loaded checkpoint misses the key {name} present in the model weights.")
-
-        if param.device.type != "meta":
-            checkpoint_weights[name] = checkpoint_weights[name].to(param.device)
-
-    # Handle multi-device loading if enabled
-    if model_importer.multi_device and is_accelerate_available():
-        _handle_multi_device_loading(model, checkpoint_weights)
-
-    model.load_state_dict(checkpoint_weights, assign=True)
-    model = _convert_quantized_model(model, model_config)
-
-    logger.info("hf_format quantized model imported successfully.")
-    return model
 
 
 def _load_weights_from_safetensors(model_info_dir: str) -> dict[str, torch.Tensor]:

@@ -1,0 +1,52 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "stx_SD_unified_fastpm_2x4x4"
+    op_namespaces: "sd3"
+    model_type: SD30_VAE
+    op_config: "ops-config.json"
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+# conv
+    - sd3.pad_conv_ic
+    - sd3.pad_conv_to_conv
+    - sd15.conv_to_sd_conv2d
+# gemm
+    - sd15.matmul_add_to_sd_gemm
+# slice
+    - sd3.slice_to_sd_slice
+# concat
+    - sd15.concat_to_sd_concat
+# resize
+    - sd15.resize_to_sd_resize
+# add
+    - sd15.add_to_sd_add
+# matmul
+    - sd15.matmul_to_sd_matmul
+# mha
+    - sd15.mha_to_sd_mha
+# groupnorm
+    - sd15.groupnorm_to_sd_groupnorm
+# silu
+    - sd15.sigmoid_mul_to_sd_silu
+# mul
+    - sd15.mul_to_sd_mul
+# whitebox_checker
+    - sd3.whitebox_checker
+# generate unsupported shape txn
+    #- wait pass
+    - sd15.sdconv
+    - sd15.sdgemm
+    - sd15.sdmatmul
+# set preemption and fastpm attr for sd nodes
+    - sd15.set_preemption_fastpm_attr_for_sd_nodes
+# below are the passes to simplify the graph
+    - simplify_casts
+    - remove_reshapes
+    - remove_parallel_casts
+    - remove_dangling_nodes
+    - remove_unused_io

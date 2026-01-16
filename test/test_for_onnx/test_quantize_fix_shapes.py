@@ -12,8 +12,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -101,6 +100,7 @@ def prepare_model(output_dir):
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

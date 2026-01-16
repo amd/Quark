@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -8,7 +8,7 @@ Convert u16u8 to u8u8.
 
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Any, List, Optional, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -70,21 +70,18 @@ SOURCE_TYPE = onnx.TensorProto.UINT16
 TARGET_TYPE = onnx.TensorProto.UINT8
 
 
-def convert_u16u8_to_u8u8(
-    input_model: Union[str, Path, onnx.ModelProto], output_model: Union[str, Path] | None = None
-) -> Any:
+def convert_u16u8_to_u8u8(input_model: str | Path | onnx.ModelProto, output_model: str | Path | None = None) -> Any:
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
     onnx_model = ONNXModel(model)
 
     output_name_to_node = onnx_model.output_name_to_node()
-    input_name_to_nodes = onnx_model.input_name_to_nodes()
 
     model_inputs = [inp.name for inp in onnx_model.model.graph.input]
     updated_initializers: list[str] = []
 
     def _modify_scale_value(
         scale_init: onnx.TensorProto, zp_init: onnx.TensorProto, quant_type: onnx.TensorProto.DataType
-    ) -> Union[onnx.TensorProto, None]:
+    ) -> onnx.TensorProto | None:
         source_dtype: onnx.TensorProto.DataType = ONNX_INT_TO_ONNX_TYPE[zp_init.data_type]
         target_dtype: onnx.TensorProto.DataType = quant_type
         if (
@@ -106,7 +103,7 @@ def convert_u16u8_to_u8u8(
 
     def _create_zp_value_and_datatype(
         init: onnx.TensorProto, quant_type: onnx.TensorProto.DataType
-    ) -> Union[onnx.TensorProto, None]:
+    ) -> onnx.TensorProto | None:
         source_dtype: onnx.TensorProto.DataType = ONNX_INT_TO_ONNX_TYPE[init.data_type]
         target_dtype: onnx.TensorProto.DataType = quant_type
         if (

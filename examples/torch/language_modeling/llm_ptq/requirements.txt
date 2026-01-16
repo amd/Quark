@@ -1,4 +1,5 @@
 accelerate
+ai2-olmo
 datasets
 einops
 evaluate>=0.4.0

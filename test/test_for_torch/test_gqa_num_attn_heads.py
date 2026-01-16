@@ -13,9 +13,9 @@ from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import (
-    Config,
     Int8PerTensorSpec,
-    QuantizationConfig,
+    QConfig,
+    QLayerConfig,
     Uint4PerChannelSpec,
     load_pre_optimization_config_from_file,
     load_quant_algo_config_from_file,
@@ -24,14 +24,10 @@ from quark.torch.quantization import (
 logger = ScreenLogger(__name__)
 
 # quant spec
-INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(
-    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-).to_quantization_spec()
-W8A8_CONFIG = QuantizationConfig(input_tensors=INT8_PER_TENSOR_SPEC, weight=INT8_PER_TENSOR_SPEC)
-UINT4_PER_CHANNEL_ASYM_SPEC = Uint4PerChannelSpec(
-    symmetric=False, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-).to_quantization_spec()
-W_UINT4_PER_CHANNEL_ASYM_CONFIG = QuantizationConfig(weight=UINT4_PER_CHANNEL_ASYM_SPEC)
+INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(is_dynamic=False).to_quantization_spec()
+W8A8_CONFIG = QLayerConfig(input_tensors=INT8_PER_TENSOR_SPEC, weight=INT8_PER_TENSOR_SPEC)
+UINT4_PER_CHANNEL_ASYM_SPEC = Uint4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
+W_UINT4_PER_CHANNEL_ASYM_CONFIG = QLayerConfig(weight=UINT4_PER_CHANNEL_ASYM_SPEC)
 sys.path.append("..")
 
 
@@ -57,7 +53,7 @@ def test_dbrx_num_head_sq():
 
     # algorithm config
     algo_config = load_pre_optimization_config_from_file(config_path + "/smoothquant_config.json")
-    quant_config = Config(global_quant_config=W8A8_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*ffn*"])
+    quant_config = QConfig(global_quant_config=W8A8_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*ffn*"])
 
     # apply algorithm
     quantizer = ModelQuantizer(quant_config)
@@ -81,7 +77,7 @@ def test_opt_num_head_awq():
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/awq_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_CHANNEL_ASYM_CONFIG, algo_config=[algo_config], exclude=["lm_head"]
     )
 
@@ -109,7 +105,7 @@ def test_vlm_num_head_asq():
 
     # algorithm config
     algo_config = load_pre_optimization_config_from_file(config_path + "/smoothquant_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W8A8_CONFIG, algo_config=[algo_config], exclude=["lm_head", "vision_model*"]
     )
     # algorithm

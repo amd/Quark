@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import functools
-from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union, cast
+from typing import Any, Callable, TypeVar, cast
 
 import torch
 
@@ -13,6 +13,27 @@ from quark.shares.utils.log import ScreenLogger
 logger = ScreenLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def memory_summary(tag: str = "") -> tuple[float, float]:
+    torch.cuda.empty_cache()  # Clear cache first
+    torch.cuda.synchronize()  # Wait for all operations to complete
+    # Reset peak memory statistics
+    torch.cuda.reset_peak_memory_stats()
+    # Record baseline memory
+    baseline_allocated_total = torch.cuda.memory_allocated()
+    baseline_reserved_total = torch.cuda.memory_reserved()
+    free_total = torch.cuda.memory.mem_get_info()[0]
+
+    title = f"{tag} GPU Memory Profiling"
+    print_value = {
+        "Total Allocated Memory:": f"{baseline_allocated_total / 1024**3:.2f}GB",
+        "Total Reserved Memory:": f"{baseline_reserved_total / 1024**3:.2f}GB",
+        "Total Free Memory:": f"{free_total / 1024**3:.2f}GB",
+    }
+    GPUMemoryProfiling.profiling_print(title, print_value)
+
+    return baseline_allocated_total, baseline_reserved_total
 
 
 class GPUMemoryProfiling:
@@ -26,18 +47,14 @@ class GPUMemoryProfiling:
             torch.cuda.synchronize()  # Wait for all operations to complete
             # Reset peak memory statistics
             torch.cuda.reset_peak_memory_stats()
-            # Record baseline memory
-            self.baseline_allocated_total = torch.cuda.memory_allocated()
-            self.baseline_reserved_total = torch.cuda.memory_reserved()
 
-            title = f"{self.tag} GPU Memory Profiling Before Forward "
-            print_value = {
-                "Total Allocated Memory:": f"{self.baseline_allocated_total / 1024**3:.2f}GB",
-                "Total Reserved Memory:": f"{self.baseline_reserved_total / 1024**3:.2f}GB",
-            }
-            self.profiling_print(title, print_value)
+            baseline_allocated_total, baseline_reserved_total = memory_summary(tag=self.tag)
 
-    def profiling_print(self, title: str, value: dict[str, str]) -> None:
+            self.baseline_allocated_total = baseline_allocated_total
+            self.baseline_reserved_total = baseline_reserved_total
+
+    @staticmethod
+    def profiling_print(title: str, value: dict[str, str]) -> None:
         row_format = "|{:^40}|{:^20}|"
         line_width = (len(row_format.format("", "")) - len(title)) // 2
         separator = "=" * line_width
@@ -79,7 +96,7 @@ class GPUMemoryProfiling:
                 logger.info("Using >80% of available GPU memory (total)")
 
 
-def gpu_memory_profiled(_func: F | None = None, *, tag: str = "") -> Union[F, Callable[[F], F]]:
+def gpu_memory_profiled(_func: F | None = None, *, tag: str = "") -> F | Callable[[F], F]:
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def wrapper(*args: object, **kwargs: object) -> object:

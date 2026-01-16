@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 #
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +12,7 @@ from gguf import GGMLQuantizationType
 from quark.shares.utils.testing_utils import require_torch_higher_or_equal, torch_device, use_temporary_directory
 from quark.torch import export_gguf
 from quark.torch.export.gguf_export.tensor_convert import convert_from_gguf, convert_to_gguf
-from quark.torch.quantization import Config, QuantizationConfig, Uint4PerGroupSpec
+from quark.torch.quantization import QConfig, QLayerConfig, Uint4PerGroupSpec
 
 
 # flake8: noqa: C901
@@ -639,8 +638,6 @@ def generate_test_data():
 
 
 def test_convert_to_gguf():
-    cur_file_dir = os.path.dirname(__file__)
-    test_dir = os.path.dirname(cur_file_dir)
     test_data = generate_test_data()
     inpt = test_data["inpt"]
     scale = test_data["scale"]
@@ -677,8 +674,6 @@ def test_convert_to_gguf():
 
 
 def test_convert_from_gguf():
-    cur_file_dir = os.path.dirname(__file__)
-    test_dir = os.path.dirname(cur_file_dir)
     test_data = generate_test_data()
     inpt = test_data["inpt"]
     scale = test_data["scale"]
@@ -750,7 +745,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
         )
         model.eval()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         model.eval()
         model = model.to(torch_device)
     # Get dataloader, if multi_gpu, give the first layer's device
@@ -771,13 +766,10 @@ def test_gguf_export(tmpdir: str):
     Test Features:
         Export Format:            GGUF
     """
-    UINT4_PER_GROUP_ASYM_SPEC = Uint4PerGroupSpec(
-        scale_type="float", ch_axis=1, is_dynamic=False, group_size=32
-    ).to_quantization_spec()
-    W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
-    quant_config = Config(global_quant_config=W_UINT4_PER_GROUP_CONFIG)
-    with patch("quark.torch.export.api.convert_exported_model_to_gguf"):
-        with torch.inference_mode():
-            for multi_gpu in [False]:
-                model = quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=multi_gpu)
-                export_gguf(model, output_dir=tmpdir, model_type="llama", tokenizer_path="facebook/opt-125m")
+    UINT4_PER_GROUP_ASYM_SPEC = Uint4PerGroupSpec(ch_axis=1, is_dynamic=False, group_size=32).to_quantization_spec()
+    W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
+    quant_config = QConfig(global_quant_config=W_UINT4_PER_GROUP_CONFIG)
+    with patch("quark.torch.export.api.convert_exported_model_to_gguf"), torch.inference_mode():
+        for multi_gpu in [False]:
+            model = quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=multi_gpu)
+            export_gguf(model, output_dir=tmpdir, model_type="llama", tokenizer_path="facebook/opt-125m")

@@ -15,3 +15,8 @@ The following models and techniques are demonstrated in the AMD Quark for ONNX e
 | Object Detection PTQ for AMD Ryzen AI             | yolov8n-face                                                                      |
 
 ¹Accuracy improvement includes examples with: AdaQuant, AdaRound, Block Floating Point (BFP), Cross-Layer Equalization (CLE), GPTQ, Mixed Precision, Microscaling (MX) data types, QuaRot, and SmoothQuant.
+
+<!--
+## License
+Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
+-->

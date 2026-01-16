@@ -187,11 +187,11 @@ struct Float16Impl {
   /// <param name="lhs">first value</param>
   /// <param name="rhs">second value</param>
   /// <returns>True if both arguments represent zero</returns>
-  static bool AreZero(const Float16Impl &lhs, const Float16Impl &rhs) noexcept {
+  static bool AreZero(const Float16Impl& lhs, const Float16Impl& rhs) noexcept {
     return static_cast<uint16_t>((lhs.val | rhs.val) & ~kSignMask) == 0;
   }
 
-  bool operator==(const Float16Impl &rhs) const noexcept {
+  bool operator==(const Float16Impl& rhs) const noexcept {
     if (IsNaN() || rhs.IsNaN()) {
       // IEEE defines that NaN is not equal to anything, including itself.
       return false;
@@ -199,11 +199,11 @@ struct Float16Impl {
     return val == rhs.val;
   }
 
-  bool operator!=(const Float16Impl &rhs) const noexcept {
+  bool operator!=(const Float16Impl& rhs) const noexcept {
     return !(*this == rhs);
   }
 
-  bool operator<(const Float16Impl &rhs) const noexcept {
+  bool operator<(const Float16Impl& rhs) const noexcept {
     if (IsNaN() || rhs.IsNaN()) {
       // IEEE defines that NaN is unordered with respect to everything,
       // including itself.
@@ -484,7 +484,7 @@ struct BFloat16Impl {
   /// <param name="rhs">second value</param>
   /// <returns>True if both arguments represent zero</returns>
   static bool AreZero(
-    const BFloat16Impl &lhs, const BFloat16Impl &rhs
+    const BFloat16Impl& lhs, const BFloat16Impl& rhs
   ) noexcept {
     // IEEE defines that positive and negative zero are equal, this gives us a
     // quick equality check for two values by or'ing the private bits together
@@ -508,7 +508,7 @@ inline uint16_t BFloat16Impl<Derived>::ToUint16Impl(float v) noexcept {
       if (detail::endian::native == detail::endian::little) {
 #endif
         std::memcpy(
-          &result, reinterpret_cast<char *>(&fl) + sizeof(uint16_t),
+          &result, reinterpret_cast<char*>(&fl) + sizeof(uint16_t),
           sizeof(uint16_t)
         );
       } else {
@@ -535,8 +535,8 @@ inline float BFloat16Impl<Derived>::ToFloatImpl() const noexcept {
     return std::numeric_limits<float>::quiet_NaN();
   }
   float result;
-  char *const first = reinterpret_cast<char *>(&result);
-  char *const second = first + sizeof(uint16_t);
+  char* const first = reinterpret_cast<char*>(&result);
+  char* const second = first + sizeof(uint16_t);
 #ifdef __cpp_if_constexpr
   if constexpr (detail::endian::native == detail::endian::little) {
 #else

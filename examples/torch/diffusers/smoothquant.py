@@ -24,13 +24,13 @@ class SmoothQuantLinearLike(torch.nn.Module):
         return x
 
     def __getattr__(self, name):
-        if name in self.__dict__.keys():
+        if name in self.__dict__:
             return self.__dict__[name]
-        if name in self._modules.keys():
+        if name in self._modules:
             return self._modules[name]
-        if name in self._buffers.keys():
+        if name in self._buffers:
             return self._buffers[name]
-        if name in self._parameters.keys():
+        if name in self._parameters:
             return self._parameters[name]
         return getattr(self.op, name)
 
@@ -116,7 +116,7 @@ def apply_smoothquant(model, cache_activation_max=None, exclude_layers={}, alpha
         if is_linear_like(module):
             if filter_by_name(name):
                 continue
-            if name in cache_activation_max.keys():
+            if name in cache_activation_max:
                 activation_max = cache_activation_max[name]
             else:
                 activation_max = module.activation_max

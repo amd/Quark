@@ -17,8 +17,8 @@ from transformers import AutoTokenizer
 from quark.torch.pruning.config import Config, LayerImportancePruneConfig
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from llm_eval.evaluation import eval_model
-from llm_utils.model_preparation import get_model, get_model_type, save_model, set_seed
+from quark.contrib.llm_eval import eval_model
+from quark.torch.utils.llm import get_model, save_model, set_seed
 
 
 def get_config(args: argparse.Namespace, model_type: str) -> Config:
@@ -54,12 +54,8 @@ def main(args: argparse.Namespace) -> None:
     # 1. Define original model
     print("\n[INFO]: Loading model ...")
     set_seed(args.seed)
-    model, model_dtype = get_model(args.model_dir, args.data_type, args.device, args.multi_gpu)
-    model_type = get_model_type(model)
-
-    from quark.shares.utils.log import ScreenLogger
-
-    logger = ScreenLogger(__name__)
+    model, _ = get_model(args.model_dir, args.data_type, args.device, args.multi_gpu)
+    model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
 
     # 2. Define calibration dataloader.
     print("\n[INFO]: Loading dataset ...")

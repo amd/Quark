@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,8 +12,7 @@ import onnxruntime as ort
 from onnxruntime.quantization.calibrate import CalibrationMethod
 
 from quark.experimental.cli import base_cli
-from quark.onnx import LayerWiseMethod, ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, LayerWiseMethod, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import get_default_config
 
 from .helper_utils import ImageDataReader, get_calib_dataset, get_model_input_name, is_number, parse_subgraphs_list

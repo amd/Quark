@@ -11,10 +11,8 @@ import onnxruntime
 from onnx import TensorProto, helper
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quant_utils import is_version_below
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int8Spec, Int16Spec, QLayerConfig
+from quark.onnx import Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig
+from quark.onnx.quantization.quant_utils import is_version_below
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 np.random.seed(42)

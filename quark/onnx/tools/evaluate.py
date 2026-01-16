@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -20,7 +20,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from quark.onnx.quant_utils import calculate_cos, calculate_l2_distance
+from quark.onnx.quantization.output_eval import calculate_cos, calculate_l2_distance
 
 
 def parse_args() -> Namespace:

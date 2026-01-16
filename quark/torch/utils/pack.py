@@ -1,18 +1,20 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from functools import reduce
-from typing import Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 from torch import Tensor
 
-from quark.torch.quantization.config.config import QuantizationSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.constants import PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.utils import get_dtype_params
+
+if TYPE_CHECKING:
+    from quark.torch.quantization.config.config import QTensorConfig
 
 T = TypeVar("T", bound="PackMethod")
 
@@ -51,7 +53,7 @@ class PackMethod:
     def _infer_scale_zero_point_shape(
         self,
         unpacked_shape: tuple[int, ...],
-        quantization_spec: QuantizationSpec,
+        quantization_spec: "QTensorConfig",
         legacy: bool = False,
         custom_mode: str = "quark",
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -110,7 +112,7 @@ class PackMethod:
     def infer_packed_shape(
         self,
         unpacked_shape: tuple[int, ...],
-        quantization_spec: QuantizationSpec,
+        quantization_spec: "QTensorConfig",
         legacy: bool = False,
         custom_mode: str = "quark",
     ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:

@@ -11,8 +11,6 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
-
-WEIGHTS_NAME = "pytorch_model.bin"
 from transformers import (
     GPT2Tokenizer,
     OPTConfig,
@@ -24,6 +22,7 @@ logger = logging.getLogger(__name__)
 MODEL_CLASSES = {
     "opt": (OPTConfig, OPTForCausalLM, GPT2Tokenizer),
 }
+WEIGHTS_NAME = "pytorch_model.bin"
 
 
 class TextDataset(Dataset):
@@ -73,7 +72,6 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
-    sampler = eval_dataloader.sampler
 
     # Eval!
     logger.info(f"***** Running evaluation {prefix} *****")
@@ -145,9 +143,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup CUDA, GPU & distributed training
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -159,11 +154,7 @@ def main():
     set_seed(args)
 
     # Load pretrained model and tokenizer
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-    config = config_class.from_pretrained(
-        args.config_name if args.config_name else args.model_name_or_path,
-        cache_dir=None,
-    )
+    _, _, tokenizer_class = MODEL_CLASSES[args.model_type]
     tokenizer = tokenizer_class.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
         do_lower_case=False,

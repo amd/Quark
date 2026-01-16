@@ -14,13 +14,13 @@ from quark.torch.quantization.config.config import (
     AWQConfig,
     Config,
     Float16Spec,
-    QuantizationConfig,
+    QLayerConfig,
     RotationConfig,
     SmoothQuantConfig,
 )
 
 FLOAT16_SPEC = Float16Spec().to_quantization_spec()
-DEFAULT_CONFIG = QuantizationConfig(weight=FLOAT16_SPEC)
+DEFAULT_CONFIG = QLayerConfig(weight=FLOAT16_SPEC)
 
 
 @patch("os.makedirs")
@@ -53,4 +53,4 @@ def test_smoke_enhance_algorithm_config():
         ],
     )
     dataloader = torch.utils.data.DataLoader(torch.tensor([[1, 2, 3, 4]]))
-    updated_config = add_algorithm_config_by_model(model, dataloader, config)
+    _ = add_algorithm_config_by_model(model, dataloader, config)

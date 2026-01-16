@@ -1,12 +1,11 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
 import operator
 import sys
 from math import sqrt
-from typing import List, Tuple
 
 import torch
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
@@ -708,7 +707,6 @@ class ConvertDeleteRedundantSliceQOPass(OptPassBase):
             shape_equal = input_node.meta["val"].shape == slice_node.meta["val"].shape
 
         # check based on param
-        dim = slice_node.args[1] if len(slice_node.args) >= 2 else slice_node.target._schema.arguments[1].default_value
         start = (
             slice_node.args[2] if len(slice_node.args) >= 3 else slice_node.target._schema.arguments[2].default_value
         )

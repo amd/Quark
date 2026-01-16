@@ -34,11 +34,14 @@ repository = "https://github.com/amd/quark.git"
 
 [project.optional-dependencies]
 lint = [
-    "pyyaml",
-    "ruff",
-    "mypy",
-    "opencv-python",
-    "pre-commit",
+  "mypy==1.18.2",
+  "opencv-python",
+  "pre-commit",
+  "pydantic",
+  "pytest",
+  "pyyaml",
+  "ruff",
+  "types-PyYAML",
 ]
 
 [project.scripts]
@@ -53,7 +56,6 @@ line-length = 120
 target-version = "py310"
 exclude = [
   "setup.py",
-  "__init__.py",
   "docs/source/conf.py",
   "quark/torch/algorithm/rotation/hadamard.py"
 ]
@@ -74,9 +76,6 @@ ignore = [
     "B006", # Do not use mutable data structures for argument defaults
     "B007", # loop variable not used in loop
     "B008", # Do not perform function call in argument defaults
-    "B011", # raise assertion error
-    "B015", # pointless comparison
-    "B020", # Loop control variable overrides iterable it iterates
     "B023", # Function definition does not bind loop variable
     "B024", # abstract class has no abstract methods or properties
     "B026", # Star-arg unpacking after a keyword argument is strongly discouraged
@@ -86,22 +85,14 @@ ignore = [
     "C401", # Unnecessary generator (rewrite as a set comprehension)
     "C402", # Unnecessary generator (rewrite as a dict comprehension)
     "C403", # Unnecessary list comprehension (rewrite as a set comprehension)
-    "C405", # unnecessary list literal
     "C408", # Unnecessary `dict()` call (rewrite as a literal)
     "C409", # Unnecessary list literal passed to `tuple()` (rewrite as a tuple literal)
     "C416", # unnecessary comprehension
-    "C417", # unnecessary map()
     "C419", # unnecessary list comprehension
     "C901", # function is too complex
-    "E402", # Module level import not at top of file
     "E501",  # line too long
     "E721", # Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
     "E741", # Ambiguous variable name
-    "F401", # Remove unused imported module
-    "F601", # Dictionary key literal repeated
-    "F811", # Redefinition of unused variable
-    "F821", # undefined name
-    "F841",  # unused variable
     "G003", # + in logging statements
     "G004", # f-strings in logging statements
     "SIM101", # Multiple `isinstance` calls, merge into a single call
@@ -112,8 +103,6 @@ ignore = [
     "SIM110", # use any(...)
     "SIM113", # Use `enumerate()` in `for` loop
     "SIM115", # use a context manager for files
-    "SIM117", # use `with` statement with multiple contexts instead of nesting
-    "SIM118", # don't use dict.keys()
     "SIM201", # Use !=
     "SIM210", # Remove unnecessary `True if ... else False`
     "SIM211", # use not ... instead of False if ... else True
@@ -129,6 +118,8 @@ ignore = [
 [tool.mypy]
 strict = true
 disable_error_code = ["method-assign", "unused-ignore"]
+plugins = ['pydantic.mypy']
+exclude_gitignore = true
 
 [[tool.mypy.overrides]]
 module = ["quark.*"]
@@ -139,7 +130,7 @@ disable_error_code = ["misc", "no-any-return", "arg-type", "index"]
 module = [
   "quark.torch.quantization.fake_quantize.*",
   "quark.onnx.*",
-  "quark.onnxsim.*",
+  "quark.onnxslim.*",
 ]
 disallow_untyped_calls = false
 
@@ -151,7 +142,11 @@ disable_error_code = ["override"]
 [[tool.mypy.overrides]]
 module = [
   "examples.*",
-  "quark.experimental.cli.*",
+  "quark.experimental.cli.quark_onnx.*",
+  "quark.experimental.cli.torch_llm.llm_eval.*",
+  "quark.experimental.cli.torch_llm.llm_ptq.*",
+  "quark.experimental.cli.torch_llm.llm_utils.*",
+  "quark.experimental.cli.torch_llm.module_replacement.*",
   "quark.torch.export.json_export.converter.*",
 ]
 ignore_errors = true
@@ -168,22 +163,42 @@ module = [
   "brevitas.*",
   "cv2",
   "datasets.*",
+  "evaluate.*",
+  "gguf.*",
   "google.*",
+  "lm_eval.*",
   "matplotlib.*",
+  "ml_dtypes.*",
+  "nltk.*",
+  "numpy.*",
   "onnx.*",
+  "onnx_tool.*",
   "onnxruntime.*",
   "onnxruntime_extensions.*",
-  "onnxsim.*",
+  "onnxruntime_genai.*",
+  "onnxscript.*",
+  "onnxslim.*",
+  "optimum.*",
   "packaging",
   "packaging.version",
   "packaging.*",
   "pandas.*",
+  "protobuf.*",
+  "psutil.*",
+  "pydantic.*",
+  "pytest",
+  "pytest.*",
+  "PIL.*",
   "quark.contrib.*",
   "quark.version.*",
   "rich.*",
+  "ryzenai_onnx_utils.*",
   "safetensors.*",
   "scipy.*",
+  "sentencepiece.*",
   "six.*",
+  "sympy.*",
+  "timm.*",
   "torch.*",
   "transformers.*",
   "tqdm.*",
@@ -235,10 +250,13 @@ exclude_also = [
   ]
 
 [tool.pytest.ini_options]
+pythonpath = [".", ".github/scripts", "test"]
 addopts = [
   "--strict-markers",
   "--strict-config",
-  "-ra"]
+  "-ra",
+  "-vvvvv",
+  "-s"]
 markers = [
   "accelerate_test: Tests which requires `accelerate` library to run.",
   "require_dual_gpu: Tests which requires two GPU devices to run",

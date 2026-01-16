@@ -6,8 +6,8 @@
 #
 
 # Update source/sphinx/requirements.txt from source/sphinx/requirements.in
-pip install --upgrade pip
-pip install pip-tools
+# TODO: Install latest `pip` when https://github.com/jazzband/pip-tools/issues/2252 is fixed
+pip install --upgrade pip==25.2 pip-tools
 rm -f source/sphinx/requirements.txt
 LC_ALL=C pip-compile source/sphinx/requirements.in
 

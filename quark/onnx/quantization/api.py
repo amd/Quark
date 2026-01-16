@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization API for ONNX."""
@@ -8,15 +8,10 @@ import logging
 import os
 import warnings
 from pathlib import Path
-from typing import List, Optional, Union
 
 import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 
-from quark.onnx.quant_utils import recursive_update
-from quark.onnx.quantization.config.config import Config, QConfig, QuantizationConfig
-from quark.onnx.quantization.config.maps import _map_q_config
-from quark.onnx.quantize import quantize_dynamic, quantize_static
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .config.algorithm import (
@@ -30,6 +25,11 @@ from .config.algorithm import (
     _algo_flag,
     _resolove_algo_conflict,
 )
+from .config.config import Config, QConfig
+from .config.legacy import QuantizationConfig
+from .config.maps import _check_q_config, _map_mixed_precision_tensors, _map_q_config
+from .quant_utils import recursive_update
+from .quantize import quantize_dynamic, quantize_static
 
 __all__ = ["ModelQuantizer"]
 
@@ -48,7 +48,7 @@ class ModelQuantizer:
         - This class assumes that the model is compatible with the quantization settings specified in 'config'.
     """
 
-    def __init__(self, config: Union[Config, QConfig]) -> None:
+    def __init__(self, config: Config | QConfig) -> None:
         """Initializes the ModelQuantizer with the provided configuration.
 
         :param Config config: Configuration object containing global quantization settings.
@@ -56,14 +56,22 @@ class ModelQuantizer:
         if isinstance(config, Config):
             logger.warning("Config has been replaced by QConfig. The old API will be removed in the next release.")
             self.config = config.global_quant_config
-            self.set_logging_level()
+
+            if self.config.debug_mode:
+                ScreenLogger.set_shared_level(logging.DEBUG)
+            elif self.config.crypto_mode:
+                ScreenLogger.set_shared_level(logging.CRITICAL)
 
             if self.config.ignore_warnings:
                 warnings.simplefilter("ignore", ResourceWarning)
                 warnings.simplefilter("ignore", UserWarning)
         elif isinstance(config, QConfig):
             self.config = config  # type: ignore
-            self.set_logging_level()
+
+            if "DebugMode" in self.config.extra_options and self.config.extra_options["DebugMode"]:
+                ScreenLogger.set_shared_level(logging.DEBUG)
+            elif "CryptoMode" in self.config.extra_options and self.config.extra_options["CryptoMode"]:
+                ScreenLogger.set_shared_level(logging.CRITICAL)
 
             if "IgnoreWarnings" in self.config.extra_options and self.config.extra_options["IgnoreWarnings"]:
                 warnings.simplefilter("ignore", ResourceWarning)
@@ -71,46 +79,11 @@ class ModelQuantizer:
         else:
             raise ValueError("quantization config must be one of Config and QConfig.")
 
-    def set_logging_level(self) -> None:
-        if isinstance(self.config, QuantizationConfig):
-            if self.config.debug_mode:
-                ScreenLogger.set_shared_level(logging.DEBUG)
-            elif self.config.crypto_mode:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
-            elif self.config.log_severity_level == 0:
-                ScreenLogger.set_shared_level(logging.DEBUG)
-            elif self.config.log_severity_level == 1:
-                ScreenLogger.set_shared_level(logging.INFO)
-            elif self.config.log_severity_level == 2:
-                ScreenLogger.set_shared_level(logging.WARNING)
-            elif self.config.log_severity_level == 3:
-                ScreenLogger.set_shared_level(logging.ERROR)
-            else:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
-        if isinstance(self.config, QConfig):
-            if "DebugMode" in self.config.extra_options and self.config.extra_options["DebugMode"]:
-                ScreenLogger.set_shared_level(logging.DEBUG)
-            elif "CryptoMode" in self.config.extra_options and self.config.extra_options["CryptoMode"]:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
-            elif "LogSeverityLevel" not in self.config.extra_options:
-                ScreenLogger.set_shared_level(logging.INFO)
-            elif "LogSeverityLevel" in self.config.extra_options:
-                if self.config.extra_options["LogSeverityLevel"] == 0:
-                    ScreenLogger.set_shared_level(logging.DEBUG)
-                if self.config.extra_options["LogSeverityLevel"] == 1:
-                    ScreenLogger.set_shared_level(logging.INFO)
-                if self.config.extra_options["LogSeverityLevel"] == 2:
-                    ScreenLogger.set_shared_level(logging.WARNING)
-                if self.config.extra_options["LogSeverityLevel"] == 3:
-                    ScreenLogger.set_shared_level(logging.ERROR)
-            else:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
-
     @log_errors
     def quantize_model(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
-        model_output: Union[str, Path] | None = None,
+        model_input: str | Path | onnx.ModelProto,
+        model_output: str | Path | None = None,
         calibration_data_reader: CalibrationDataReader | None = None,
         calibration_data_path: str | None = None,
         algorithms: list[AlgoConfig] | None = None,
@@ -130,6 +103,7 @@ class ModelQuantizer:
                 "The algorithm API is algo_config in QConfig. The old API will be removed in the next release."
             )
         if isinstance(self.config, QConfig):
+            _check_q_config(self.config)
             algorithms = self.config.algo_config
 
         if isinstance(model_input, (str, Path)) and not os.path.exists(model_input):
@@ -140,6 +114,9 @@ class ModelQuantizer:
             for algo in algorithms:
                 recursive_update(self.config.extra_options, algo._get_config(self.config.extra_options))
             if isinstance(self.config, QuantizationConfig):
+                if self.config.specific_tensor_precision:
+                    _map_mixed_precision_tensors(self.config.extra_options)
+
                 return quantize_static(
                     model_input=model_input,
                     model_output=model_output,

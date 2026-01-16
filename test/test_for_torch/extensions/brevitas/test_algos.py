@@ -40,9 +40,9 @@ def create_simple_model():
 
 
 def create_quantized_model(calib_loader=None, input_quant=True):
-    input_spec = brevitas_config.QuantizationSpec() if input_quant else None
-    weight_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(weight=weight_spec, input_tensors=input_spec)
+    input_spec = brevitas_config.QTensorConfig() if input_quant else None
+    weight_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(weight=weight_spec, input_tensors=input_spec)
     config = brevitas_config.Config(global_quant_config=global_config, pre_quant_opt_config=[])
 
     quantizer = brevitas_api.ModelQuantizer(config)

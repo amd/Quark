@@ -14,12 +14,12 @@
 namespace quark_onnx {
 
 static void PrepareForBF16(
-  const Ort::ConstValue &data, std::vector<float> &buf
+  const Ort::ConstValue& data, std::vector<float>& buf
 ) {
   ONNXTensorElementDataType data_type =
     data.GetTensorTypeAndShapeInfo().GetElementType();
   if (data_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-    const float *pdata = data.GetTensorData<float>();
+    const float* pdata = data.GetTensorData<float>();
     for (size_t k = 0; k < data.GetTensorTypeAndShapeInfo().GetElementCount();
          k++) {
       buf.push_back(float2bfloat_cpu(*pdata));  // Cast to bfloat16 directly
@@ -47,7 +47,7 @@ static void PrepareForBF16(
 /////////////////////////////////////////////////////////////////////////////////////////////
 
 KernelCustomInstanceNormalization::KernelCustomInstanceNormalization(
-  const OrtApi &api, const OrtKernelInfo *info
+  const OrtApi& api, const OrtKernelInfo* info
 )
   : api_(api) {
   Ort::ConstKernelInfo const_info{info};
@@ -59,7 +59,7 @@ KernelCustomInstanceNormalization::KernelCustomInstanceNormalization(
 
 KernelCustomInstanceNormalization::~KernelCustomInstanceNormalization() {};
 
-void KernelCustomInstanceNormalization::Compute(OrtKernelContext *context) {
+void KernelCustomInstanceNormalization::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   auto input = ctx.GetInput(0);
@@ -103,13 +103,13 @@ void KernelCustomInstanceNormalization::Compute(OrtKernelContext *context) {
   means_.clear();
   variances_.clear();
 
-  const float *pinput = input.GetTensorData<float>();
+  const float* pinput = input.GetTensorData<float>();
   calculate_mean_var(pinput, batch, channel, size, means_, variances_);
 
   // Execute instance normalization algorithm
   auto output = ctx.GetOutput(0, input_shape);
 
-  float *poutput = output.GetTensorMutableData<float>();
+  float* poutput = output.GetTensorMutableData<float>();
   instance_normalization(
     pinput, batch, channel, size, means_, variances_, gamma_, beta_, epsilon_,
     poutput

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -41,7 +41,7 @@ quantization FastFinetune need.
 
 import copy
 from argparse import ArgumentParser, Namespace
-from typing import Any, Dict
+from typing import Any
 
 import onnx
 

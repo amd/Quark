@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import CalibMethod, QLayerConfig, ScaleType, UInt8Spec, XInt8Spec
+from quark.onnx import CalibMethod, ModelQuantizer, QConfig, QLayerConfig, ScaleType, UInt8Spec, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array([[0.36239759, 0.55816052, 0.28596501, 0.2115006]]).astype(np.float32)
@@ -76,6 +74,7 @@ def prepare_model(output_dir: str):
         keep_initializers_as_inputs=False,
         do_constant_folding=False,
         opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

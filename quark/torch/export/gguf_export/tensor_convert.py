@@ -1,8 +1,7 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -101,8 +100,8 @@ def convert_from_gguf(
 
 def build_quant_cfg(
     tensor_name: str, gguf_type: GGMLQuantizationType = GGMLQuantizationType.Q4_1
-) -> dict[str, Union[str, int]]:
-    quant_cfg: dict[str, Union[str, int]] = {}
+) -> dict[str, str | int]:
+    quant_cfg: dict[str, str | int] = {}
     if gguf_type == GGMLQuantizationType.Q4_1:
         quant_cfg["scale"] = tensor_name + "_scale"
         quant_cfg["zero_point"] = tensor_name + "_zero_point"

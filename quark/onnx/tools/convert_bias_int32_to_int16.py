@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -10,15 +10,14 @@ Convert the quantized model with int32 bias to one with int16 bias.
 """
 
 from argparse import ArgumentParser, Namespace
-from typing import Tuple
 
 import numpy as np
 import onnx
-import onnxruntime
 from onnx import numpy_helper
 from onnxruntime.quantization.onnx_model import ONNXModel
 
 from quark.onnx.tools.convert_opset_version import convert_opset_version
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -81,9 +80,10 @@ def convert_bias_int32_to_int16(model: onnx.ModelProto) -> tuple[onnx.ModelProto
 if __name__ == "__main__":
     args = parse_args()
     try:
-        ort_session = onnxruntime.InferenceSession(args.input_model_path, providers=["CPUExecutionProvider"])
+        ort_session = create_infer_session_for_onnx_model(args.input_model_path, providers=["CPUExecutionProvider"])
     except Exception as e:
         raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}")
+
     input_model = onnx.load(args.input_model_path)
     output_model, flag = convert_bias_int32_to_int16(input_model)
     if flag:

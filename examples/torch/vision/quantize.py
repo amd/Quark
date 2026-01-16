@@ -18,7 +18,7 @@ from torchvision import datasets
 # from torch._export import capture_pre_autograd_graph
 from quark.shares.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer, export_onnx
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec, TQTSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig, TQTSpec
 from quark.torch.quantization.config.type import (
     Dtype,
     QSchemeType,
@@ -453,7 +453,7 @@ def main():
         assert args.qat, "Must set qat is True!"
 
     # Init quantization config and instance quantizer
-    INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    INT8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -463,7 +463,7 @@ def main():
         is_dynamic=False,
     )
 
-    INT16_PER_TENSOR_SPEC = QuantizationSpec(
+    INT16_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int16,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -473,7 +473,7 @@ def main():
         is_dynamic=False,
     )
 
-    INT32_PER_TENSOR_SPEC = QuantizationSpec(
+    INT32_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int32,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -484,7 +484,7 @@ def main():
     )
 
     if args.tqt:
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT = QuantizationSpec(
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=TQTObserver,
@@ -495,7 +495,7 @@ def main():
             qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._3SD),
         )
 
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT = QuantizationSpec(
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=TQTObserver,
@@ -505,7 +505,7 @@ def main():
             is_dynamic=False,
             qat_spec=TQTSpec(threshold_init_meth=TQTThresholdInitMeth._KL_J),
         )
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             weight=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_WEIGHT,
             input_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT,
             output_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_TQT_INPUT,
@@ -513,7 +513,7 @@ def main():
         )
         calib_loader = []  # if using tqt, we will directly train, skip PTQ
     elif args.lsq:
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT = QuantizationSpec(
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=LSQObserver,
@@ -523,7 +523,7 @@ def main():
             is_dynamic=False,
         )
 
-        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT = QuantizationSpec(
+        DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=LSQObserver,
@@ -532,14 +532,14 @@ def main():
             round_method=RoundType.half_even,
             is_dynamic=False,
         )
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             weight=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT,
             input_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT,
             output_tensors=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_INPUT,
             bias=DEFAULT_QAT_INT8_PER_TENSOR_SPEC_LSQ_WEIGHT,
         )
     elif args.non_overflow:
-        INT8_PER_TENSOR_SPEC = QuantizationSpec(
+        INT8_PER_TENSOR_SPEC = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -548,14 +548,14 @@ def main():
             round_method=RoundType.half_even,
             is_dynamic=False,
         )
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             input_tensors=INT8_PER_TENSOR_SPEC,
             output_tensors=INT8_PER_TENSOR_SPEC,
             weight=INT8_PER_TENSOR_SPEC,
             bias=INT8_PER_TENSOR_SPEC,
         )
     elif args.mse_powof2:
-        INT8_PER_WEIGHT_TENSOR_SPEC = QuantizationSpec(
+        INT8_PER_WEIGHT_TENSOR_SPEC = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=PerTensorPowOf2MinMSEObserver,
@@ -565,7 +565,7 @@ def main():
             is_dynamic=False,
         )
 
-        INT8_PER_ACTIVTION_TENSOR_SPEC = QuantizationSpec(
+        INT8_PER_ACTIVTION_TENSOR_SPEC = QTensorConfig(
             dtype=Dtype.uint8,
             qscheme=QSchemeType.per_tensor,
             observer_cls=PerTensorPowOf2MinMSEObserver,
@@ -575,34 +575,34 @@ def main():
             is_dynamic=False,
         )
 
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             input_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
             output_tensors=INT8_PER_ACTIVTION_TENSOR_SPEC,
             weight=INT8_PER_WEIGHT_TENSOR_SPEC,
             bias=INT8_PER_WEIGHT_TENSOR_SPEC,
         )
     elif args.a8w8:
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             input_tensors=INT8_PER_TENSOR_SPEC,
             output_tensors=INT8_PER_TENSOR_SPEC,
             weight=INT8_PER_TENSOR_SPEC,
             bias=INT32_PER_TENSOR_SPEC,
         )
     elif args.a16w8:
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             input_tensors=INT16_PER_TENSOR_SPEC,
             output_tensors=INT16_PER_TENSOR_SPEC,
             weight=INT8_PER_TENSOR_SPEC,
             bias=INT32_PER_TENSOR_SPEC,
         )
     else:
-        quant_config = QuantizationConfig(
+        quant_config = QLayerConfig(
             input_tensors=INT8_PER_TENSOR_SPEC,
             output_tensors=INT8_PER_TENSOR_SPEC,
             weight=INT8_PER_TENSOR_SPEC,
             bias=INT8_PER_TENSOR_SPEC,
         )
-    quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+    quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(quant_config)
     # prepare the torch.fx.GraphModule
     graph_model = get_graph_module(float_model, example_inputs)
@@ -611,7 +611,7 @@ def main():
     # Test the validation accuracy after PTQ
     print("Evaluate the validation accuracy after PTQ:")
     if not args.tqt:
-        acc1 = validate(val_loader, quantized_model, criterion, device)
+        validate(val_loader, quantized_model, criterion, device)
     # User can train the model (QAT) to further improve accuracy.
     if args.qat is True:
         train(quantized_model, train_loader, val_loader, criterion, device_ids)

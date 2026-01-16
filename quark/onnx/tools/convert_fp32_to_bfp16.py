@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -16,8 +16,7 @@ python convert_fp32_to_bfp16.py --input $FLOAT_32_ONNX_MODEL_PATH --output $BFP_
 import copy
 from argparse import ArgumentParser, Namespace
 
-from quark.onnx.quantization.api import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import BFP16_CONFIG
 
 

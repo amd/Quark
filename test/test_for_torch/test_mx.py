@@ -15,7 +15,6 @@ from quark.torch import ModelQuantizer
 from quark.torch.export.nn.modules import realquantizer
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 from quark.torch.quantization import (
-    Config,
     MX6Spec,
     MX9Spec,
     OCP_MXFP4Spec,
@@ -24,8 +23,9 @@ from quark.torch.quantization import (
     OCP_MXFP8E4M3Spec,
     OCP_MXFP8E5M2Spec,
     OCP_MXINT8Spec,
-    QuantizationConfig,
-    QuantizationSpec,
+    QConfig,
+    QLayerConfig,
+    QTensorConfig,
 )
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerBlockMXObserver
@@ -64,7 +64,7 @@ class SimpleDataset(Dataset):
         return input_tensor.squeeze(0)
 
 
-def create_quantize_run_simple_network(config: Config):
+def create_quantize_run_simple_network(config: QConfig):
     model = SimpleNetwork()
     model(input_tensor)
     dataset = SimpleDataset()
@@ -98,25 +98,32 @@ valid_configs = [
 def test_mx_valid_config_verification(dtype, is_dynamic, spec_class, group_size, weight_only):
     if dtype == "mx":
         partial_spec = partial(spec_class, is_dynamic=is_dynamic)
+
+        linear_input_spec = spec_class(ch_axis=-1, is_dynamic=True).to_quantization_spec()
+        conv_input_spec = spec_class(ch_axis=1, is_dynamic=True).to_quantization_spec()
     elif dtype == "mx6" or dtype == "mx9":
         partial_spec = partial(spec_class, block_size=group_size)
+
+        linear_input_spec = spec_class(ch_axis=-1, block_size=group_size).to_quantization_spec()
+        conv_input_spec = spec_class(ch_axis=1, block_size=group_size).to_quantization_spec()
     else:
         assert 0
 
     if weight_only:
-        linear_config = QuantizationConfig(weight=partial_spec(ch_axis=-1).to_quantization_spec())
-        conv_config = QuantizationConfig(weight=partial_spec(ch_axis=1).to_quantization_spec())
+        linear_config = QLayerConfig(weight=partial_spec(ch_axis=-1).to_quantization_spec())
+        conv_config = QLayerConfig(weight=partial_spec(ch_axis=1).to_quantization_spec())
     else:
-        linear_config = QuantizationConfig(
-            input_tensors=partial_spec(ch_axis=-1).to_quantization_spec(),
+        linear_config = QLayerConfig(
+            input_tensors=linear_input_spec,
             weight=partial_spec(ch_axis=-1).to_quantization_spec(),
         )
-        conv_config = QuantizationConfig(
-            input_tensors=partial_spec(ch_axis=1).to_quantization_spec(),
+
+        conv_config = QLayerConfig(
+            input_tensors=conv_input_spec,
             weight=partial_spec(ch_axis=1).to_quantization_spec(),
         )
-    config = Config(
-        global_quant_config=QuantizationConfig(),
+    config = QConfig(
+        global_quant_config=QLayerConfig(),
         layer_type_quant_config={nn.Linear: linear_config, nn.Conv2d: conv_config},
     )
     create_quantize_run_simple_network(config)
@@ -236,9 +243,7 @@ def create_4d_tensor_with_interesting_pattern():
 
 
 def test_per_block_simple_scale():
-    element_dtype = "fp8_e4m3"
-
-    spec = OCP_MXFP8E4M3Spec(scale_calculation_mode="floor").to_quantization_spec()
+    spec = OCP_MXFP8E4M3Spec(ch_axis=-1, scale_calculation_mode="floor").to_quantization_spec()
     observer = PerBlockMXObserver(qspec=spec)
 
     a = torch.zeros(10, 10)
@@ -271,7 +276,7 @@ def test_per_block_scale_tiled():
     #    [ -5, -4, -3, -2, -1, 0, 1, 2, 3, 4],
     #    [ 5, 4, 3, 2, 1, 0 , -1, -2, -3, -4]
     # ]
-    spec = QuantizationSpec(
+    spec = QTensorConfig(
         dtype=Dtype.fp8_e4m3,
         observer_cls=PerBlockMXObserver,
         symmetric=None,
@@ -2208,7 +2213,7 @@ quark_mx_dtype_lst = [Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e3m2, Dtype.fp6_
 @pytest.mark.parametrize("quark_mx_dtype", quark_mx_dtype_lst)
 def test_fake_quantize_mx(quark_mx_dtype):
     test_data = generate_test_case_input()
-    for scene, test_tensor in test_data.items():
+    for _, test_tensor in test_data.items():
         test_tensor = test_tensor.view(torch.float32)
         block_size = 32
         axis = 1
@@ -2284,9 +2289,3 @@ def test_realquantizer_pipline():
     )
     x = torch.randn(256, 256, device="cuda", dtype=torch.bfloat16)
     input_quantizer.to_real_quantize_params(x)
-
-
-if __name__ == "__main__":
-    test_realquantizer_pipline()
-    # test_per_block_simple_scale()
-    # test_mx_valid_config_verification("mx", False, "fp8_e4m3", 4, True)

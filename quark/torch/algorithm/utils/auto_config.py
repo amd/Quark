@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,13 +7,13 @@ import json
 import os
 import re
 from operator import add, mul
-from typing import Any, Dict, List, Tuple, Type, Union, cast
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import AlgoConfig, AWQConfig, Config
+from quark.torch.quantization.config.config import AlgoConfig, AWQConfig, QConfig
 
 logger = ScreenLogger(__name__)
 
@@ -28,7 +28,7 @@ CONST_PARAM_SOURCE_FN = MODULES_WITH_CONST_PARAM + [
 ]
 
 
-def is_auto_config_needed(config: Config) -> tuple[int, int, bool]:
+def is_auto_config_needed(config: QConfig) -> tuple[int, int, bool]:
     smooth_position = -1  # Position of smooth config in pre-optimization, -1 if not found. We cannot use bool here because pre-optizization is a list related to orders. If we want to do smooth then do rotation, it will be like smooth_position=0 and rotation_position=1
     rotation_position = -1  # Position of rotation config in pre-optimization, -1 if not found. We cannot use bool here because pre-optizization is a list related to orders. If we want to do smooth then do rotation, it will be like smooth_position=0 and rotation_position=1
     is_awq_needed = False  # Here we use bool because
@@ -45,11 +45,11 @@ def is_auto_config_needed(config: Config) -> tuple[int, int, bool]:
 def add_auto_config(
     model: nn.Module,
     dummy_input: torch.Tensor,
-    config: Config,
+    config: QConfig,
     smooth_position: int,
     rotation_position: int,
     is_awq_needed: bool,
-) -> Config:
+) -> QConfig:
     logger.info(
         "Lack of specific information of algorithm configuration, auto generating algorithms configuration. It may take several minutes..."
     )
@@ -111,7 +111,7 @@ class EasyGraph:
     @staticmethod
     def find_nearest_module_name(node: torch.fx.node.Node) -> str:
         module_info: str = ""
-        if "nn_module_stack" in node.meta.keys():
+        if "nn_module_stack" in node.meta:
             name_info = [value for _, value in node.meta["nn_module_stack"].items()][-1][0]
             module_info = name_info.replace("L['self'].", "")
 
@@ -143,7 +143,6 @@ class EasyGraph:
             self.gm = gm
             # ---------------------------------------------------------------------
             # make name convert
-            param_dict: dict[int, str] = {}
             self.parameters_convert: dict[str, str] = {}
             for name, module in model.named_modules():
                 module.module_name = name
@@ -178,7 +177,7 @@ class EasyGraph:
     def _is_weight_node(self, node: torch.fx.node.Node) -> bool:
         if node.op == "get_attr":  # pragma: no cover
             # This path exists in torch<=2.3.
-            return "source_fn_stack" not in node.meta.keys()
+            return "source_fn_stack" not in node.meta
         elif node.op == "placeholder":
             # Weights are placeholders in more recent torch versions.
             return node.type == torch.nn.Parameter
@@ -236,14 +235,14 @@ class EasyGraph:
             return False
 
     def get_module_name_by_node(self, node: torch.fx.node.Node) -> Any:
-        if "source_fn_stack" in node.meta.keys():
+        if "source_fn_stack" in node.meta:
             module_info = [x for x in node.meta["source_fn_stack"]]
             node_name = module_info[-1][0]
-            if node_name in self.parameters_convert.keys():
+            if node_name in self.parameters_convert:
                 return self.parameters_convert[node_name]
-            elif (node_name.lower() + ".weight") in self.parameters_convert.keys() or (
+            elif (node_name.lower() + ".weight") in self.parameters_convert or (
                 node_name.lower() + "_weight"
-            ) in self.parameters_convert.keys():
+            ) in self.parameters_convert:
                 return self.parameters_convert[node_name + ".weight"][:-7]
             else:
                 return EasyGraph.find_nearest_module_name(node)
@@ -253,7 +252,7 @@ class EasyGraph:
     @torch._dynamo.disable  # type: ignore[misc]
     def find_nn_linear(self) -> None:
         for node in self.gm.graph.nodes:
-            if "source_fn_stack" in node.meta.keys():
+            if "source_fn_stack" in node.meta:
                 module_info = [x for x in node.meta["source_fn_stack"]]
                 if module_info[-1][-1] is torch.nn.Linear or module_info[-1][-1] == torch.nn.functional.linear:
                     args_name_list = node.args
@@ -269,7 +268,7 @@ class EasyGraph:
                 prefix_model.append(module_name)
                 if len(node.args) == 0:
                     # const parameters
-                    parent_node = [k for k in node.users.keys()][0]
+                    parent_node = [k for k in node.users][0]
                     for node_args in parent_node.args:
                         if isinstance(node_args, torch.fx.node.Node):
                             if node_args is not node:
@@ -287,12 +286,12 @@ class EasyGraph:
         else:
             if not self._check_node(node):
                 return
-            if module_name not in self.parameterized_pair_list.keys():
+            if module_name not in self.parameterized_pair_list:
                 self.parameterized_pair_list[module_name] = prefix_model
             else:
                 self.parameterized_pair_list[module_name].extend(prefix_model)
 
-    def _is_target_type(self, input_node_type: type[Any], target_list: list[Union[type, str]]) -> bool:
+    def _is_target_type(self, input_node_type: type[Any], target_list: list[type | str]) -> bool:
         for target_node in target_list:
             if isinstance(target_node, str):
                 input_node_type_str = str(input_node_type).replace("torch.nn.modules", "").replace("torch", "")
@@ -323,7 +322,7 @@ class EasyGraph:
                 return False
 
     def find_merge_pair(self, node: torch.fx.node.Node, prefix_model: list[str]) -> None:
-        logger.debug("Processing node in find_merge_pair:", node, node.op, node.target, node.type, node.meta)
+        logger.debug(f"Processing node in find_merge_pair: {node}, {node.op}, {node.target}, {node.type}, {node.meta}")
 
         node_has_double_input_tensor: list[Any] = [mul, add]
         node_has_double_input_tensor_only_left: list[Any] = [torch.matmul, torch.bmm]
@@ -394,7 +393,7 @@ class EasyGraph:
                     sub_node.bfs_flag = node.bfs_flag  # type: ignore[attr-defined]
                 node_list.insert(0, sub_node)
         logger.info("no common node")
-        assert False
+        raise RuntimeError()
 
     def generate_module2inspect(self, parameterized_pair_dict: dict[str, Any]) -> None:
         self.module_name2node = {}
@@ -428,7 +427,7 @@ class EasyGraph:
         data_dict: dict[Any, Any] = {}
         result = []
         for k in self.rotation_pair_list:
-            if (k[2], k[1]) not in data_dict.keys():
+            if (k[2], k[1]) not in data_dict:
                 data_dict[(k[2], k[1])] = [k[0]]
             else:
                 data_dict[(k[2], k[1])].append(k[0])
@@ -438,7 +437,7 @@ class EasyGraph:
         for k, v in data_dict.items():
             v.sort()
             v = tuple(v)
-            if (v, k[1]) not in data_dict2.keys():
+            if (v, k[1]) not in data_dict2:
                 data_dict2[(v, k[1])] = [k[0]]
             else:
                 data_dict2[(v, k[1])].append(k[0])

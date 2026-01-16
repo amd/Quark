@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -10,7 +10,7 @@
 try:
     import argparse
     from abc import ABC, abstractmethod
-    from typing import ClassVar, Optional
+    from typing import ClassVar
 except ImportError:
     print(
         "AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`."

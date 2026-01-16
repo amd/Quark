@@ -13,8 +13,8 @@ from data_preparation import get_calib_dataloader
 from transformers import AutoTokenizer
 
 import quark
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import Config, ModelQuantizer
+from quark.onnx.quantization.config import get_default_config
 
 kv_cache_name = [
     "past_key_values.0.key",

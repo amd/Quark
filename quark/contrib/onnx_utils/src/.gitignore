@@ -1,0 +1,8 @@
+# Copyright (c) 2024 Advanced Micro Devices, Inc
+
+# this is here, rather than in the global gitignore, so Hatch will still include
+# these files when building the wheel but we can exclude them from Git as well.
+# Currrently, Hatch only considers the root .gitignore, not nested ones.
+
+ryzenai_onnx_utils/proto/*.py*
+!ryzenai_onnx_utils/proto/__init__.py

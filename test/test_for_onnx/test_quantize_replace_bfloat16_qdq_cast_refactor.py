@@ -11,10 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
+from quark.onnx import BFloat16Spec, ModelQuantizer, QConfig, QLayerConfig
 from quark.onnx.operators.custom_ops import get_library_path
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import BFloat16Spec, QLayerConfig
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
@@ -88,6 +86,27 @@ class Model(nn.Module):
         return x
 
 
+class SplitAddConcatModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Define the constant tensor c as a parameter (or buffer)
+        c = torch.ones(1, 1, 5, 5)  # for example, all ones
+        self.register_buffer("c", c)
+
+    def forward(self, input):
+        # input shape: [1, 3, 5, 5]
+        x = input[:, 0:1, :, :]  # [1,1,5,5]
+        y = input[:, 1:3, :, :]  # [1,2,5,5]
+
+        x2 = x + self.c  # [1,1,5,5]
+        y2 = y - self.c  # broadcasting c along channel dim of y
+
+        # concat along channel dimension (dim=1)
+        z = torch.cat([x2, y2], dim=1)  # [1,3,5,5]
+
+        return z
+
+
 def prepare_model(output_dir):
     torch.manual_seed(42)
 
@@ -106,6 +125,32 @@ def prepare_model(output_dir):
         keep_initializers_as_inputs=False,
         do_constant_folding=False,
         opset_version=17,
+        dynamo=False,
+    )
+
+    print(f"Model has been saved to {onnx_model_path}")
+    return onnx_model_path, quant_onnx_model_path_qdq, quant_onnx_model_path_cast
+
+
+def prepare_split_add_concat_model(output_dir):
+    torch.manual_seed(42)
+
+    model = SplitAddConcatModel()
+    onnx_model_path = Path(output_dir, "onnx_input.onnx").as_posix()
+    quant_onnx_model_path_qdq = Path(output_dir, "onnx_quantized_qdq.onnx").as_posix()
+    quant_onnx_model_path_cast = Path(output_dir, "onnx_quantized_cast.onnx").as_posix()
+
+    dummy_input = torch.randn([1, 3, 5, 5])
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        keep_initializers_as_inputs=False,
+        do_constant_folding=False,
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -120,6 +165,22 @@ def prepare_config(is_replace_bfloat16_qdq_cast):
     else:
         quant_config = QConfig(
             global_config=QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()), BF16QDQToCast=False
+        )
+    return quant_config
+
+
+def prepare_config_rm_cast(is_replace_bfloat16_qdq_cast):
+    if is_replace_bfloat16_qdq_cast:
+        quant_config = QConfig(
+            global_config=QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()),
+            BF16QDQToCast=True,
+            EnableVaimlBF16=True,
+        )
+    else:
+        quant_config = QConfig(
+            global_config=QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()),
+            BF16QDQToCast=True,
+            EnableVaimlBF16=False,
         )
     return quant_config
 
@@ -164,6 +225,19 @@ def tensor_quantize(output_dir: str, input_data, is_replace_bfloat16_qdq_cast):
     return output, quantized_model_path
 
 
+def tensor_quantize_splitaddconcat(output_dir: str, input_data, is_remove_bfloat16_qdq_cast):
+    data_reader = prepare_data(input_data)
+    input_model_path, output_model_path_qdq, output_model_path_cast = prepare_split_add_concat_model(output_dir)
+    quant_config = prepare_config_rm_cast(is_remove_bfloat16_qdq_cast)
+    quantizer = prepare_quantizer(quant_config)
+    if is_remove_bfloat16_qdq_cast:
+        quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path_cast, data_reader)
+    else:
+        quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path_qdq, data_reader)
+    output = infer_quantized_model(input_data, quantized_model_path)
+    return output, quantized_model_path
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_MultiMulAddModel(self, tmpdir: str):
@@ -171,6 +245,13 @@ class TestTensorQuantize(unittest.TestCase):
         output_cast, quantized_model_path_cast = tensor_quantize(tmpdir, input_data, True)
         comp_equal = np.allclose(output_qdq, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)
+        comp_equal = np.allclose(output_cast, output_qdq, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_SplitAddConcatModel(self, tmpdir: str):
+        output_qdq, quantized_model_path_qdq = tensor_quantize_splitaddconcat(tmpdir, input_data, False)
+        output_cast, quantized_model_path_cast = tensor_quantize_splitaddconcat(tmpdir, input_data, True)
         comp_equal = np.allclose(output_cast, output_qdq, atol=1e-1)
         self.assertEqual(comp_equal, True)
 

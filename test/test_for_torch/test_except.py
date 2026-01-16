@@ -1,6 +1,6 @@
 import pytest
 
-from quark.torch.utils.exceptions import AppError, LossError
+from quark.torch.utils import AppError, LossError
 
 
 def test_app_error_message_and_str():

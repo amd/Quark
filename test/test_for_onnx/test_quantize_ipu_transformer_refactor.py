@@ -9,10 +9,7 @@ import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model_vit
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.algorithm import AdaRoundConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int8Spec, Int16Spec, QLayerConfig
+from quark.onnx import AdaRoundConfig, Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(

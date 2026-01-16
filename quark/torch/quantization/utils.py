@@ -1,11 +1,10 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import gc
-import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,27 +13,10 @@ from quark.shares.utils.import_utils import is_transformers_available
 from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.torch.quantization.config.type import Dtype
 
-QUARK_DEBUG = os.environ.get("QUARK_DEBUG", "0") == "1"
-DEBUG_NAN = os.environ.get("QUARK_DEBUG_NAN", None) or QUARK_DEBUG
-
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
 
 logger = ScreenLogger(__name__)
-
-
-def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
-    """
-    Asserts that the tensor does not contain any NaN value. If it does, it will raise a `AssertionError` with the given message.
-
-    Only does the assertion if the environment variable `QUARK_DEBUG_NAN` is set to `1`. This is useful to avoid the overhead of checking for NaNs in production code.
-
-    Args:
-        tensor (torch.Tensor): The tensor to check for NaNs.
-        message (str): The message to display in the `AssertionError` if the tensor contains NaNs.
-    """
-    if DEBUG_NAN:
-        torch._assert_async(~torch.isnan(tensor).any(), message)
 
 
 def clear_memory(weight: torch.Tensor | None = None) -> None:
@@ -48,7 +30,7 @@ def validate_qmin_qmax(quant_min: int, quant_max: int) -> None:
     assert quant_min < quant_max, "qmin must be less than qmax."
 
 
-def calculate_qmin_qmax(dtype: Dtype) -> tuple[Union[int, float], Union[int, float]]:
+def calculate_qmin_qmax(dtype: Dtype) -> tuple[int | float, int | float]:
     # Fallback onto default 8-bit qmin and qmax calculation if dynamic range is not used.
     if dtype == Dtype.int8:
         return -128, 127
@@ -84,7 +66,7 @@ def calculate_qmin_qmax(dtype: Dtype) -> tuple[Union[int, float], Union[int, flo
         raise ValueError("The qmin and qmax of {dtype} are not defined")
 
 
-def get_num_bits(dtype: Dtype) -> Union[int, tuple[int, int]] | None:
+def get_num_bits(dtype: Dtype) -> int | tuple[int, int] | None:
     if dtype in [Dtype.int4, Dtype.uint4]:
         return 4
     elif dtype in [Dtype.int8, Dtype.uint8]:
@@ -100,7 +82,7 @@ def get_num_bits(dtype: Dtype) -> Union[int, tuple[int, int]] | None:
 
 
 def deep_compare(dict1: dict[str, Any], dict2: dict[str, Any]) -> bool:
-    if type(dict1) != type(dict2):
+    if type(dict1) is not type(dict2):
         return False
     if isinstance(dict1, dict):
         if dict1.keys() != dict2.keys():
@@ -115,7 +97,7 @@ def deep_compare(dict1: dict[str, Any], dict2: dict[str, Any]) -> bool:
 _FORMAT_CACHE: dict[Dtype, tuple[int, int, int]] = {}
 
 
-def get_dtype_params(dtype: Union[str, Dtype]) -> tuple[int, int, int]:
+def get_dtype_params(dtype: str | Dtype) -> tuple[int, int, int]:
     if isinstance(dtype, str):
         dtype = Dtype.from_str(dtype)
 
@@ -178,7 +160,6 @@ def reshape_to_blocks(x: torch.Tensor, block_size: int, axis: int) -> torch.Tens
     x = x.reshape(-1, x.size(-1))
 
     x, _ = pad_to_blocks(x, block_size)
-
     return x.reshape(x.size(0), x.size(1) // block_size, block_size)
 
 
@@ -221,7 +202,7 @@ def t_exponent(t: torch.Tensor) -> torch.Tensor:
         return t_exp
 
 
-def even_round(max_abs: torch.Tensor, dtype: Union[Dtype, str]) -> torch.Tensor:
+def even_round(max_abs: torch.Tensor, dtype: Dtype | str) -> torch.Tensor:
     f32_min_normal = 2 ** (-127 + 1)
     eps = f32_min_normal * (max_abs == 0).type(max_abs.dtype)
 
@@ -253,17 +234,15 @@ def even_round(max_abs: torch.Tensor, dtype: Union[Dtype, str]) -> torch.Tensor:
 
 
 def count_calibration_tokens(
-    dataloader: Union[
-        DataLoader[torch.Tensor],
-        DataLoader[list[dict[str, torch.Tensor]]],
-        DataLoader[dict[str, torch.Tensor]],
-        DataLoader[list["BatchFeature"]],
-    ],
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
+    | DataLoader[list["BatchFeature"]],
 ) -> int:
     total_tokens = 0
     for data in dataloader:
         if isinstance(data, dict) or (is_transformers_available() and isinstance(data, BatchFeature)):
-            if "input_ids" in data.keys():
+            if "input_ids" in data:
                 if isinstance(data["input_ids"], torch.Tensor):
                     total_tokens += data["input_ids"].numel()
                 else:

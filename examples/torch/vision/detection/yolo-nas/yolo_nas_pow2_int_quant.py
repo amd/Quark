@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 # from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 from quark.shares.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer, export_onnx
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerTensorPowOf2MinMaxObserver
 
@@ -202,7 +202,7 @@ def main():
     # Using PyTorch API to get the Fx-Graph trainable model
     graph_model = torch.export.export_for_training(yolo_nas.eval(), (dummy_input,)).module()
 
-    INT8_PER_TENSOR_SPEC = QuantizationSpec(
+    INT8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -213,14 +213,14 @@ def main():
     )
 
     # quant config
-    quant_config = QuantizationConfig(
+    quant_config = QLayerConfig(
         weight=INT8_PER_TENSOR_SPEC,
         input_tensors=INT8_PER_TENSOR_SPEC,
         output_tensors=INT8_PER_TENSOR_SPEC,
         bias=INT8_PER_TENSOR_SPEC,
     )
 
-    quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+    quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(graph_model, calib_data)
     # fx_contain_module_num(quantized_model, ScaledFakeQuantize) # To test the quantizer num

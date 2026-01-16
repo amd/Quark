@@ -8,7 +8,7 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import onnx
 import onnx.numpy_helper
@@ -27,9 +27,8 @@ from onnxruntime.quantization.quant_utils import (
     find_by_name,
 )
 
-from quark.shares.utils.log import ScreenLogger, log_errors
-
-from ..quant_utils import (
+from quark.onnx.postprocess import adjust_quantize_info, simulate_transforms
+from quark.onnx.quantization.quant_utils import (
     __producer__,
     __version__,
     get_annotate_tensors,
@@ -37,15 +36,15 @@ from ..quant_utils import (
     modified_annotate_input,
     remove_nodes,
 )
-from ..refine import adjust_quantize_info
-from ..registry import CreateNPUCnnQDQQuantizer
-from ..simulate_dpu import simulate_transforms
-from .qdq_quantizer import VitisQDQQuantizer
+from quark.shares.utils.log import ScreenLogger, log_errors
+
+from .qdq_quantizer import BaseExtendedQDQQuantizer
+from .registry import CreateNPUCnnQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
-class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
+class XINT8QDQQuantizer(BaseExtendedQDQQuantizer):
     @log_errors
     def __init__(
         self,
@@ -61,13 +60,12 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
         nodes_to_exclude: list[str],
         op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: dict[Any, Any] = {},
         extra_options: dict[str, Any] | None = None,
     ):
         self.calibrate_method = calibrate_method
         self.model = ONNXModel(model)
         self.nodes_to_exclude = nodes_to_exclude
-        VitisQDQQuantizer.__init__(
+        BaseExtendedQDQQuantizer.__init__(
             self,
             model,
             False,
@@ -81,7 +79,6 @@ class VitisQDQNPUCNNQuantizer(VitisQDQQuantizer):
             nodes_to_exclude,
             op_types_to_quantize,
             calibrate_method,
-            quantized_tensor_type,
             extra_options,
         )
         self.tensors_to_quantize = {}

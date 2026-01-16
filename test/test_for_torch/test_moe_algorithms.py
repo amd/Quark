@@ -23,23 +23,22 @@ from quark.torch.quantization import (
     load_pre_optimization_config_from_file,
     load_quant_algo_config_from_file,
 )
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.observer.observer import PlaceholderObserver
 
 logger = ScreenLogger(__name__)
 
-FLOAT16_SPEC = QuantizationSpec(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
-FLOAT16_CONFIG = QuantizationConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
-FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
-W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
-W_MXFP4_A_DYN_MXFP4_CONFIG = QuantizationConfig(
-    input_tensors=OCP_MXFP4Spec().to_quantization_spec(), weight=OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+FLOAT16_SPEC = QTensorConfig(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
+FLOAT16_CONFIG = QLayerConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
+FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(is_dynamic=False).to_quantization_spec()
+W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+W_MXFP4_A_DYN_MXFP4_CONFIG = QLayerConfig(
+    input_tensors=OCP_MXFP4Spec(ch_axis=-1).to_quantization_spec(),
+    weight=OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec(),
 )
-UINT4_PER_CHANNEL_ASYM_SPEC = Uint4PerChannelSpec(
-    symmetric=False, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-).to_quantization_spec()
-W_UINT4_PER_CHANNEL_ASYM_CONFIG = QuantizationConfig(weight=UINT4_PER_CHANNEL_ASYM_SPEC)
+UINT4_PER_CHANNEL_ASYM_SPEC = Uint4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
+W_UINT4_PER_CHANNEL_ASYM_CONFIG = QLayerConfig(weight=UINT4_PER_CHANNEL_ASYM_SPEC)
 sys.path.append("..")
 
 
@@ -65,7 +64,7 @@ def test_moe_gptq():
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/gptq_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_CHANNEL_ASYM_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*gate"]
     )
 
@@ -92,7 +91,7 @@ def test_moe_qronos():
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/qronos_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_CHANNEL_ASYM_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*gate"]
     )
 
@@ -118,7 +117,7 @@ def test_moe_awq():
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/awq_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_CHANNEL_ASYM_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*gate"]
     )
 
@@ -149,7 +148,7 @@ def test_moe_autosmoothquant(global_quant_config, model_config_name):
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/autosmoothquant_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=global_quant_config, algo_config=[algo_config], exclude=["lm_head", "*gate"]
     )
 
@@ -183,7 +182,7 @@ def test_moe_smoothquant():
 
     # algorithm config
     algo_config = load_pre_optimization_config_from_file(config_path + "/smoothquant_config.json")
-    quant_config = Config(global_quant_config=FLOAT16_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*gate"])
+    quant_config = QConfig(global_quant_config=FLOAT16_CONFIG, algo_config=[algo_config], exclude=["lm_head", "*gate"])
 
     # algorithm
     quantizer = ModelQuantizer(quant_config)

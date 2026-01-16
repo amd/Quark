@@ -1,4 +1,4 @@
-.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+..  Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 Brevitas API
 ========
@@ -21,7 +21,7 @@ For example:
 
     model = ... # A pytorch model created manually or downloaded from huggingface
 
-    global_config = brevitas_config.QuantizationConfig() # This config will be applied to the whole model
+    global_config = brevitas_config.QLayerConfig() # This config will be applied to the whole model
 
     config = brevitas_config.Config(global_quant_config=global_config)
     quantizer = brevitas_api.ModelQuantizer(config)
@@ -34,14 +34,14 @@ If you want to export the quantized model, it's even simpler:
     exporter.export_onnx_model(quantized_model, torch.ones(1, 3, 32, 32))
 
 To start, you just need to know that you must specify a global_quant_config which controls the quantization settings that will be applied to the whole model.
-This is a QuantizationConfig object and it has parameters for controlling input/output, bias and weight quantization. By default these will be set to None.
+This is a QLayerConfig object and it has parameters for controlling input/output, bias and weight quantization. By default these will be set to None.
 
 To define the quantization settings for weights for example, you can do this:
 .. code:: python
-    global_config = brevitas_config.QuantizationConfig(weight=brevitas_config.QuantizationSpec())
+    global_config = brevitas_config.QLayerConfig(weight=brevitas_config.QTensorConfig())
     config = brevitas_config.Config(global_quant_config=global_config)
 
-The default values for QuantizationSpec should be reasonable but please refer to QuantizationSpec in config.py to get details on the different parameters you can set.
+The default values for QTensorConfig should be reasonable but please refer to QTensorConfig in config.py to get details on the different parameters you can set.
 
 .. raw:: html
 

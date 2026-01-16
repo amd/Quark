@@ -7,7 +7,6 @@ import sys
 
 sys.path.append("..")
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -18,12 +17,12 @@ from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 
 # -------- init config -----
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.processor.processor import prepare_quant_model
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -32,13 +31,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_config = QuantizationConfig(
+quant_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 # ================== following aims to test conv's weight is not a pure attr node that save parameter
@@ -153,7 +152,7 @@ def test_graph_conv_weight_replace_condition():
     float_model(example_inputs[0])
     graph_model = torch.export.export_for_training(float_model, example_inputs).module()
 
-    prepared_quant_model = prepare_quant_model(graph_model, quant_config)
+    _ = prepare_quant_model(graph_model, quant_config)
     print("Finish test: test_graph_conv_weight_replace_condition")
     torch.cuda.empty_cache()
 

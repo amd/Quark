@@ -3,12 +3,12 @@ joblib
 ninja
 numpy<=2.1.3
 onnx>=1.16.0,<=1.19.0
-onnxruntime>=1.20.1,<=1.22.1
-onnxruntime_extensions>=0.4.2
-onnxruntime_genai
-onnxsim==0.4.36
+onnxscript
+onnxslim>=0.1.77
 pandas
+plotly
 protobuf
+pydantic
 rich
 scipy
 sentencepiece

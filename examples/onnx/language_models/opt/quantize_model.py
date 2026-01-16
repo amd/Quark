@@ -11,8 +11,8 @@ import numpy as np
 from data_preparation import get_calib_dataloader
 from transformers import GPT2Tokenizer
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import Config, ModelQuantizer
+from quark.onnx.quantization.config import get_default_config
 
 
 class CalibrationDataReader:

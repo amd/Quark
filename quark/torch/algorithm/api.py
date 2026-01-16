@@ -1,10 +1,8 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Algorithm/Pre-Quant Optimization API for PyTorch."""
-
-from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -18,15 +16,15 @@ from quark.torch.algorithm.awq.awq import AwqProcessor
 from quark.torch.algorithm.awq.smooth import SmoothQuantProcessor
 from quark.torch.algorithm.blockwise_tuning.blockwise_tuning import BlockwiseTuningProcessor
 from quark.torch.algorithm.depth_pruning.layer_importance import LayerImportancePrunerProcessor
+from quark.torch.algorithm.gptaq.gptaq import GptaqProcessor
 from quark.torch.algorithm.gptq.gptq import GptqProcessor
 from quark.torch.algorithm.osscar.osscar import OsscarProcessor
 from quark.torch.algorithm.qronos.qronos import QronosProcessor
-from quark.torch.algorithm.quarot.quarot import QuaRotProcessor
 from quark.torch.algorithm.rotation.rotation import RotationProcessor
 from quark.torch.algorithm.utils.auto_config import add_auto_config, is_auto_config_needed
 from quark.torch.algorithm.utils.utils import get_device_map, set_device_map
 from quark.torch.pruning.config import Config as Pruning_Config
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
 
 if is_transformers_available():
@@ -38,11 +36,12 @@ __all__ = ["apply_advanced_quant_algo", "apply_advanced_pruning_algo", "blockwis
 
 PROCESSOR_MAP = {
     "rotation": RotationProcessor,
-    "quarot": QuaRotProcessor,
+    "quarot": RotationProcessor,
     "smooth": SmoothQuantProcessor,
     "autosmoothquant": AutoSmoothQuantProcessor,
     "awq": AwqProcessor,
     "gptq": GptqProcessor,
+    "gptaq": GptaqProcessor,
     "qronos": QronosProcessor,
     "osscar": OsscarProcessor,
     "blockwise_tuning": BlockwiseTuningProcessor,
@@ -53,14 +52,12 @@ PROCESSOR_MAP = {
 @torch.no_grad()
 def apply_advanced_quant_algo(
     model: nn.Module,
-    config: Config,
+    config: QConfig,
     is_accelerate: bool | None,
-    dataloader: Union[
-        DataLoader[torch.Tensor],
-        DataLoader[list[dict[str, torch.Tensor]]],
-        DataLoader[dict[str, torch.Tensor]],
-        DataLoader[list["BatchFeature"]],
-    ]
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
+    | DataLoader[list["BatchFeature"]]
     | None = None,
 ) -> nn.Module:
     # apply algorithms sequentially
@@ -76,8 +73,8 @@ def apply_advanced_quant_algo(
             device_map = get_device_map(model, is_accelerate)
 
             logger.info(f"Applying {config.algo_config[i].name} processing/algorithm...")
-            quantizer = PROCESSOR_MAP[config.algo_config[i].name](model, config.algo_config[i], dataloader)
-            quantizer.apply()
+            processor = PROCESSOR_MAP[config.algo_config[i].name](model, config.algo_config[i], dataloader)
+            processor.apply()
 
             model = set_device_map(model, device_map)
 
@@ -88,15 +85,13 @@ def apply_advanced_quant_algo(
 
 def add_algorithm_config_by_model(
     model: nn.Module,
-    dataloader: Union[
-        DataLoader[torch.Tensor],
-        DataLoader[list[dict[str, torch.Tensor]]],
-        DataLoader[dict[str, torch.Tensor]],
-        DataLoader[list["BatchFeature"]],
-        None,
-    ],
-    config: Config,
-) -> Config:
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
+    | DataLoader[list["BatchFeature"]]
+    | None,
+    config: QConfig,
+) -> QConfig:
     # Determine the positions and need for auto configuration
     smooth_position, rotation_position, is_awq_needed = is_auto_config_needed(config)
 
@@ -122,9 +117,9 @@ def apply_advanced_pruning_algo(
     model: nn.Module,
     config: Pruning_Config,
     is_accelerate: bool | None,
-    dataloader: Union[
-        DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-    ]
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
     | None = None,
 ) -> nn.Module:
     if config.algo_config is not None:
@@ -146,9 +141,9 @@ def blockwise_tuning_algo(
     model: nn.Module,
     config: Pruning_Config,
     is_accelerate: bool | None,
-    dataloader: Union[
-        DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-    ]
+    dataloader: DataLoader[torch.Tensor]
+    | DataLoader[list[dict[str, torch.Tensor]]]
+    | DataLoader[dict[str, torch.Tensor]]
     | None = None,
 ) -> nn.Module:
     if config.blockwise_tuning_config is not None:

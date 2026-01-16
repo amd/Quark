@@ -10,8 +10,7 @@ import onnxruntime
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model
 
-from quark.onnx import CalibrationMethod, ModelQuantizer, PowerOfTwoMethod, get_library_path
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod, get_library_path
 from quark.onnx.quantization.config.custom_config import (
     A8W8_CONFIG,
     A16W8_CONFIG,

@@ -19,7 +19,6 @@
 import importlib
 import importlib.metadata
 import importlib.util  # type: ignore[attr-defined]
-from typing import Tuple
 
 from packaging import version
 
@@ -40,17 +39,13 @@ def _is_package_available(pkg_name: str) -> tuple[bool, str]:  # pragma: no cove
             # Primary method to get the package version
             package_version = importlib.metadata.version(pkg_name)
         except importlib.metadata.PackageNotFoundError:
-            # Fallback method: Only for "torch" and versions containing "dev"
-            if pkg_name == "torch":
+            # Fallback method: Only for "torch"/"triton"/"PIL"
+            if pkg_name in ["torch", "triton", "PIL"]:
                 try:
                     package = importlib.import_module(pkg_name)
                     temp_version = getattr(package, "__version__", "N/A")
-                    # Check if the version contains "dev"
-                    if "dev" in temp_version:
-                        package_version = temp_version
-                        package_exists = True
-                    else:
-                        package_exists = False
+                    package_version = temp_version
+                    package_exists = True
                 except ImportError:
                     # If the package can't be imported, it's not available
                     package_exists = False
@@ -71,6 +66,12 @@ _triton_available, _ = _is_package_available("triton")  # pragma: no cover
 _gguf_available, _gguf_version = _is_package_available("gguf")  # pragma: no cover
 
 
+_pil_available, _pil_version = _is_package_available("PIL")  # pragma: no cover
+_datasets_available, _datasets_version = _is_package_available("datasets")  # pragma: no cover
+_requests_available, _requests_version = _is_package_available("requests")  # pragma: no cover
+_psutil_available, _psutil_version = _is_package_available("psutil")  # pragma: no cover
+
+
 def is_torch_available() -> bool:  # pragma: no cover
     return _torch_available
 
@@ -79,12 +80,20 @@ def is_torch_greater_or_equal_2_5() -> bool:
     return version.parse(_torch_version) >= version.parse("2.5")
 
 
+TORCH_HIGHER_OR_EQUAL_2_7 = version.parse(_torch_version) >= version.parse("2.7")
+TORCH_HIGHER_OR_EQUAL_2_5 = version.parse(_torch_version) >= version.parse("2.5")
+
+
 def is_torch_greater_or_equal_2_7() -> bool:
     return version.parse(_torch_version) >= version.parse("2.7")
 
 
 def is_transformers_version_higher_or_equal(target_version: str) -> bool:
     return version.parse(_transformers_version) >= version.parse(target_version)
+
+
+def is_transformers_version_lower(target_version: str) -> bool:
+    return version.parse(_transformers_version) <= version.parse(target_version)
 
 
 def is_accelerate_available() -> bool:  # pragma: no cover
@@ -105,6 +114,31 @@ def is_safetensors_available() -> bool:  # pragma: no cover
 
 def is_triton_available() -> bool:  # pragma: no cover
     return _triton_available
+
+
+def is_pil_available() -> bool:  # pragma: no cover
+    return _pil_available
+
+
+def is_datasets_available() -> bool:  # pragma: no cover
+    return _datasets_available
+
+
+def is_requests_available() -> bool:  # pragma: no cover
+    return _requests_available
+
+
+def is_psutil_available() -> bool:  # pragma: no cover
+    return _psutil_available
+
+
+def is_package_lower_or_equal(package_name: str, target_version: str) -> bool:
+    _, package_version = _is_package_available(package_name)
+
+    if package_version != "N/A":
+        return version.parse(package_version) <= version.parse(target_version)
+    else:
+        return False
 
 
 def is_gguf_available_and_version_0_6_0() -> bool:  # pragma: no cover

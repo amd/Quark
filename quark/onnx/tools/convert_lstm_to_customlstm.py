@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Convert Custom QDQ to QDQ."""
@@ -10,14 +10,14 @@ from typing import Any
 
 import onnx
 
-from quark.onnx.quant_utils import (
+from quark.onnx.quantization.quant_utils import (
     COP_DEQUANT_OP_NAME,
     COP_DOMAIN,
     COP_IN_OP_NAME,
     COP_LSTM_OP_NAME,
     COP_QUANT_OP_NAME,
-    ONNXQuantizedModel,
 )
+from quark.onnx.utils.model_utils import ONNXQuantizedModel
 
 
 def convert_lstm_to_customlstm(model: onnx.ModelProto) -> Any:
@@ -144,7 +144,7 @@ def custom_ops_infer_shapes(model: onnx.ModelProto) -> Any:
             break
 
     if has_customop:
-        from quark.onnx.quant_utils import infer_custom_op_shape as infer_shape
+        from quark.onnx.quantization.quant_utils import infer_custom_op_shape as infer_shape
 
         print("Infer tensor's shape to generate value info for custom ops")
         return infer_shape(model)

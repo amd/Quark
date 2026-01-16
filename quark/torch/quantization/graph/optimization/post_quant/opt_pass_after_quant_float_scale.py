@@ -1,9 +1,9 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, Iterable, Tuple, Union
+from typing import Any, Iterable
 
 from torch.fx import GraphModule, Node
 
@@ -42,7 +42,7 @@ def _is_has_one_user_and_followed_quantizer(m: GraphModule, n: Node) -> bool:
     return True
 
 
-def _make_iterable(obj: Union[Iterable[Any], Any]) -> Iterable[Any]:
+def _make_iterable(obj: Iterable[Any] | Any) -> Iterable[Any]:
     if isinstance(obj, Iterable):
         return obj
     else:
@@ -52,7 +52,7 @@ def _make_iterable(obj: Union[Iterable[Any], Any]) -> Iterable[Any]:
 class AliginScaleOutputToInputBase(OptPassBase):
     def __init__(self) -> None:
         super().__init__()
-        self.target_op: Union[list[Any], tuple[Any, ...]] = []
+        self.target_op: list[Any] | tuple[Any, ...] = []
 
     def get_target_node(self, g: GraphModule, n: Node) -> bool:
         if n.op == "call_function" and (n.target in self.target_op) and _is_has_one_user_and_followed_quantizer(g, n):
@@ -110,7 +110,7 @@ class AliginScaleOutputToInputBase(OptPassBase):
 class AliginScaleInputToOutputBase(OptPassBase):
     def __init__(self) -> None:
         super().__init__()
-        self.target_op: Union[list[Any], tuple[Any, ...]] = []
+        self.target_op: list[Any] | tuple[Any, ...] = []
         self.target_module: tuple[Any, ...] = ()
 
     def get_target_node(self, g: GraphModule, n: Node) -> bool:

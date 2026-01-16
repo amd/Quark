@@ -25,7 +25,7 @@ In Quark, we take advantage of the ``fx.GraphModule``, Once we get the fully des
 
 **Utilize Graph information to perform fine-grained quantization.**
 
-- In `eager-mode quantization <https://pytorch.org/docs/stable/quantization.html#eager-mode-quantization>`_ method, that uses traditional ``nn.Module`` as input/output. And do the direct replacement on model's component (e.g. ``nn.Conv2d`` to ``QuantizedConv2d``). This method can not recognize and quantize the Python inner operation (e.g. ``x = x + 10``), meaning this quantization method can only quant a small part of the model. Seems little possible to deploy on the demand hardware.
+- In `eager-mode quantization <https://pytorch.org/docs/stable/quantization.html#eager-mode-quantization>`_ method, that uses traditional ``nn.Module`` as input/output. And do the direct replacement on model’s component (e.g. ``nn.Conv2d`` to ``QuantizedConv2d``). This method can not recognize and quantize the Python inner operation (e.g. ``x = x + 10``), meaning this quantization method can only quant a small part of the model. Seems little possible to deploy on the demand hardware.
 - In Quark Fx model quantization, we use the ``torch.fx.GraphModule`` as the inner interpretation. The ``fx.GraphModule`` contain every operation relationship in the computation graph. Quark Fx tool utilize this characteristics to parse the computation graph and insert the Quantizer at the proper place. Meaning the model can be fully quantized. The quantized model are more friendly to AMD NPU etc. device.
 
 
@@ -124,12 +124,12 @@ In this section, we give an overall method of using the Quark Fx quantization to
       # Prepare the Quantization config to convey the quant demand
       # More details can be found in the example codes
       from quark.torch import ModelQuantizer, ...
-      INT8_PER_TENSOR = QuantizationSpec(dtype=Dtype.int8, qscheme=QSchemeType.per_tensor,
+      INT8_PER_TENSOR = QTensorConfig(dtype=Dtype.int8, qscheme=QSchemeType.per_tensor,
           observer_cls=PerTensorMinMaxObserver, symmetric=True,scale_type=ScaleType.float,
           round_method=RoundType.half_even, is_dynamic=False)
-      quant_config = QuantizationConfig( weight=INT8_PER_TENSOR,input_tensors=INT8_PER_TENSOR,
+      quant_config = QLayerConfig( weight=INT8_PER_TENSOR,input_tensors=INT8_PER_TENSOR,
            output_tensors=INT8_PER_TENSOR, bias=INT8_PER_TENSOR)
-      quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+      quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 3. Perform quantization (PTQ/QAT)
 
@@ -230,6 +230,5 @@ Below we share a list of recipes that about the vision task.
 .. toctree::
    :maxdepth: 1
 
-   example_quark_fx_image_classification.rst
-   sample_yolo_nas_quant.rst
-   sample_yolo_x_tiny_quant.rst
+   example_quark_fx_image_classification
+   sample_yolo_nas_quant

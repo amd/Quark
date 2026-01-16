@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -17,7 +17,6 @@ python remove_bf16_cast.py --input $INPUT_MODEL_PATH --output $OUTPUT_MODEL_PATH
 """
 
 from argparse import ArgumentParser, Namespace
-from typing import Dict, List, Tuple
 
 import numpy as np
 import onnx
@@ -90,7 +89,10 @@ def remove_couples_of_cast(model: ModelProto, input_tensor_to_node_dict: dict[st
     for first_node, third_node_output, fourth_node in edges_to_reconnect:
         for i in range(len(fourth_node.input)):
             if fourth_node.input[i] == third_node_output:
-                fourth_node.input[i] = first_node.output[0]
+                for j in range(len(first_node.output)):
+                    if first_node.output[j] in fourth_node.input[i]:
+                        fourth_node.input[i] = first_node.output[j]
+                        break
 
     return model
 
@@ -123,10 +125,10 @@ def convert_bf16_cast_to_fp32_weights(model: ModelProto, input_tensor_to_node_di
                 and second_node.attribute[0].i == 1
                 and second_node.output[0] in input_tensor_to_node_dict
             ):
-                third_node = input_tensor_to_node_dict[second_node.output[0]][0]
-                cast_cast_node_list.append((first_node, second_node, third_node))
+                third_node_list = input_tensor_to_node_dict[second_node.output[0]]
+                cast_cast_node_list.append((first_node, second_node, third_node_list))
 
-    for first_node, second_node, third_node in cast_cast_node_list:
+    for first_node, second_node, third_node_list in cast_cast_node_list:
         init_name = first_node.input[0]
         for init in model.graph.initializer:
             if init.name == init_name:
@@ -135,13 +137,16 @@ def convert_bf16_cast_to_fp32_weights(model: ModelProto, input_tensor_to_node_di
                 new_tensor = numpy_helper.from_array(bfloat16_init, name=init.name + "_bf16")
                 new_tensor.data_type = TensorProto.FLOAT
                 second_node_output = second_node.output[0]
-                for i in range(len(third_node.input)):
-                    if third_node.input[i] == second_node_output:
-                        third_node.input[i] = new_tensor.name
-                        model.graph.initializer.append(new_tensor)
-                        model.graph.node.remove(first_node)
-                        model.graph.node.remove(second_node)
-                        model.graph.initializer.remove(init)
+                for k in range(len(third_node_list)):
+                    third_node = third_node_list[k]
+                    for i in range(len(third_node.input)):
+                        if third_node.input[i] == second_node_output:
+                            third_node.input[i] = new_tensor.name
+                            if k == 0:  # only execute once
+                                model.graph.initializer.append(new_tensor)
+                                model.graph.node.remove(first_node)
+                                model.graph.node.remove(second_node)
+                                model.graph.initializer.remove(init)
 
     return model
 

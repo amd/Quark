@@ -1,15 +1,13 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark ONNX Quantization Data Type Classes"""
 
-from typing import Union
-
 from onnx import TensorProto
 from onnxruntime.quantization.quant_utils import QuantType
 
-from quark.onnx.quant_utils import ExtendedQuantType
+from quark.onnx.quantization.quant_utils import ExtendedQuantType
 from quark.shares.data_type import (
     BaseBFloat16,
     BaseBFP16,
@@ -19,6 +17,15 @@ from quark.shares.data_type import (
     BaseInt8,
     BaseInt16,
     BaseInt32,
+    BaseMX4,
+    BaseMX6,
+    BaseMX9,
+    BaseMXFP4_E2M1,
+    BaseMXFP6_E2M3,
+    BaseMXFP6_E3M2,
+    BaseMXFP8_E4M3,
+    BaseMXFP8_E5M2,
+    BaseMXInt8,
     BaseUInt4,
     BaseUInt8,
     BaseUInt16,
@@ -29,13 +36,13 @@ from quark.shares.data_type import (
 class DataType(BaseDataType):
     """
     Base class for representing a quantization data type.
-    Attributes:
-        onnx_proto_dtype (TensorProto): Corresponding ONNX TensorProto data type.
-        map_onnx_format (Union[ExtendedQuantType, QuantType]): Mapping to ONNX Runtime quantization type.
     """
 
+    # Corresponding ONNX TensorProto data type.
     onnx_proto_dtype: TensorProto
-    map_onnx_format: Union[ExtendedQuantType, QuantType]
+
+    # Mapping to ONNX Runtime quantization type.
+    map_onnx_format: ExtendedQuantType | QuantType
 
 
 class Int4(BaseInt4):
@@ -115,4 +122,64 @@ class BFP16(BaseBFP16):
     map_onnx_format = ExtendedQuantType.QBFP
 
 
-# TODO: Add Quark ONNX MX data type classes.
+class MX4(BaseMX4):
+    """MX4 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QBFP
+
+
+class MX6(BaseMX6):
+    """MX6 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QBFP
+
+
+class MX9(BaseMX9):
+    """MX9 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QBFP
+
+
+class MXFP4E2M1(BaseMXFP4_E2M1):
+    """MXFP4E2M1 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX
+
+
+class MXFP6E3M2(BaseMXFP6_E3M2):
+    """MXFP6E3M2 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX
+
+
+class MXFP6E2M3(BaseMXFP6_E2M3):
+    """MXFP6E2M3 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX
+
+
+class MXFP8E5M2(BaseMXFP8_E5M2):
+    """MXFP8E5M2 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX
+
+
+class MXFP8E4M3(BaseMXFP8_E4M3):
+    """MXFP8E4M3 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX
+
+
+class MXInt8(BaseMXInt8):
+    """MXInt8 quark onnx quantization data type."""
+
+    onnx_proto_dtype = TensorProto.UNDEFINED
+    map_onnx_format = ExtendedQuantType.QMX

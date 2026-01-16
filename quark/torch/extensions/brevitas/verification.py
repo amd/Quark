@@ -1,10 +1,8 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Config verificiation helper functions for Brevitas quantizer."""
-
-from typing import List, Optional
 
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.extensions.brevitas.config as brevitas_config
@@ -29,7 +27,7 @@ class ConfigVerifier:
         cls._verify_post_quant_configs(config.algo_config, config)
 
     @classmethod
-    def _verify_global_config(cls, global_config: brevitas_config.QuantizationConfig) -> None:
+    def _verify_global_config(cls, global_config: brevitas_config.QLayerConfig) -> None:
         if global_config.bias is not None and global_config.input_tensors is None:
             raise ValueError("There must be input quantization if bias quantization is used.")
 
@@ -39,7 +37,7 @@ class ConfigVerifier:
         cls._verify_bias_quant_spec(global_config.bias)
 
     @classmethod
-    def _verify_spec_common(cls, spec: brevitas_config.QuantizationSpec) -> None:
+    def _verify_spec_common(cls, spec: brevitas_config.QTensorConfig) -> None:
         if spec.quant_type is brevitas_config.QuantType.float_quant:
             if spec.exponent_bit_width is None or spec.mantissa_bit_width is None:
                 raise ValueError("Exponent and mantissa bit width must be specified for float quantization.")
@@ -48,17 +46,17 @@ class ConfigVerifier:
                 raise ValueError("Asymmetric quantization is not supported with float quantization.")
 
     @classmethod
-    def _verify_activation_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
+    def _verify_activation_quant_spec(cls, spec: brevitas_config.QTensorConfig | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 
     @classmethod
-    def _verify_weight_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
+    def _verify_weight_quant_spec(cls, spec: brevitas_config.QTensorConfig | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 
     @classmethod
-    def _verify_bias_quant_spec(cls, spec: brevitas_config.QuantizationSpec | None) -> None:
+    def _verify_bias_quant_spec(cls, spec: brevitas_config.QTensorConfig | None) -> None:
         if spec is not None:
             cls._verify_spec_common(spec)
 

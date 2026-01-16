@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -17,6 +17,14 @@ _COP_MX_OP_NAME = "MXQuantizeDequantize"
 _COP_VERSION = 1
 
 __all__ = [
-    "get_library_path", "_COP_DOMAIN", "_COP_QUANT_OP_NAME", "_COP_DEQUANT_OP_NAME", "_COP_IN_OP_NAME",
-    "_COP_LSTM_OP_NAME", "_COP_BFP_OP_NAME", "_COP_MX_OP_NAME", "_COP_VERSION"
+    "get_library_path",
+    "compile_library",
+    "_COP_DOMAIN",
+    "_COP_QUANT_OP_NAME",
+    "_COP_DEQUANT_OP_NAME",
+    "_COP_IN_OP_NAME",
+    "_COP_LSTM_OP_NAME",
+    "_COP_BFP_OP_NAME",
+    "_COP_MX_OP_NAME",
+    "_COP_VERSION",
 ]

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -13,7 +13,7 @@ import argparse
 import os
 import pathlib
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Iterator
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,7 +24,8 @@ from onnxruntime.quantization.calibrate import CalibraterBase, CalibrationDataRe
 from tqdm import tqdm
 
 from quark.onnx.calibration import CachedDataReader, RandomDataReader, create_calibrator_float_scale
-from quark.onnx.quant_utils import check_and_create_path, create_tmp_dir
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
+from quark.onnx.utils.system_utils import check_and_create_path, create_tmp_dir
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -227,7 +228,7 @@ class HistDataReader(RandomDataReader):
         """
         if self.enum_data_iter is None:
             so = ort.SessionOptions()
-            session = ort.InferenceSession(self._model_path, so, providers=["CPUExecutionProvider"])
+            session = create_infer_session_for_onnx_model(self._model_path, so, providers=["CPUExecutionProvider"])
 
             for input_index, input_node in enumerate(session.get_inputs()):
                 input_name = self._get_input_name(input_node)
@@ -336,7 +337,7 @@ def save_figure(calibrator: CalibraterBase, saved_path: str | None = None) -> No
 # Collect all data then save tensors to picture
 # Reset the DataReader
 def save_tensor_hist_figure(
-    input_model: Union[str, onnx.ModelProto], dr: CalibrationDataReader, output_figure_path: str | None = None
+    input_model: str | onnx.ModelProto, dr: CalibrationDataReader, output_figure_path: str | None = None
 ) -> None:
     # Need to reload & save the file if the input_model_path does not have write permissions
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)

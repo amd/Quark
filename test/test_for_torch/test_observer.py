@@ -6,7 +6,7 @@
 import pytest
 import torch
 
-from quark.torch.quantization import Int8PerTensorSpec, OCP_MXFP8E4M3Spec, QuantizationSpec, Uint4PerTensorSpec
+from quark.torch.quantization import Int8PerTensorSpec, OCP_MXFP8E4M3Spec, QTensorConfig, Uint4PerTensorSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
     PerBlockBFPObserver,
@@ -24,9 +24,7 @@ from quark.torch.quantization.observer.observer import (
 
 def test_calculate_int_quant_params():
     # Test Symmetric
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(
-        observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-    ).to_quantization_spec()
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(is_dynamic=False).to_quantization_spec()
     observer = PerTensorMinMaxObserver(DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
     min_val = torch.Tensor([0.0, 0.0])
     max_val = torch.Tensor([1.0, 1.0])
@@ -35,9 +33,7 @@ def test_calculate_int_quant_params():
     assert torch.equal(zero_point, torch.Tensor([0, 0]))
 
     # Test Asymmetric
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Uint4PerTensorSpec(
-        observer_method="min_max", symmetric=False, scale_type="float", round_method="half_even", is_dynamic=False
-    ).to_quantization_spec()
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = Uint4PerTensorSpec(is_dynamic=False).to_quantization_spec()
     observer = PerTensorMinMaxObserver(DEFAULT_INT8_PER_TENSOR_SYM_SPEC)
     min_val = torch.Tensor([-1.0, -1.0])
     max_val = torch.Tensor([10.0, 10.0])
@@ -54,7 +50,7 @@ def test_calculate_int_quant_params():
     ],
 )
 def test_calculate_fp8_quant_parameters(dtype, max_norm, observer_cls):
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=dtype, qscheme=QSchemeType.per_tensor, observer_cls=observer_cls, is_dynamic=False
     )
     observer = observer_cls(FP8_PER_TENSOR_SPEC)
@@ -66,7 +62,7 @@ def test_calculate_fp8_quant_parameters(dtype, max_norm, observer_cls):
 
 
 def test_PerTensorMinMaxObserver():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -84,7 +80,7 @@ def test_PerTensorMinMaxObserver():
 
 
 def test_PerChannelMinMaxObserver():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -103,7 +99,7 @@ def test_PerChannelMinMaxObserver():
 
 
 def test_PerTensorHistogramObserver():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorHistogramObserver,
@@ -121,7 +117,7 @@ def test_PerTensorHistogramObserver():
 
 
 def test_PerTensorPercentileObserver():
-    DEFAULT_INT8_PER_TENSOR_ASYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_ASYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorPercentileObserver,
@@ -149,9 +145,9 @@ def test_PerTensorPercentileObserver():
 )
 def test_reset_state(observer_cls):
     if observer_cls is PerBlockMXObserver:
-        spec = OCP_MXFP8E4M3Spec().to_quantization_spec()
+        spec = OCP_MXFP8E4M3Spec(ch_axis=-1).to_quantization_spec()
     elif observer_cls is PerBlockBFPObserver:
-        spec = QuantizationSpec(
+        spec = QTensorConfig(
             dtype=Dtype.bfp16,
             observer_cls=PerBlockBFPObserver,
             qscheme=QSchemeType.per_group,
@@ -161,7 +157,7 @@ def test_reset_state(observer_cls):
             round_method=RoundType.half_even,
         )
     elif observer_cls is PerChannelMinMaxObserver:
-        spec = QuantizationSpec(
+        spec = QTensorConfig(
             dtype=Dtype.fp4,
             observer_cls=PerChannelMinMaxObserver,
             qscheme=QSchemeType.per_channel,
@@ -204,7 +200,7 @@ def test_PerTensorPowOf2MinMaxObserver():
     zp_list = [torch.tensor(0), torch.tensor(128), torch.tensor(-64), torch.tensor(63)]
     for each_symmetric in symmetric:
         for each_dtype in dtype:
-            DEFAULT_POF2_INT8_PER_TENSOR_SPEC = QuantizationSpec(
+            DEFAULT_POF2_INT8_PER_TENSOR_SPEC = QTensorConfig(
                 dtype=each_dtype,
                 qscheme=QSchemeType.per_tensor,
                 observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -235,7 +231,7 @@ def test_PerTensorPowOf2MinMSEObserver():
     zp_list = [torch.tensor(0), torch.tensor(128), torch.tensor(-42), torch.tensor(85)]
     for each_symmetric in symmetric:
         for each_dtype in dtype:
-            POF2_INT8_PER_TENSOR_MSE_SPEC = QuantizationSpec(
+            POF2_INT8_PER_TENSOR_MSE_SPEC = QTensorConfig(
                 dtype=each_dtype,
                 qscheme=QSchemeType.per_tensor,
                 observer_cls=PerTensorPowOf2MinMSEObserver,
@@ -277,7 +273,7 @@ def test_PerChannelPowOf2MinMaxObserver():
     ]
     for each_symmetric in symmetric:
         for each_dtype in dtype:
-            POF2_INT8_PER_CHANNEL_MSE_SPEC = QuantizationSpec(
+            POF2_INT8_PER_CHANNEL_MSE_SPEC = QTensorConfig(
                 dtype=each_dtype,
                 qscheme=QSchemeType.per_channel,
                 observer_cls=PerChannelPowOf2MinMaxObserver,
@@ -322,7 +318,7 @@ def test_PerChannelPowOf2MinMSEObserver():
     # ch_anix = 0
     for each_symmetric in symmetric:
         for each_dtype in dtype:
-            POF2_INT8_PER_CHANNEL_MSE_SPEC = QuantizationSpec(
+            POF2_INT8_PER_CHANNEL_MSE_SPEC = QTensorConfig(
                 dtype=each_dtype,
                 qscheme=QSchemeType.per_channel,
                 observer_cls=PerChannelPowOf2MinMSEObserver,
@@ -362,7 +358,7 @@ def test_PerChannelPowOf2MinMSEObserver():
     count = 0
     for each_symmetric in symmetric:
         for each_dtype in dtype:
-            POF2_INT8_PER_CHANNEL_MSE_SPEC = QuantizationSpec(
+            POF2_INT8_PER_CHANNEL_MSE_SPEC = QTensorConfig(
                 dtype=each_dtype,
                 qscheme=QSchemeType.per_channel,
                 observer_cls=PerChannelPowOf2MinMSEObserver,

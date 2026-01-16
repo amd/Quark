@@ -8,14 +8,12 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from onnx import ModelProto
 from onnxruntime.quantization.quant_utils import QuantizationMode, ms_domain
 
-from quark.shares.utils.log import ScreenLogger
-
-from ..quant_utils import (
+from quark.onnx.quantization.quant_utils import (
     __producer__,
     __version__,
     get_annotate_tensors,
@@ -23,13 +21,15 @@ from ..quant_utils import (
     modified_annotate_input,
     remove_nodes,
 )
-from ..registry import CreateNPUTransformerQDQQuantizer
+from quark.shares.utils.log import ScreenLogger
+
 from .qdq_quantizer import QDQQuantizer
+from .registry import CreateNPUTransformerQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
-class QDQNPUTransformerQuantizer(QDQQuantizer):
+class TransformerQDQQuantizer(QDQQuantizer):
     def __init__(
         self,
         model: ModelProto,

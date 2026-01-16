@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -8,7 +8,7 @@ import time
 import traceback
 from pathlib import Path
 from types import TracebackType
-from typing import Any, List, Optional, Type
+from typing import Any
 
 import torch
 from torch.utils.cpp_extension import _get_build_directory, load
@@ -87,9 +87,21 @@ def compile_kernel(
             extra_cflags.append("-DUSE_CUDA")
             extra_cuda_cflags.append("-DUSE_CUDA")
 
-        logger.info("C++ kernel build directory " + compile_dir)
-        logger.info("C++ kernel loading. First-time compilation may take a few minutes...")
         with set_rocm_user_architecture():
+            build_arch = ""
+            if torch.version.hip is not None:
+                if os.environ.get("PYTORCH_ROCM_ARCH", None) is not None:
+                    build_arch = f" Building for architectures PYTORCH_ROCM_ARCH='{os.environ['PYTORCH_ROCM_ARCH']}'."
+            elif torch.version.cuda is not None:
+                if os.environ.get("TORCH_CUDA_ARCH_LIST", None) is not None:
+                    build_arch = (
+                        f" Building for architectures TORCH_CUDA_ARCH_LIST='{os.environ['TORCH_CUDA_ARCH_LIST']}'."
+                    )
+
+            logger.info(
+                f"C++ kernel build directory: {compile_dir}. First-time compilation may take a few minutes...{build_arch}"
+            )
+
             return load(
                 name=kernel_name,
                 sources=sources,
@@ -105,16 +117,13 @@ def compile_kernel(
 
 
 logger.info("C++ kernel compilation check start.")
-is_cuda_runtime = 1
-if torch.version.cuda:
-    is_cuda_runtime = 1
-else:
-    is_cuda_runtime = 0
+is_cuda_runtime = torch.version.cuda
+is_gpu_mode = torch.cuda.is_available()
 
 extra_cuda_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
 extra_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
-if torch.cuda.is_available():
-    if is_cuda_runtime == 1:
+if is_gpu_mode:
+    if is_cuda_runtime:
         extra_cuda_cflags.extend(["-O2", "--extended-lambda"])
     else:
         extra_cuda_cflags.extend(["-O2"])

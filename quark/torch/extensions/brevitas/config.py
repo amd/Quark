@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for Brevitas."""
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import List, Optional
 
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.quantization.config.type as quark_config_type
@@ -35,7 +34,7 @@ class Config:
     """
 
     # Global quantization configuration applied to the entire model.
-    global_quant_config: QuantizationConfig
+    global_quant_config: QLayerConfig
 
     # Optional pre-processing optimization - these will be applied in the same order as their position in the list.
     pre_quant_opt_config: list[brevitas_algos.PreQuantOptConfig] = field(
@@ -59,10 +58,15 @@ class QuantizationConfig:
     - `bias`: The quantization parameters (if any) to apply to the model biases.
     """
 
-    input_tensors: QuantizationSpec | None = None
-    output_tensors: QuantizationSpec | None = None
-    weight: QuantizationSpec | None = None
-    bias: QuantizationSpec | None = None
+    input_tensors: QTensorConfig | None = None
+    output_tensors: QTensorConfig | None = None
+    weight: QTensorConfig | None = None
+    bias: QTensorConfig | None = None
+
+    def __post_init__(self) -> None:
+        print(
+            f"{self.__class__.__name__} is deprecated and will be removed in a future release. Please use QLayerConfig instead."
+        )
 
 
 class QuantType(Enum):
@@ -115,3 +119,18 @@ class QuantizationSpec:
     bit_width: int = 8
     exponent_bit_width: int | None = None
     mantissa_bit_width: int | None = None
+
+    def __post_init__(self) -> None:
+        print(
+            f"{self.__class__.__name__} is deprecated and will be removed in a future release. Please use QTensorConfig instead."
+        )
+
+
+@dataclass(eq=True, frozen=True)
+class QTensorConfig(QuantizationSpec):
+    pass
+
+
+@dataclass(eq=True)
+class QLayerConfig(QuantizationConfig):
+    pass

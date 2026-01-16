@@ -1,15 +1,15 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import types
-from typing import Callable, List, Optional
+from typing import Callable
 
 import torch.fx
 from torch.fx import Node
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 
 # Graph
 from quark.torch.quantization.graph.optimization.model_optimization import (
@@ -27,7 +27,7 @@ from quark.torch.quantization.graph.processor.tag_quant_node import mask_op_with
 from quark.torch.quantization.graph.torch_utils import QUANT_CONV_WITH_BN, allow_exported_model_train_eval
 
 # from torch.ao.quantization.pt2e.utils import _get_node_name_to_scope
-# from quark.torch.quantization.config.config import QuantizationConfig
+# from quark.torch.quantization.config.config import QLayerConfig
 logger = ScreenLogger(__name__)
 
 global_post_quant_hw_constrain_func: Callable[[torch.fx.GraphModule], torch.fx.GraphModule] = (
@@ -88,7 +88,7 @@ def _bound_inner_function(model: torch.fx.GraphModule) -> torch.fx.GraphModule:
 
 
 def annotate(
-    model: torch.fx.GraphModule, config: Config, filter_fn: Callable[[Node], bool] | None = None
+    model: torch.fx.GraphModule, config: QConfig, filter_fn: Callable[[Node], bool] | None = None
 ) -> torch.fx.GraphModule:
     if config.global_quant_config is None:
         return model
@@ -124,7 +124,7 @@ def mark_exclude_nodes(model: torch.fx.GraphModule) -> list[str]:
     return skip_quant_node_name
 
 
-def prepare_quant_model(model: torch.fx.GraphModule, config: Config) -> torch.fx.GraphModule:
+def prepare_quant_model(model: torch.fx.GraphModule, config: QConfig) -> torch.fx.GraphModule:
     # NOTE This is not a permanent function,
     global global_post_quant_hw_constrain_func
     global_post_quant_hw_constrain_func = select_proper_hw_constrain_passes(config)

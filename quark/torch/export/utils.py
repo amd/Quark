@@ -1,11 +1,12 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import fnmatch
+import re
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -14,20 +15,28 @@ from tqdm import tqdm
 
 from quark.shares.utils.import_utils import is_accelerate_available
 from quark.shares.utils.log import ScreenLogger
+from quark.torch.algorithm.rotation.rotation import RotationProcessor
+from quark.torch.algorithm.rotation.rotation_utils import InputRotationWrapperHadamard, InputRotationWrapperOrthogonal
+from quark.torch.export.constants import (
+    AWQ_LOAD_MAP,
+    LOAD_MAP,
+    LOAD_MAP_MULTI,
+    MISMATCHING_PARAMETERS_NAMES,
+    REVERSE_LOAD_MAP,
+    REVERSE_MISMATCHING_PARAMETERS_NAMES,
+)
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser, get_layer_quant_config
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
-from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
 from quark.torch.export.nn.modules.realquantizer import get_real_quantizer
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.config.type import QSchemeType
 from quark.torch.quantization.model_transformation import prepare_for_attention_quant
 from quark.torch.quantization.nn.modules import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, NonScaledFakeQuantize, ScaledFakeQuantize
-from quark.torch.utils import getattr_recursive, setattr_recursive
-from quark.torch.utils.device import TPDeviceManager, e4m3fn_to_e4m3fnuz
+from quark.torch.utils import TPDeviceManager, e4m3fn_to_e4m3fnuz, getattr_recursive, setattr_recursive
 
 if is_accelerate_available():
-    from accelerate.utils.modeling import find_tied_parameters, named_module_tensors
+    from accelerate.utils.modeling import find_tied_parameters, get_state_dict_from_offload, named_module_tensors
 
 logger = ScreenLogger(__name__)
 
@@ -40,6 +49,9 @@ __all__ = [
     "_convert_quantized_model",
     "_handle_multi_device_loading",
     "_convert_e4m3fn_to_e4m3fnuz",
+    "_fix_loaded_weights_key_mismatch",
+    "_fix_state_dict_key_on_save",
+    "get_state_dict_for_export",
 ]
 
 
@@ -166,7 +178,6 @@ def _build_quantized_model(
 ) -> nn.Module:
     """
     Build quantized model with proper module replacement.
-    Equivalent to ModelImporter._build_model.
     """
     if model_config.quantization_config is None:
         logger.info("This is a non-quantized model")
@@ -186,7 +197,7 @@ def _build_quantized_model(
     # Parse quantization configuration
     if custom_mode != "quark":
         # For AWQ and FP8 custom modes
-        is_bias_quantized = any("bias.scales" in key or "bias_scale" in key for key in model_state_dict.keys())
+        is_bias_quantized = any("bias.scales" in key or "bias_scale" in key for key in model_state_dict)
         quantization_config = QuantConfigParser.from_custom_config(
             model_config.quantization_config,
             is_bias_quantized=is_bias_quantized,
@@ -194,7 +205,7 @@ def _build_quantized_model(
             kv_layers_name=kv_layers_name,
         )
     else:
-        quantization_config = Config.from_dict(model_config.quantization_config)
+        quantization_config = QConfig.from_dict(model_config.quantization_config)
 
     # Determine if using real quantized mode
     is_real_quantized_mode = model_config.weight_format != "fake_quantized"
@@ -236,6 +247,7 @@ def _build_quantized_model(
 
                 quant_module = QuantLinear.from_float(float_module, layer_quantization_config, device=device)
                 quant_module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
+
                 setattr_recursive(model, name, quant_module)
 
         # Enable observers and fake quantization for dynamic quantization
@@ -250,7 +262,15 @@ def _build_quantized_model(
             elif isinstance(module, NonScaledFakeQuantize):
                 module.enable_fake_quant()
 
+        if quantization_config.get_rotation_config() is not None:
+            RotationProcessor.prepare_model_for_reloading_fake(model, quantization_config)
+
     logger.info("Converting quantized ops end")
+
+    # Attach quantization config to model for later use (e.g., cache import)
+    model.quant_config = quantization_config  # type: ignore[attr-defined]
+    model.quark_quantized = True  # type: ignore[attr-defined]
+
     return model
 
 
@@ -269,7 +289,7 @@ def _untie_parameters(model: nn.Module, model_state_dict: dict[str, Any]) -> Non
         missing_key: list[str] = []
         tied_param_value: torch.Tensor | None = None
         for tied_param_name in tied_param_groups[0]:
-            if tied_param_name in model_state_dict.keys():
+            if tied_param_name in model_state_dict:
                 tied_param_value = model_state_dict[tied_param_name]
             else:
                 missing_key.append(tied_param_name)
@@ -283,21 +303,44 @@ def _untie_parameters(model: nn.Module, model_state_dict: dict[str, Any]) -> Non
 def _convert_quantized_model(model: nn.Module, model_config: "PretrainedConfig") -> nn.Module:
     """
     Convert quantized model for specific formats.
-    Equivalent to ModelImporter._convert_model.
     """
+    # TODO: fix circular import.
+    from quark.torch.export.nn.modules.qparamslinear import QParamsLinearWithRotation
+
     if model_config.quantization_config is None:
         return model
 
     custom_mode = model_config.quantization_config["quant_method"]
     assert custom_mode in ["fp8", "awq", "quark"], f"Unsupported quantization method: {custom_mode}"
 
-    if custom_mode != "fp8":
-        return model
-
     is_real_quantized_mode = model_config.weight_format != "fake_quantized"
-    if is_real_quantized_mode and torch.version.hip is not None:
+    if custom_mode == "fp8" and is_real_quantized_mode and torch.version.hip is not None:
         logger.info("In-place fp8 e4m3fn to e4m3fnuz conversion start.")
         _convert_e4m3fn_to_e4m3fnuz(model)
+
+    for name, submodule in model.named_modules():
+        # `weight_format="real_quantized"` case.
+        if isinstance(submodule, QParamsLinearWithRotation):
+            submodule.post_process_after_loading()
+
+        # `weight_format="fake_quantized"` case.
+        if isinstance(submodule, QuantLinear) and hasattr(submodule, "input_rotation"):
+            if submodule.input_rotation.dtype == torch.float64:
+                layer_with_input_rotation = InputRotationWrapperOrthogonal(
+                    submodule,
+                    rotation_matrix=submodule.input_rotation,
+                )
+            elif submodule.input_rotation.dtype == torch.bool:
+                rotation_size = submodule.input_rotation.shape[0]
+
+                layer_with_input_rotation = InputRotationWrapperHadamard(
+                    submodule,
+                    rotation_size=rotation_size,
+                )
+            else:
+                raise ValueError("Wrong input_rotation dtype.")
+
+            setattr_recursive(model, name, layer_with_input_rotation)
 
     return model
 
@@ -321,14 +364,14 @@ def _handle_multi_device_loading(model: nn.Module, checkpoint_weights: dict[str,
             # "weight_map" doesn't support increasing KV.
             prefix = hook.weights_map.prefix
             weight_keys = []
-            for weight_name in weight_modules.keys():
+            for weight_name in weight_modules:
                 full_name = prefix + weight_name
                 weight_keys.append(full_name)
                 hook.weights_map[weight_name].data = checkpoint_weights[full_name]
                 # can't del checkpoint_weights[full_name], should move to meta
                 checkpoint_weights[full_name] = checkpoint_weights[full_name].to("meta")
 
-            for checkpoint_weights_name in checkpoint_weights.keys():
+            for checkpoint_weights_name in checkpoint_weights:
                 if checkpoint_weights_name.startswith(prefix):
                     if checkpoint_weights_name not in weight_keys:  # is scale or zero
                         # how to add kv into weights_map? For OffloadedWeightsLoader and PrefixedDataset, it is not possible to add a k and v.
@@ -346,6 +389,9 @@ def _convert_e4m3fn_to_e4m3fnuz(model: nn.Module) -> None:
     Parameters:
         model (torch.nn.Module): An instance of the original not-quantized model. This model may be on `meta` device, or may have random weights.
     """
+    # TODO: fix circular import.
+    from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
+
     if TPDeviceManager._tp_mesh is None:
         return
 
@@ -366,10 +412,160 @@ def _convert_e4m3fn_to_e4m3fnuz(model: nn.Module) -> None:
             dweight, dwscale = e4m3fn_to_e4m3fnuz(dweight, dwscale)
 
             # Not always need to copy to CPU, if the GPU memory is enough, this step can be skip to save time.
-            if type(dweight) == DTensor and type(dwscale) == DTensor:
+            if type(dweight) is DTensor and type(dwscale) is DTensor:
                 dweight = dweight.to_local().to("cpu")
                 dwscale = dwscale.to_local().to("cpu")
 
             qparams_linear.weight = torch.nn.Parameter(dweight)
             qparams_linear.weight_quantizer.scale = torch.nn.Parameter(dwscale)
             setattr_recursive(model, module_name, qparams_linear)
+
+
+def get_state_dict_for_export(model: nn.Module) -> dict[str, torch.Tensor]:
+    """
+    We call `model.save_pretrained(dir, state_dict=state_dict)` when exporting Quark models with Transformers library.
+
+    This logic is used to fix the key mapping & retrieve offloaded weights.
+
+    # TODO: eventually remove this once ``QParamsLinear`` parameters/buffers keys match the serialized checkpoints keys.
+    """
+    state_dict = model.state_dict()
+    if hasattr(model, "_fix_state_dict_keys_on_save"):
+        state_dict = model._fix_state_dict_keys_on_save(state_dict)  # type: ignore[no-untyped-call]
+
+    module_map = {}
+
+    # This handles offloaded parameters from Accelerate library. As we pass `state_dict` to save_pretrained,
+    # we need to handle this logic ourselves.
+    if (
+        hasattr(model, "hf_device_map")
+        and len(set(model.hf_device_map.values())) > 1
+        and ("cpu" in model.hf_device_map.values() or "disk" in model.hf_device_map.values())
+    ):
+        for name, module in model.named_modules():
+            if name == "":
+                continue
+            module_state_dict = module.state_dict()
+
+            for key in module_state_dict:
+                module_map[name + f".{key}"] = module
+
+    if module_map:
+        for module_name in list(state_dict.keys()):
+            tensor = state_dict[module_name]
+            if tensor == "" or (isinstance(tensor, torch.Tensor) and tensor.device.type == "meta"):
+                # update state dict with onloaded parameters
+                module = module_map[module_name]
+                state_dict = get_state_dict_from_offload(module, module_name, state_dict)
+
+    return state_dict
+
+
+def _fix_loaded_weights_key_mismatch(
+    weight_dict: dict[str, torch.Tensor], weight_format: str | None, custom_mode: str
+) -> dict[str, torch.Tensor]:
+    """
+    Maps ``weight_dict`` keys from:
+
+    - ``*.weight_scale`` to ``.weigth_quantizer.scale`` (or ``.weigth_quantizer.0.scale`` in case of multi-level quantization)
+    - ``*.input_scale`` to ``.input_quantizer.scale``
+    - etc.
+
+    TODO: this needs to be removed once we avoid having a mismatched state_dict between ``QParamsLinear`` and the serialized checkpoint.
+    """
+    if weight_format == "fake_quantized":
+        return weight_dict
+
+    if custom_mode == "awq":
+        for key in list(weight_dict.keys()):
+            prefix = ".".join(key.split(".")[:-1])
+
+            for awq_name, quark_name in AWQ_LOAD_MAP.items():
+                if key == prefix + "." + awq_name:
+                    weight_dict[prefix + "." + quark_name] = weight_dict.pop(key)
+
+        return weight_dict
+
+    uses_multi_levels = set()
+    for key in list(weight_dict.keys()):
+        original_key = key
+
+        # Handle `weight_scale_1` layout case.
+        for name_pattern in REVERSE_MISMATCHING_PARAMETERS_NAMES:
+            # Example: key 'model.layers.0.self_attn.q_proj.weight_scale' or 'model.layers.0.self_attn.q_proj.weight_scale_1'.
+            matching = re.match(name_pattern, key) is not None
+            if not matching:
+                continue
+
+            # TODO: this is crazy...
+            # We have `weight_scale`, and then `weight_scale_2`...
+            index = key.split(".")[-1]
+            index = int(index.split("_")[-1]) - 1
+
+            if "zero_point" in key.split(".")[-1]:
+                qparam_type = "zero_point"
+            elif "scale" in key.split(".")[-1]:
+                qparam_type = "scale"
+            else:
+                raise ValueError(f"Unexpected value {key.split('.')[-1]}. Please open an issue.")
+
+            prefix = ".".join(key.split(".")[:-1])
+            tensor_name = key.split(".")[-1].split("_")[0]
+            new_key = prefix + "." + tensor_name + "_quantizer." + str(index) + f".{qparam_type}"
+
+            weight_dict[new_key] = weight_dict.pop(key)
+
+            # Different tensor types (weight, bias, input, output) may use/not use multi-level quantization,
+            # used later to handle `*.weight_scale` without postfix.
+            uses_multi_levels.add("_".join(original_key.split("_")[:-1]))
+
+    # `*.weight_scale` -> `.weigth_quantizer.scale` or `.weigth_quantizer.0.scale`
+    for key in list(weight_dict.keys()):
+        if key in uses_multi_levels:
+            load_map = LOAD_MAP_MULTI
+        else:
+            load_map = LOAD_MAP
+
+        for subname in load_map:
+            if subname in key:
+                weight_dict[key.replace(subname, load_map[subname])] = weight_dict.pop(key)
+                break
+
+    return weight_dict
+
+
+def _fix_state_dict_key_on_save(key: str) -> tuple[str, bool]:
+    """
+    Overrides https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/modeling_utils.py#L5270.
+
+    This is only useful for the serialization of Transformers models in ``real_quantized`` format, where we serialize scales/zeropoints as `layer.weight_scale`, `layer.input_scale`, etc. and NOT as `layer.weight_quantizer.scale`, `layer.input_quantizer.scale`.
+
+    TODO: this needs to be removed once we avoid having a mismatched state_dict between ``QParamsLinear`` and the serialized checkpoint.
+    """
+    # Handle `weight_quantizer.scale` layout case.
+    for state_dict_key in REVERSE_LOAD_MAP:
+        if state_dict_key in key:
+            key = key.replace(state_dict_key, REVERSE_LOAD_MAP[state_dict_key])
+
+    # Handle `weight_quantizer.0.scale`, `weight_quantizer.1.scale` layout case.
+    for name_pattern in MISMATCHING_PARAMETERS_NAMES:
+        # Example: key 'model.layers.0.self_attn.q_proj.weight_quantizer.scale' or 'model.layers.0.self_attn.q_proj.input_quantizer.scale'.
+        matching = re.match(name_pattern, key) is not None
+        if not matching:
+            continue
+
+        index_keys = key.split(".")[-2]
+
+        prefix = ".".join(key.split(".")[:-3])
+        tensor_name = key.split(".")[-3].split("_")[-2]
+
+        qparam_type = key.split(".")[-1]  # scale or zero_point.
+
+        if int(index_keys) == 0:
+            suffix = ""
+        else:
+            suffix = "_" + str(int(index_keys) + 1)
+
+        key = prefix + "." + tensor_name + "_" + qparam_type + suffix
+
+    return key, True

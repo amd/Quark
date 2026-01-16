@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 #
 
-from functools import reduce
 
 import pytest
 import torch
@@ -12,12 +11,13 @@ from torch import ops  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader, Dataset
 
 import quark.torch.kernel  # noqa
+from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx, fake_quantize_non_mx
-from quark.torch.quantization.config.config import Config, FP4PerGroupSpec, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import FP4PerGroupSpec, QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.observer.observer import PerBlockMXObserver, PerChannelMinMaxObserver
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 from quark.torch.quantization.utils import calculate_qmin_qmax, get_dtype_params, reshape_to_blocks
 
 
@@ -58,6 +58,11 @@ def is_power_of_two(tensor):
         (Dtype.fp4, 0, "e8m0", "ceil"),
         (Dtype.fp4, 0, "e4m3", ""),
         (Dtype.fp4, 0, "float32", ""),
+        (Dtype.fp4, 1, "e8m0", "even"),
+        (Dtype.fp4, 1, "e8m0", "floor"),
+        (Dtype.fp4, 1, "e8m0", "ceil"),
+        (Dtype.fp4, 1, "e4m3", ""),
+        (Dtype.fp4, 1, "float32", ""),
         (Dtype.fp4, -1, "e8m0", "even"),
         (Dtype.fp4, -1, "e8m0", "floor"),
         (Dtype.fp4, -1, "e8m0", "ceil"),
@@ -74,10 +79,10 @@ def test_fp4_per_channel_scaled_fake_quantize(dtype, dim, scale_format, scale_ca
     if len(scale_calculation_mode) == 0:
         scale_calculation_mode = None
 
-    tensor_shape = (4096, 4096)
-    x: torch.Tensor = torch.randn(tensor_shape, dtype=torch.float32)
+    dim0 = 4096
+    tensor_shape = (dim0, 4096)
 
-    fp4_per_channel_spec = QuantizationSpec(
+    fp4_per_channel_spec = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -86,10 +91,9 @@ def test_fp4_per_channel_scaled_fake_quantize(dtype, dim, scale_format, scale_ca
         scale_calculation_mode=scale_calculation_mode,
         is_dynamic=False,
     )
-    quantizer_per_channel = ScaledFakeQuantize(fp4_per_channel_spec)
-    fp4_per_channel_scaled_fake_quantize = quantizer_per_channel(x.clone())
+    quantizer_per_channel = FakeQuantizeBase.get_fake_quantize(fp4_per_channel_spec, device=torch_device)
 
-    fp4_per_group_spec = QuantizationSpec(
+    fp4_per_group_spec = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_group,
         observer_cls=PerBlockMXObserver,
@@ -99,15 +103,36 @@ def test_fp4_per_channel_scaled_fake_quantize(dtype, dim, scale_format, scale_ca
         scale_calculation_mode=scale_calculation_mode,
         is_dynamic=False,
     )
-    quantizer_per_group = ScaledFakeQuantize(fp4_per_group_spec)
-    fp4_per_group_scaled_fake_quantize = quantizer_per_group(x.transpose(0, 1).clone())
-    fp4_per_group_scaled_fake_quantize = fp4_per_group_scaled_fake_quantize.transpose(0, 1)
+    quantizer_per_group = FakeQuantizeBase.get_fake_quantize(fp4_per_group_spec)
 
-    if scale_format == "e8m0":
-        diff = fp4_per_channel_scaled_fake_quantize - fp4_per_group_scaled_fake_quantize
-        assert (torch.count_nonzero(diff).item() / reduce(lambda x, y: x * y, tensor_shape)) < 0.1
+    allclose_count = 0
+    close_col_sum = 0
+
+    test_device = torch.device(torch_device)
+    if test_device.type == "cpu":
+        n_runs = 1  # This test is relatively slow on CPU.
     else:
-        assert torch.allclose(fp4_per_channel_scaled_fake_quantize, fp4_per_group_scaled_fake_quantize)
+        n_runs = 30
+    for _ in range(n_runs):
+        x: torch.Tensor = torch.randn(tensor_shape, dtype=torch.float32, device=torch_device)
+
+        fp4_per_channel_scaled_fake_quantize = quantizer_per_channel(x.clone())
+        fp4_per_group_scaled_fake_quantize = quantizer_per_group(x.transpose(0, 1).clone())
+        fp4_per_group_scaled_fake_quantize = fp4_per_group_scaled_fake_quantize.transpose(0, 1)
+
+        allclose = torch.allclose(fp4_per_channel_scaled_fake_quantize, fp4_per_group_scaled_fake_quantize)
+
+        close_col = torch.isclose(fp4_per_channel_scaled_fake_quantize, fp4_per_group_scaled_fake_quantize)
+        close_col = torch.all(close_col, dim=-1)
+        close_col_sum += torch.sum(close_col)
+
+        if allclose:
+            allclose_count += 1
+
+        diff = (fp4_per_channel_scaled_fake_quantize - fp4_per_group_scaled_fake_quantize).abs()
+        assert (torch.count_nonzero(diff).item() / diff.numel()) < 0.1
+
+    print(f"Allclose: {allclose_count}/{n_runs} (columns average equal: {close_col_sum.item() / n_runs} / {dim0})")
 
 
 @pytest.mark.parametrize(
@@ -122,7 +147,7 @@ def test_fp4_per_channel_scaled_fake_quantize(dtype, dim, scale_format, scale_ca
     ],
 )
 def test_fp_per_group_weight_quantization_qparams(dtype, group_size):
-    FP_WEIGHT_PER_GROUP_SPEC = QuantizationSpec(
+    FP_WEIGHT_PER_GROUP_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_group,
         observer_cls=PerBlockMXObserver,
@@ -132,13 +157,13 @@ def test_fp_per_group_weight_quantization_qparams(dtype, group_size):
         scale_calculation_mode="floor",
         is_dynamic=False,
     )
-    FP_WEIGHT_PER_GROUP_CONFIG = QuantizationConfig(weight=FP_WEIGHT_PER_GROUP_SPEC)
+    FP_WEIGHT_PER_GROUP_CONFIG = QLayerConfig(weight=FP_WEIGHT_PER_GROUP_SPEC)
     model = ToyModel(in_features=4096, out_features=4096)
     model.fc.weight = torch.nn.Parameter(torch.randn([4096, 4096]))
     model(input_tensor)
     dataset = MyDataset()
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
-    quant_config = Config(global_quant_config=FP_WEIGHT_PER_GROUP_CONFIG)
+    quant_config = QConfig(global_quant_config=FP_WEIGHT_PER_GROUP_CONFIG)
     quantizer = ModelQuantizer(quant_config)
     quant_model = quantizer.quantize_model(model, dataloader)
     assert quant_model.fc._weight_quantizer.scale.shape[1] == int(model.fc.weight.shape[0] / group_size)
@@ -234,7 +259,7 @@ def test_mxfp4_per_group_scaled_and_non_scaled_fake_quantize(dtype, scale_calcul
         scale_calculation_mode=scale_calculation_mode,
         is_dynamic=False,
     ).to_quantization_spec()
-    quantizer = ScaledFakeQuantize(spec)
+    quantizer = FakeQuantizeBase.get_fake_quantize(spec)
     scaled_fake_quantize = quantizer(x.clone())
 
     non_scaled_fake_quantize = fake_quantize_mx(
@@ -257,5 +282,5 @@ def test_fp4_per_group_scale(scale_format):
     spec = FP4PerGroupSpec(
         ch_axis=axis, group_size=block_size, scale_format=scale_format, is_dynamic=False
     ).to_quantization_spec()
-    quantizer = ScaledFakeQuantize(spec)
+    quantizer = FakeQuantizeBase.get_fake_quantize(spec)
     quantizer(x.clone())

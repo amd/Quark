@@ -3,16 +3,15 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import require_torch_higher_or_equal, slow, torch_device
+from quark.shares.utils.testing_utils import require_torch_higher_or_equal, torch_device
 from quark.testing.common_utils import skip_if_no_gpu
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import Uint4PerChannelSpec
 from quark.torch.quantization.config.config import (
-    Config,
     GPTQConfig,
     OCP_MXFP4Spec,
-    QuantizationConfig,
+    QConfig,
+    QLayerConfig,
     Uint4PerGroupSpec,
 )
 from quark.torch.utils import getattr_recursive, setattr_recursive
@@ -52,21 +51,19 @@ def test_gptq_correctness(act_order: bool, dtype: str, qscheme: str, model_id: s
 
     if dtype == "uint4":
         if qscheme == "per_group":
-            qspec = Uint4PerGroupSpec(
-                scale_type="float", ch_axis=1, is_dynamic=False, group_size=32
-            ).to_quantization_spec()
+            qspec = Uint4PerGroupSpec(1, 32, scale_type="float", is_dynamic=False).to_quantization_spec()
         elif qscheme == "per_channel":
             # actorder has no influence in this case.
             qspec = Uint4PerChannelSpec(
-                symmetric=False, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
+                0, symmetric=False, scale_type="float", round_method="half_even", is_dynamic=False
             ).to_quantization_spec()
     else:
         if qscheme == "per_group":
-            qspec = OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+            qspec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
         else:
             pytest.skip("ocp mxfp4 not compatible with per_channel, per_tensor")
 
-    global_quant_config = QuantizationConfig(weight=qspec)
+    global_quant_config = QLayerConfig(weight=qspec)
 
     gptq_config = GPTQConfig(
         model_decoder_layers=model_decoder_layers,
@@ -75,8 +72,8 @@ def test_gptq_correctness(act_order: bool, dtype: str, qscheme: str, model_id: s
         block_size=32,
     )
 
-    config_gptq = Config(global_quant_config=global_quant_config, algo_config=[gptq_config])
-    config_no_algo = Config(global_quant_config=global_quant_config)
+    config_gptq = QConfig(global_quant_config=global_quant_config, algo_config=[gptq_config])
+    config_no_algo = QConfig(global_quant_config=global_quant_config)
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -84,10 +81,10 @@ def test_gptq_correctness(act_order: bool, dtype: str, qscheme: str, model_id: s
     tokenized_inputs = tokenizer(text, return_tensors="pt").to(torch_device)
     calib_dataloader = DataLoader(tokenized_inputs["input_ids"])
 
-    model = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
     model = model.eval()
 
-    model2 = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+    model2 = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
     model2 = model2.eval()
 
     # Make the model smaller just to speed up this test.

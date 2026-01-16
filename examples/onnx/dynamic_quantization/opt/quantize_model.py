@@ -5,8 +5,8 @@
 
 import argparse
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import Config, ModelQuantizer
+from quark.onnx.quantization.config import get_default_config
 
 
 def main(args: argparse.Namespace) -> None:

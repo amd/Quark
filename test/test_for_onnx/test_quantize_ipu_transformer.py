@@ -9,8 +9,7 @@ import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model_vit
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import (
     INT8_TRANSFORMER_ACCURATE_CONFIG,
     INT8_TRANSFORMER_DEFAULT_CONFIG,

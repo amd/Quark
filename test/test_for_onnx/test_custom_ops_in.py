@@ -5,7 +5,7 @@
 import argparse
 import tempfile
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
 
 import numpy as np
 import onnx

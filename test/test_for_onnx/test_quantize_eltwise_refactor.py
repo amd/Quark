@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int8Spec, Int16Spec, QLayerConfig, XInt8Spec
+from quark.onnx import Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array([3.0]).astype(np.float32)
@@ -56,7 +54,13 @@ def prepare_model(output_dir):
     onnx_quantized_model_path = Path(output_dir, "simple_mul_model_quantized.onnx").as_posix()
 
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

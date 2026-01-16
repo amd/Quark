@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import functools
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
@@ -29,9 +29,8 @@ from quark.torch.algorithm.utils.prepare import (
     reset_model_kv_cache,
 )
 from quark.torch.algorithm.utils.utils import get_num_attn_heads_from_model
-from quark.torch.quantization.debug import QUARK_ALGO_DEBUG
 from quark.torch.quantization.utils import clear_memory
-from quark.torch.utils.torch_utils import get_op_name
+from quark.torch.utils import QUARK_ALGO_DEBUG, get_op_name
 
 logger = ScreenLogger(__name__)
 

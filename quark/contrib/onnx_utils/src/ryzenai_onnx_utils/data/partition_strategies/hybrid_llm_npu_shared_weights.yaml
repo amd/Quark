@@ -1,0 +1,50 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: ""
+    op_namespaces: "hybrid"
+    # set to "" or remove to use BF16 weights
+    is_bfp16: "weights"
+    npu_jit: true
+    fuse_qkv: false
+    # flag to enable logits prune
+    prune_logits: "lmhead"
+    enable_model_hash: true
+    offload_embedding: true
+
+    npu_only: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+# NOTE: any new passes that you add here may need to be added to the
+# hybrid_llm.gitignore file
+passes:
+    - fastgelu_to_gelu
+    # - initializers_to_bfloat16
+    - normalize_gqa
+    - normalize_matmulnbits
+    - hybrid_llm_embedding
+    - hybrid_llm_ssmlp
+    - hybrid_llm_gqa
+    - hybrid_llm_gqo:
+        attributes:
+            cast_kv_cache: false
+    - hybrid_llm_kv_cache_to_bf16
+    - hybrid_llm_matmulnbits
+    - hybrid_llm_gqa_rotary_dim
+    # convert any new ops
+    - initializers_to_float16
+    # this must be enabled for now for renaming the op_type
+    - hybrid_llm_add_npu_weights
+    - hybrid_llm_prune_logits_matmulnbits
+    - remove_parallel_casts
+    - simplify_casts
+    # - hybrid_llm_add_cast_attributes
+    - hybrid_llm_add_empty_cast_attributes
+    - simplify_matmulnbits
+    - hybrid_llm_cast_logits
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_jit

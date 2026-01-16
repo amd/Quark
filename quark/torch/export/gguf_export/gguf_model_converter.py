@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # Copyright (c) 2023-2024 The ggml authors
@@ -9,22 +9,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 
 import torch
 
 from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
 from quark.shares.utils.log import ScreenLogger
-
-logger = ScreenLogger(__name__)
+from quark.torch.export.gguf_export.tensor_convert import build_quant_cfg, convert_from_gguf, gguf_shape
+from quark.torch.export.gguf_export.utils import inverse_permute
 
 if is_gguf_available_and_version_0_6_0():
     import gguf  # type: ignore
     from gguf.constants import MODEL_ARCH, GGMLQuantizationType  # type: ignore
     from gguf.tensor_mapping import get_tensor_name_map  # type: ignore
 
-from .tensor_convert import build_quant_cfg, convert_from_gguf, gguf_shape
-from .utils import inverse_permute
+logger = ScreenLogger(__name__)
 
 
 class GGUFModelConverter:

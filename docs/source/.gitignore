@@ -81,7 +81,7 @@ _docs_build
 
 # Quark logs and cache
 quark_logs/
-model_cache/
+dataset_cache/
 
 # Debian packages
 *.deb

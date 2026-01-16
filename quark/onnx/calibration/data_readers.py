@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Iterator
 
 import numpy as np
 import onnx
@@ -13,7 +13,7 @@ import onnxruntime
 from onnx.onnx_ml_pb2 import NodeProto
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 
-from quark.onnx.quant_utils import create_infer_session_for_onnx_model
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
@@ -109,7 +109,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
 
     def __init__(
         self,
-        model_input: Union[str, Path, onnx.ModelProto],
+        model_input: str | Path | onnx.ModelProto,
         input_shape: dict[str, list[int]] = {},
         input_data_range: dict[str, list[int]] | None = None,
     ):
@@ -142,7 +142,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
         :return: input shape required for the input node
         """
 
-        def _deal_shape_value(list_or_tuple_shape: Union[int, list[int], Any]) -> Any:
+        def _deal_shape_value(list_or_tuple_shape: int | list[int] | Any) -> Any:
             if not isinstance(list_or_tuple_shape, (list, tuple)):
                 logger.warning(f"Invalid input shape {list_or_tuple_shape}")
                 return []
@@ -160,7 +160,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
             return input_shape
 
         if isinstance(self._input_shape, dict):
-            if input_name in self._input_shape.keys():
+            if input_name in self._input_shape:
                 return _deal_shape_value(self._input_shape[input_name])
             elif self._input_shape != {}:
                 raise ValueError(
@@ -225,7 +225,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
         :param input_node: the input node
         :return: data type of the input node
         """
-        input_type: Union[Any, None] = None
+        input_type: Any | None = None
 
         if "tensor(int8)" in input_node.type:
             input_type = np.int8
@@ -281,7 +281,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
                         if self._input_data_range is None:
                             input_data = np.random.random(input_shape).astype(input_type)
                         else:
-                            if input_name not in self._input_data_range.keys():
+                            if input_name not in self._input_data_range:
                                 raise ValueError(
                                     f'Input name "{input_name}" is not found in RandomDataReaderInputDataRange. Please check whether '
                                     'the parameter config.global_quant_config.extra_options["RandomDataReaderInputDataRange"] is correct.'
@@ -310,9 +310,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
     A CalibrationDataReader loading data from specified paths for model calibration.
     """
 
-    def __init__(
-        self, model_input: Union[str, Path, onnx.ModelProto], data_path: str, input_shape: list[Any] = []
-    ) -> None:
+    def __init__(self, model_input: str | Path | onnx.ModelProto, data_path: str, input_shape: list[Any] = []) -> None:
         """
         :param Union[str, Path, onnx.ModelProto] model_path: Full path of the input model.
         :param str data_path: Full path of the input data.
@@ -337,7 +335,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
         """
 
         def _deal_shape_value(
-            list_or_tuple_shape: Union[list[int], tuple[int], list[list[int]], list[Any], Any],
+            list_or_tuple_shape: list[int] | tuple[int] | list[list[int]] | list[Any] | Any,
         ) -> Any:
             if not isinstance(list_or_tuple_shape, (list, tuple)):
                 logger.warning(f"Invalid input shape {list_or_tuple_shape}")
@@ -356,7 +354,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
             return input_shape
 
         if isinstance(self._input_shape, dict):
-            if input_name in self._input_shape.keys():
+            if input_name in self._input_shape:
                 return _deal_shape_value(self._input_shape[input_name])
         elif all(isinstance(n, (list, tuple)) for n in self._input_shape):
             if input_index < len(self._input_shape):
@@ -426,7 +424,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
 
     @log_errors
     def load_npy_data(
-        self, data_path: str, file_names: list[str], input_shape: Union[list[int], tuple[int, ...]]
+        self, data_path: str, file_names: list[str], input_shape: list[int] | tuple[int, ...]
     ) -> dict[str, np.ndarray[Any, Any]]:
         data_dict: dict[str, np.ndarray[Any, Any]] = {}
 
@@ -467,7 +465,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
     # Load data from data path and support raw data, npy data and image data,
     # return a dict, key is file name and value is numpy arrary
     def load_data(
-        self, data_path: str, input_shape: Union[list[int], tuple[int, ...]], input_name: str
+        self, data_path: str, input_shape: list[int] | tuple[int, ...], input_name: str
     ) -> dict[str, np.ndarray[Any, Any]]:
         files = [f for f in os.listdir(data_path) if f.endswith(".npy")]
         if files != []:
@@ -544,7 +542,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
 
 @log_errors
 def get_data_reader(
-    model_input: Union[str, Path, onnx.ModelProto],
+    model_input: str | Path | onnx.ModelProto,
     calibration_data_reader: CalibrationDataReader | None = None,
     calibration_data_path: str | None = None,
     extra_options: dict[str, Any] = {},

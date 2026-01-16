@@ -30,22 +30,22 @@ Initiate the **Config** to convey the quantization demand. Users need to specify
 
 .. code-block:: python
 
-    INT8_PER_TENSOR_POW2 = QuantizationSpec(dtype=Dtype.int8, \
+    INT8_PER_TENSOR_POW2 = QTensorConfig(dtype=Dtype.int8, \
                             qscheme=QSchemeType.per_tensor, \
                             observer_cls= PerTensorPowOf2MinMaxObserver, \
                             symmetric=True, scale_type=ScaleType.float,\
                             round_method=RoundType.half_even, is_dynamic=False)
-    INT8_PER_TENSOR_FL = QuantizationSpec(dtype=Dtype.int8, \
+    INT8_PER_TENSOR_FL = QTensorConfig(dtype=Dtype.int8, \
                             qscheme=QSchemeType.per_tensor, \
                             observer_cls=PerTensorMinMaxObserver, \
                             symmetric=True, scale_type=ScaleType.float,\
                             round_method=RoundType.half_even, is_dynamic=False)
-    quant_glb_config = QuantizationConfig(input_tensors=INT8_PER_TENSOR_FL, \
+    quant_glb_config = QLayerConfig(input_tensors=INT8_PER_TENSOR_FL, \
                             output_tensors=INT8_PER_TENSOR_FL, \
                             weight=INT8_PER_TENSOR_POW2, \
                             bias=INT8_PER_TENSOR_POW2)
-    quant_config = Config(global_quant_config=quant_glb_config, \
-                          quant_mode=QuantizationMode.fx_graph_mode)
+    quant_config = QConfig(global_quant_config=quant_glb_config, \
+                           quant_mode=QuantizationMode.fx_graph_mode)
 
 Initialize the **quantizer** and perform quantization:
 

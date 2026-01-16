@@ -16,9 +16,16 @@ from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import CalibrationMethod, ExtendedQuantFormat, ExtendedQuantType, ModelQuantizer, get_library_path
-from quark.onnx.quant_utils import COP_DOMAIN, COP_MX_OP_NAME
-from quark.onnx.quantization.config.config import Config, QuantizationConfig
+from quark.onnx import (
+    CalibrationMethod,
+    Config,
+    ExtendedQuantFormat,
+    ExtendedQuantType,
+    ModelQuantizer,
+    QuantizationConfig,
+    get_library_path,
+)
+from quark.onnx.quantization.quant_utils import COP_DOMAIN, COP_MX_OP_NAME
 from quark.shares.utils.testing_utils import use_temporary_directory
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 from quark.torch.quantization.config.type import Dtype
@@ -320,7 +327,7 @@ def compare_random_data(output_dir: str, elem_dtype: str, device_type: str = "CP
 
 
 def verify_mx_fixneuron(output_dir: str) -> None:
-    for key in quark_supported_elem_dtype.keys():
+    for key in quark_supported_elem_dtype:
         if key == "fp4":
             create_custom_op("fp4_e2m1", output_dir)  # Different name for fp4
         else:
@@ -420,7 +427,13 @@ def prepare_model(output_dir):
     onnx_model_path = Path(output_dir, "simple_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "simple_conv_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

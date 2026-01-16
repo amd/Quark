@@ -1,0 +1,19 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    # multiple xclbins for SDMatmul and SDConv. xclbins will be merged into one later
+    xclbins: "stx_SD_unet_fastpm_preempt_2x4x4"
+    op_namespaces: "sd15"
+    model_type: SD15_UNET
+    op_config: "ops-config.json"
+    preemption: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order. Inherited passes before are inserted before any passes listed here
+inherit_passes_before: !include [sd15_unet_no_dd.yaml]
+passes:
+    - dd.optimize_toposort
+    - dd.dynamic_sd_nodes_to_dd
+inherit_passes_after: !include [sd15_dd.yaml]

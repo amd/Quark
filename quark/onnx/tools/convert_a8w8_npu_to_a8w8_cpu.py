@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -13,8 +13,8 @@ from argparse import ArgumentParser, Namespace
 
 import numpy as np
 import onnx
-import onnxruntime
 
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
@@ -60,9 +60,6 @@ def convert_a8w8_npu_to_a8w8_cpu(model: onnx.ModelProto) -> onnx.ModelProto:
             if init.name == bias_qdq_node.input[1]:
                 bias_scale_init = init
                 bias_scale = bias_scale_init.float_data[0]
-            if init.name == bias_qdq_node.input[2]:
-                bias_zp_init = init
-                bias_zp = bias_zp_init.int32_data[0]
             if init.name == act_qdq_node.input[1]:
                 act_scale_init = init
                 act_scale = act_scale_init.float_data[0]
@@ -71,7 +68,6 @@ def convert_a8w8_npu_to_a8w8_cpu(model: onnx.ModelProto) -> onnx.ModelProto:
                 weights_scale = weights_scale_init.float_data[0]
         new_bias_scale = act_scale * weights_scale
         new_bias_x = bias_x * bias_scale / new_bias_scale
-        new_bias_zp = 0
         int32_bias_x = np.array(new_bias_x, dtype=np.int32)
         int32_bias_scale = np.array(new_bias_scale, dtype=np.float32)
         int32_bias_zp = np.array(0, dtype=np.int32)
@@ -94,7 +90,7 @@ def convert_a8w8_npu_to_a8w8_cpu(model: onnx.ModelProto) -> onnx.ModelProto:
 if __name__ == "__main__":
     args = parse_args()
     try:
-        ort_session = onnxruntime.InferenceSession(args.input, providers=["CPUExecutionProvider"])
+        ort_session = create_infer_session_for_onnx_model(args.input, providers=["CPUExecutionProvider"])
     except Exception as e:
         raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}")
     input_model = onnx.load(args.input)

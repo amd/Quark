@@ -1,0 +1,204 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+Checks: >
+  *,
+  -altera-*,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -fuchsia-*,
+  -google-runtime-references,
+  -hicpp-no-array-decay,
+  -hicpp-signed-bitwise,
+  -llvm-header-guard,
+  -llvm-include-order,
+  -llvmlibc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-unused-parameters,
+  -modernize-use-trailing-return-type
+#
+# Disabled checks:
+#
+# altera-*
+#   These guidelines are particular to altera and unnecessary here
+#
+# cppcoreguidelines-non-private-member-variables-in-classes
+#   We allow protected member variables in virtual classes.
+#
+# cppcoreguidelines-pro-bounds-array-to-pointer-decay
+#   This gets triggered on using assert() in clang-tidy-10
+#
+# cppcoreguidelines-pro-bounds-pointer-arithmetic
+#   We use pointer math to get at underlying buffer data
+#
+# cppcoreguidelines-pro-type-reinterpret-cast
+#   Sometimes used in type-invariant buffer data
+#
+# fuchsia-*
+#   These guidelines are particular to Fuchsia and unnecessary here
+#
+# google-runtime-references
+#   Flags non-const reference parameters but this is fine (assume caller modifies)
+#
+# hicpp-no-array-decay
+#   Alias for cppcoreguidelines-pro-bounds-array-to-pointer-decay
+#
+# hicpp-signed-bitwise
+#   This check is needlessly pedantic (https://bugs.llvm.org/show_bug.cgi?id=36961#c9)
+#
+# llvm-header-guard
+#   Doesn't seem to be satisfied easily
+#
+# llvm-include-order
+#   clang-format takes care of the include order
+#
+# llvmlibc-*
+#   These guidelines are particular to llvm-libc and unnecessary here
+#
+# misc-non-private-member-variables-in-classes
+#   Alias for cppcoreguidelines-non-private-member-variables-in-classes
+#
+# misc-unused-parameters
+#   This gets triggered too often on virtual functions that are unimplemented
+#
+# modernize-use-trailing-return-type
+#   Not using trailing type syntax here
+
+WarningsAsErrors: ''
+HeaderFilterRegex: ''
+FormatStyle:     google
+CheckOptions:
+  - key:   cppcoreguidelines-pro-type-member-init.IgnoreArrays
+    value: '1'
+  - key:   cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: '1'
+  - key:   hicpp-member-init.IgnoreArrays
+    value: '1'
+  - key:   hicpp-special-member-functions.AllowSoleDefaultDtor
+    value: '1'
+  - key:   misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: '1'
+  - key:   readability-identifier-naming.AbstractClassCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ClassConstantCase
+    value: lower_case
+  - key:   readability-identifier-naming.ClassMemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.ClassMemberSuffix
+    value: _
+  - key:   readability-identifier-naming.ClassMethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.ConstantCase
+    value: lower_case
+  - key:   readability-identifier-naming.ConstantMemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.ConstantParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.ConstantPointerParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.ConstexprFunctionCase
+    value: camelBack
+  - key:   readability-identifier-naming.ConstexprMethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key:   readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key:   readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key:   readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key:   readability-identifier-naming.GlobalConstantPointerCase
+    value: CamelCase
+  - key:   readability-identifier-naming.GlobalConstantPointerPrefix
+    value: k
+  - key:   readability-identifier-naming.GlobalFunctionCase
+    value: camelBack
+  - key:   readability-identifier-naming.GlobalPointerCase
+    value: lower_case
+  - key:   readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+  - key:   readability-identifier-length.IgnoredVariableNames
+    value: ss
+  - key:   readability-identifier-naming.InlineNamespaceCase
+    value: lower_case
+  - key:   readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key:   readability-identifier-naming.LocalConstantPointerCase
+    value: lower_case
+  - key:   readability-identifier-naming.LocalPointerCase
+    value: lower_case
+  - key:   readability-identifier-naming.LocalVariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key:   readability-identifier-naming.MemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.MemberSuffix
+    value: _
+  - key:   readability-identifier-naming.MethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key:   readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.ParameterPackCase
+    value: lower_case
+  - key:   readability-identifier-naming.PointerParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key:   readability-identifier-naming.PrivateMethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.ProtectedMemberSuffix
+    value: _
+  - key:   readability-identifier-naming.ProtectedMethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.PublicMemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.PublicMethodCase
+    value: camelBack
+  - key:   readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key:   readability-identifier-naming.StaticVariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.StructCase
+    value: CamelCase
+  - key:   readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key:   readability-identifier-naming.TemplateTemplateParameterCase
+    value: CamelCase
+  - key:   readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key:   readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key:   readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+  - key:   readability-identifier-naming.UnionCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ValueTemplateParameterCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ValueTemplateParameterPrefix
+    value: k
+  - key:   readability-identifier-naming.VariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.VirtualMethodCase
+    value: camelBack

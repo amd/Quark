@@ -8,7 +8,7 @@ This file should live outside of Quark codebase.
 
 import dataclasses
 import enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import torch
 from brevitas.core.stats.stats_op import NegativeMinOrZero
@@ -136,7 +136,7 @@ class BrevitasSDXLQuantizationConfig:
 
 
 class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
-    config: Union[BrevitasSDXLQuantizationConfig, BrevitasImageClassificationQuantizationConfig]
+    config: BrevitasSDXLQuantizationConfig | BrevitasImageClassificationQuantizationConfig
 
     def init_config(self) -> None:
         # TODO: brevitas config validation
@@ -145,9 +145,9 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
     def quantize_model(
         self,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         # Step1[optional]: Pre quant optimization
@@ -373,9 +373,9 @@ class BrevitasModelQuantizer(quark_torch.ModelQuantizer):
     def _apply_advanced_quant_algo(
         self,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         if self.config.gptq:

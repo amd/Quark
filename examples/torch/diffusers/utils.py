@@ -2,16 +2,15 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Optional
 
 import torch
 
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
 
 class CustomPercentileObserver(PerTensorMinMaxObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         self.forward_count = 0
         self.tensor_range = None

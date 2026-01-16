@@ -1,17 +1,17 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import math
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 from torch import nn
 from torch.nn.common_types import _size_2_t, _size_any_opt_t
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
 
@@ -32,7 +32,7 @@ class QuantAvgPool2d(nn.AvgPool2d, QuantMixin):
         count_include_pad: bool = True,
         divisor_override: int | None = None,
         # args about quantization
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
         device: torch.device = torch.device("cpu"),
         **kwargs: Any,
     ) -> None:
@@ -82,7 +82,7 @@ class QuantAdaptiveAvgPool2d(nn.AdaptiveAvgPool2d, QuantMixin):
         self,
         output_size: _size_any_opt_t,
         # args about quantization
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
         device: torch.device = torch.device("cpu"),
         **kwargs: Any,
     ) -> None:

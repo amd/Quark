@@ -1,10 +1,9 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-import re
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -12,13 +11,15 @@ from torch.distributed._tensor import DTensor, Replicate, distribute_tensor  # t
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 
+from quark.torch.algorithm.rotation.hadamard import _get_hadamard_K
+from quark.torch.algorithm.rotation.rotation_utils import HadamardTransform, OrthogonalTransform
 from quark.torch.export.constants import AWQ_LOAD_MAP, AWQ_SAVE_MAP, SCALED_MM_AVAILABLE_DEV
 from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase, SequentialRealQuantizer, get_real_quantizer
-from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
+from quark.torch.export.utils import _fix_loaded_weights_key_mismatch, _fix_state_dict_key_on_save
+from quark.torch.quantization.config.config import AlgoConfig, QLayerConfig, QTensorConfig, RotationConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
-from quark.torch.utils.device import e4m3fn_to_e4m3fnuz
-from quark.torch.utils.pack import create_pack_method
+from quark.torch.utils import QPARAMSLINEAR_OVERRIDES_STATE_DICT, create_pack_method, e4m3fn_to_e4m3fnuz
 
 
 def normalize_e4m3fn_to_e4m3fnuz(
@@ -46,34 +47,32 @@ def normalize_e4m3fn_to_e4m3fnuz(
 class QparamsOperator(torch.nn.Module):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.weight_quantizer: Union[RealQuantizerBase, SequentialRealQuantizer, None] = None
-        self.bias_quantizer: Union[RealQuantizerBase, SequentialRealQuantizer, None] = None
-        self.input_quantizer: Union[RealQuantizerBase, SequentialRealQuantizer, None] = None
-        self.output_quantizer: Union[RealQuantizerBase, SequentialRealQuantizer, None] = None
+        self.weight_quantizer: RealQuantizerBase | SequentialRealQuantizer | None = None
+        self.bias_quantizer: RealQuantizerBase | SequentialRealQuantizer | None = None
+        self.input_quantizer: RealQuantizerBase | SequentialRealQuantizer | None = None
+        self.output_quantizer: RealQuantizerBase | SequentialRealQuantizer | None = None
 
 
 class QParamsLinear(torch.nn.Linear, QparamsOperator):
-    SCALE_PARAMETERS_NAMES = [
-        "weight_quantizer.*scale",
-        "bias_quantizer.*scale",
-        "input_quantizer.*scale",
-        "output_quantizer.*scale",
-    ]
-
     def __init__(
         self,
         linear: nn.Linear,
         custom_mode: str,
         pack_method: str | None = "reorder",
-        quant_config: QuantizationConfig | None = None,
+        quant_config: QLayerConfig | None = None,
+        algo_config: list[AlgoConfig] | None = None,
     ):
         bias = True if linear.bias is not None else False
         super(QParamsLinear, self).__init__(linear.in_features, linear.out_features, bias)
 
         reorder = True if pack_method == "reorder" else False
         self._custom_mode: str = custom_mode
+        self._quant_config: QLayerConfig | None = quant_config  # Store for cache quantization check
+
         self._init_qparamlinear(linear, reorder, quant_config)
         self._quant_dict = None
+
+        self.algo_config = algo_config
 
     # In the original __init__ function of torch.nn.Linear,
     # the reset_parameters function is called, which takes up a lot of time.
@@ -83,9 +82,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
     def reset_parameters(self) -> None:
         pass
 
-    def _init_qparamlinear(
-        self, linear: nn.Linear, reorder: bool, quant_config: QuantizationConfig | None = None
-    ) -> None:
+    def _init_qparamlinear(self, linear: nn.Linear, reorder: bool, quant_config: QLayerConfig | None = None) -> None:
         """Initialize QParamsLinear from either a QuantLinear or nn.Linear module.
 
         Args:
@@ -138,7 +135,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
                 )
         self._real_quantize()
 
-    def _init_from_linear(self, linear: nn.Linear, reorder: bool, quant_config: QuantizationConfig) -> None:
+    def _init_from_linear(self, linear: nn.Linear, reorder: bool, quant_config: QLayerConfig) -> None:
         device = linear.weight.device
         float_dtype = torch.float32
         in_features = linear.in_features
@@ -171,7 +168,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
     def _init_weight_quantizer(
         self,
         linear: nn.Linear,
-        weight_spec: Union[QuantizationSpec, list[QuantizationSpec]],
+        weight_spec: QTensorConfig | list[QTensorConfig],
         reorder: bool,
         device: torch.device,
         float_dtype: torch.dtype,
@@ -212,13 +209,13 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
             torch.empty(weight_shape, device=device, dtype=quant_torch_dtype), requires_grad=False
         )
 
-        s_shape: Union[tuple[int, ...], list[tuple[int, ...]]] = (
-            scale_shapes[0] if isinstance(weight_spec, QuantizationSpec) else scale_shapes
+        s_shape: tuple[int, ...] | list[tuple[int, ...]] = (
+            scale_shapes[0] if isinstance(weight_spec, QTensorConfig) else scale_shapes
         )
-        zp_shape: Union[tuple[int, ...], list[tuple[int, ...]]] = (
-            zero_point_shapes[0] if isinstance(weight_spec, QuantizationSpec) else zero_point_shapes
+        zp_shape: tuple[int, ...] | list[tuple[int, ...]] = (
+            zero_point_shapes[0] if isinstance(weight_spec, QTensorConfig) else zero_point_shapes
         )
-        self.weight_quantizer: Union[RealQuantizerBase, SequentialRealQuantizer] = get_real_quantizer(
+        self.weight_quantizer: RealQuantizerBase | SequentialRealQuantizer = get_real_quantizer(
             qspec=weight_spec,
             quantizer=None,
             reorder=reorder,
@@ -230,7 +227,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
         )
 
     def _init_other_quantizers(
-        self, quant_config: QuantizationConfig, reorder: bool, device: torch.device, float_dtype: torch.dtype
+        self, quant_config: QLayerConfig, reorder: bool, device: torch.device, float_dtype: torch.dtype
     ) -> None:
         # Define quantizer configurations
         quantizer_specs = {
@@ -241,7 +238,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
 
         for name, config in quantizer_specs.items():
             spec = config["spec"]
-            spec = cast(Union[QuantizationSpec, list[QuantizationSpec]] | None, spec)
+            spec = cast(QTensorConfig | list[QTensorConfig] | None, spec)
             if spec is not None:
                 # Validate quantization scheme
                 error_msg = (
@@ -250,7 +247,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
                     "Please open an issue."
                 )
 
-                specs: list[QuantizationSpec] = [spec] if not isinstance(spec, list) else spec
+                specs: list[QTensorConfig] = [spec] if not isinstance(spec, list) else spec
                 assert all(spec.qscheme == QSchemeType.per_tensor or spec.is_dynamic for spec in specs), error_msg
 
                 # Create quantizer
@@ -276,14 +273,21 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
         linear: nn.Linear,
         custom_mode: str,
         pack_method: str | None = "reorder",
-        quant_config: QuantizationConfig | None = None,
+        quant_config: QLayerConfig | None = None,
+        algo_config: list[AlgoConfig] | None = None,
     ) -> "QParamsLinear":
         """
         Build a QParamsLinear from a QuantLinear or nn.Linear.
         Initialize the shape and data type of weight and bias in importing.
         Initialize weight and bias in exporting.
         """
-        qparamslinear = cls(linear=linear, custom_mode=custom_mode, pack_method=pack_method, quant_config=quant_config)
+        qparamslinear = cls(
+            linear=linear,
+            custom_mode=custom_mode,
+            pack_method=pack_method,
+            quant_config=quant_config,
+            algo_config=algo_config,
+        )
         return qparamslinear
 
     def can_use_fp8_kernel(self) -> bool:
@@ -319,7 +323,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
         Dequantizes quantized weight/bias, runs a linear in high precision and apply QDQ on the (input)activation/output if required.
         """
         dtype = args[0].dtype
-        output: Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]
+        output: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
         use_fp8_kernel = self.can_use_fp8_kernel()
         if use_fp8_kernel:
             input = args[0]
@@ -510,9 +514,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
     def state_dict(self, *args: Any, destination: Any = None, prefix: str = "", keep_vars: bool = False) -> Any:
         """
         We consider state_dict keys to be `weight_scale`, `weight_zero_point` as in the serialized checkpoint / external user-facing keys, instead of `weight_quantizer.scale`, etc. that are used only internally.
-
         Thus the logic below does the mapping from keys as:
-
         - `weight_quantizer.scale` to `weight_scale`.
         - `weight_quantizer.0.scale` to `weight_scale`.
         - `weight_quantizer.1.scale` to `weight_scale_2`.
@@ -520,70 +522,21 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
         """
         destination_local = super().state_dict(*args, prefix=prefix, keep_vars=keep_vars)
 
-        for scale_name_pattern in self.SCALE_PARAMETERS_NAMES:
-            # Example: matching_internal_names = ['model.layers.0.self_attn.q_proj.weight_quantizer.scale', 'model.layers.0.self_attn.q_proj.input_quantizer.scale']
-            matching_internal_names = [
-                key for key in destination_local.keys() if re.match(prefix + scale_name_pattern, key)
-            ]
-            if len(matching_internal_names) == 0:
-                continue
+        # Following a change in Transformers 4.57, we move to avoid overriding the state_dict method here.
+        # See context in #3665.
+        # TODO: Remove once we drop transformers<=4.56 support.
+        if QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+            for key in list(destination_local.keys()):
+                new_key = _fix_state_dict_key_on_save(key)[0]
+                if key != new_key:
+                    destination_local[new_key] = destination_local.pop(key)
 
-            index_keys = [key.split(".")[-2] for key in matching_internal_names]
-
-            # We have two layouts:
-            # - `weight_quantizer.scale` (historical).
-            # - and e.g.`weight_quantizer.0.scale`, `weight_quantizer.1.scale` for multi-stage quantization.
-            # TODO: Simplify that and use a single layout.
-            if len(matching_internal_names) == 1 and not index_keys[0].isdigit():
-                # Handle `weight_quantizer.scale` layout case.
-
-                # `tensor_name` is e.g. "weight", "bias", "input", "output".
-                tensor_name = index_keys[0].split("_")[-2]
-
-                internal_scale_name = matching_internal_names[0]
-                external_scale_name = prefix + tensor_name + "_scale"
-
-                destination_local[external_scale_name] = destination_local.pop(internal_scale_name)
-
-                # replace the last "scale" in keys[0] with "zero_point".
-                zero_point_key = internal_scale_name.rsplit(".", 1)[0] + ".zero_point"
-                if zero_point_key in destination_local:
-                    zero_point_external_name = prefix + tensor_name + "_" + "zero_point"
-                    destination_local[zero_point_external_name] = destination_local.pop(zero_point_key)
-            elif all(index_key.isdigit() for index_key in index_keys):
-                # Handle `weight_quantizer.0.scale`, `weight_quantizer.1.scale` layout case.
-
-                # sort keys by index_keys from small to large
-                matching_internal_names = [
-                    x
-                    for _, x in sorted(zip(index_keys, matching_internal_names, strict=False), key=lambda pair: pair[0])
-                ]
-
-                # `tensor_name` is e.g. "weight", "bias", "input", "output".
-                tensor_name = matching_internal_names[0].split(".")[-3].split("_")[-2]
-
-                for i, key in enumerate(matching_internal_names):
-                    if i == 0:
-                        suffix = ""
-                    else:
-                        suffix = "_" + str(i + 1)
-                    destination_local[prefix + tensor_name + "_" + "scale" + suffix] = destination_local[key]
-
-                    # replace the last "scale" in key with "zero_point".
-                    zero_point_key = key.rsplit(".", 1)[0] + ".zero_point"
-                    if zero_point_key in destination_local:
-                        destination_local[prefix + tensor_name + "_" + "zero_point" + suffix] = destination_local[
-                            zero_point_key
-                        ]
-                        del destination_local[zero_point_key]
-                    del destination_local[key]
-
-        if self._custom_mode == "awq":
-            for quark_name, awq_name in AWQ_SAVE_MAP.items():
-                for key in list(destination_local.keys()):
-                    if (prefix + quark_name) == key:
-                        destination_local[prefix + awq_name] = destination_local[key]
-                        del destination_local[key]
+            if self._custom_mode == "awq":
+                for quark_name, awq_name in AWQ_SAVE_MAP.items():
+                    for key in list(destination_local.keys()):
+                        if (prefix + quark_name) == key:
+                            destination_local[prefix + awq_name] = destination_local[key]
+                            del destination_local[key]
 
         is_mx_export = (
             self.weight_quantizer is not None
@@ -618,55 +571,122 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
         unexpected_keys: list[str],
         error_msgs: list[str],
     ) -> None:
-        scale_quantizer_map = {
-            "weight_scale*": "weight_quantizer",
-            "bias_scale*": "bias_quantizer",
-            "input_scale*": "input_quantizer",
-            "output_scale*": "output_quantizer",
-        }
-        for scale_key, quantizer_name in scale_quantizer_map.items():
-            keys = [key for key in state_dict.keys() if re.match(prefix + scale_key, key)]
-            if len(keys) == 0:
-                continue
-            # Sort: non-numbered keys first, then numbered keys by numerical order
-            # for example, if keys is ["weight_scale_1", "weight_scale_2", "weight_scale"],
-            # the sorted keys should be ["weight_scale", "weight_scale_1", "weight_scale_2"]
-            sorted_keys = sorted(keys, key=lambda x: int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else 0)
-            quantizer = getattr(self, quantizer_name, None)
-            if quantizer is not None:
-                if isinstance(quantizer, RealQuantizerBase):
-                    real_key = prefix + quantizer_name + ".scale"
-                    state_dict[real_key] = state_dict[sorted_keys[0]]
-                    del state_dict[sorted_keys[0]]
-                    zero_point_key = prefix + sorted_keys[0].split(".")[-1].replace("scale", "zero_point")
-                    if zero_point_key in state_dict and getattr(quantizer, "zero_point", None) is not None:
-                        real_zero_point_key = prefix + quantizer_name + ".zero_point"
-                        state_dict[real_zero_point_key] = state_dict[zero_point_key]
-                        del state_dict[zero_point_key]
-                elif isinstance(quantizer, SequentialRealQuantizer):
-                    key_index = 0
-                    for i, module in enumerate(quantizer):
-                        real_key = prefix + quantizer_name + "." + str(i) + ".scale"
-                        if getattr(module, "scale", None) is not None and module.has_static_scale():
-                            state_dict[real_key] = state_dict[sorted_keys[key_index]]
-                            del state_dict[sorted_keys[key_index]]
-                            zero_point_key = prefix + sorted_keys[key_index].split(".")[-1].replace(
-                                "scale", "zero_point"
-                            )
-                            if zero_point_key in state_dict and getattr(module, "zero_point", None) is not None:
-                                real_zero_point_key = prefix + quantizer_name + "." + str(i) + ".zero_point"
-                                state_dict[real_zero_point_key] = state_dict[zero_point_key]
-                                del state_dict[zero_point_key]
-                            key_index += 1
+        # TODO: Remove once we drop transformers<=4.56 support.
+        if QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+            state_dict = _fix_loaded_weights_key_mismatch(
+                state_dict, weight_format="real_quantized", custom_mode=self._custom_mode
+            )
 
-        if self._custom_mode == "awq":
-            for quark_name, awq_name in AWQ_LOAD_MAP.items():
-                if quark_name != awq_name:
-                    keys = [key for key in state_dict.keys() if (prefix + quark_name) == key]
-                    for key in keys:
-                        state_dict[prefix + awq_name] = state_dict[key]
-                        del state_dict[key]
+            if self._custom_mode == "awq":
+                for quark_name, awq_name in AWQ_LOAD_MAP.items():
+                    if quark_name != awq_name:
+                        keys = [key for key in state_dict if (prefix + quark_name) == key]
+                        for key in keys:
+                            state_dict[prefix + awq_name] = state_dict[key]
+                            del state_dict[key]
 
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )  # type: ignore
+
+
+class QParamsLinearWithRotation(QParamsLinear):
+    def __init__(
+        self,
+        linear: nn.Linear,
+        custom_mode: str,
+        pack_method: str | None = "reorder",
+        quant_config: QLayerConfig | None = None,
+        algo_config: list[AlgoConfig] | None = None,
+    ):
+        if algo_config is None:
+            raise ValueError(
+                f"The argument algo_config is required when initializing QParamsLinearWithRotation, got algo_config={algo_config}. Please open an issue."
+            )
+
+        super().__init__(
+            linear=linear,
+            custom_mode=custom_mode,
+            pack_method=pack_method,
+            quant_config=quant_config,
+            algo_config=algo_config,
+        )
+
+        rotation_config = None
+        for algo_conf in algo_config:
+            if isinstance(algo_conf, RotationConfig):
+                rotation_config = algo_conf
+                break
+        else:
+            raise ValueError(
+                f"Attempted to initialize a QParamsLinearWithRotation instance, but a RotationConfig was not found among algo_config={algo_config}. Please open an issue."
+            )
+
+        rotation_size = rotation_config.rotation_size
+        trainable = rotation_config.trainable
+
+        if rotation_size is None:
+            rotation_size = linear.in_features
+
+        if isinstance(linear, QuantLinear):
+            input_rotation = linear.input_rotation
+        elif isinstance(linear, nn.Linear):
+            if trainable:
+                rotation_dtype = torch.float64  # TODO: use lower precision.
+            else:
+                # In case hadamard transform is used (non-trained case), it is serialized as torch.bool wherer `0` represents `-1`.
+                rotation_dtype = torch.bool
+        else:
+            raise ValueError(f"Unsupported linear type: {type(linear)}")
+
+        input_rotation = torch.zeros((rotation_size, rotation_size), device=linear.weight.device, dtype=rotation_dtype)
+        self.register_buffer("input_rotation", input_rotation)
+
+        self.rotation_size = rotation_size
+        self.trainable = trainable
+
+    def post_process_after_loading(self) -> None:
+        # TODO: make sure this function gets called as well in AutoModelForCausalLM.from_pretrained(quantized_model_id).
+
+        if self.trainable:
+            self.transform = OrthogonalTransform(rotation_matrix=self.input_rotation)  # type: ignore[has-type]
+        else:
+            if self.rotation_size == self.in_features:
+                # inp = inp @ self.input_rotation
+
+                # inp_dtype = inp.dtype
+                # inp = inp.to(torch.float64) @ self.input_rotation
+                # inp = inp.to(inp_dtype)
+
+                # TODO: the two approaches above seem to be not strictly numerically equivalent compared to matmul_hadU (see `test_serialization_and_reload` in test_rotation.py), leaving matmul_hadU for now, verify end-to-end metrics for the influence of the two.
+                use_matmul_hadU = True
+                hadamard_K, K = _get_hadamard_K(self.rotation_size)
+                hadamard_K = hadamard_K.to(self.input_rotation.device)  # type: ignore[has-type]
+                self.input_rotation = None
+            else:
+                use_matmul_hadU = False
+                K = None
+
+                # In case hadamard transform is used (non-trained case), it is serialized as torch.bool wherer `0` represents `-1`.
+                float_dtype = torch.float  # TODO: move that to QParamsLinear, and specify the correct dtype!
+                self.input_rotation = self.input_rotation.to(float_dtype)  # type: ignore
+                self.input_rotation[self.input_rotation == 0] = -1
+
+                hadamard_K = self.input_rotation
+
+            self.transform = HadamardTransform(
+                rotation_size=self.rotation_size, use_matmul_hadU=use_matmul_hadU, hadamard_K=hadamard_K, K=K
+            )
+
+        delattr(self, "input_rotation")
+
+    def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        """
+        Dequantizes quantized weight/bias, runs a linear in high precision and apply QDQ on the (input)activation/output if required.
+        """
+        assert len(args) == 1
+        inp = args[0]
+
+        inp = self.transform(inp)
+
+        return super().forward(inp)

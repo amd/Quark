@@ -1,10 +1,11 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+import math
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 from torch import nn
@@ -12,7 +13,7 @@ from torch.nn import functional as F
 
 from quark.shares.utils.import_utils import is_accelerate_available
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.config.type import QSchemeType
 
 from .mixin import QuantMixin
@@ -23,7 +24,7 @@ from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, Sequentia
 
 logger = ScreenLogger(__name__)
 
-__all__ = ["QuantLinear"]
+__all__ = ["QuantLinear", "QLoRaQuantLinear"]
 
 
 class QuantLinear(nn.Linear, QuantMixin):
@@ -35,7 +36,7 @@ class QuantLinear(nn.Linear, QuantMixin):
         out_features: int,
         device: torch.device,
         bias: bool,
-        quant_config: QuantizationConfig,
+        quant_config: QLayerConfig,
         **kwargs: Any,
     ) -> None:
         super(QuantLinear, self).__init__(in_features, out_features, bias)
@@ -45,9 +46,19 @@ class QuantLinear(nn.Linear, QuantMixin):
         self.init_quantizer(quant_config, device, **kwargs)
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        return self.forward_with_weight(*args, **kwargs, weight=self.weight, bias=self.bias)
+
+    def forward_with_weight(
+        self, *args: Any, weight: torch.Tensor, bias: torch.Tensor | None, **kwargs: Any
+    ) -> torch.Tensor:
+        """
+        Allows to call `QuantLinear` forward with an arbitrary weight.
+
+        For example, it can be the original ``self.weight`` that has been transformed by a learnable orthogonal matrix, while we do not want to override ``self.weight``.
+        """
         quant_input = self.get_quant_input(args[0])
-        quant_weight = self.get_quant_weight(self.weight)
-        quant_bias = self.get_quant_bias(self.bias)
+        quant_weight = self.get_quant_weight(weight)
+        quant_bias = self.get_quant_bias(bias)
         output = F.linear(quant_input, quant_weight, bias=quant_bias)
         quant_output: torch.Tensor = self.get_quant_output(output)
 
@@ -65,7 +76,7 @@ class QuantLinear(nn.Linear, QuantMixin):
     def from_float(
         cls,
         float_module: nn.Module,
-        layer_quant_config: QuantizationConfig,
+        layer_quant_config: QLayerConfig,
         reload: bool = False,
         weight_tensor: torch.Tensor | None = None,
         bias_tensor: torch.Tensor | None = None,
@@ -136,7 +147,7 @@ class QuantLinear(nn.Linear, QuantMixin):
         ]
         for param_name in params_names:
             # find all keys that both contains prefix string and param_name, param_name is a regex
-            keys = [key for key in destination.keys() if re.match(prefix + param_name, key)]
+            keys = [key for key in destination if re.match(prefix + param_name, key)]
             if len(keys) == 0:
                 continue
             param_name = keys[0].split(".")[-1]
@@ -187,7 +198,7 @@ class QuantLinear(nn.Linear, QuantMixin):
         }
 
         for scale_key, quantizer_name in scale_quantizer_map.items():
-            keys = [key for key in state_dict.keys() if re.match(prefix + scale_key, key)]
+            keys = [key for key in state_dict if re.match(prefix + scale_key, key)]
             if len(keys) == 0:
                 continue
             # Sort: non-numbered keys first, then numbered keys by numerical order
@@ -227,3 +238,104 @@ class QuantLinear(nn.Linear, QuantMixin):
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )  # type: ignore
+
+
+class QLoRaQuantLinear(QuantLinear):
+    """QLoRaQuantLinear of nn.Linear
+    inherted from QuantLinear
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: torch.device,
+        bias: bool,
+        quant_config: QLayerConfig,
+        **kwargs: Any,
+    ) -> None:
+        super(QLoRaQuantLinear, self).__init__(
+            in_features=in_features,
+            out_features=out_features,
+            device=device,
+            bias=bias,
+            quant_config=quant_config,
+            kwargs=kwargs,
+        )
+
+        # init lora layer
+        self._init_lora_layer(in_features, out_features, device=device)
+        self._init_trainable_param()
+        # activate the lora layer
+        self.active_adapters = False
+        self.merged_weight = False
+
+    def _init_lora_layer(
+        self,
+        in_feature: int,
+        out_feature: int,
+        r: int = 8,
+        lora_bias: bool = False,
+        lora_alpha: int = 8,
+        device: torch.device | None = None,
+    ) -> None:
+        """
+        ref: /peft/tuners/lora/layer.py
+        """
+        self.lora_A = nn.Linear(in_feature, r, bias=False)
+        self.lora_B = nn.Linear(r, out_feature, bias=lora_bias)
+        if device is not None:
+            self.lora_A.to(device)
+            self.lora_B.to(device)
+        self.scaling = lora_alpha / r
+
+        # init weight for linear's weight
+        # ref: /peft/tuners/lora/layer.py
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B.weight)
+        self.lora_A.to(dtype=torch.bfloat16)
+        self.lora_B.to(dtype=torch.bfloat16)
+        return
+
+    def _init_trainable_param(self) -> None:
+        """
+        ref: peft/tuners/lora/model.py
+        """
+        self.lora_A.requires_grad_(True)
+        self.lora_B.requires_grad_(True)
+        self.weight.requires_grad = False
+        if self.bias is not None:
+            self.bias.requires_grad = False
+        return
+
+    def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        # NOTE may modify the compute logic
+        if not self.active_adapters or self.merged_weight:
+            return super().forward(*args, **kwargs)
+
+        input_tensor = args[0]
+        # 1.calculate the base layer's output
+        quant_input = self.get_quant_input(input_tensor)
+        quant_weight = self.get_quant_weight(self.weight)
+        quant_bias = self.get_quant_bias(self.bias)
+        output = F.linear(quant_input, quant_weight, bias=quant_bias)
+        quant_output = self.get_quant_output(output)
+
+        # 2.compute lora session
+        lora_a_output = F.linear(input_tensor, self.lora_A.weight)
+        lora_b_output = F.linear(lora_a_output, self.lora_B.weight)
+
+        # 3. base linear's output + lora's output
+        output = quant_output + lora_b_output
+        return output
+
+    def merge(self) -> None:
+        weight_A = self.lora_A.weight.data
+        weight_B = self.lora_B.weight.data
+        delta_weight = weight_B @ weight_A
+        self.weight.data += delta_weight
+        self.active_adapters = False
+        self.merged_weight = True
+        self.lora_A = None
+        self.lora_B = None
+        return

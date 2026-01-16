@@ -10,9 +10,8 @@ import onnxruntime
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
+from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
@@ -120,12 +119,14 @@ def infer_quantized_model(quantized_model_path):
 
 
 def tensor_static_quantize(output_dir):
+    original_log_level = ScreenLogger._shared_level
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
     quant_config = prepare_static_config()
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
+    ScreenLogger.set_shared_level(original_log_level)  # Restore the original log level
     return output
 
 

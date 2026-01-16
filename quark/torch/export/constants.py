@@ -1,11 +1,10 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import re
 import subprocess
-from typing import Optional
 
 import torch
 
@@ -19,10 +18,8 @@ AWQ_LOAD_MAP = {
     "qzeros": "weight_quantizer.zero_point",
 }
 LOAD_MAP = {
-    "weight": "weight",
     "weight_scale": "weight_quantizer.scale",
     "weight_zero_point": "weight_quantizer.zero_point",
-    "bias": "bias",
     "bias_scale": "bias_quantizer.scale",
     "bias_zero_point": "bias_quantizer.zero_point",
     "input_scale": "input_quantizer.scale",
@@ -30,24 +27,23 @@ LOAD_MAP = {
     "output_scale": "output_quantizer.scale",
     "output_zero_point": "output_quantizer.zero_point",
 }
+LOAD_MAP_MULTI = {
+    "weight_scale": "weight_quantizer.0.scale",
+    "weight_zero_point": "weight_quantizer.0.zero_point",
+    "bias_scale": "bias_quantizer.0.scale",
+    "bias_zero_point": "bias_quantizer.0.zero_point",
+    "input_scale": "input_quantizer.0.scale",
+    "input_zero_point": "input_quantizer.0.zero_point",
+    "output_scale": "output_quantizer.0.scale",
+    "output_zero_point": "output_quantizer.0.zero_point",
+}
 REVERSE_AWQ_LOAD_MAP = {
     "weight": "qweight",
     "bias": "bias",
     "weight_quantizer.scale": "scales",
     "weight_quantizer.zero_point": "qzeros",
 }
-REVERSE_LOAD_MAP = {
-    "weight": "weight",
-    "weight_quantizer.scale": "weight_scale",
-    "weight_quantizer.zero_point": "weight_zero_point",
-    "bias": "bias",
-    "bias_quantizer.scale": "bias_scale",
-    "bias_quantizer.zero_point": "bias_zero_point",
-    "input_quantizer.scale": "input_scale",
-    "input_quantizer.zero_point": "input_zero_point",
-    "output_quantizer.scale": "output_scale",
-    "output_quantizer.zero_point": "output_zero_point",
-}
+REVERSE_LOAD_MAP = {value: key for key, value in LOAD_MAP.items()}
 FAKE_QUANTIZED_LOAD_MAP = {
     "weight": "weight",
     "weight_scale": "_weight_quantizer.scale",
@@ -71,6 +67,28 @@ AWQ_SAVE_MAP = {
     "weight_scale": "scales",
     "weight_zero_point": "qzeros",
 }
+
+MISMATCHING_PARAMETERS_NAMES = [
+    r".*weight_quantizer\..*\.scale",
+    r".*bias_quantizer\..*\.scale",
+    r".*input_quantizer\..*\.scale",
+    r".*output_quantizer\..*\.scale",
+    r".*weight_quantizer\..*\.zero_point",
+    r".*bias_quantizer\..*\.zero_point",
+    r".*input_quantizer\..*\.zero_point",
+    r".*output_quantizer\..*\.zero_point",
+]
+
+REVERSE_MISMATCHING_PARAMETERS_NAMES = [
+    r".*weight_scale_.*",
+    r".*bias_scale_.*",
+    r".*input_scale_.*",
+    r".*output_scale_.*",
+    r".*weight_zero_point_.*",
+    r".*bias_zero_point_.*",
+    r".*input_zero_point_.*",
+    r".*output_zero_point_.*",
+]
 
 
 def _check_scaled_mm_available_dev() -> str | None:

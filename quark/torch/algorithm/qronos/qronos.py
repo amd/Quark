@@ -7,29 +7,21 @@
 #
 from __future__ import annotations
 
-import copy
-import fnmatch
 import math
 import time
-from functools import partial
-from types import TracebackType
-from typing import List, Optional, Tuple, Type
+from typing import Callable
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
-from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import get_device, get_named_quant_linears, move_to_device
-from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map, reset_model_kv_cache
+from quark.torch.algorithm.common import BaseHessianAlgorithm, BaseHessianProcessor, RestoreOriginalWeights
+from quark.torch.algorithm.utils.module import get_device
 from quark.torch.algorithm.utils.utils import clear_memory
-from quark.torch.quantization.config.config import QronosConfig, QuantizationSpec
-from quark.torch.quantization.config.type import QSchemeType
-from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
+from quark.torch.quantization.config.config import QronosConfig
+from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 
 logger = ScreenLogger(__name__)
 
@@ -39,42 +31,14 @@ CPU = torch.device("cpu")
 META = torch.device("meta")
 
 
-class Qronos:
+class Qronos(BaseHessianAlgorithm):
     """
     Handles the core Qronos logic, an advanced post-training quantization algorithm. Implemented as proposed in https://arxiv.org/pdf/2505.11695
     """
 
     def __init__(self, layer: nn.Module) -> None:
-        self.layer = layer
-        self.device = self.layer.weight.device
-        self.columns = layer.weight.data.shape[1]
-        if self.device == META:
-            self.device = self.layer._hf_hook.execution_device
-        self.q_input: torch.Tensor | None = None
-        self.H: torch.Tensor | None = torch.zeros((self.columns, self.columns), device=self.device, dtype=torch.float32)
+        super().__init__(layer)
         self.G: torch.Tensor | None = torch.zeros((self.columns, self.columns), device=self.device, dtype=torch.float32)
-        self.nsamples = 0
-        self.original_qspec = self.layer._weight_quantizer.observer.qspec
-
-        # for per group minmaxobserver: group_size > 1 and group_size == -1
-        if self.original_qspec.qscheme == QSchemeType.per_group:
-            self.adjusted_qspec = QuantizationSpec(
-                dtype=self.original_qspec.dtype,
-                qscheme=QSchemeType.per_channel,
-                observer_cls=PerChannelMinMaxObserver,
-                symmetric=self.original_qspec.symmetric,
-                scale_type=self.original_qspec.scale_type,
-                round_method=self.original_qspec.round_method,  # useless for perchannel
-                ch_axis=0,
-                is_dynamic=self.original_qspec.is_dynamic,
-                mx_element_dtype=self.original_qspec.mx_element_dtype,
-                scale_format=self.original_qspec.scale_format,
-                scale_calculation_mode=self.original_qspec.scale_calculation_mode,
-            )
-            self.quantizer = FakeQuantizeBase.get_fake_quantize(self.adjusted_qspec, self.device)
-        # pertensor & perchannel
-        else:
-            self.quantizer = layer._weight_quantizer
 
     def add_batch_quantized(self, quant_inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
         assert self.H is not None
@@ -115,7 +79,7 @@ class Qronos:
         self.G += (inp.matmul(self.q_input.t())) / self.nsamples
         self.q_input = None
 
-    def qronos_quantize(
+    def quantize(
         self, blocksize: int, alpha: float, beta: float, group_size: int, actorder: bool, static_groups: bool
     ) -> None:
         assert self.H is not None
@@ -140,39 +104,11 @@ class Qronos:
         H[dead, dead] = 1
         W[:, dead] = 0
 
-        scale: list[torch.Tensor] = []
-        zero: list[torch.Tensor] = []
-
-        quantizers = []
-        if per_group:
-            if static_groups:
-                # only pergroup group_size > 0 need static_group
-                # if not static, we will create quantizer for pergroup (groupsize > 0) in the following codes.
-                for i in range(0, self.columns, group_size):
-                    quantizer = copy.deepcopy(self.quantizer)  # TODO: this is very slow as well!
-                    quantizer.observe(W[:, i : (i + group_size)])
-
-                    scale.append(quantizer.scale)
-                    zero.append(quantizer.zero_point)
-                    quantizers.append(quantizer)
-            else:
-                quantizers.append(self.quantizer)
-        else:
-            # per-tensor, per-channel, and group_size = -1 cases.
-            self.quantizer.observe(W)
-
-            quantizers.append(self.quantizer)
-            scale.append(self.quantizer.scale)
-            zero.append(self.quantizer.zero_point)
+        quantizers, scale, zero = self._setup_quantizers(W, group_size, static_groups)
+        W, H, perm, invperm = self._apply_activation_order(W, H, actorder)
 
         if actorder:
-            perm = torch.argsort(torch.diag(H), descending=True)
-            W = W[:, perm]
-            H = H[perm][:, perm]
             G = G[perm][:, perm]
-            invperm = torch.argsort(perm)
-        else:
-            perm = None
 
         qronos_inner_kwargs = {
             "H": H,
@@ -198,26 +134,14 @@ class Qronos:
 
         group_size_for_order = group_size if per_group else self.columns
         if static_groups and actorder:
+            assert perm is not None  # for mypy
             g_idx = perm // group_size_for_order
 
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
 
-        if get_device(self.layer) == META:
-            # Directly replace weight in dict with qweight
-            self.layer._hf_hook.weights_map["weight"].data = Q.reshape(self.layer.weight.shape).to(orig_dtype).to("cpu")
-        else:
-            self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
-
-        # scale and zero of perchannel, pertensor have been added to buffer
-        # but per_group (any groupsize) need be added
-        if group_size is not None:
-            if group_size > 0:  # if not static, scale and zero_point need to be reordered when using quantization
-                self.layer._weight_quantizer.scale = torch.cat([s.view(-1, 1) for s in scale], dim=1)
-                self.layer._weight_quantizer.zero_point = torch.cat([z.view(-1, 1) for z in zero], dim=1)
-            else:  # when group size == -1, static_group does not work
-                self.layer._weight_quantizer.scale = self.quantizer.scale
-                self.layer._weight_quantizer.zero_point = self.quantizer.zero_point
+        self._set_weight(Q, orig_dtype)
+        self._update_layer_quantizer(scale, zero, group_size)
 
     def qronos_inner(
         self,
@@ -257,12 +181,13 @@ class Qronos:
             "beta": beta,
         }
 
-        Q, Losses, scale, zero_point = self.qronos_inner_eager(**inputs)  # type: ignore[arg-type]
+        Q, Losses, scale, zero_point = self.qronos_inner_eager(self, **inputs)  # type: ignore[arg-type]
 
         return Q, Losses, scale, zero_point
 
     @staticmethod
     def qronos_inner_eager(
+        self: Qronos,
         H: torch.Tensor,
         Hinv: torch.Tensor,
         G: torch.Tensor,
@@ -344,8 +269,8 @@ class Qronos:
         Err1 = torch.zeros_like(W[:, :blocksize])
         Losses1 = torch.zeros_like(W[:, :blocksize])
 
-        scale = []
-        zero = []
+        scale: list[torch.Tensor] = []
+        zero: list[torch.Tensor] = []
         now_idx = 1
 
         # re-calculate cholesky decomposition using a fairly large constant beta for stabilisation
@@ -372,24 +297,9 @@ class Qronos:
                 w = W1[:, i]
                 d = Hinv1[i, i]
 
-                if group_size is not None and group_size > 0:
-                    if not static_groups:
-                        if (i1 + i) % group_size == 0:
-                            quantizer = quantizers[0]
-
-                            quantizer.observer.reset_min_max_vals()
-                            quantizer.observe(W[:, (i1 + i) : (i1 + i + group_size)])
-                        if ((i1 + i) // group_size) - now_idx == -1:
-                            scale.append(quantizer.scale)
-                            zero.append(quantizer.zero_point)
-                            now_idx += 1
-                    else:
-                        idx = i1 + i
-                        if actorder:
-                            idx = perm[idx]  # type: ignore
-                        quantizer = quantizers[idx // group_size]
-                else:
-                    quantizer = quantizers[0]
+                quantizer = self._get_quantizer(
+                    group_size, static_groups, quantizers, W, i1, i, now_idx, scale, zero, actorder, perm
+                )
 
                 q = quantizer.fake_quantize_with_qparams(
                     w.unsqueeze(1), scale=quantizer.scale, zero_point=quantizer.zero_point
@@ -412,6 +322,39 @@ class Qronos:
 
         return Q, Losses, scale, zero
 
+    def _get_quantizer(
+        self,
+        group_size: int | None,
+        static_groups: bool,
+        quantizers: list[ScaledFakeQuantize],
+        W: torch.Tensor,
+        i1: int,
+        i: int,
+        now_idx: int,
+        scale: list[torch.Tensor],
+        zero: list[torch.Tensor],
+        actorder: bool,
+        perm: torch.Tensor | None,
+    ) -> ScaledFakeQuantize:
+        quantizer = quantizers[0]
+        if group_size is not None and group_size > 0:
+            if not static_groups:
+                if (i1 + i) % group_size == 0:
+                    quantizer = quantizers[0]
+
+                    quantizer.observer.reset_min_max_vals()
+                    quantizer.observe(W[:, (i1 + i) : (i1 + i + group_size)])
+                if ((i1 + i) // group_size) - now_idx == -1:
+                    scale.append(quantizer.scale)
+                    zero.append(quantizer.zero_point)
+                    now_idx += 1
+            else:
+                idx = i1 + i
+                if actorder:
+                    idx = perm[idx]  # type: ignore
+                quantizer = quantizers[idx // group_size]
+        return quantizer
+
     @staticmethod
     def power_iteration(H: torch.Tensor, num_iterations: int, eps: float = 1e-12) -> float:
         """
@@ -419,14 +362,20 @@ class Qronos:
         Used to determine an 'optimal' dampening factor
         """
         # NOTE: this implementation doesn't necessitate convergence to the dominant eigenvector but should be a good approximation nonetheless.
-        b_k = torch.rand(H.shape[1], device=H.device)
+        # This computation is done on CPU for better deterministic results
+        # Please check issue #3832 for more details
+        torch_default_device = torch.tensor([0]).device
+        b_k_device = CPU if torch_default_device == CPU else H.device
+        b_k = torch.ones(H.shape[1], device=b_k_device)
+        c_k = H.max().abs()  # get absmax
+        H_k = (H / c_k).to(b_k.device)
         for _ in range(num_iterations):
-            b_k1 = torch.mv(H, b_k)  # H*b_k
+            b_k1 = torch.mv(H_k, b_k)  # H*b_k
             b_k1_norm = torch.norm(b_k1)  # ||H*b_k||
             b_k = b_k1 / (b_k1_norm + eps)  # b_{k+1} = H*b_k / ( ||H*b_k|| + epsilon )
 
         # λ_max ~= b_k^T · (H · b_k) when b_k is normalised; this is a simplification of the rayleigh quotient since ||b_k|| = 1
-        max_eigenval = torch.dot(b_k, torch.mv(H, b_k))
+        max_eigenval = torch.dot(b_k, torch.mv(H_k, b_k)) * c_k
         return max_eigenval.item()
 
     def free(self) -> None:
@@ -435,179 +384,75 @@ class Qronos:
         clear_memory()
 
 
-class QronosProcessor(BaseAlgoProcessor):
+class QronosProcessor(BaseHessianProcessor):
     def __init__(
         self, model: nn.Module, quant_algo_config: QronosConfig, data_loader: DataLoader[torch.Tensor]
     ) -> None:
-        self.model = model
-        self.block_size = quant_algo_config.block_size
+        super().__init__(model, quant_algo_config, data_loader)
         self.alpha = quant_algo_config.alpha
         self.beta = quant_algo_config.beta
-        self.act_order = quant_algo_config.desc_act
-        self.static_groups = quant_algo_config.static_groups
-        self.inside_layer_modules = quant_algo_config.inside_layer_modules
-        self.model_decoder_layers = quant_algo_config.model_decoder_layers
-        self.data_loader = data_loader
-        self.device_map = init_device_map(self.model)
-        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(
-            self.model, self.model_decoder_layers, self.data_loader
-        )
+        self._use_original_weight = True
 
-    def apply(self) -> None:
-        num_batches = len(self.inps)
-        layer_inputs = [inp.clone() for inp in self.inps]
-        orig_layer_inputs = [inp.clone() for inp in self.inps]
-        layer_outputs: list[torch.Tensor] = []
-        orig_layer_outputs: list[torch.Tensor] = []
-        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
+    def _get_algorithm_instance(self, layer: nn.Module) -> Qronos:
+        return Qronos(layer)
 
-        for i in tqdm(range(len(self.modules)), desc="Applying Qronos on layers"):
-            logger.info(f"Start quantizing layer {i + 1}/{len(self.modules)}")
-            self.register_original_weights(self.modules[i])
-            layer = self.modules[i]
+    def _quantize_layer(self, algo_instance: Qronos, layer: nn.Module, group_size: int) -> None:
+        algo_instance.quantize(self.block_size, self.alpha, self.beta, group_size, self.act_order, self.static_groups)
 
-            force_layer_back_to_cpu = False
-            if get_device(layer) == CPU:
-                move_to_device(layer, self.device_map[f"{self.model_decoder_layers}.{i}"])
-                force_layer_back_to_cpu = True
-            current_layer_device = (
-                get_device(layer) if not get_device(layer) == META else layer._hf_hook.execution_device
+    def _collect_statistics(
+        self,
+        layer: nn.Module,
+        grouped_inner_layers: dict[str, nn.Module],
+        algo_instances: dict[str, Qronos],
+        layer_inputs: list[torch.Tensor],
+        orig_layer_inputs: list[torch.Tensor],
+        num_batches: int,
+        current_layer_device: torch.device,
+    ) -> None:
+        for batch_idx in range(num_batches):
+            batch_input = [layer_inputs[batch_idx]]
+            orig_batch_input = [orig_layer_inputs[batch_idx]]
+
+            def add_batch_quantized_hook(
+                name: str,
+            ) -> Callable[[nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
+                def hook(module: nn.Module, input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+                    algo_instances[name].add_batch_quantized(input[0].data, output.data, name)
+
+                return hook
+
+            def add_batch_nonquantized_hook(
+                name: str,
+            ) -> Callable[[nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
+                def hook(module: nn.Module, input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+                    algo_instances[name].add_batch_nonquantized(input[0].data, output.data, name)
+
+                return hook
+
+            hook_handles_H = []
+            for name in grouped_inner_layers:
+                hook_handles_H.append(grouped_inner_layers[name].register_forward_hook(add_batch_quantized_hook(name)))
+
+            block_forward(
+                layer, self.module_kwargs, 1, current_layer_device, batch_input, [], cache_examples_on_gpu=True
             )
 
-            # all_inner_layer_modules.keys: ['self_attn.k_proj', 'feed_forward.experts.0.gate_proj', 'feed_forward.experts.1.gate_proj', ...]
-            all_inner_layer_modules = get_named_quant_linears(layer)
-            assert self.inside_layer_modules is not None
-            inner_layer_module_names: list[str] = self.inside_layer_modules
+            for hook in hook_handles_H:
+                hook.remove()
 
-            # inner_layer_module_names: ['self_attn.k_proj', 'mlp.down_proj', ...]
-            for layer_name in inner_layer_module_names:
-                # handle both dense and moe layers, e.g. feed_forward.experts.*.down_proj are grouped into mlp.down_proj
-                matched_names = fnmatch.filter(all_inner_layer_modules.keys(), "*" + layer_name)
-                grouped_inner_layers = {
-                    inner_layer: all_inner_layer_modules[inner_layer]
-                    for inner_layer in matched_names
-                    if getattr(all_inner_layer_modules[inner_layer], "_weight_quantizer", None) is not None
-                }
-
-                qronos = {}
-                for inner_layer in grouped_inner_layers:
-                    qronos[inner_layer] = Qronos(grouped_inner_layers[inner_layer])
-
-                # Process one sample at a time to ensure the quantized input from each sample's
-                # quantized forward pass is available for the corresponding G calculation
-                for batch_idx in range(num_batches):
-                    # block_forward expectes List[torch.Tensor] as input.
-                    # tensor shape: [1, seq_length, dim]
-                    batch_input = [layer_inputs[batch_idx]]
-                    orig_batch_input = [orig_layer_inputs[batch_idx]]
-
-                    # define hook to collect H = \tilde{X} @ \tilde{X}^T
-                    def add_batch_hook_quantized(
-                        module: nn.Module, inp: torch.Tensor, out: torch.Tensor, name: str
-                    ) -> None:
-                        qronos[name].add_batch_quantized(inp[0].data, out.data, name)
-
-                    # define hook to collect G = X @ \tilde{X}^T
-                    def add_batch_hook_nonquantized(
-                        module: nn.Module, inp: torch.Tensor, out: torch.Tensor, name: str
-                    ) -> None:
-                        qronos[name].add_batch_nonquantized(inp[0].data, out.data, name)
-
-                    hook_handles_H = []
-                    for name in grouped_inner_layers:
-                        hook_handles_H.append(
-                            grouped_inner_layers[name].register_forward_hook(
-                                partial(add_batch_hook_quantized, name=name)
-                            )
-                        )
-
-                    # calculate H = \tilde{X} @ \tilde{X}^T
-                    _ = block_forward(
-                        layer=layer,
-                        module_kwargs=self.module_kwargs,
-                        num_batches=1,
-                        device=current_layer_device,
-                        layer_inputs=batch_input,  # type: ignore[arg-type]
-                        fp_layer_outputs=[],
-                        cache_examples_on_gpu=True,
-                    )
-
-                    for hook in hook_handles_H:
-                        hook.remove()
-
-                    hook_handles_G = []
-                    for name in grouped_inner_layers:
-                        hook_handles_G.append(
-                            grouped_inner_layers[name].register_forward_hook(
-                                partial(add_batch_hook_nonquantized, name=name)
-                            )
-                        )
-
-                    with RestoreOriginalWeights(layer):
-                        # calculate G = X @ \tilde{X}^T
-                        _ = block_forward(
-                            layer=layer,
-                            module_kwargs=self.module_kwargs,
-                            num_batches=1,
-                            device=current_layer_device,
-                            layer_inputs=orig_batch_input,  # type: ignore[arg-type]
-                            fp_layer_outputs=[],
-                            cache_examples_on_gpu=True,
-                        )
-
-                    for hook in hook_handles_G:
-                        hook.remove()
-
-                # apply qronos to each inner layer e.g. mlp_down_proj
-                for name in grouped_inner_layers:
-                    logger.info(f"Quantizing {name} in layer {i + 1}/{len(self.modules)}...")
-                    qronos[name].qronos_quantize(
-                        blocksize=self.block_size,
-                        alpha=self.alpha,
-                        beta=self.beta,
-                        group_size=grouped_inner_layers[name]._weight_quantizer.group_size,
-                        actorder=self.act_order,
-                        static_groups=self.static_groups,
-                    )
-                    qronos[name].free()
-
-            # get whole decoder layer output
-            layer_outputs = block_forward(
-                layer,
-                self.module_kwargs,
-                num_batches,
-                current_layer_device,
-                layer_inputs,
-                layer_outputs,
-                cache_examples_on_gpu=True,
-            )
-
-            with RestoreOriginalWeights(layer):
-                orig_layer_outputs = block_forward(
-                    layer,
-                    self.module_kwargs,
-                    num_batches,
-                    current_layer_device,
-                    orig_layer_inputs,
-                    orig_layer_outputs,
-                    cache_examples_on_gpu=True,
+            hook_handles_G = []
+            for name in grouped_inner_layers:
+                hook_handles_G.append(
+                    grouped_inner_layers[name].register_forward_hook(add_batch_nonquantized_hook(name))
                 )
 
-            if get_device(layer) != META:
-                # if meta, scale and zero point are in execution_device, and weight is in meta, can't change.
-                layer = move_to_device(layer, CPU if force_layer_back_to_cpu else current_layer_device)
+            with RestoreOriginalWeights(layer):
+                block_forward(
+                    layer, self.module_kwargs, 1, current_layer_device, orig_batch_input, [], cache_examples_on_gpu=True
+                )
 
-            del layer
-            del qronos
-            del layer_inputs
-            del orig_layer_inputs
-            self.delete_original_weight_buffer(self.modules[i])
-            clear_memory()
-
-            orig_layer_inputs, layer_inputs = orig_layer_outputs, layer_outputs
-            orig_layer_outputs, layer_outputs = [], []
-
-        reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)
+            for hook in hook_handles_G:
+                hook.remove()
 
     @staticmethod
     def register_original_weights(layer: nn.Module) -> None:
@@ -620,35 +465,3 @@ class QronosProcessor(BaseAlgoProcessor):
         for submodule in layer.modules():
             if hasattr(submodule, "weight_orig"):
                 delattr(submodule, "weight_orig")
-
-
-class RestoreOriginalWeights:
-    """
-    Used to temporarily switch layers to use their original (unquantized) weights.
-    Useful for collection of cross-correlation matrices that depend on non-quantized values i.e. G = X @ tilde{X}^T
-    """
-
-    def __init__(self, module: nn.Module) -> None:
-        self.module = module
-        self.quantized_weight_states = []  # type: ignore[var-annotated]
-
-    def __enter__(self) -> RestoreOriginalWeights:
-        for submodule in self.module.modules():
-            if hasattr(submodule, "weight") and hasattr(submodule, "weight_orig"):
-                self._swap_to_unquantized_weights(submodule)
-
-        return self
-
-    def _swap_to_unquantized_weights(self, module: nn.Module) -> None:
-        quantized_weight_state = {"module": module, "current_weight": module.weight.data}
-        self.quantized_weight_states.append(quantized_weight_state)
-        module.weight.data = module.weight_orig.data
-
-    def __exit__(
-        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, exc_traceback: TracebackType | None
-    ) -> None:
-        for state in self.quantized_weight_states:
-            module = state["module"]
-            module.weight.data = state["current_weight"]
-
-        self.quantized_weight_states.clear()

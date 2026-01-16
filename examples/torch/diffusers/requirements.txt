@@ -2,7 +2,7 @@ accelerate
 diffusers==0.31.0
 huggingface-hub==0.25.2
 open-clip-torch==2.7.0
-opencv-python
-optimum
+opencv-python-headless
+optimum[onnxruntime]
 scipy
 sentencepiece

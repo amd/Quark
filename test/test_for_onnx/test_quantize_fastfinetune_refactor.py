@@ -11,9 +11,9 @@ import onnxruntime as ort
 import torch
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.finetuning.create_torch.base_fn_quantizers import BFPQuantizer, MXQuantizer
-from quark.onnx.finetuning.create_torch.base_qdq_quantizers import (
+from quark.onnx import AdaRoundConfig, ModelQuantizer, QConfig, QLayerConfig, QuantGranularity, UInt8Spec
+from quark.onnx.algorithm.finetuning.create_torch.base_fn_quantizers import BFPQuantizer, MXQuantizer
+from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
     FPQuantizer,
     INTQuantDequantFunction,
     INTQuantizer,
@@ -24,11 +24,8 @@ from quark.onnx.finetuning.create_torch.base_qdq_quantizers import (
     int_dequant_func,
     int_quant_func,
 )
-from quark.onnx.finetuning.create_torch.quant_base_ops import QuantizationModule, create_fn_quantizer
-from quark.onnx.quant_utils import COP_BFP_OP_NAME, COP_MX_OP_NAME
-from quark.onnx.quantization import AdaRoundConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, QuantGranularity, UInt8Spec
+from quark.onnx.algorithm.finetuning.create_torch.quant_base_ops import QuantizationModule, create_fn_quantizer
+from quark.onnx.quantization.quant_utils import COP_BFP_OP_NAME, COP_MX_OP_NAME
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
@@ -114,7 +111,13 @@ def prepare_model(output_dir):
     quant_onnx_model_path = Path(output_dir, "simple_custom_model_quantized.onnx").as_posix()
 
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -267,10 +270,10 @@ class TestTensorQuantize(unittest.TestCase):
         inp = torch.from_numpy(input_tensor)
         inp.requires_grad = True
 
-        itg = INTQuantizer(scale, zero_point, min_q, max_q)
+        INTQuantizer(scale, zero_point, min_q, max_q)
         fp = FPQuantizer(scale, zero_point, min_q, max_q)
-        bfp = BFPQuantizer({})
-        mx = MXQuantizer({})
+        BFPQuantizer({})
+        MXQuantizer({})
 
         create_fn_quantizer({"op_type": COP_MX_OP_NAME, "op_attrs": {}})
 

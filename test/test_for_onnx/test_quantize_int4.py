@@ -12,13 +12,11 @@ import onnxruntime
 import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
-from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
-from quark.onnx import ModelQuantizer, PowerOfTwoMethod
-from quark.onnx.quant_utils import is_version_below
-from quark.onnx.quantization.config.config import Config, QuantizationConfig
+from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod, QuantizationConfig
 from quark.onnx.quantization.config.custom_config import DEFAULT_ADAROUND_PARAMS
+from quark.onnx.quantization.quant_utils import is_version_below
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
@@ -96,7 +94,13 @@ def prepare_model(output_dir):
     onnx_model_path = Path(output_dir, "double_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "double_conv_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -222,7 +226,7 @@ class TestQuantization(unittest.TestCase):
             with self.assertRaises(Exception) as context:
                 quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
             self.assertIn(
-                "Only MinMax, Percentile Method and QuantFormat supports int4/uint4 quantization types or onnxruntime version below 1.19.0",
+                "Only the ORT official CalibrationMethod and QuantFormat can be used for int4/uint4 quantization.",
                 str(context.exception),
             )
         else:

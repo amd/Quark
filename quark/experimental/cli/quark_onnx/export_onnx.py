@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -62,5 +62,6 @@ class ExportONNX_CLI(base_cli.BaseQuarkCLICommand):
             output_names=["output"],
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
             verbose=True,
+            dynamo=False,
         )
         print(f"Onnx model is saved at {output_path}")

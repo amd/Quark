@@ -1,0 +1,11 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "/xclbin/stx/sdxl_unet_vae_combined_new.xclbin"
+    op_namespaces: "sdxlt"
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order. Inherited passes before are inserted before any passes listed here
+inherit_passes_before: !include [sdxl_turbo_vae_decoder_no_dd.yaml, dd.yaml]

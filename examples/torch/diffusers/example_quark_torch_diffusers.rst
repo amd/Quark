@@ -53,20 +53,19 @@ Calibration and Export
 
 Note: For Controlnet, only unet is quantized. For Diffusion Models, entire pipeline (unet, vae, text_encoder and text_encoder_2) can be quantized.
 
+Quantize Diffusion and Export SafeTensors (entire pipeline)
+-----------------------------------------------------------
+
+.. code-block:: shell
+
+   python quantize_diffusers.py --model_id stabilityai/stable-diffusion-xl-base-1.0 --quant_config_file_path models/stabilityai/stable-diffusion-xl-base-1.0_unet.json --calib_prompts inference/text_to_image/coco2014/calibration/captions.tsv --calib_size 50 --dump_data_folder coco2014_calib_data --export safetensor --export_path ./quantized_models
+
 Quantize Controlnet and Export SafeTensors (unet-only)
 ------------------------------------------------------
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --quant_config_file_path {your quant config file path} --calib_prompts {your calibration dataset file path} --calib_size {number of calibration prompts, default 500} --dump_data_folder {file path to dump data folder} --export safetensor --saved_path {output path for your quantized model}
-
-
-Quantize Diffusion and Export ONNX (entire pipeline)
-----------------------------------------------------
-
-.. code-block:: shell
-
-   python quantize_diffusers.py --model_id {your diffusion model} --quant_config_file_path {your quant config file path} --calib_prompts {your calibration dataset file path} --calib_size {number of calibration prompts, default 500} --dump_data_folder {file path to dump data folder} --export onnx --onnx_path {output path for your exported onnx model}
+   python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {guidance image if controlnet is used} --quant_config_file_path models/runwayml/stable-diffusion-v1-5_w_fp8_a_fp8.json --calib_prompts inference/text_to_image/coco2014/calibration/captions.tsv --calib_size 50 --dump_data_folder coco2014_calib_data --export safetensor --export_path ./quantized_models
 
 Load SafeTensor and Test
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -76,7 +75,7 @@ Load and Test
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --load --saved_path {the path for your quantized model} --test --test_prompts {your test dataset file path} --test_size {number of test prompts, default 5000}
+   python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --model_name unet --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {guidance image if controlnet is used} --load --export_path ./quantized_models --test --test_prompts inference/text_to_image/coco2014/captions/captions_source.tsv --test_size 50
 
 Load SafeTensor and Run with a prompt
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -86,7 +85,7 @@ Load and Run
 
 .. code-block:: shell
 
-   python quantize_diffusers.py --model_id {your diffusion model} --controlnet_id {your controlnet if used} --input_image {guidance image if controlnet is used} --load --saved_path {the path for your quantized model} --prompt "A city at night with people walking around."
+   python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --model_name unet --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {guidance image if controlnet is used} --load --export_path ./quantized_models --prompt "A city at night with people walking around."
 
 Benchmark
 ---------

@@ -8,11 +8,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -22,7 +22,7 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     is_dynamic=False,
 )
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
@@ -59,7 +59,7 @@ def test_net():
     model = SimpleCNN(num_classes=10)
     dataset = MyDataset()
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
-    quant_config = Config(global_quant_config=DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG)
+    quant_config = QConfig(global_quant_config=DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG)
     quantizer = ModelQuantizer(quant_config)
     quant_model = quantizer.quantize_model(model, dataloader)
     assert (

@@ -1,11 +1,11 @@
 #
-# Copyright(c) 2024 Advanced Micro Devices,Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -135,8 +135,8 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
             del layer_fp
             del layer_inputs
             del fp_layer_inputs
-            layer_inputs, layer_outputs = layer_outputs, []
-            fp_layer_inputs, fp_layer_outputs = fp_layer_outputs, []
+            layer_inputs, layer_outputs = layer_outputs, []  # noqa
+            fp_layer_inputs, fp_layer_outputs = fp_layer_outputs, []  # noqa
             clear_memory()
         self.model.config.use_cache = forward_pass_use_cache
         self.fp_model.config.use_cache = forward_pass_use_cache

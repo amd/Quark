@@ -5,7 +5,6 @@
 
 from dataclasses import dataclass, field, make_dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from pytorchlight.config.configs_sets import int_k
@@ -19,9 +18,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.torch import ModelExporter, ModelQuantizer
+from quark.torch import ModelQuantizer
 from quark.torch.export.config.config import ExporterConfig
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.config.type import Dtype
 
 
@@ -48,7 +47,7 @@ class PytorchlightConfig:
         self.brecq = None
 
     @staticmethod
-    def create_from_quark_config(config: Config):
+    def create_from_quark_config(config: QConfig):
         pytorch_light_config = {}
         dtype_list = []
         if config.global_quant_config.input_tensors is not None:
@@ -139,7 +138,7 @@ class PytorchlightConfig:
 
 def extend_enum(enum_obj, name):
     dtype_dict = {x: x for x in enum_obj.__members__}
-    if name not in enum_obj.__members__.keys():
+    if name not in enum_obj.__members__:
         dtype_dict[name] = name
     return Enum(Dtype.__name__, dtype_dict)
 
@@ -158,7 +157,7 @@ ExporterConfig = extend_dataclass(ExporterConfig, "pytorch_light_export_config",
 
 
 class PytorchlightModelQuantizer(ModelQuantizer):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: QConfig) -> None:
         self.pytorchlight_quant_config = PytorchlightConfig.create_from_quark_config(config)
         self.config = config
         return
@@ -166,9 +165,9 @@ class PytorchlightModelQuantizer(ModelQuantizer):
     def quantize_model(
         self,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         quant_config = self.pytorchlight_quant_config
@@ -201,11 +200,10 @@ class PytorchlightModelQuantizer(ModelQuantizer):
         return model
 
 
-class PytorchlightModelExporter(ModelExporter):
-    def export_onnx_model(self, model: nn.Module, input_args: Union[torch.Tensor, tuple[float]]) -> None:
-        ONNXQDQManager.onnx_passes = []
-        ONNXQDQManager.export(model, input_args, "./pytorch-light-export.onnx", do_constant_folding=False)
-        return
+def pytorchlight_export_onnx_model(model: nn.Module, input_args: torch.Tensor | tuple[float]) -> None:
+    ONNXQDQManager.onnx_passes = []
+    ONNXQDQManager.export(model, input_args, "./pytorch-light-export.onnx", do_constant_folding=False)
+    return
 
 
 def model_eval(model, dataloader):

@@ -7,31 +7,25 @@
 #
 from __future__ import annotations
 
-import copy
 import math
 import os
 import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import GPTQConfig
-import fnmatch
 
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
-from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import get_device, get_named_quant_linears, move_to_device
-from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map, reset_model_kv_cache
+from quark.torch.algorithm.common import BaseHessianAlgorithm, BaseHessianProcessor
+from quark.torch.algorithm.utils.module import get_device
 from quark.torch.algorithm.utils.utils import clear_memory
-from quark.torch.quantization.config.type import QSchemeType
-from quark.torch.quantization.debug import QUARK_GRAPH_DEBUG
-from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.utils import QUARK_DISABLE_CUDA_GRAPH
 
 logger = ScreenLogger(__name__)
 
@@ -191,7 +185,30 @@ def fasterquant_inner(
         "group_size": group_size,
     }
 
-    if not use_cuda_graphs:
+    columns_per_graph = 0
+    graph_supports_problem_size = True
+    if use_cuda_graphs:
+        if columns % DEFAULT_COLUMNS_PER_GRAPH == 0:
+            columns_per_graph = DEFAULT_COLUMNS_PER_GRAPH
+        else:
+            if columns < DEFAULT_COLUMNS_PER_GRAPH:
+                columns_per_graph = columns
+            else:
+                for possible_columns_per_graph in FALLBACK_COLUMNS_PER_GRAPH:
+                    if columns % possible_columns_per_graph == 0:
+                        columns_per_graph = possible_columns_per_graph
+                        break
+                else:
+                    graph_supports_problem_size = False
+
+        graph_supports_problem_size = graph_supports_problem_size and (columns_per_graph % inputs["blocksize"] == 0)
+
+        if not graph_supports_problem_size:
+            logger.info(
+                f"In GPTQ algorithm, block_size={inputs['blocksize']} is not supported with the CUDA Graph captured for GPTQ algo using columns_per_graph={columns_per_graph}. Disabling CUDA Graph for the weight quantization of W={W.shape}. You can silence this warning with the environment variable `QUARK_DISABLE_CUDA_GRAPH=1`."
+            )
+
+    if not use_cuda_graphs or not graph_supports_problem_size:
         inputs["columns"] = columns
 
         Q, Losses, scale, zero_point = fasterquant_inner_eager(
@@ -221,6 +238,7 @@ def fasterquant_inner(
         inputs["zero_points"] = zero_points
         inputs["quantizer"] = quantizers[0]  # type: ignore[assignment]
         inputs["columns_start_idx"] = 0
+        inputs["columns_per_graph"] = columns_per_graph
 
         for tensor in [Hinv, scales, zero_points]:
             if tensor is not None:
@@ -228,31 +246,11 @@ def fasterquant_inner(
         if actorder:
             assert perm.device == device  # type: ignore[union-attr]
 
-        if columns % DEFAULT_COLUMNS_PER_GRAPH == 0:
-            inputs["columns_per_graph"] = DEFAULT_COLUMNS_PER_GRAPH
-        else:
-            if columns < DEFAULT_COLUMNS_PER_GRAPH:
-                inputs["columns_per_graph"] = columns
-            else:
-                for possible_columns_per_graph in FALLBACK_COLUMNS_PER_GRAPH:
-                    if columns % possible_columns_per_graph == 0:
-                        inputs["columns_per_graph"] = possible_columns_per_graph
-                        break
-                else:
-                    raise ValueError(
-                        f"Unsupported columns number in GPTQ using CUDA Graph: {columns}. Only multiples of 64 are supported. Consider using the environment variable `QUARK_GRAPH_DEBUG=1` to avoid using CUDA graphs in GPTQ algorithm - this may result in 3-4x slower quantization."
-                    )
-
-        if inputs["columns_per_graph"] % inputs["blocksize"] != 0:  # type: ignore
-            raise ValueError(
-                f"block_size={inputs['blocksize']} is not supported with CUDA Graph using columns_per_graph={inputs['columns_per_graph']}."
-            )
-
         if graph_spec not in graphs:
             # See the comment below about `record_graph` for the reason to clone the inputs here.
             ref_inputs = {name: inp.clone() if isinstance(inp, torch.Tensor) else inp for name, inp in inputs.items()}
 
-            logger.debug(f"recording graph with columns_per_graph={inputs['columns_per_graph']}")
+            logger.debug(f"recording graph with columns_per_graph={columns_per_graph}")
             subgraphs = record_graphs(inputs, columns=columns, device=W.device)
 
             graphs[graph_spec] = subgraphs, inputs
@@ -367,56 +365,11 @@ def fasterquant_inner_eager(
     return Q, Losses, scale, zero
 
 
-class GPTQ:
+class GPTQ(BaseHessianAlgorithm):
     def __init__(self, layer: nn.Module) -> None:
-        self.layer = layer
-        self.dev = self.layer.weight.device
-        if self.dev == META:
-            # should be execute_device, When cuda0 is very small, it could be any other value.
-            self.dev = self.layer._hf_hook.execution_device
-        W = layer.weight.data.clone()
-        if isinstance(self.layer, nn.Conv2d):
-            W = W.flatten(1)
+        super().__init__(layer)
 
-        # Transformers might not be in the user environment, hence the class name check instead.
-        if "transformers.pytorch_utils.Conv1D" in str(self.layer.__class__):
-            W = W.t()
-        self.rows = W.shape[0]
-        self.columns = W.shape[1]
-        # self.H: Optional[torch.Tensor] = torch.zeros((self.columns, self.columns), device=self.dev)
-        self.H: torch.Tensor | None = torch.zeros((self.columns, self.columns), device=self.dev, dtype=torch.float)
-        self.nsamples = 0
-        self.inp1: torch.Tensor | None = None
-        self.out1: torch.Tensor | None = None
-        self.original_qspec = self.layer._weight_quantizer.observer.qspec
-        kwargs: Any = {}
-        from quark.torch.quantization.config.config import QuantizationSpec
-        from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
-
-        # for per group minmaxobserver: group_size > 1 and group_size == -1
-        if self.original_qspec.qscheme == QSchemeType.per_group:
-            self.adjusted_qspec = QuantizationSpec(
-                dtype=self.original_qspec.dtype,
-                qscheme=QSchemeType.per_channel,
-                observer_cls=PerChannelMinMaxObserver,
-                symmetric=self.original_qspec.symmetric,
-                scale_type=self.original_qspec.scale_type,
-                round_method=self.original_qspec.round_method,  # useless for perchannel
-                ch_axis=0,
-                is_dynamic=self.original_qspec.is_dynamic,
-                mx_element_dtype=self.original_qspec.mx_element_dtype,
-                scale_format=self.original_qspec.scale_format,
-                scale_calculation_mode=self.original_qspec.scale_calculation_mode,
-            )
-            # Due to the difference between cuda and cpu hardware architecture and calculation precision,
-            # it will lead to the difference in the last few bits of the value obtained from the calculation,
-            # this difference will be amplified by the calculation method of GPTQ, you should keep the consistency of the device.
-            self.quantizer = FakeQuantizeBase.get_fake_quantize(self.adjusted_qspec, self.dev, **kwargs)
-        # pertensor & perchannel
-        else:
-            self.quantizer = layer._weight_quantizer
-
-    def add_batch(self, inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
+    def add_batch_quantized(self, inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
         assert self.H is not None
         if os.environ.get("DEBUG"):
             self.inp1 = inp
@@ -446,7 +399,10 @@ class GPTQ:
         # self.H += 2 / self.nsamples * inp.matmul(inp.t())
         self.H += inp.matmul(inp.t())
 
-    def fasterquant(
+    def add_batch_nonquantized(self, inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
+        raise ValueError("We don't need it for GPTQ")
+
+    def quantize(
         self,
         blocksize: int,
         percdamp: float,
@@ -481,42 +437,11 @@ class GPTQ:
         H[dead, dead] = 1
         W[:, dead] = 0
 
-        scale: list[torch.Tensor] = []
-        zero: list[torch.Tensor] = []
-
-        quantizers = []
-        if per_group:
-            if static_groups:
-                # only pergroup group_size > 0 need static_group
-                # if not static, we will create quantizer for pergroup (groupsize > 0) in the following codes.
-                for i in range(0, self.columns, group_size):
-                    quantizer = copy.deepcopy(self.quantizer)  # TODO: this is very slow as well!
-                    quantizer.observe(W[:, i : (i + group_size)])
-
-                    scale.append(quantizer.scale)
-                    zero.append(quantizer.zero_point)
-                    quantizers.append(quantizer)
-            else:
-                quantizers.append(self.quantizer)
-        else:
-            # per-tensor, per-channel, and group_size = -1 cases.
-            self.quantizer.observe(W)
-
-            quantizers.append(self.quantizer)
-            scale.append(self.quantizer.scale)
-            zero.append(self.quantizer.zero_point)
-
-        if actorder:
-            perm = torch.argsort(torch.diag(H), descending=True)
-            W = W[:, perm]
-            H = H[perm][:, perm]
-            invperm = torch.argsort(perm)
-        else:
-            perm = None
-            invperm = None
+        quantizers, scale, zero = self._setup_quantizers(W, group_size, static_groups)
+        W, H, perm, invperm = self._apply_activation_order(W, H, actorder)
 
         damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
+        diag = torch.arange(self.columns, device=self.device)
         H[diag, diag] += damp
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
@@ -558,7 +483,7 @@ class GPTQ:
 
         logger.info(f"duration: {(time.time() - tick)}")
 
-        if QUARK_GRAPH_DEBUG:
+        if QUARK_DISABLE_CUDA_GRAPH:
             logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")  # type: ignore[arg-type]
 
         group_size_for_order = group_size if per_group else self.columns
@@ -571,162 +496,77 @@ class GPTQ:
         if "transformers.pytorch_utils.Conv1D" in str(self.layer.__class__):
             Q = Q.t()
 
-        if get_device(self.layer) == META:
-            # Directly replace weight in dict with qweight
-            self.layer._hf_hook.weights_map["weight"].data = Q.reshape(self.layer.weight.shape).to(orig_dtype).to("cpu")
-        else:
-            self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
-
-        # scale and zero of perchannel, pertensor have been added to buffer
-        # but per_group (any groupsize) need be added
-        if group_size is not None:
-            if group_size > 0:  # if not static, scale and zero_point need to be reordered when using quantization
-                self.layer._weight_quantizer.scale = torch.cat([s.view(-1, 1) for s in scale], dim=1)
-                self.layer._weight_quantizer.zero_point = torch.cat([z.view(-1, 1) for z in zero], dim=1)
-            else:  # when group size == -1, static_group does not work
-                self.layer._weight_quantizer.scale = self.quantizer.scale
-                self.layer._weight_quantizer.zero_point = self.quantizer.zero_point
+        self._set_weight(Q, orig_dtype)
+        self._update_layer_quantizer(scale, zero, group_size)
 
     def free(self) -> None:
         self.H = None
         clear_memory()
 
 
-class GptqProcessor(BaseAlgoProcessor):
+class GptqProcessor(BaseHessianProcessor):
     def __init__(self, model: nn.Module, quant_algo_config: GPTQConfig, data_loader: DataLoader[torch.Tensor]) -> None:
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
-
-        self.model = model
-        self.block_size = quant_algo_config.block_size
+        super().__init__(model, quant_algo_config, data_loader)
         self.damp_percent = quant_algo_config.damp_percent
-        self.act_order = quant_algo_config.desc_act
-        self.static_groups = quant_algo_config.static_groups
-        self.inside_layer_modules = quant_algo_config.inside_layer_modules
-        self.model_decoder_layers = quant_algo_config.model_decoder_layers
-        self.data_loader = data_loader
-        self.device_map = init_device_map(self.model)
-        self.modules, self.module_kwargs, self.inps = init_blockwise_algo(
-            self.model, self.model_decoder_layers, self.data_loader
-        )
-
-        # In case we use CUDA Graph, this dictionary holds all the recorded graphs and all the static inputs to the graphs. The graphs have no outputs and modify the input in place.
-        self.graphs: dict[str, tuple[list[torch.cuda.CUDAGraph], dict[str, Any]]] = {}
-
-        use_cuda = next(iter(model.parameters())).device.type == "cuda"
-        self.use_cuda_graphs = not QUARK_GRAPH_DEBUG and self.static_groups and use_cuda
-
         if self.use_cuda_graphs:
             logger.info("Using CUDA Graph for GPTQ column by column quantization.")
-        elif QUARK_GRAPH_DEBUG:
+        elif QUARK_DISABLE_CUDA_GRAPH:
             logger.info(
-                f"CUDA Graph are not used for GPTQ column by column quantization as the environment variable QUARK_GRAPH_DEBUG is {QUARK_GRAPH_DEBUG}."
+                f"CUDA Graph are not used for GPTQ column by column quantization as the environment variable QUARK_DISABLE_CUDA_GRAPH is {QUARK_DISABLE_CUDA_GRAPH}."
             )
         elif not self.static_groups:
             logger.info(
                 "CUDA Graph are not used for GPTQ column by column quantization as `static_groups=False` is not supported in the CUDA Graph implementation."
             )
-        elif not use_cuda:
+        elif not self._use_cuda:
             logger.info(
                 "CUDA Graph are not used for GPTQ column by column quantization as the algorithm is running on CPU."
             )
 
-    def apply(self) -> None:
-        cache_examples_on_gpu = True
-        num_batches = len(self.inps)
-        layer_inputs = [inp for inp in self.inps]
-        layer_outputs: list[torch.Tensor] = []
-        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
-        for i in tqdm(range(len(self.modules)), desc="GPTQ"):
-            logger.info(f"Start quantizing layer {i + 1}/{len(self.modules)}")
-            layer = self.modules[i]
+    def _get_algorithm_instance(self, layer: nn.Module) -> GPTQ:
+        return GPTQ(layer)
 
-            force_layer_back_to_cpu = False
-            if get_device(layer) == CPU:
-                move_to_device(layer, self.device_map[f"{self.model_decoder_layers}.{i}"])
-                force_layer_back_to_cpu = True
-            cur_layer_device = get_device(layer) if not get_device(layer) == META else layer._hf_hook.execution_device
+    def _quantize_layer(self, algo_instance: GPTQ, layer: nn.Module, group_size: int) -> None:
+        algo_instance.quantize(
+            self.block_size,
+            self.damp_percent,
+            group_size,
+            self.act_order,
+            self.static_groups,
+            self.use_cuda_graphs,
+            self.graphs,
+        )
 
-            # full.keys: ['self_attn.k_proj', 'feed_forward.experts.0.gate_proj', 'feed_forward.experts.1.gate_proj', ...]
-            full = get_named_quant_linears(layer)
-            assert self.inside_layer_modules is not None
-            inside_layer_modules: list[str] = self.inside_layer_modules
+    def _collect_statistics(
+        self,
+        layer: nn.Module,
+        grouped_inner_layers: dict[str, nn.Module],
+        algo_instances: dict[str, GPTQ],
+        layer_inputs: list[torch.Tensor],
+        orig_layer_inputs: list[torch.Tensor],
+        num_batches: int,
+        current_layer_device: torch.device,
+    ) -> None:
+        def add_batch_quantized_hook(name: str) -> Callable[[nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
+            def hook(module: nn.Module, input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+                algo_instances[name].add_batch_quantized(input[0].data, output.data, name)
 
-            # inside_layer_modules: ['self_attn.k_proj', 'down_proj', ...]
-            for names in inside_layer_modules:
-                # support both dense and moe layers
-                matched_names = fnmatch.filter(
-                    full.keys(), "*" + names
-                )  # e.g., 'self_attn.k_proj' <- '*self_attn.k_proj', 'feed_forward.experts.0.down_proj' <- '*down_proj'
-                subset = {
-                    name: full[name]
-                    for name in matched_names
-                    if getattr(full[name], "_weight_quantizer", None) is not None
-                }
+            return hook
 
-                gptq = {}
-                for name in subset:
-                    gptq[name] = GPTQ(subset[name])
+        hook_handles = []
+        for name in grouped_inner_layers:
+            hook = grouped_inner_layers[name].register_forward_hook(add_batch_quantized_hook(name))
+            hook_handles.append(hook)
 
-                def add_batch(name: str) -> Callable[[torch.nn.Module, tuple[torch.Tensor, ...], torch.Tensor], None]:
-                    def tmp(_: nn.Module, inp: tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
-                        gptq[name].add_batch(inp[0].data, out.data, name)
+        block_forward(
+            layer,
+            self.module_kwargs,
+            num_batches,
+            current_layer_device,
+            layer_inputs,
+            [],
+            cache_examples_on_gpu=True,
+        )
 
-                    return tmp
-
-                handles = []
-                for name in subset:
-                    handles.append(subset[name].register_forward_hook(add_batch(name)))
-                # cal H
-                layer_outputs = block_forward(
-                    layer,
-                    self.module_kwargs,
-                    num_batches,
-                    cur_layer_device,
-                    layer_inputs,
-                    layer_outputs,
-                    cache_examples_on_gpu,
-                )
-
-                layer_outputs = []
-
-                for h in handles:
-                    h.remove()
-
-                for name in subset:
-                    logger.info(f"Quantizing {name} in layer {i + 1}/{len(self.modules)}...")
-                    gptq[name].fasterquant(
-                        blocksize=self.block_size,
-                        percdamp=self.damp_percent,
-                        group_size=subset[name]._weight_quantizer.group_size,
-                        actorder=self.act_order,
-                        static_groups=self.static_groups,
-                        graphs=self.graphs,
-                        use_cuda_graphs=self.use_cuda_graphs,
-                    )
-                    if not self.use_cuda_graphs:
-                        gptq[name].free()
-
-            # get whole decoder layer output
-            layer_outputs = block_forward(
-                layer,
-                self.module_kwargs,
-                num_batches,
-                cur_layer_device,
-                layer_inputs,
-                layer_outputs,
-                cache_examples_on_gpu,
-            )
-
-            if get_device(layer) != META:
-                # if meta, scale and zero point are in execution_device, and weight is in meta, can't change.
-                layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
-            del layer
-            del gptq
-            del layer_inputs
-            layer_inputs, layer_outputs = layer_outputs, []
-
-            if not self.use_cuda_graphs:
-                clear_memory()
-
-        reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)
+        for hook in hook_handles:
+            hook.remove()

@@ -12,8 +12,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer, get_library_path
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG, S8S8_AAWS_CONFIG, XINT8_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -108,7 +107,13 @@ def prepare_model(output_dir):
     onnx_model_path = Path(output_dir, "extra_op_types_to_quantize_model.onnx").as_posix()
     quant_onnx_model_path = Path(output_dir, "extra_op_types_to_quantize_model_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -164,7 +169,7 @@ def tensor_quantize(config, op_types_to_quantize, extra_op_types_to_quantize, ou
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_Raise(self, tmpdir: str):
-        with self.assertLogs("quark.onnx.quant_utils_screen", level="WARNING") as cm:
+        with self.assertLogs("quark.onnx.quantizers.interface_screen", level="WARNING") as cm:
             output = tensor_quantize(XINT8_CONFIG, [], ["BatchNormalization", "xxx"], tmpdir)
         self.assertTrue(any("The model does not contain the following op types: " in message for message in cm.output))
 

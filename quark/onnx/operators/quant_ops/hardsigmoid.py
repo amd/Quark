@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -7,9 +7,8 @@ from typing import Any
 from onnx import NodeProto
 from onnxruntime.quantization.operators.qdq_base_operator import QDQOperatorBase
 
+from quark.onnx.quantization.quant_utils import check_hard_sigmoid_condition
 from quark.shares.utils.log import ScreenLogger
-
-from ...quant_utils import check_hard_sigmoid_condition
 
 logger = ScreenLogger(__name__)
 

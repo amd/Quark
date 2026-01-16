@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 from functools import reduce
-from typing import Any, Dict, List, Tuple, TypeVar, Union
+from typing import Any, TypeVar, Union
 
 import torch
 import torch.nn as nn
@@ -27,8 +27,8 @@ def get_moe_layers(module: nn.Module) -> dict[str, nn.Linear]:
 
 
 NestedStrListTuple = Union[
-    list[tuple[str, Union[tuple[str, ...], torch.Tensor], torch.Tensor]],
-    tuple[str, Union[tuple[str, ...], torch.Tensor], torch.Tensor],
+    list[tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor]],
+    tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor],
     object,
 ]
 
@@ -44,7 +44,7 @@ def append_str_prefix(x: NestedStrListTuple, prefix: str) -> Any:
         return x
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
+def get_device(obj: torch.Tensor | nn.Module) -> torch.device:
     if isinstance(obj, torch.Tensor):
         return obj.device
     elif isinstance(obj, nn.Module):
@@ -53,7 +53,7 @@ def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
         raise TypeError("obj must be a torch.Tensor or nn.Module")
 
 
-def get_dtype(obj: Union[torch.Tensor, nn.Module]) -> torch.dtype:
+def get_dtype(obj: torch.Tensor | nn.Module) -> torch.dtype:
     if isinstance(obj, torch.Tensor):
         return obj.dtype
     elif isinstance(obj, nn.Module):

@@ -1,9 +1,9 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 import torch
 import torch.fx
@@ -13,7 +13,7 @@ from torch.fx import Node
 # from torch.fx.passes.utils.source_matcher_utils import (SourcePartition, get_source_partitions)
 # from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QLayerConfig, QTensorConfig
 from quark.torch.quantization.graph.torch_utils import (
     QUANT_ADAPTIVEAVGPOOL2D,
     QUANT_AVGPOOL2D,
@@ -72,8 +72,8 @@ STATIC_OPS = [
 
 @dataclass
 class QuantizationAnnotation:
-    input_qspec_map: dict[Node, QuantizationSpec | None] = field(default_factory=dict)
-    output_qspec: QuantizationSpec | None = None
+    input_qspec_map: dict[Node, QTensorConfig | None] = field(default_factory=dict)
+    output_qspec: QTensorConfig | None = None
     allow_implicit_sharing: bool = True
     # whether the node is annotated or not
     _annotated: bool = False
@@ -82,7 +82,7 @@ class QuantizationAnnotation:
 AnnotatorType = Callable[
     [
         torch.fx.GraphModule,
-        QuantizationConfig | None,
+        QLayerConfig | None,
         Callable[[Node], bool] | None,
     ],
     list[list[Node]] | None,
@@ -172,8 +172,8 @@ def propagate_annotation(model: torch.fx.GraphModule) -> None:
 
 
 def add_node_input(
-    node: Node, input_qspec_map: dict[Node, QuantizationSpec], input_act_qspec: QuantizationSpec | None
-) -> dict[Node, QuantizationSpec]:
+    node: Node, input_qspec_map: dict[Node, QTensorConfig], input_act_qspec: QTensorConfig | None
+) -> dict[Node, QTensorConfig]:
     for input_args in node.args:
         if isinstance(input_args, Node) and input_act_qspec is not None:
             # if 'val' in input_args.meta.keys() and input_args.meta['val'].dtype not in [torch.float32, torch.float16]:
@@ -182,51 +182,51 @@ def add_node_input(
     return input_qspec_map
 
 
-def get_weight_qspec(quantization_config: QuantizationConfig | None) -> QuantizationSpec | None:
+def get_weight_qspec(quantization_config: QLayerConfig | None) -> QTensorConfig | None:
     if quantization_config is None:
         return None
     if quantization_config.weight is None:
         return None
-    assert isinstance(quantization_config.weight, QuantizationSpec), (
-        "weight quantization spec should be a QuantizationSpec instance"
+    assert isinstance(quantization_config.weight, QTensorConfig), (
+        "weight quantization spec should be a QTensorConfig instance"
     )
-    quantization_spec: QuantizationSpec = quantization_config.weight
+    quantization_spec: QTensorConfig = quantization_config.weight
     return quantization_spec
 
 
-def get_bias_qspec(quantization_config: QuantizationConfig | None) -> QuantizationSpec | None:
+def get_bias_qspec(quantization_config: QLayerConfig | None) -> QTensorConfig | None:
     if quantization_config is None:
         return None
     if quantization_config.bias is None:
         return None
-    assert isinstance(quantization_config.bias, QuantizationSpec), (
-        "bias quantization spec should be a QuantizationSpec instance"
+    assert isinstance(quantization_config.bias, QTensorConfig), (
+        "bias quantization spec should be a QTensorConfig instance"
     )
-    quantization_spec: QuantizationSpec = quantization_config.bias
+    quantization_spec: QTensorConfig = quantization_config.bias
     return quantization_spec
 
 
-def get_input_act_qspec(quantization_config: QuantizationConfig | None) -> QuantizationSpec | None:
+def get_input_act_qspec(quantization_config: QLayerConfig | None) -> QTensorConfig | None:
     if quantization_config is None:
         return None
     if quantization_config.input_tensors is None:
         return None
-    assert isinstance(quantization_config.input_tensors, QuantizationSpec), (
-        "input quantization spec should be a QuantizationSpec instance"
+    assert isinstance(quantization_config.input_tensors, QTensorConfig), (
+        "input quantization spec should be a QTensorConfig instance"
     )
-    quantization_spec: QuantizationSpec = quantization_config.input_tensors
+    quantization_spec: QTensorConfig = quantization_config.input_tensors
     return quantization_spec
 
 
-def get_output_act_qspec(quantization_config: QuantizationConfig | None) -> QuantizationSpec | None:
+def get_output_act_qspec(quantization_config: QLayerConfig | None) -> QTensorConfig | None:
     if quantization_config is None:
         return None
     if quantization_config.output_tensors is None:
         return None
-    assert isinstance(quantization_config.output_tensors, QuantizationSpec), (
-        "output quantization spec should be a QuantizationSpec instance"
+    assert isinstance(quantization_config.output_tensors, QTensorConfig), (
+        "output quantization spec should be a QTensorConfig instance"
     )
-    quantization_spec: QuantizationSpec = quantization_config.output_tensors
+    quantization_spec: QTensorConfig = quantization_config.output_tensors
     return quantization_spec
 
 
@@ -242,7 +242,7 @@ def _mark_nodes_as_annotated(nodes: list[Node]) -> None:
 # will be deprecated later
 def _annotate_single_input_single_output(
     source_partitions: Dict[Any, List[SourcePartition]],
-    quantization_config: Optional[QuantizationConfig],
+    quantization_config: Optional[QLayerConfig],
     filter_fn: Optional[Callable[[Node], bool]] = None,
 ) -> Optional[List[List[Node]]]:
     partitions = list(itertools.chain(*source_partitions.values()))
@@ -256,7 +256,7 @@ def _annotate_single_input_single_output(
         input_act_qspec = get_input_act_qspec(quantization_config)
         output_act_qspec = get_output_act_qspec(quantization_config)
 
-        input_qspec_map: Dict[Node, Optional[QuantizationSpec]] = {}
+        input_qspec_map: Dict[Node, Optional[QTensorConfig]] = {}
         input_act = node.args[0]
         if isinstance(input_act, Node) and input_act_qspec:
             if input_act.meta.get("quantization_annotation"):
@@ -275,7 +275,7 @@ def _annotate_single_input_single_output(
 
 def _annotate_single_input_output_node(
     node: Node,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> Node | None:
     if _is_annotated([node]) or _is_skip_quant_node(node) or (filter_fn and not filter_fn(node)):
@@ -284,7 +284,7 @@ def _annotate_single_input_output_node(
     input_act_qspec = get_input_act_qspec(quantization_config)
     output_act_qspec = get_output_act_qspec(quantization_config)
 
-    input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+    input_qspec_map: dict[Node, QTensorConfig | None] = {}
     input_act = node.args[0]
     if input_act_qspec is None and isinstance(input_act, Node):
         if hasattr(input_act, "meta") and "quantization_annotation" in input_act.meta:
@@ -366,7 +366,7 @@ register_annotator
 @register_annotator("quantized_convbn_act")
 def _annotate_quantized_convbn_2d_act(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     # annotate the conv(2d,3d, linear, transpose) -> activation
@@ -381,7 +381,7 @@ def _annotate_quantized_convbn_2d_act(
         if not _is_call_module_qt_conv_node(gm, maybe_quant_conv_node):
             continue
         quant_convbn_node = maybe_quant_conv_node
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_act = quant_convbn_node.args[0]
         assert isinstance(input_act, Node)
         if qspec := get_input_act_qspec(quantization_config):
@@ -411,7 +411,7 @@ def _annotate_quantized_convbn_2d_act(
 @register_annotator("quantized_convbn_wo_act")
 def _annotate_quantized_convbn_2d(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     # annotate the conv(2d,3d, linear, transpose) without activateion
@@ -427,7 +427,7 @@ def _annotate_quantized_convbn_2d(
             continue
         if filter_fn and any(not filter_fn(n) for n in partition):
             continue
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_act = quant_convbn_node.args[0]
         assert isinstance(input_act, Node)
         if qspec := get_input_act_qspec(quantization_config):
@@ -447,7 +447,7 @@ def _annotate_quantized_convbn_2d(
 @register_annotator("convlike")
 def _annotate_conv(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -455,7 +455,7 @@ def _annotate_conv(
         if not is_conv_like_node(n):
             continue
         conv_node = n
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_act = conv_node.args[0]
         assert isinstance(input_act, Node)
         if qspec := get_input_act_qspec(quantization_config):
@@ -493,7 +493,7 @@ def _annotate_conv(
 @register_annotator("layernorm")
 def _annotate_layernorm(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -504,7 +504,7 @@ def _annotate_layernorm(
         if not is_layernorm_node(node):
             continue
         layer_norm_node = node
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_act = layer_norm_node.args[0]
         partition = [layer_norm_node]
         assert isinstance(input_act, Node)
@@ -539,7 +539,7 @@ def _annotate_layernorm(
 @register_annotator("convlike_act")
 def _annotate_conv_act(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -556,7 +556,7 @@ def _annotate_conv_act(
             continue
         conv_node = maybe_conv_node
 
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_act = conv_node.args[0]
         assert isinstance(input_act, Node)
         if qspec := get_input_act_qspec(quantization_config):
@@ -598,11 +598,10 @@ def _annotate_conv_act(
 @register_annotator("pool2d")
 def _annotate_pool2d(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
-    target_module = QUANT_ADAPTIVEAVGPOOL2D + QUANT_AVGPOOL2D
     for n in gm.graph.nodes:
         condition = _is_call_module_pool2d_node(gm, n) or _is_call_function_pool2d_node(n)
         if not condition:
@@ -618,7 +617,7 @@ def _annotate_pool2d(
 @register_annotator("element_arithmetic")
 def _annotate_element_arithmetic(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     # add: [operator.add, torch.add, operator.iadd] sub: [operator.sub, torch.sub, operator.isub]
@@ -637,7 +636,7 @@ def _annotate_element_arithmetic(
             continue
         input_act_qspec = get_input_act_qspec(quantization_config)
         output_act_qspec = get_output_act_qspec(quantization_config)
-        input_qspec_map: dict[Node, QuantizationSpec] = {}
+        input_qspec_map: dict[Node, QTensorConfig] = {}
         input_qspec_map = add_node_input(arithmetic_node, input_qspec_map, input_act_qspec)
 
         arithmetic_node.meta["quantization_annotation"] = QuantizationAnnotation(
@@ -652,7 +651,7 @@ def _annotate_element_arithmetic(
 @register_annotator("add_act")
 def _annotate_add_relu(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -672,7 +671,7 @@ def _annotate_add_relu(
         if filter_fn and any(not filter_fn(n) for n in partition):
             continue
         input_qspec = get_input_act_qspec(quantization_config)
-        input_qspec_map: dict[Node, QuantizationSpec] = {}
+        input_qspec_map: dict[Node, QTensorConfig] = {}
         input_qspec_map = add_node_input(math_arithmetic_node, input_qspec_map, input_qspec)
         math_arithmetic_node.meta["quantization_annotation"] = QuantizationAnnotation(
             input_qspec_map=input_qspec_map,  # type: ignore[arg-type]
@@ -690,7 +689,7 @@ def _annotate_add_relu(
 @register_annotator("mean")
 def _annotate_mean(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     # mean_partitions = get_source_partitions(gm.graph, [torch.mean], filter_fn)
@@ -709,7 +708,7 @@ def _annotate_mean(
 @register_annotator("sum")
 def _annotate_sum(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     # sum_partitions = get_source_partitions( gm.graph, [torch.SUM, torch.sum], filter_fn)
@@ -728,7 +727,7 @@ def _annotate_sum(
 @register_annotator("activation_op")
 def _annotate_activation(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -745,7 +744,7 @@ def _annotate_activation(
 @register_annotator("cat")
 def _annotate_cat(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -753,7 +752,7 @@ def _annotate_cat(
         if not is_cat_node(n):
             continue
         cat_node = n
-        input_qspec_map: dict[Node, QuantizationSpec | None] = {}
+        input_qspec_map: dict[Node, QTensorConfig | None] = {}
         input_acts = cat_node.args[0]  # NOTE args[0] is a list
         partition = [cat_node]
         for each_maybe_node in input_acts:
@@ -779,7 +778,7 @@ def _annotate_cat(
 @register_annotator("slice")
 def _annotate_slice(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []
@@ -796,7 +795,7 @@ def _annotate_slice(
 @register_annotator("shape_change")
 def _annotate_shape_change(
     gm: torch.fx.GraphModule,
-    quantization_config: QuantizationConfig | None,
+    quantization_config: QLayerConfig | None,
     filter_fn: Callable[[Node], bool] | None = None,
 ) -> list[list[Node]] | None:
     annotated_partitions = []

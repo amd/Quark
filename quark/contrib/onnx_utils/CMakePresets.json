@@ -1,0 +1,108 @@
+{
+  "$schema": "https://cmake.org/cmake/help/v3.28/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "default",
+      "binaryDir": "${sourceDir}/build",
+      "installDir": "build/install",
+      "cacheVariables": {
+        "CMAKE_FIND_NO_INSTALL_PREFIX": "ON"
+      }
+    },
+    {
+      "name": "msvc",
+      "inherits": "default",
+      "generator": "Visual Studio 17 2022"
+    },
+    {
+      "name": "ninja",
+      "inherits": "default",
+      "generator": "Ninja Multi-Config"
+    },
+    {
+      "name": "hybrid-llm",
+      "inherits": "default",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM": "ON",
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_CPU": "OFF",
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_GPU": "ON",
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_NPU": "ON",
+        "ONNX_UTILS_ENABLE_PROJECT_SHARED_MEMORY": "ON",
+        "ONNX_UTILS_ENABLE_PROJECT_DD": "ON",
+        "ONNX_UTILS_BUILD_EXAMPLES": "ON",
+        "ONNX_UTILS_USE_STATIC_PROTOBUF": "ON",
+        "BUILD_SHARED_LIBS": "ON",
+        "ONNX_UTILS_USE_RYZENAI_EP": "ON"
+      }
+    },
+    {
+      "name": "hybrid-llm-linux",
+      "inherits": "hybrid-llm",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_GPU": "OFF",
+        "ONNX_UTILS_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
+      "name": "hybrid-llm-static",
+      "inherits": "hybrid-llm",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "OFF"
+      }
+    },
+    {
+      "name": "hybrid-llm-npu",
+      "inherits": "hybrid-llm",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_GPU": "OFF"
+      }
+    },
+    {
+      "name": "hybrid-llm-npu-static",
+      "inherits": "hybrid-llm-static",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_PROJECT_HYBRID_LLM_GPU": "OFF"
+      }
+    },
+    {
+      "name": "hybrid-llm-corelib",
+      "inherits": "hybrid-llm",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_CORELIB": "ON"
+      }
+    },
+    {
+      "name": "stable-diffusion",
+      "inherits": "default",
+      "cacheVariables": {
+        "ONNX_UTILS_ENABLE_PROJECT_DD": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-base",
+      "hidden": true,
+      "targets": [
+        "install"
+      ],
+      "configurePreset": "default"
+    },
+    {
+      "name": "release",
+      "inherits": "build-base",
+      "configuration": "Release"
+    },
+    {
+      "name": "relwithdebinfo",
+      "inherits": "build-base",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "debug",
+      "inherits": "build-base",
+      "configuration": "Debug"
+    }
+  ]
+}

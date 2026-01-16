@@ -13,6 +13,14 @@
 #include <cstdio>
 #include <stdexcept>
 
+// Required for ::cuda::std::is_same_v, used only for Nvidia GPUs.
+// `cuda/std/type_traits` is not properly transpiled on AMD platforms (fatal
+// error: 'cuda/std/type_traits' file not found), and likely requires
+// https://github.com/ROCm/libhipcxx that is not shipped as part of ROCm.
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(__HIP_PLATFORM_HCC__)
+#include <cuda/std/type_traits>
+#endif
+
 #define TORCH_CHECK_SHAPES(__x, __dim_x, __y, __dim_y, __scale_y) \
   TORCH_CHECK(                                                    \
     (__x).size(__dim_x) == (__y).size(__dim_y) * __scale_y,       \
@@ -23,17 +31,6 @@
     (__x).dtype() == torch::__dtype,                 \
     #__x " is incorrect datatype, must be " #__dtype \
   )
-
-// Check for bfloat16 support
-// V100 is compute capability 7.0 and doesn't support __nv_bfloat16 (requires
-// >= 8.0) ROCm/HIP generally supports bfloat16 on modern GPUs
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
-#define BFLOAT16_SUPPORTED 1
-#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-#define BFLOAT16_SUPPORTED 1
-#else
-#define BFLOAT16_SUPPORTED 0
-#endif
 
 #define FLOAT16_MANTISSA_BITS 10
 #define FLOAT16_EXP_BITS 5
@@ -84,37 +81,58 @@ inline __device__ int bf16_or_half2int_rn(const __half h) {
   return __half2int_rn(h);
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ int bf16_or_half2int_rn(const __nv_bfloat16 h) {
   // __bfloat162int_rn is not implemented in ROCm hip/amd_detail/amd_hip_bf16.h.
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
   return __float2int_rn(__bfloat162float(h));
-}
+#else
+  printf(
+    "ERROR in bf16_or_half2int_rn: compute capability does not support "
+    "bfloat16.\n"
+  );
+  assert(1);
 #endif
+}
 
 template <>
 inline __device__ __half float_to_bf16_or_half(const float x) {
   return __float2half(x);
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ __nv_bfloat16 float_to_bf16_or_half(const float x) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
   return __float2bfloat16(x);
-}
+#else
+  printf(
+    "ERROR in float_to_bf16_or_half: compute capability does not support "
+    "bfloat16.\n"
+  );
+  assert(1);
 #endif
+}
 
 template <>
 inline __device__ float bf16_or_half_to_float(const __half x) {
   return __half2float(x);
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ float bf16_or_half_to_float(const __nv_bfloat16 x) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
   return __bfloat162float(x);
-}
+#else
+  printf(
+    "ERROR in bf16_or_half_to_float: compute capability does not support "
+    "bfloat16.\n"
+  );
+  assert(1);
 #endif
+}
 
 template <>
 inline __device__ __half shfl_xor_bf16_or_half(__half x, int laneMask) {
@@ -126,10 +144,12 @@ inline __device__ __half shfl_xor_bf16_or_half(__half x, int laneMask) {
 #endif
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ __nv_bfloat16
 shfl_xor_bf16_or_half(__nv_bfloat16 x, int laneMask) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+
 #if defined USE_ROCM
   // `__shfl_xor_sync` does not exist for float16 in rocm 6.3.
   return __ushort_as_bfloat16(__shfl_xor(__bfloat16_as_ushort(x), laneMask));
@@ -138,20 +158,25 @@ shfl_xor_bf16_or_half(__nv_bfloat16 x, int laneMask) {
     __shfl_xor_sync(0xffffffff, __bfloat16_as_ushort(x), laneMask)
   );
 #endif
-}
+
+#else
+  printf(
+    "ERROR in shfl_xor_bf16_or_half: compute capability does not support "
+    "bfloat16.\n"
+  );
+  assert(1);
 #endif
+}
 
 template <>
 inline __device__ __half e8m0_to_half(__half scale) {
   return scale;
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ __nv_bfloat16 e8m0_to_half(__nv_bfloat16 scale) {
   return scale;
 }
-#endif
 
 template <>
 inline __device__ __half e8m0_to_half(uint8_t scale) {
@@ -175,14 +200,15 @@ inline __device__ __half e8m0_to_half(uint8_t scale) {
                              scale_biased >= 1 - FLOAT16_MANTISSA_BITS) *
                               (1 << (FLOAT16_MANTISSA_BITS + scale_biased - 1));
 
-  __half scale_half = *(__half *)(&scale_bits);
+  __half scale_half = *(__half*)(&scale_bits);
 
   return scale_half;
 }
 
-#if BFLOAT16_SUPPORTED
 template <>
 inline __device__ __nv_bfloat16 e8m0_to_half(uint8_t scale) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
   int16_t scale_exp = (int16_t)scale - 127;
 
   __nv_bfloat16 scale_half = __float2bfloat16(powf(2.0, (float)scale_exp));
@@ -196,8 +222,106 @@ inline __device__ __nv_bfloat16 e8m0_to_half(uint8_t scale) {
                               (1 << (BFLOAT16_MANTISSA_BITS + scale_exp - 1));
 
   return scale_half;
-}
+#else
+  printf(
+    "ERROR in e8m0_to_half: compute capability does not support bfloat16.\n"
+  );
+  assert(1);
 #endif
+}
+
+// CUDA compute capabilities <sm_80 (e.g. V100, etc.) do not support bfloat16
+// math. As `__CUDA_ARCH__` is only defined in device code, we handle the checks
+// here.
+template <typename float_type>
+__device__ float_type hmul_impl(float_type a, float_type b) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return __hmul(a, b);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return __hmul(a, b);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
+
+template <typename float_type>
+__device__ float_type hdiv_impl(float_type a, float_type b) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return __hdiv(a, b);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return __hdiv(a, b);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
+
+template <typename float_type>
+__device__ float_type hmax_impl(float_type a, float_type b) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return __hmax(a, b);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return __hmax(a, b);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
+
+template <typename float_type>
+__device__ float_type habs_impl(float_type a) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return __habs(a);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return __habs(a);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
+
+template <typename float_type>
+__device__ float_type hlog2_impl(float_type a) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return hlog2(a);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return hlog2(a);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
+
+template <typename float_type>
+__device__ float_type hfloor_impl(float_type a) {
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || \
+  defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return hfloor(a);
+#else
+  if constexpr (::cuda::std::is_same_v<float_type, __half>) {
+    return hfloor(a);
+  } else {
+    printf("ERROR: compute capability does not support bfloat16.\n");
+    assert(1);
+  }
+#endif
+}
 
 #endif
 #endif

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import argparse
@@ -9,8 +9,8 @@ from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
 
 from quark.experimental.cli import base_cli
-from quark.onnx import auto_search
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import AutoSearch, Config
+from quark.onnx.quantization.config import get_default_config
 
 from .helper_utils import NpyDataReader
 
@@ -127,7 +127,7 @@ class OnnxAutoSearch_CLI(base_cli.BaseQuarkCLICommand):
         dr = NpyDataReader(calibration_image_folder=calibration_dataset_path, model_path=input_model_path, data_size=10)
 
         # Create auto search instance
-        auto_search_ins = auto_search.AutoSearch(
+        auto_search_ins = AutoSearch(
             config=config,
             auto_search_config=auto_search_config,
             model_input=input_model_path,

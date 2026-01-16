@@ -12,13 +12,13 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
-from quark.torch.quantization import Config, FP8E4M3PerTensorSpec, QuantizationConfig, load_quant_algo_config_from_file
+from quark.torch.quantization import FP8E4M3PerTensorSpec, QConfig, QLayerConfig, load_quant_algo_config_from_file
 
 logger = ScreenLogger(__name__)
 
 # quant spec
-FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
-global_quant_config = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(is_dynamic=False).to_quantization_spec()
+global_quant_config = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
 sys.path.append("..")
 
 
@@ -47,7 +47,7 @@ def test_fp8_attn_asq():
     kv_cache_quant_config = {}
     kv_layers_name = ["*k_proj", "*v_proj"]
     for layer_name in kv_layers_name:
-        kv_cache_quant_config[layer_name] = QuantizationConfig(
+        kv_cache_quant_config[layer_name] = QLayerConfig(
             input_tensors=global_quant_config.input_tensors,
             weight=global_quant_config.weight,
             output_tensors=FP8_PER_TENSOR_SPEC,
@@ -56,13 +56,13 @@ def test_fp8_attn_asq():
     # fp8 attn
     q_layers_name = "*q_proj"
     attn_qspec = FP8_PER_TENSOR_SPEC
-    layer_quant_config[q_layers_name] = QuantizationConfig(
+    layer_quant_config[q_layers_name] = QLayerConfig(
         input_tensors=global_quant_config.input_tensors, weight=global_quant_config.weight, output_tensors=attn_qspec
     )
 
     # algorithm config
     algo_config = load_quant_algo_config_from_file(config_path + "/autosmoothquant_config.json")
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=global_quant_config,
         layer_quant_config=layer_quant_config,
         kv_cache_quant_config=kv_cache_quant_config,

@@ -10,7 +10,6 @@ import json
 import os
 import time
 from datetime import datetime
-from typing import List, Optional
 
 import adapter as quark_brevitas
 import numpy as np
@@ -182,9 +181,8 @@ def main(args):
     assert args.calibration_prompt <= len(calibration_prompts), f"Only {len(calibration_prompts)} prompts are available"
     calibration_prompts = calibration_prompts[: args.calibration_prompt]
 
-    latents = None
     if args.path_to_latents is not None:
-        latents = torch.load(args.path_to_latents).to(torch.float16)
+        _ = torch.load(args.path_to_latents).to(torch.float16)
 
     # Create output dir. Move to tmp if None
     ts = datetime.fromtimestamp(time.time())

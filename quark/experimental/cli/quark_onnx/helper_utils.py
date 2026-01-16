@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -156,9 +156,6 @@ class NpyDataReader(BasicDataReader):
     ):
         return self.datasize
 
-    def rewind(self):
-        self.enum_data = None
-
     def reset(self):
         self.enum_data = None
 
@@ -268,66 +265,9 @@ def get_calib_dataloader_to_tensor(
     return calib_dataloader
 
 
-def get_calib_dataloader_to_dict(
-    dataset_name: str = "cnn_dailymail",
-    tokenizer: AutoTokenizer = None,
-    batch_size: int = 1,
-    num_calib_data: int = 512,
-    seqlen: int = 512,
-    device: str | None = None,
-) -> DataLoader[dict[str, torch.Tensor]]:
-    def make_data_block(
-        examples: dict[str, list[str]],
-        tokenizer: AutoTokenizer = None,
-        prompt_col_name: str = "",
-        max_length: int = 512,
-    ) -> dict[str, list[list[torch.Tensor]]]:
-        res: dict[str, list[list[torch.Tensor]]] = tokenizer(
-            examples[prompt_col_name], padding=True, truncation=True, max_length=max_length
-        )
-        return res
-
-    def my_collate_fn(blocks: list[dict[str, list[list[str]]]]) -> dict[str, torch.Tensor]:
-        data_batch = {}
-        data_batch["input_ids"] = torch.Tensor([block["input_ids"] for block in blocks])
-        if device:
-            data_batch["input_ids"] = data_batch["input_ids"].to(device)
-        return data_batch
-
-    if dataset_name == "pileval":
-        dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation", cache_dir="data_cache")
-        prompt_col_name = "text"
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
-        prompt_col_name = "article"
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
-        prompt_col_name = "text"
-    else:
-        raise NotImplementedError
-
-    dataset = dataset.select(
-        indices=[i for i in range(min(len(dataset), num_calib_data))],
-        keep_in_memory=True,
-    )
-    tokenized_datasets = dataset.map(
-        make_data_block,
-        batched=True,
-        batch_size=len(dataset),
-        num_proc=1,
-        remove_columns=dataset.column_names,
-        keep_in_memory=True,
-        fn_kwargs={"tokenizer": tokenizer, "prompt_col_name": prompt_col_name, "max_length": seqlen},
-    )
-
-    calib_dataloader = DataLoader(tokenized_datasets, batch_size=batch_size, collate_fn=my_collate_fn)
-
-    return calib_dataloader
-
-
 def get_calib_dataloader(
     dataset_name: str, **kwargs: Any
-) -> Union[DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]]:
+) -> DataLoader[torch.Tensor] | DataLoader[list[dict[str, torch.Tensor]]] | DataLoader[dict[str, torch.Tensor]]:
     if dataset_name in ["pileval", "cnn_dailymail"]:
         return get_calib_dataloader_to_tensor(dataset_name, **kwargs)
     elif dataset_name in ["pileval_for_awq_benchmark", "wikitext_for_gptq_benchmark"]:

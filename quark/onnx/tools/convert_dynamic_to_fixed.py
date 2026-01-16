@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Convert dynamic to fixed shape."""
@@ -8,7 +8,6 @@ import argparse
 import os
 import pathlib
 import sys
-from typing import Dict, List
 
 import onnx
 from onnxruntime.tools.onnx_model_utils import fix_output_shapes, make_input_shape_fixed

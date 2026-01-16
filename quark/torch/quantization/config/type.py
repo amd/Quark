@@ -1,17 +1,17 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from enum import Enum, auto
-from typing import Dict
 
 import torch
 
 from quark.shares.data_type import (
+    # ---------------
     BaseBFloat16,
     BaseBFP16,
-    BaseDataType,
+    BaseDtype,
     BaseFloat16,
     BaseFP4,
     BaseFP6_E2M3,
@@ -27,14 +27,18 @@ from quark.shares.data_type import (
     BaseMX,
     BaseMX6,
     BaseMX9,
+    BaseQSchemeType,
+    BaseRoundType,
+    BaseScaleType,
     BaseUInt4,
     BaseUInt8,
     BaseUInt16,
     BaseUInt32,
+    BaseZeroPointType,
 )
 
 
-class QSchemeType(Enum):
+class QSchemeType(BaseQSchemeType):
     """
     The quantization schemes applicable to tensors within a model.
 
@@ -49,7 +53,7 @@ class QSchemeType(Enum):
     per_group = "per_group"
 
 
-class ZeroPointType(Enum):
+class ZeroPointType(BaseZeroPointType):
     """
     The zero point Dtype used for zero point.
 
@@ -212,7 +216,7 @@ SUPPORT_DATA_TYPE = [
 ]
 
 
-class Dtype(Enum):
+class Dtype(BaseDtype):
     """
     The data types used for quantization of tensors.
 
@@ -317,7 +321,7 @@ UNSUPPORTED_TYPES = frozenset(["mx", "mx6", "mx9", "bfp16"])
 ALL_DATA_TYPES = list(Dtype.__members__.values())
 
 
-class ScaleType(Enum):
+class ScaleType(BaseScaleType):
     """
     The types of scales used in quantization.
 
@@ -347,7 +351,7 @@ class ScaleType(Enum):
             )
 
 
-class RoundType(Enum):
+class RoundType(BaseRoundType):
     """
     The rounding methods used during quantization.
 

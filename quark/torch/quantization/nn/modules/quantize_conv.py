@@ -1,9 +1,9 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ from torch.nn.common_types import _size_2_t
 from torch.nn.modules.utils import _pair
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
 
@@ -36,7 +36,7 @@ class _QuantizedConvNd(nn.modules.conv._ConvNd, QuantMixin):
         groups: int,
         bias: bool,
         padding_mode: str,
-        quant_config: QuantizationConfig,
+        quant_config: QLayerConfig,
         reload: bool = False,
         device: torch.device = torch.device("cpu"),
     ) -> None:
@@ -80,7 +80,7 @@ class _QuantizedConv(_QuantizedConvNd):
     def from_float(
         cls,
         float_module: nn.Module,
-        quant_config: QuantizationConfig,
+        quant_config: QLayerConfig,
         reload: bool = False,
         weight_tensor: torch.Tensor | None = None,
         bias_tensor: torch.Tensor | None = None,
@@ -127,7 +127,7 @@ class QuantConv2d(_QuantizedConv):
         groups: int = 1,
         bias: bool = True,
         padding_mode: str = "zeros",
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
         reload: bool = False,
         device: torch.device = torch.device("cpu"),
     ) -> None:
@@ -182,7 +182,7 @@ class _QuantizedConvTransposeNd(_QuantizedConvNd, nn.modules.conv._ConvTranspose
         bias: bool,
         padding_mode: str,
         dim: int,
-        quant_config: QuantizationConfig,
+        quant_config: QLayerConfig,
         reload: bool = False,
         device: torch.device = torch.device("cpu"),
     ) -> None:
@@ -233,7 +233,7 @@ class _QuantizedConvTransposeNd(_QuantizedConvNd, nn.modules.conv._ConvTranspose
     def from_float(
         cls,
         float_module: nn.Module,
-        quant_config: QuantizationConfig,
+        quant_config: QLayerConfig,
         reload: bool = False,
         weight_tensor: torch.Tensor | None = None,
         bias_tensor: torch.Tensor | None = None,
@@ -280,7 +280,7 @@ class QuantConvTranspose2d(_QuantizedConvTransposeNd):
         bias: bool = True,
         dilation: _size_2_t = 1,
         padding_mode: str = "zeros",
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
         reload: bool = False,
         device: torch.device = torch.device("cpu"),
     ) -> None:

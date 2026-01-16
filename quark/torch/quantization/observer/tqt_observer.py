@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 from quark.torch.quantization.observer.observer import UniformScalingObserver
 
 if TYPE_CHECKING:
-    from quark.torch.quantization.config.config import QuantizationSpec
-from typing import Any, List, Optional, Tuple
+    from quark.torch.quantization.config.config import QTensorConfig
+from typing import Any
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ from quark.torch.quantization.utils import get_num_bits
 
 # TODO: @Ruiying Add TQTObserver here
 class TQTObserver(UniformScalingObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec)
         _num_bits = get_num_bits(qspec.dtype)
         assert isinstance(_num_bits, int)

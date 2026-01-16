@@ -8,7 +8,7 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import onnx
 import onnx.numpy_helper
@@ -21,9 +21,7 @@ from onnxruntime.quantization.quant_utils import (
     find_by_name,
 )
 
-from quark.shares.utils.log import ScreenLogger
-
-from ..quant_utils import (
+from quark.onnx.quantization.quant_utils import (
     BFP_OP_DEFAULT_ATTRS,
     COP_BFP_OP_NAME,
     COP_DOMAIN,
@@ -37,13 +35,15 @@ from ..quant_utils import (
     modified_annotate_input,
     remove_nodes,
 )
-from ..registry import CreateQDQQuantizer
-from .qdq_quantizer import VitisQDQQuantizer
+from quark.shares.utils.log import ScreenLogger
+
+from .qdq_quantizer import BaseExtendedQDQQuantizer
+from .registry import CreateQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
-class VitisBFPQuantizer(VitisQDQQuantizer):
+class BFPQDQQuantizer(BaseExtendedQDQQuantizer):
     def __init__(
         self,
         model: ModelProto,
@@ -58,10 +58,10 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
         nodes_to_exclude: list[str],
         op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: dict[Any, Any] = {},
         extra_options: dict[str, Any] | None = None,
     ):
-        super().__init__(
+        BaseExtendedQDQQuantizer.__init__(
+            self,
             model,
             per_channel,
             reduce_range,
@@ -74,7 +74,6 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
             nodes_to_exclude,
             op_types_to_quantize,
             calibrate_method,
-            quantized_tensor_type,
             extra_options,
         )
 
@@ -136,7 +135,7 @@ class VitisBFPQuantizer(VitisQDQQuantizer):
         weight_name = weight_proto.name
         dq_output = add_dequant_output_suffix(weight_name)
         self.model.replace_input_of_all_nodes(weight_name, dq_output)
-        axis = 0 if len(weight_proto.dims) == 1 else None  # For scalar, the axis should be 0
+        axis = 0 if len(weight_proto.dims) <= 1 else None  # For scalar, the axis should be 0
         convert_to = 0  # Initializer is a constant, no conversion required
         self._create_fn_nodes(weight_name, dq_output, add_dequant_suffix(weight_name), axis, convert_to)
 

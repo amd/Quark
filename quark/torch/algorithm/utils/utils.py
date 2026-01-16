@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import gc
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -44,7 +44,7 @@ def get_device_map(model: nn.Module, is_accelerate: bool | None) -> dict[str, An
 
 
 def set_device_map(model: nn.Module, device_map: dict[str, Any]) -> nn.Module:
-    if len(device_map) == 1 and "" in device_map.keys():
+    if len(device_map) == 1 and "" in device_map:
         model = model.to(device_map[""])
     else:
         for name, module in model.named_modules(remove_duplicate=False):

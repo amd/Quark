@@ -10,8 +10,15 @@ import onnxruntime
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
 from testing_utils import prepare_model
 
-from quark.onnx import ExtendedQuantFormat, ExtendedQuantType, ModelQuantizer, VitisQuantFormat, VitisQuantType
-from quark.onnx.quantization.config.config import Config, QuantizationConfig
+from quark.onnx import (
+    Config,
+    ExtendedQuantFormat,
+    ExtendedQuantType,
+    ModelQuantizer,
+    QuantizationConfig,
+    VitisQuantFormat,
+    VitisQuantType,
+)
 from quark.onnx.quantization.config.custom_config import BF16_BFP16_CONFIG, BF16_MIXED_BFP16_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -127,11 +134,8 @@ def prepare_tensorwise_config():
         quant_format=ExtendedQuantFormat.QDQ,
         activation_type=ExtendedQuantType.QBFloat16,
         weight_type=ExtendedQuantType.QBFloat16,
-        specific_tensor_precision=True,
         extra_options={
-            "MixedPrecisionTensor": {
-                ExtendedQuantType.QBFP: ["conv.weight"]  # This is a specific name
-            },
+            "TensorQuantOverrides": {"conv.weight": [{"quant_type": ExtendedQuantType.QBFP}]},
             "BFPAttributes": {
                 "bfp_method": "to_bfp",
                 "axis": 1,

@@ -9,7 +9,6 @@
 
 import itertools
 import warnings
-from typing import Dict, List, Optional, Set
 
 import numpy as np
 import onnx

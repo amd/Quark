@@ -9,10 +9,10 @@ from quark.testing.common_utils import skip_if_no_gpu
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import Uint4PerChannelSpec
 from quark.torch.quantization.config.config import (
-    Config,
     OCP_MXFP4Spec,
+    QConfig,
+    QLayerConfig,
     QronosConfig,
-    QuantizationConfig,
     Uint4PerGroupSpec,
 )
 from quark.torch.utils import getattr_recursive, setattr_recursive
@@ -71,20 +71,20 @@ def test_qronos_basic_correctness(dtype: str, qscheme: str, model_id: str):
             ).to_quantization_spec()
     else:
         if qscheme == "per_group":
-            qspec = OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+            qspec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
         else:
             pytest.skip("ocp mxfp4 not compatible with per_channel, per_tensor")
 
-    global_quant_config = QuantizationConfig(weight=qspec)
+    global_quant_config = QLayerConfig(weight=qspec)
 
     qronos_config = QronosConfig(
         model_decoder_layers=model_decoder_layers, inside_layer_modules=inside_layer_modules, block_size=32
     )
 
-    config = Config(global_quant_config=global_quant_config, algo_config=[qronos_config])
+    config = QConfig(global_quant_config=global_quant_config, algo_config=[qronos_config])
     calib_dataloader = get_dataloader(torch_device)
 
-    model = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
     model = model.eval()
 
     # make the model smaller (2 layers instead of 16) just to speed up test.
@@ -127,11 +127,11 @@ def test_qronos_correctness(dtype: str, qscheme: str):
             ).to_quantization_spec()
     else:
         if qscheme == "per_group":
-            qspec = OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+            qspec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
         else:
             pytest.skip("ocp mxfp4 not compatible with per_channel, per_tensor")
 
-    global_quant_config = QuantizationConfig(weight=qspec)
+    global_quant_config = QLayerConfig(weight=qspec)
 
     qronos_config = QronosConfig(
         model_decoder_layers="model.layers",
@@ -146,10 +146,10 @@ def test_qronos_correctness(dtype: str, qscheme: str):
         ],
     )
 
-    config = Config(global_quant_config=global_quant_config, algo_config=[qronos_config])
+    config = QConfig(global_quant_config=global_quant_config, algo_config=[qronos_config])
     calib_dataloader = get_dataloader(torch_device)
 
-    model = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
     model = model.eval()
     logits_original = model(calib_dataloader.dataset).logits
 

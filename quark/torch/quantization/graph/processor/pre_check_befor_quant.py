@@ -1,12 +1,13 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
 
 import torch.fx
+from packaging.version import Version
 
-from quark.torch.quantization.config.config import Config
+from quark.torch.quantization.config.config import QConfig
 
 __all__ = [
     "pre_quant_model_and_config_checks",
@@ -44,7 +45,7 @@ All check related to config should be here
 """
 
 
-def _contain_layer_quant_config(config: Config) -> bool:
+def _contain_layer_quant_config(config: QConfig) -> bool:
     """
     raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_quant_config`, got {config.layer_quant_config}. Please use eager mode quantization for now."
@@ -55,7 +56,7 @@ def _contain_layer_quant_config(config: Config) -> bool:
     return True
 
 
-def _contain_layer_type_quant_config(config: Config) -> bool:
+def _contain_layer_type_quant_config(config: QConfig) -> bool:
     """
     raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_type_quant_config`, got {config.layer_type_quant_config}. Please use eager mode quantization for now."
@@ -66,18 +67,17 @@ def _contain_layer_type_quant_config(config: Config) -> bool:
     return True
 
 
-def _all_config_checks(config: Config) -> bool:
+def _all_config_checks(config: QConfig) -> bool:
     if (not _contain_layer_quant_config(config)) or (not _contain_layer_type_quant_config(config)):
         return False
     return True
 
 
-def pre_quant_model_and_config_checks(model: Any, config: Config) -> bool:
+# TODO delete this function later haoliang, merge with check_supported_model_and_config
+def pre_quant_model_and_config_checks(model: Any, config: QConfig) -> bool:
+    model = _delete_guards_fn_if_torch_gt_290(model)
     if (not _all_model_checks(model)) or (not _all_config_checks(config)):
         return False
-    # TODO here
-    # if not pre_quant_check_config&model(model, config):
-    #     return False
     return True
 
 
@@ -86,7 +86,8 @@ TODO NOTE replaced to pre_quant_model_and_config_checks or other func later
 """
 
 
-def check_supported_model_and_config(model: torch.fx.GraphModule, config: Config) -> None:  # pragma: no cover
+def check_supported_model_and_config(model: torch.fx.GraphModule, config: QConfig) -> None:  # pragma: no cover
+    model = _delete_guards_fn_if_torch_gt_290(model)
     if not isinstance(model, torch.fx.GraphModule):
         raise ValueError(
             "Quark graph-based quantization requires a model inheriting from torch.fx.GraphModule but the provided model is not. Please check your model and refer to https://pytorch.org/docs/stable/fx.html and https://pytorch.org/docs/stable/export.html#torch.export.ExportedProgram.module."
@@ -119,3 +120,29 @@ def check_supported_model_and_config(model: torch.fx.GraphModule, config: Config
             raise NotImplementedError(
                 "Quark quantizer in graph mode does not support sequence of quantization specs, but got a list of quantization specs in global quant config. Please use eager mode quantization for now."
             )
+
+
+def _delete_guards_fn_if_torch_gt_290(graph_model: torch.fx.GraphModule) -> torch.fx.GraphModule:
+    """
+    since torch 2.9, after trace a torch model, will contain a `call_module` in GraphModule.
+    This `call_module` node looks like:
+        _guards_fn = self._guards_fn(x)
+    This node would not take effect during the forward, and for better later GraphModule condition check,
+    we need to delete this node.
+    """
+    if Version(torch.__version__) < Version("2.9"):
+        return graph_model
+    maybe_guards_fn = [[node, node.op] for node in graph_model.graph.nodes if node.op == "call_module"]
+    if len(maybe_guards_fn) > 1:
+        # meaning contain over 1 call_module node
+        # we will not do process, this model may not be quantized.
+        return graph_model
+    guards_fn_node = maybe_guards_fn[0][0]
+    if not isinstance(getattr(graph_model, guards_fn_node.target), torch.export._unlift.GuardsFn):
+        # other case, we skip, let the later code/logic to process
+        return graph_model
+
+    graph_model.graph.erase_node(guards_fn_node)
+    graph_model.graph.eliminate_dead_code()
+    graph_model.recompile()
+    return graph_model

@@ -13,9 +13,7 @@ import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer, get_library_path
-from quark.onnx.calibration.methods import ExtendedCalibrationMethod
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ExtendedCalibrationMethod, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import A8W8_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -264,7 +262,13 @@ def prepare_model_2(output_dir):
     quant_onnx_model_path = Path(output_dir, "simple_conv_model_quantized.onnx").as_posix()
 
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

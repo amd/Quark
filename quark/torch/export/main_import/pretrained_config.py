@@ -1,17 +1,17 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 CONFIG_NAME = "config.json"
 
 
 class PretrainedConfig:
-    def __init__(self, pretrained_dir: Union[str, Path]) -> None:
+    def __init__(self, pretrained_dir: str | Path) -> None:
         model_info_dir = Path(pretrained_dir)
         config_file_path = model_info_dir / CONFIG_NAME
         with open(config_file_path, encoding="utf-8") as reader:

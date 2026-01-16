@@ -1,0 +1,73 @@
+// Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+syntax = "proto3";
+package ryzenai.onnx_utils.proto;
+
+// An initializer in the  model
+message Tensor {
+  // byte offset in the external data
+  uint64 offset = 1;
+  // size in bytes
+  uint64 size = 2;
+  // original shape of the data
+  repeated int64 shape = 3;
+  // ONNX data type
+  int32 data_type = 4;
+}
+
+// Each node in the model is represented by an Operator message
+message Operator {
+  string op_type = 1;
+  // list of initializer data associated with this node
+  repeated Tensor data = 2;
+}
+
+// "Layers" are repeated blocks within a model made up of one or more nodes. For
+// ease of loading external data, the data associated with a layer is stored
+// contiguously. Currently, the layers are stored separately for NPU and GPU
+// data. As such, the offset and size are currently specific to the GPU weights
+// TODO(varunsh): in the next model revision, this protobuf can be updated to
+// reflect these semantics
+message Layer {
+  // byte offset of the layer's data in the external data
+  uint64 offset = 1;
+  // size in bytes of the layer's data
+  uint64 size = 2;
+  // list of node names that make up this layer
+  repeated string operators = 3;
+}
+
+// Each op_type has its own metadata
+message OpMetadata {
+  //  maximum JIT buffer size for this operator
+  uint64 max_npu_buffer_size = 1;
+  // name of the first node of this op_type
+  string first = 2;
+  // name of the last node of this op_type
+  string last = 3;
+}
+
+message ExternalData {
+  // if non-empty, an external data file exists
+  string filename = 1;
+  // if true, NPU uses the external data file
+  bool npu = 2;
+  // if true, GPU uses the external data file
+  bool gpu = 3;
+  // if true, embedding is loaded from external data file
+  bool embedding = 4;
+  // if true, qmoe experts is loaded from external data file
+  bool qmoe = 5;
+}
+
+// top-level message
+message Header {
+  // map from the node name to its metadata
+  map<string, Operator> operators = 1;
+  // map from the op_type to its metadata
+  map<string, OpMetadata> op_metadata = 2;
+  // list of layer information
+  repeated Layer layers = 3;
+  // external data metadata
+  ExternalData external_data = 4;
+}

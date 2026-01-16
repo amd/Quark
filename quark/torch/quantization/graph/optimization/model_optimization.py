@@ -1,8 +1,8 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Callable
+from typing import Callable, cast
 
 import torch.fx
 
@@ -11,7 +11,7 @@ import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_qua
 import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_quant_powof2_scale as opt_post_qt_pow2_pass
 import quark.torch.quantization.graph.optimization.pre_quant.opt_pass_before_quant as opt_pre_qt_pass
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassManager
 from quark.torch.quantization.graph.optimization.pre_quant.convert_scalars_to_attrs import convert_scalars_to_attrs
 from quark.torch.quantization.graph.optimization.pre_quant.cross_layer_equaliztion import (
@@ -218,22 +218,20 @@ def _apply_post_hw_fs_constrain_passes(model: torch.fx.GraphModule) -> torch.fx.
     return model
 
 
-def select_proper_hw_constrain_passes(config: Config) -> Callable[[torch.fx.GraphModule], torch.fx.GraphModule]:
+def select_proper_hw_constrain_passes(config: QConfig) -> Callable[[torch.fx.GraphModule], torch.fx.GraphModule]:
     # NOTE this is a temporanr function
     # as currently we decide the pow-of-2 or float scale optimization only decided by the observer
     if config.global_quant_config is None:
         call_func = _apply_post_hw_powof2_constrain_passes
 
     # we need to chack the input/output/bias/weight
-    quant_config: QuantizationConfig = config.global_quant_config
-    in_obs = (
-        quant_config.input_tensors.observer_cls if isinstance(quant_config.input_tensors, QuantizationSpec) else None
-    )
+    quant_config: QLayerConfig = cast(QLayerConfig, config.global_quant_config)
+    in_obs = quant_config.input_tensors.observer_cls if isinstance(quant_config.input_tensors, QTensorConfig) else None
     out_obs = (
-        quant_config.output_tensors.observer_cls if isinstance(quant_config.output_tensors, QuantizationSpec) else None
+        quant_config.output_tensors.observer_cls if isinstance(quant_config.output_tensors, QTensorConfig) else None
     )
-    w_obs = quant_config.weight.observer_cls if isinstance(quant_config.weight, QuantizationSpec) else None
-    b_obs = quant_config.bias.observer_cls if isinstance(quant_config.bias, QuantizationSpec) else None
+    w_obs = quant_config.weight.observer_cls if isinstance(quant_config.weight, QTensorConfig) else None
+    b_obs = quant_config.bias.observer_cls if isinstance(quant_config.bias, QTensorConfig) else None
 
     call_func, print_str = (
         (_apply_post_hw_powof2_constrain_passes, "Pow-of-2")

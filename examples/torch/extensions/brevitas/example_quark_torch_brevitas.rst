@@ -27,10 +27,10 @@ Extension Feature Design
 The Quark extension feature is designed to facilitate integration
 without code leakage into the Quark core. This is achieved by exposing a
 well-defined interface that external libraries can implement. The main
-components of this interface include the ``QuantizationConfig``
+components of this interface include the ``QLayerConfig``
 and ``ModelQuantizer`` classes.
 
-QuantizationConfig
+QLayerConfig
 ~~~~~~~~~~~~~~~~~~
 
 This class is responsible for holding all configuration parameters
@@ -41,7 +41,7 @@ ModelQuantizer
 
 The ModelQuantizer class serves as the primary interface for model
 quantization. Implementations of this class should encapsulate the logic
-required to parse the QuantizationConfig and apply quantization steps
+required to parse the QLayerConfig and apply quantization steps
 accordingly from the external library.
 
 Brevitas Integration
@@ -53,8 +53,8 @@ using the new extension feature.
 Step-by-Step Integration
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. Implement QuantizationConfig: Begin by creating a subclass of
-   QuantizationConfig specific to Brevitas settings. This subclass
+1. Implement QLayerConfig: Begin by creating a subclass of
+   QLayerConfig specific to Brevitas settings. This subclass
    should define all Brevitas-specific parameters such as bit-widths,
    quantization modes, and other relevant settings.
 

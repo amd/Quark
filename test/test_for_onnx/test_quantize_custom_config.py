@@ -11,8 +11,8 @@ from onnxruntime.quantization import CalibrationDataReader
 from onnxruntime.quantization.quant_utils import QuantFormat
 from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import Config, ModelQuantizer
+from quark.onnx.quantization.config import get_default_config
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(

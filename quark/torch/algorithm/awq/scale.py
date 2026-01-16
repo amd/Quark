@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Dict, List, Optional, Tuple, cast
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -14,8 +14,11 @@ import torch.nn as nn
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.modules.act import ScaledActivation
 from quark.torch.algorithm.utils.utils import is_attention_module
-from quark.torch.quantization.utils import assert_no_nan
-from quark.torch.utils import getattr_recursive, setattr_recursive
+from quark.torch.utils import (
+    assert_no_nan,
+    getattr_recursive,
+    setattr_recursive,
+)
 from quark.torch.utils.accelerate_helper import OffloadParameter, update_offload_parameter
 
 logger = ScreenLogger(__name__)
@@ -78,7 +81,7 @@ def apply_scale(
                 scale_fc_fc(
                     prev_op, layers[0], scales, num_attention_heads, num_key_value_heads, is_prev_op_in_attention_module
                 )
-            except RuntimeError as e:
+            except RuntimeError:
                 logger.warning(
                     f"\nUnknown fc1-scales-fc2 pair to support scaling between them, the scale (smooth) computation will not be implemented in fact. This may impact the quantization accuracy."
                     f"\n\tfc1 is {prev_op_name}, shape is {prev_op.weight.shape}."

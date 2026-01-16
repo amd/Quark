@@ -1,39 +1,51 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-import os
-import functools
 
-from typing import Any
+from .constants import (
+    QPARAMSLINEAR_OVERRIDES_STATE_DICT,
+    QUARK_ALGO_DEBUG,
+    QUARK_COUNT_OBSERVED_SAMPLES,
+    QUARK_DEBUG_NAN,
+    QUARK_DISABLE_COMPILE,
+    QUARK_DISABLE_CUDA_GRAPH,
+    QUARK_MXFP4_IMPL,
+    QUARK_TOKENS_DISTRIBUTION_PATH,
+    QUARK_TORCH_COMPILE_MODE,
+    TOKEN_DISTRIBUTION_THRESHOLD,
+    TRITON_GPU_SUPPORTS_FP8,
+)
+from .debug import assert_no_nan
+from .device import TPDeviceManager, e4m3fn_to_e4m3fnuz
+from .exceptions import AppError, LossError
+from .pack import create_pack_method
+from .profile import gpu_memory_profiled
+from .torch_utils import create_dir, get_op_name, getattr_recursive, resolve_star, setattr_recursive
 
-
-def create_dir(dir_name: str) -> None:
-    if not os.path.exists(dir_name):
-        os.makedirs(dir_name)
-
-
-def getattr_recursive(obj: Any, attr: str) -> Any:
-    """
-    Recursive ``getattr``. This is useful e.g. to get the attribute ``"model.layers.0.self_attn.k_proj.weight"`` from a Transformers model.
-
-    :param Any obj: A class instance holding the attribute.
-    :param str attr: The attribute that is to be retrieved, e.g. 'attribute1.attribute2'.
-    """
-
-    def _getattr(obj: Any, attr: str) -> Any:
-        return getattr(obj, attr)
-
-    return functools.reduce(_getattr, [obj] + attr.split("."))
-
-
-def setattr_recursive(module: Any, name: str, value: Any) -> None:
-    """
-    Recursive ``setattr``. This is useful e.g. to set the attribute ``"model.layers.0.self_attn.k_proj.weight"`` from a Transformers model.
-    """
-    if "." not in name:
-        setattr(module, name, value)
-    else:
-        name, rest = name.split(".", 1)
-        setattr_recursive(getattr(module, name), rest, value)
+__all__ = [
+    "QPARAMSLINEAR_OVERRIDES_STATE_DICT",
+    "QUARK_ALGO_DEBUG",
+    "QUARK_COUNT_OBSERVED_SAMPLES",
+    "QUARK_DEBUG_NAN",
+    "QUARK_DISABLE_COMPILE",
+    "QUARK_DISABLE_CUDA_GRAPH",
+    "QUARK_MXFP4_IMPL",
+    "QUARK_TOKENS_DISTRIBUTION_PATH",
+    "QUARK_TORCH_COMPILE_MODE",
+    "TRITON_GPU_SUPPORTS_FP8",
+    "TOKEN_DISTRIBUTION_THRESHOLD",
+    "assert_no_nan",
+    "TPDeviceManager",
+    "e4m3fn_to_e4m3fnuz",
+    "AppError",
+    "LossError",
+    "create_pack_method",
+    "gpu_memory_profiled",
+    "create_dir",
+    "get_op_name",
+    "getattr_recursive",
+    "resolve_star",
+    "setattr_recursive",
+]

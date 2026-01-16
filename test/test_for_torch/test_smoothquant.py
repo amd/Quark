@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec, SmoothQuantConfig
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig, SmoothQuantConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
@@ -55,7 +55,7 @@ def test_vanilla_nn_module():
     inp.cauchy_(sigma=5e-3)
 
     # Quantize the model using smoothquant.
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -66,8 +66,8 @@ def test_vanilla_nn_module():
         ch_axis=None,
         group_size=None,
     )
-    global_config = QuantizationConfig(weight=quant_spec, input_tensors=quant_spec)
-    quant_config = Config(global_quant_config=global_config, algo_config=[])
+    global_config = QLayerConfig(weight=quant_spec, input_tensors=quant_spec)
+    quant_config = QConfig(global_quant_config=global_config, algo_config=[])
 
     pre_quant_optimization = SmoothQuantConfig(
         scaling_layers=[{"prev_op": "layer_norm", "layers": ["lin1"], "inp": "lin1"}],

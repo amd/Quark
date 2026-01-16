@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # pylint: disable=g-explicit-length-test
@@ -7,17 +7,27 @@
 
 import copy
 import enum
-from typing import Any, Dict, List, Union
+import os
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnx
+import onnxruntime
 from google.protobuf import text_format
 from onnx import ModelProto, NodeProto, TensorProto, TensorShapeProto, ValueInfoProto
 from onnxruntime.quantization.onnx_model import ONNXModel
+from onnxruntime.quantization.quant_utils import add_infer_metadata
 
-from quark.shares.utils.log import ScreenLogger
+from quark.onnx.operators.custom_ops import get_library_path
+from quark.onnx.quantization.quant_utils import DEQUANT_OP_TYPES, QUANT_OP_TYPES, load_model_with_shape_infer
+from quark.onnx.utils.system_utils import create_tmp_dir
+from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
+
+global USER_CUSTOM_OP_LIB_PATHS
+USER_CUSTOM_OP_LIB_PATHS: list[str] = []
 
 
 def get_tensor_value(initializer: TensorProto) -> np.ndarray[Any, np.dtype[np.float32]]:
@@ -32,15 +42,6 @@ def generate_initializer(tensor_array: np.ndarray[Any, np.dtype[np.float32]], dt
     return init
 
 
-def save_model(model: ModelProto, path: str, as_text: bool = False) -> None:
-    """Save onnx model to disk."""
-    if as_text:
-        with open(path, "w") as f:
-            f.write(text_format.MessageToString(model))
-    else:
-        onnx.save(model, path)
-
-
 class SharedNodesHelper:
     class NodeType(enum.Enum):
         NODE = 1
@@ -48,7 +49,7 @@ class SharedNodesHelper:
         INPUT = 3
 
     @staticmethod
-    def _node_type(node: Union[NodeProto, TensorProto, ValueInfoProto]) -> NodeType:
+    def _node_type(node: NodeProto | TensorProto | ValueInfoProto) -> NodeType:
         """Returns whether the node is a node or initializer."""
         if isinstance(node, onnx.NodeProto):
             return SharedNodesHelper.NodeType.NODE
@@ -60,7 +61,7 @@ class SharedNodesHelper:
             raise ValueError(f"Unknown node type for node: {node}")
 
     @staticmethod
-    def _add_node_init(model: ModelProto, node_init_to_add: Union[NodeProto, TensorProto, ValueInfoProto]) -> None:
+    def _add_node_init(model: ModelProto, node_init_to_add: NodeProto | TensorProto | ValueInfoProto) -> None:
         """Add the node or initializer/input to the model."""
         if SharedNodesHelper._node_type(node_init_to_add) == SharedNodesHelper.NodeType.NODE:
             for node in model.graph.node:
@@ -176,8 +177,6 @@ def copy_shared_nodes(model: ModelProto) -> ModelProto:
     while modified_flag:
         modified_flag = False
         name_to_node_map: dict[str, onnx.NodeProto] = helper._map_name_to_node(model)
-        name_to_init_map: dict[str, onnx.TensorProto] = helper._map_name_to_init(model)
-        name_to_input_map: dict[str, onnx.ValueInfoProto] = helper._map_name_to_input(model)
         tensor_to_producer_map: dict[str, NodeProto] = helper._map_tensor_to_producer(model)
 
         tensor_to_consumer_map = {}
@@ -240,7 +239,7 @@ def clean_initializer_in_input(model: ModelProto) -> ModelProto:
     return model
 
 
-def get_shape_list(shape: TensorShapeProto) -> list[Union[int, str]]:
+def get_shape_list(shape: TensorShapeProto) -> list[int | str]:
     shape_list = []
     for d in shape.dim:
         if d.HasField("dim_value"):
@@ -326,8 +325,8 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
             "Transpose", [out.name], [transpose_name], name=transpose_name, perm=[0, 2, 3, 1]
         )
         onnx_model.add_node(out_transpose_node)
-        last_node: Union[NodeProto, Any] = None
-        penultimate_node: Union[NodeProto, Any] = None
+        last_node: NodeProto | Any = None
+        penultimate_node: NodeProto | Any = None
         for node in onnx_model.graph().node:
             if node.output[0] == out.name:
                 last_node = node
@@ -362,3 +361,389 @@ def convert_nchw_to_nhwc(model: ModelProto) -> Any:
             out.name = transpose_name
     onnx_model.topological_sort()
     return onnx_model.model
+
+
+class ONNXQuantizedModel:
+    """
+    This class is used to gather all Q/DQ nodes of a target node's inputs and outputs.
+    It is applicable to sub-models extracted from quantized models.
+
+    :param onnx.ModelProto model: the quantized sub-model.
+    """
+
+    def __init__(self, model: onnx.ModelProto) -> None:
+        self.model = model
+        self.onnx_model = ONNXModel(model)
+
+        self.in_name_to_nodes = self.onnx_model.input_name_to_nodes()
+        self.out_name_to_node = self.onnx_model.output_name_to_node()
+
+    def _find_node_input_qdq(self, node: NodeProto, tensor_name: str) -> tuple[NodeProto | None, NodeProto | None]:
+        """Find qdq nodes on input tensor, dq always exits but q may be folded"""
+        if tensor_name not in self.out_name_to_node:
+            logger.debug(f"input {tensor_name} of {node.name} came from initializer")
+            return None, None
+
+        dq_candidate = self.out_name_to_node[tensor_name]
+        if dq_candidate.op_type not in DEQUANT_OP_TYPES:
+            logger.debug(f"input {tensor_name} of {node.name} was not quantized")
+            return None, None
+        elif dq_candidate.input[0] not in self.out_name_to_node:
+            logger.debug(f"input {tensor_name} of {node.name} has a folded Q")
+            return dq_candidate, None
+
+        q_candidate = self.out_name_to_node[dq_candidate.input[0]]
+        if q_candidate.op_type not in QUANT_OP_TYPES:
+            logger.warning(f"input {tensor_name} of {node.name} lost a Q")
+            return dq_candidate, None
+
+        return dq_candidate, q_candidate  # Note that DQ came first
+
+    def _find_node_output_qdq(self, node: NodeProto, tensor_name: str) -> tuple[NodeProto | None, NodeProto | None]:
+        """Find qdq nodes on output tensor"""
+        if tensor_name not in self.in_name_to_nodes:
+            logger.debug(f"output {tensor_name} of {node.name} was a isolate node")
+            return None, None
+
+        # this assertion maybe uncessary, in some special cases
+        assert len(self.in_name_to_nodes[tensor_name]) == 1
+
+        q_candidate = self.in_name_to_nodes[tensor_name][0]
+        if q_candidate.op_type not in QUANT_OP_TYPES:
+            logger.debug(f"output {tensor_name} of {node.name} was not quantized")
+            return None, None
+        elif q_candidate.output[0] not in self.in_name_to_nodes:
+            logger.debug(f"input {tensor_name} of {node.name} lost a DQ")
+            return q_candidate, None
+
+        dq_candidate = self.in_name_to_nodes[q_candidate.output[0]][0]
+        if dq_candidate.op_type not in DEQUANT_OP_TYPES:
+            logger.warning(f"input {tensor_name} of {node.name} lost a DQ")
+            return q_candidate, None
+
+        return q_candidate, dq_candidate  # Note that Q came first
+
+    def find_target_op_type_qdqs(self, target_op_type: list[str]) -> dict[str, Any]:
+        """Get the qdqs on all inputs and outputs of the target node,
+        which is the first node with a target op type.
+        """
+        node_struct: dict[str, Any] = {"node": None, "input_qdqs": [], "output_qdqs": []}
+
+        for node in self.model.graph.node:
+            if node.op_type in target_op_type:
+                node_struct["node"] = node
+
+                input_qdqs = []  # This contains weight/bias qdqs
+                for tensor_name in node.input:
+                    dq, q = self._find_node_input_qdq(node, tensor_name)
+                    input_qdqs.append((dq, q))
+                node_struct["input_qdqs"] = input_qdqs
+
+                output_qdqs = []
+                for tensor_name in node.output:
+                    q, dq = self._find_node_output_qdq(node, tensor_name)
+                    output_qdqs.append((dq, q))
+                node_struct["output_qdqs"] = output_qdqs
+
+                break  # Note that only the first node of specified op type
+
+        return node_struct
+
+    def find_target_node_qdqs(self, target_node: NodeProto) -> dict[str, Any]:
+        """Get the qdqs on all inputs and outputs of the target node."""
+        node_struct: dict[str, Any] = {
+            "node": None,
+            "input_qdqs": [],
+            "output_qdqs": [],
+        }
+
+        for node in self.model.graph.node:
+            if node == target_node:
+                node_struct["node"] = node
+
+                input_qdqs = []  # This contains weight/bias qdqs
+                for tensor_name in node.input:
+                    dq, q = self._find_node_input_qdq(node, tensor_name)
+                    input_qdqs.append((dq, q))
+                node_struct["input_qdqs"] = input_qdqs
+                temp_input_dqs = [item[0] for item in input_qdqs]
+                if None in temp_input_dqs:
+                    break
+
+                output_qdqs = []
+                for tensor_name in node.output:
+                    q, dq = self._find_node_output_qdq(node, tensor_name)
+                    output_qdqs.append((dq, q))
+                node_struct["output_qdqs"] = output_qdqs
+
+                break  # Got the target node and break
+
+        return node_struct
+
+
+@log_errors
+def save_model(model: ModelProto, path: str, as_text: bool = False) -> None:
+    """Save onnx model to disk."""
+    if as_text:
+        with open(path, "w") as f:
+            f.write(text_format.MessageToString(model))
+    else:
+        onnx.save(model, path)
+
+
+@log_errors
+def run_onnx_model(model_input: str | Path | onnx.ModelProto, data_reader: Any) -> None:
+    """
+    Check if the input ONNX can run successfully
+    :param model_input: the model path or a ModelProto
+    :param data_reader: the data reader for feeding data
+    """
+    try:
+        sess = create_infer_session_for_onnx_model(model_input)
+        inputs = data_reader.get_next()
+        output = sess.run(None, inputs)
+        if output:
+            logger.info("The input ONNX model can run inference successfully")
+        else:
+            logger.warning("Fail to run inference, please check the input model and the 'calibration_data_reader'.")
+    except Exception as e:
+        raise ValueError(
+            f"Fail to run inference. Exception: {e}. Please check the input model and the 'calibration_data_reader'."
+        )
+
+
+@log_errors
+def check_onnx_model(model_input: str | Path | onnx.ModelProto) -> None:
+    """
+    Check if the input ONNX can create InferenceSession successfully
+    :param model_input: the model path or a ModelProto
+    """
+    try:
+        create_infer_session_for_onnx_model(model_input)
+        logger.info("The input ONNX model can create InferenceSession successfully")
+
+    except Exception as e:
+        raise ValueError(f"Fail to create InferenceSession. Exception: {e}. Please check the model.")
+
+
+def encrypt_data(unencrypted_data: bytes, iv: bytes, key: bytes) -> Any:
+    """
+    Encrypt data using AES-256 algorithm.
+    :param unencrypted_data: the original data to be encrypted
+    :param iv: initialization vector, 16 bytes
+    :param key: the key, 32 bytes (256 bits)
+    :return: the encrypted data
+    """
+    from cryptography.hazmat.backends import default_backend  # type: ignore
+    from cryptography.hazmat.primitives import padding  # type: ignore
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes  # type: ignore
+
+    # Apply PKCS7 padding
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(unencrypted_data) + padder.finalize()
+
+    # Encrypt using AES-256-CBC
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    return iv + ciphertext  # Store or transmit iv securely alongside the encrypted content
+
+
+def decrypt_data(encrypted_data: bytes, iv: bytes, key: bytes) -> Any:
+    """
+    Decrypt data using AES-256 algorithm.
+    :param encrypted_data: the data to be decrypted
+    :param iv: initialization vector, 16 bytes
+    :param key: the key, 32 bytes (256 bits)
+    :return: the decrypted data
+    """
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    assert iv == encrypted_data[:16]
+    ciphertext = encrypted_data[16:]
+
+    # Decrypt using AES-256-CBC
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove PKCS7 padding
+    unpadder = padding.PKCS7(128).unpadder()
+    decrypted_data = unpadder.update(decrypted_padded_data) + unpadder.finalize()
+
+    return decrypted_data
+
+
+def onnx_save_model_with_encryption(model: ModelProto, path: str | Path, secret_key: bytes) -> None:
+    """
+    Encrypt model before saving to disk. Only supports <2GB models
+    :param model: the onnx ModelProto to be decrypted
+    :param path: the path for the saving
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    """
+    assert len(secret_key) == 48 and "This is an invalid secret key"
+
+    model_bytes = model.SerializeToString()
+
+    assert isinstance(secret_key, bytes)
+    encrypted_data = encrypt_data(model_bytes, secret_key[:16], secret_key[16:])
+
+    with open(path, "wb") as f:
+        f.write(encrypted_data)
+
+
+def onnx_load_model_with_decryption(path: str | Path, secret_key: bytes) -> ModelProto:
+    """
+    Decrypt model before loading to memory. Only supports <2GB models
+    :param path: the model path
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    :return the loaded and decrypted model
+    """
+    assert len(secret_key) == 48 and "This is an invalid secret key"
+
+    with open(path, "rb") as f:
+        encrypted_data = f.read()
+
+    if encrypted_data[:16] != secret_key[:16]:  # Was not encrypted
+        try:
+            return onnx.load(path)
+        except Exception:
+            raise ValueError("Failed to load an unknown model file {path}")
+
+    assert isinstance(secret_key, bytes)
+    decrypted_data = decrypt_data(encrypted_data, secret_key[:16], secret_key[16:])
+
+    model = ModelProto()
+    model.ParseFromString(decrypted_data)
+    return model
+
+
+def cache_onnx_model_and_infer_shapes(
+    input_model: str | Path | ModelProto,
+    path: str | Path,
+    save_as_external_data: bool = False,
+    encrypt_algo: str | None = None,
+    secret_key: bytes | None = None,
+) -> ModelProto:
+    """
+    Save the model and then load it with shape infer and cryption if secret key provided
+    :param model: the onnx model path or ModelProto to be saved
+    :param path: the path for the saving
+    :param save_as_external_data: save external data for the models >2GB
+    :param secret_key: 48 bytes secret key, 16 bytes for iv and 32 bytes as key
+    :return the model proto
+    """
+    model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+
+    if secret_key is not None and len(secret_key) == 48:
+        if encrypt_algo is not None and encrypt_algo == "AES-256":
+            # TODO: support more algorithms
+            onnx_save_model_with_encryption(model, path, secret_key)
+            reloaded_model = onnx_load_model_with_decryption(path, secret_key)
+        else:
+            # If no encryption algorithm, just copying in memory
+            assert save_as_external_data is False
+            reloaded_model = copy.deepcopy(model)
+
+        add_infer_metadata(reloaded_model)  # It's a crucial step
+        return onnx.shape_inference.infer_shapes(reloaded_model)
+
+    save_onnx_model_with_external_data(model, path, save_as_external_data=save_as_external_data)
+    return load_model_with_shape_infer(Path(path))  # type: ignore
+
+
+def save_onnx_model_with_external_data(
+    model: ModelProto, path: str | Path, save_as_external_data: bool = False
+) -> None:
+    """
+    Save model to external data, the .data has same name as .onnx
+    :param model: the onnx ModelProto to be saved
+    :param path: the path for the saving
+    :param save_as_external_data: this option is for >2GB ModelProto
+    """
+    if save_as_external_data:
+        directory = Path(path).parent  # This is the directory to save the model
+        location = Path(path).name + ".data"  # Must be a relative path (to the model path)
+
+        # To avoid appending due to a duplicate name, remove it in advance
+        data_file_path = Path(directory).joinpath(location).as_posix()
+        if os.path.exists(data_file_path):
+            os.remove(data_file_path)
+
+        onnx.external_data_helper.convert_model_to_external_data(
+            model, all_tensors_to_one_file=True, location=location, convert_attribute=True
+        )
+    onnx.save(model, path)
+
+
+def update_user_custom_op_lib_paths(lib_paths: list[str] | str | None) -> None:
+    if lib_paths is not None:
+        if isinstance(lib_paths, str):
+            USER_CUSTOM_OP_LIB_PATHS.append(lib_paths)
+        elif isinstance(lib_paths, list):
+            for lib_path in lib_paths:
+                if isinstance(lib_path, str):
+                    USER_CUSTOM_OP_LIB_PATHS.append(lib_path)
+                else:
+                    logger.warning(f"The {lib_path} is not a string, will be skipped!")
+        else:
+            logger.warning(
+                "The custom library paths defined by the user are neither a string nor a list. No custom ops library will be registered!"
+            )
+
+
+def create_infer_session_for_onnx_model(
+    model_input: str | Path | ModelProto,
+    sess_options: onnxruntime.SessionOptions | None = None,
+    providers: list[str] | None = ["CPUExecutionProvider"],
+    provider_options: list[dict[str, str]] | None = None,
+    use_external_data_format: bool = False,
+    **kwargs: dict[str, Any],
+) -> onnxruntime.InferenceSession:
+    """
+    Create an Inference Session for onnx model
+    :param model_input: the onnx model, can be a path or ModelProto
+    :param session_options: session options
+    """
+
+    if USER_CUSTOM_OP_LIB_PATHS != []:
+        if sess_options is None:
+            sess_options = onnxruntime.SessionOptions()
+        for lib_path in USER_CUSTOM_OP_LIB_PATHS:
+            sess_options.register_custom_ops_library(lib_path)
+
+    def create_inference_session(model: str | Path | ModelProto) -> onnxruntime.InferenceSession:
+        try:
+            return onnxruntime.InferenceSession(
+                model, sess_options=sess_options, providers=providers, provider_options=provider_options, **kwargs
+            )
+        except onnxruntime.capi.onnxruntime_pybind11_state.RuntimeException as e:
+            raise RuntimeError(f"Failed to create inference session, likely cannot allocate memory: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create inference session, due to an unexpected error: {e}")
+
+    if isinstance(model_input, onnx.ModelProto) and (
+        use_external_data_format or model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
+    ):
+        with create_tmp_dir(prefix="quark_onnx.utils.") as temp_dir:
+            temp_path = Path(temp_dir).joinpath("infer_model.onnx").as_posix()
+            save_onnx_model_with_external_data(copy.deepcopy(model_input), temp_path, True)
+            session = create_inference_session(temp_path)
+    else:
+        model = model_input.SerializeToString() if isinstance(model_input, onnx.ModelProto) else model_input
+        session = create_inference_session(model)
+
+    return session
+
+
+def register_custom_ops_library(session_options: onnxruntime.SessionOptions, device: str = "CPU") -> None:
+    try:
+        session_options.register_custom_ops_library(get_library_path(device))
+    except Exception as e:
+        logger.warning(
+            f"Failed to register custom op library {get_library_path(device)} to ORT with {e},"
+            "please check if the library has been compiled successfully."
+        )

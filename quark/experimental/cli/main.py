@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,6 +12,7 @@ SYNOPSIS
     quark-cli [SUBCOMMAND] [ARGUMENTS ...] ...
     quark-cli onnx-ptq [ARGUMENTS ...] ...
     quark-cli torch-ptq [ARGUMENTS ...] ...
+    quark-cli onnx-adapter [ARGUMENTS ...] ...
 
 DESCRIPTION
     quark-cli is the main command-line interface to the AMD Quark quantizer.
@@ -44,10 +45,6 @@ EXAMPLES
     MODEL_DIR=dev/models/Llama-3.1-8b/
     OUTPUT_DIR=dev/models_output/
 
-    Simple Torch PTQ Perplexity evaluation:
-
-    quark-cli torch-llm-ptq --model_dir $MODEL_DIR --skip_quantization
-
     MX Quantization:
 
     quark-cli torch-llm-ptq --model_dir $MODEL_DIR --output_dir $OUTPUT_DIR --quant_scheme w_mxfp8 --num_calib_data 32 --group_size 32
@@ -67,7 +64,7 @@ except ImportError:
     exit(1)
 
 # Subcommand parsers, defined in separate files.
-from quark.experimental.cli import torch_llm_ptq
+from quark.experimental.cli import onnx_adapter, torch_llm_ptq
 from quark.experimental.cli.quark_onnx.export_oga import ExportOGA_CLI
 from quark.experimental.cli.quark_onnx.export_onnx import ExportONNX_CLI
 from quark.experimental.cli.quark_onnx.onnx_prepare_data import ONNXPrepareData_CLI
@@ -121,6 +118,10 @@ def get_cli_parser() -> argparse.ArgumentParser:
     torch_llm_ptq_parser = subparsers.add_parser("torch-llm-ptq", help="PyTorch LLM Post-Training Quantization")
     torch_llm_ptq.TorchLLM_PTQ_CLI.register_subcommand(torch_llm_ptq_parser)
     torch_llm_ptq_parser.set_defaults(func=torch_llm_ptq.TorchLLM_PTQ_CLI)
+
+    onnx_adapter_parser = subparsers.add_parser("onnx-adapter", help="ONNX Adapter workflows")
+    onnx_adapter.ONNXAdapter_CLI.register_subcommand(onnx_adapter_parser)
+    onnx_adapter_parser.set_defaults(func=onnx_adapter.ONNXAdapter_CLI)
 
     return parser
 

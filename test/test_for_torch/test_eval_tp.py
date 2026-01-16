@@ -7,7 +7,6 @@ import argparse
 import os
 import subprocess
 from dataclasses import replace
-from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -25,12 +24,12 @@ from transformers.testing_utils import (
 from quark.shares.utils.import_utils import is_transformers_version_higher_or_equal
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device
-from quark.torch import ModelImporter, ModelQuantizer, export_safetensors, import_model_from_safetensors
+from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.api import _move_quantizer_to_dict
-from quark.torch.quantization.config.config import Config, GPTQConfig, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import GPTQConfig, QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver, PerTensorMinMaxObserver
-from quark.torch.utils.device import TPDeviceManager
+from quark.torch.utils import TPDeviceManager
 
 logger = ScreenLogger(__name__)
 MODEL_DIR = "facebook/opt-125m"
@@ -49,7 +48,7 @@ GPTQ_CONFIG = GPTQConfig(
     ],
 )
 
-UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+UINT4_PER_GROUP_ASYM_SPEC = QTensorConfig(
     dtype=Dtype.uint4,
     observer_cls=PerGroupMinMaxObserver,
     symmetric=False,
@@ -108,7 +107,7 @@ def get_model(
                 trust_remote_code=True,
                 attn_implementation=attn_implementation,
             )
-        except Exception as e:
+        except Exception:
             model = AutoModelForCausalLM.from_pretrained(
                 ckpt_path, device_map=device, torch_dtype=model_dtype, trust_remote_code=True
             )
@@ -142,7 +141,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
         )
         model.eval()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         model.eval()
         model = model.to(torch_device)
     # Get dataloader, if multi_gpu, give the first layer's device
@@ -171,7 +170,12 @@ def ppl_eval(model: nn.Module, testenc: AutoTokenizer, dev: str, file_format: st
     nlls = []
 
     if file_format == "onnx_format":
-        import onnxruntime_genai as og
+        try:
+            import onnxruntime_genai as og
+        except ModuleNotFoundError:
+            raise ImportError(
+                "Quark depends on ONNX Runtime GenAI. Please install ONNX Runtime GenAI by following the instructions at: https://onnxruntime.ai/docs/genai/howto/install"
+            )
 
         params = og.GeneratorParams(model)
         params.try_graph_capture_with_max_batch_size(1)
@@ -213,16 +217,12 @@ def test_eval_tp(
 
     device = "cpu"
 
-    model, model_dtype = get_model(MODEL_DIR, data_type, device, True, model_attn_implementation)
+    model, _ = get_model(MODEL_DIR, data_type, device, True, model_attn_implementation)
 
     if not skip_mesh:
         TPDeviceManager.tp_mesh_init()
 
-    if import_file_format in ["safetensors", "hf_format"]:
-        model = import_model_from_safetensors(model, model_dir=import_dir, multi_device=False)
-    else:
-        importer = ModelImporter(model_info_dir=import_dir, saved_format=import_file_format)
-        model = importer.import_model_info(model)
+    model = import_model_from_safetensors(model, model_dir=import_dir, multi_device=False)
 
     _move_quantizer_to_dict(model.model)
 
@@ -250,7 +250,7 @@ def test_eval_tp(
 
 @pytest.mark.skip(reason="Support")
 def test_load_multi_device(working_dir: str, weight_format: str):
-    INT8_PER_TENSER_SPEC = QuantizationSpec(
+    INT8_PER_TENSER_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -260,13 +260,13 @@ def test_load_multi_device(working_dir: str, weight_format: str):
         is_dynamic=False,
     )
 
-    INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    INT8_PER_TENSOR_CONFIG = QLayerConfig(
         weight=INT8_PER_TENSER_SPEC,
         input_tensors=INT8_PER_TENSER_SPEC,
         output_tensors=INT8_PER_TENSER_SPEC,
         bias=INT8_PER_TENSER_SPEC,
     )
-    quant_config = Config(global_quant_config=INT8_PER_TENSOR_CONFIG)
+    quant_config = QConfig(global_quant_config=INT8_PER_TENSOR_CONFIG)
 
     EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)

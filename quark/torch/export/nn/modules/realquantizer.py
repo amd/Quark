@@ -1,25 +1,24 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import quark.torch.kernel  # noqa
-from typing import Optional, Tuple, Union, List
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.utils import calculate_qmin_qmax
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
-from quark.torch.utils.pack import create_pack_method
+from quark.torch.utils import create_pack_method
 from quark.torch.quantization.constants import INT_QUANT_DTYPES, PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
 from quark.torch.quantization.observer.observer import ObserverBase, PlaceholderObserver
 from quark.torch.quantization.utils import get_num_bits
 from quark.torch.quantization.config.type import ZeroPointType
-from quark.torch.quantization.utils import assert_no_nan
+from quark.torch.utils import assert_no_nan
 from torch.distributed._tensor.experimental import implicit_replication  # type: ignore
 from quark.shares.utils.log import ScreenLogger
 
@@ -27,7 +26,7 @@ logger = ScreenLogger(__name__)
 
 
 class RealQuantizerBase(ABC, nn.Module):
-    def __init__(self, qspec: QuantizationSpec) -> None:
+    def __init__(self, qspec: QTensorConfig) -> None:
         super().__init__()
         self.qspec = qspec
         self.is_dynamic = qspec.is_dynamic
@@ -68,7 +67,7 @@ class RealQuantizerBase(ABC, nn.Module):
 class StaticRealQuantizer(RealQuantizerBase, ABC):
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         quantizer: FakeQuantizeBase | None,
         reorder: bool,
         real_quantized: bool,
@@ -146,7 +145,7 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
 
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         quantizer: FakeQuantizeBase | None,
         reorder: bool,
         real_quantized: bool,
@@ -293,7 +292,7 @@ class StaticNonScaledRealQuantizer(StaticRealQuantizer):
 
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         quantizer: FakeQuantizeBase | None,
         reorder: bool,
         real_quantized: bool,
@@ -334,7 +333,7 @@ class StaticNonScaledRealQuantizer(StaticRealQuantizer):
 class DynamicScaledQuantizer(RealQuantizerBase):
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         quantizer: FakeQuantizeBase | None = None,
         device: torch.device | None = torch.device("cuda"),
         float_dtype: torch.dtype | None = None,
@@ -393,7 +392,7 @@ class DynamicScaledQuantizer(RealQuantizerBase):
         self.quant_min, self.quant_max = calculate_qmin_qmax(self.dtype)
 
     @staticmethod
-    def create_observer(quant_spec: QuantizationSpec, device: torch.device | None = None) -> ObserverBase:
+    def create_observer(quant_spec: QTensorConfig, device: torch.device | None = None) -> ObserverBase:
         if quant_spec.observer_cls is not None:
             return quant_spec.observer_cls(quant_spec, device)
         else:
@@ -636,15 +635,15 @@ class SequentialRealQuantizer(nn.Sequential):
 
 
 def get_real_quantizer(
-    qspec: Union[QuantizationSpec, list[QuantizationSpec]],
-    quantizer: Union[FakeQuantizeBase, SequentialQuantize] | None,
+    qspec: QTensorConfig | list[QTensorConfig],
+    quantizer: FakeQuantizeBase | SequentialQuantize | None,
     reorder: bool | None = None,
     real_quantized: bool | None = None,
     float_dtype: torch.dtype | None = None,
     device: torch.device | None = torch.device("cuda"),
-    scale_shape: Union[tuple[int, ...], list[tuple[int, ...]]] | None = None,
-    zero_point_shape: Union[tuple[int, ...], list[tuple[int, ...]]] | None = None,
-) -> Union[RealQuantizerBase, SequentialRealQuantizer]:
+    scale_shape: tuple[int, ...] | list[tuple[int, ...]] | None = None,
+    zero_point_shape: tuple[int, ...] | list[tuple[int, ...]] | None = None,
+) -> RealQuantizerBase | SequentialRealQuantizer:
     if isinstance(qspec, list):
         quantizers: list[RealQuantizerBase] = []
         for i, q in enumerate(qspec):

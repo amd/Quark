@@ -26,7 +26,7 @@
 #define ORT_HANDLE_EXCEPTION(func) func()
 
 // For downward compatibility
-static const char *c_OpDomain_deprecated = "com.vai.quantize";
+static const char* c_OpDomain_deprecated = "com.vai.quantize";
 static const char c_OpName1_deprecated[] = "VitisQuantizeLinear";
 static const char c_OpName2_deprecated[] = "VitisDequantizeLinear";
 static const char c_OpName3_deprecated[] = "VitisInstanceNormalization";
@@ -34,7 +34,7 @@ static const char c_OpName4_deprecated[] = "VitisLSTM";
 static const char c_OpName5_deprecated[] = "BFPFixNeuron";
 static const char c_OpName6_deprecated[] = "MXFixNeuron";
 
-static const char *c_OpDomain = "com.amd.quark";
+static const char* c_OpDomain = "com.amd.quark";
 static const char c_OpName1[] = "ExtendedQuantizeLinear";
 static const char c_OpName2[] = "ExtendedDequantizeLinear";
 static const char c_OpName3[] = "ExtendedInstanceNormalization";
@@ -44,30 +44,30 @@ static const char c_OpName6[] = "MXQuantizeDequantize";
 
 static const int c_OpVersion = 1;
 
-template <const char *OpName, int OpVersion>
+template <const char* OpName, int OpVersion>
 struct CustomQuantizeLinear : Ort::CustomOpBase<
                                 CustomQuantizeLinear<OpName, OpVersion>,
                                 quark_onnx::KernelCustomQuantizeLinear> {
-  void *CreateKernel(const OrtApi &api, const OrtKernelInfo *info) const {
+  void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     return std::make_unique<quark_onnx::KernelCustomQuantizeLinear>(api, info)
       .release();
   };
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
   OrtStatusPtr CreateKernelV2(
-    const OrtApi &api, const OrtKernelInfo *info, void **op_kernel
+    const OrtApi& api, const OrtKernelInfo* info, void** op_kernel
   ) const {
     return nullptr;
   };
-  OrtStatusPtr KernelComputeV2(OrtKernelContext *context) const {
+  OrtStatusPtr KernelComputeV2(OrtKernelContext* context) const {
     return nullptr;
   };
 #endif
 
-  const char *GetName() const { return OpName; };
+  const char* GetName() const { return OpName; };
   int GetVersion() const { return OpVersion; };
 
-  const char *GetExecutionProviderType() const {
+  const char* GetExecutionProviderType() const {
 #ifdef NO_GPU
     return "CPUExecutionProvider";
 #elif defined(USE_ROCM)
@@ -109,7 +109,7 @@ struct CustomQuantizeLinear : Ort::CustomOpBase<
 
 #if ORT_API_VERSION >= 17
   // A function that will be called by SetShapeInferFn to get shape info
-  static Ort::Status InferOutputShape(Ort::ShapeInferContext &ctx) {
+  static Ort::Status InferOutputShape(Ort::ShapeInferContext& ctx) {
     auto input_count = ctx.GetInputCount();
     if (input_count <= 1) {
       return Ort::Status(
@@ -124,30 +124,30 @@ struct CustomQuantizeLinear : Ort::CustomOpBase<
 #endif
 };
 
-template <const char *OpName, int OpVersion>
+template <const char* OpName, int OpVersion>
 struct CustomDequantizeLinear : Ort::CustomOpBase<
                                   CustomDequantizeLinear<OpName, OpVersion>,
                                   quark_onnx::KernelCustomDequantizeLinear> {
-  void *CreateKernel(const OrtApi &api, const OrtKernelInfo *info) const {
+  void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     return std::make_unique<quark_onnx::KernelCustomDequantizeLinear>(api, info)
       .release();
   };
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
   OrtStatusPtr CreateKernelV2(
-    const OrtApi &api, const OrtKernelInfo *info, void **op_kernel
+    const OrtApi& api, const OrtKernelInfo* info, void** op_kernel
   ) const {
     return nullptr;
   };
-  OrtStatusPtr KernelComputeV2(OrtKernelContext *context) const {
+  OrtStatusPtr KernelComputeV2(OrtKernelContext* context) const {
     return nullptr;
   };
 #endif
 
-  const char *GetName() const { return OpName; };
+  const char* GetName() const { return OpName; };
   int GetVersion() const { return OpVersion; };
 
-  const char *GetExecutionProviderType() const {
+  const char* GetExecutionProviderType() const {
 #ifdef NO_GPU
     return "CPUExecutionProvider";
 #elif defined(USE_ROCM)
@@ -189,7 +189,7 @@ struct CustomDequantizeLinear : Ort::CustomOpBase<
 
 #if ORT_API_VERSION >= 17
   // A function that will be called by SetShapeInferFn to get shape info
-  static Ort::Status InferOutputShape(Ort::ShapeInferContext &ctx) {
+  static Ort::Status InferOutputShape(Ort::ShapeInferContext& ctx) {
     auto input_count = ctx.GetInputCount();
     if (input_count <= 1) {
       return Ort::Status(
@@ -204,12 +204,12 @@ struct CustomDequantizeLinear : Ort::CustomOpBase<
 #endif
 };
 
-template <const char *OpName, int OpVersion>
+template <const char* OpName, int OpVersion>
 struct CustomInstanceNormalization
   : Ort::CustomOpBase<
       CustomInstanceNormalization<OpName, OpVersion>,
       quark_onnx::KernelCustomInstanceNormalization> {
-  void *CreateKernel(const OrtApi &api, const OrtKernelInfo *info) const {
+  void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     return std::make_unique<quark_onnx::KernelCustomInstanceNormalization>(
              api, info
     )
@@ -218,19 +218,19 @@ struct CustomInstanceNormalization
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
   OrtStatusPtr CreateKernelV2(
-    const OrtApi &api, const OrtKernelInfo *info, void **op_kernel
+    const OrtApi& api, const OrtKernelInfo* info, void** op_kernel
   ) const {
     return nullptr;
   };
-  OrtStatusPtr KernelComputeV2(OrtKernelContext *context) const {
+  OrtStatusPtr KernelComputeV2(OrtKernelContext* context) const {
     return nullptr;
   };
 #endif
 
-  const char *GetName() const { return OpName; };
+  const char* GetName() const { return OpName; };
   int GetVersion() const { return OpVersion; };
 
-  const char *GetExecutionProviderType() const {
+  const char* GetExecutionProviderType() const {
     return "CPUExecutionProvider";
   };
 
@@ -246,7 +246,7 @@ struct CustomInstanceNormalization
 
 #if ORT_API_VERSION >= 17
   // A function that will be called by SetShapeInferFn to get shape info
-  static Ort::Status InferOutputShape(Ort::ShapeInferContext &ctx) {
+  static Ort::Status InferOutputShape(Ort::ShapeInferContext& ctx) {
     auto input_count = ctx.GetInputCount();
     if (input_count != 3) {
       return Ort::Status(
@@ -260,29 +260,29 @@ struct CustomInstanceNormalization
 #endif
 };
 
-template <const char *OpName, int OpVersion>
+template <const char* OpName, int OpVersion>
 struct CustomLSTM
   : Ort::CustomOpBase<
       CustomLSTM<OpName, OpVersion>, quark_onnx::KernelCustomLSTM> {
-  void *CreateKernel(const OrtApi &api, const OrtKernelInfo *info) const {
+  void* CreateKernel(const OrtApi& api, const OrtKernelInfo* info) const {
     return std::make_unique<quark_onnx::KernelCustomLSTM>(api, info).release();
   };
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
   OrtStatusPtr CreateKernelV2(
-    const OrtApi &api, const OrtKernelInfo *info, void **op_kernel
+    const OrtApi& api, const OrtKernelInfo* info, void** op_kernel
   ) const {
     return nullptr;
   };
-  OrtStatusPtr KernelComputeV2(OrtKernelContext *context) const {
+  OrtStatusPtr KernelComputeV2(OrtKernelContext* context) const {
     return nullptr;
   };
 #endif
 
-  const char *GetName() const { return OpName; };
+  const char* GetName() const { return OpName; };
   int GetVersion() const { return OpVersion; };
 
-  const char *GetExecutionProviderType() const {
+  const char* GetExecutionProviderType() const {
     return "CPUExecutionProvider";
   };
 
@@ -301,7 +301,7 @@ struct CustomLSTM
 
 #if ORT_API_VERSION >= 17
   // A function that will be called by SetShapeInferFn to get shape info
-  static Ort::Status InferOutputShape(Ort::ShapeInferContext &ctx) {
+  static Ort::Status InferOutputShape(Ort::ShapeInferContext& ctx) {
     auto input_count = ctx.GetInputCount();
     if (input_count <= 3) {
       return Ort::Status(
@@ -316,15 +316,15 @@ struct CustomLSTM
 #endif
 };
 
-static void AddOrtCustomOpDomainToContainer(Ort::CustomOpDomain &&domain) {
+static void AddOrtCustomOpDomainToContainer(Ort::CustomOpDomain&& domain) {
   static std::vector<Ort::CustomOpDomain> ort_custom_op_domain_container;
   static std::mutex ort_custom_op_domain_mutex;
   std::lock_guard<std::mutex> lock(ort_custom_op_domain_mutex);
   ort_custom_op_domain_container.push_back(std::move(domain));
 }
 
-OrtStatus *ORT_API_CALL
-RegisterCustomOps(OrtSessionOptions *options, const OrtApiBase *api) {
+OrtStatus* ORT_API_CALL
+RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api) {
   Ort::Global<void>::api_ = api->GetApi(ORT_API_VERSION);
 
   static const CustomQuantizeLinear<c_OpName1_deprecated, c_OpVersion>
@@ -344,7 +344,7 @@ RegisterCustomOps(OrtSessionOptions *options, const OrtApiBase *api) {
   static const BFPFixNeuron<c_OpName5, c_OpVersion> c_BFP;
   static const MXFixNeuron<c_OpName6, c_OpVersion> c_MX;
 
-  OrtStatus *result = nullptr;
+  OrtStatus* result = nullptr;
 
   ORT_TRY {
     Ort::CustomOpDomain domain_deprecated{c_OpDomain_deprecated};
@@ -369,7 +369,7 @@ RegisterCustomOps(OrtSessionOptions *options, const OrtApiBase *api) {
     AddOrtCustomOpDomainToContainer(std::move(domain_deprecated));
     AddOrtCustomOpDomainToContainer(std::move(domain));
   }
-  ORT_CATCH(const std::exception &e) {
+  ORT_CATCH(const std::exception& e) {
     ORT_HANDLE_EXCEPTION([&]() {
       Ort::Status status{e};
       result = status.release();
@@ -378,7 +378,7 @@ RegisterCustomOps(OrtSessionOptions *options, const OrtApiBase *api) {
   return result;
 }
 
-OrtStatus *ORT_API_CALL
-RegisterCustomOpsAltName(OrtSessionOptions *options, const OrtApiBase *api) {
+OrtStatus* ORT_API_CALL
+RegisterCustomOpsAltName(OrtSessionOptions* options, const OrtApiBase* api) {
   return RegisterCustomOps(options, api);
 }

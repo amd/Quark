@@ -1,0 +1,18 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "stx_SD_dit_fastpm_preempt_2x4x4"
+    op_config: "ops-config.json"
+    op_namespaces: "sd3"
+    model_type: SD30_MMDIT
+    preemption: true
+# define the passes to run. These passes are defined in passes and are executed
+# in order. Inherited passes before are inserted before any passes listed here
+inherit_passes_before: !include [sd3_mmdit_no_dd.yaml]
+passes:
+    - dd.optimize_toposort
+    - dd.dynamic_sd_nodes_to_dd
+inherit_passes_after: !include [sd15_dd.yaml]

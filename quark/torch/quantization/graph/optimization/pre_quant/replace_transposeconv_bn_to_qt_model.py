@@ -1,16 +1,15 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import operator
-from typing import List
 
 import torch
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
     is_all_nodes_save_parameters,
@@ -180,7 +179,7 @@ def replace_transposeconv2dbn_quantconv_module(m: GraphModule) -> GraphModule:
                 bn_eps,
                 bn_momentum,
                 False,
-                QuantizationConfig(),
+                QLayerConfig(),
             ).to(device=device)
             transposeconv_module.weight.data = conv_weight.data.clone()
             if conv_bias is not None:

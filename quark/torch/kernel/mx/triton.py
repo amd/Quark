@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # type: ignore
@@ -43,10 +43,10 @@ def _get_max_quant_exp(dtype: tl.constexpr):
         tl.static_assert(False, f"Invalid {dtype=}")
 
 
-# fmt: off
 @triton.jit
-def _compute_quant_and_scale(src_tensor, valid_src_mask, mx_tensor_dtype: tl.constexpr,
-                             DEQUANT_SCALE_ROUNDING_MODE: tl.constexpr = 0):
+def _compute_quant_and_scale(
+    src_tensor, valid_src_mask, mx_tensor_dtype: tl.constexpr, DEQUANT_SCALE_ROUNDING_MODE: tl.constexpr = 0
+):
     is_fp8: tl.constexpr = mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5
     BLOCK_SIZE_OUT_DIM: tl.constexpr = src_tensor.shape[0]
     BLOCK_SIZE_QUANT_DIM: tl.constexpr = src_tensor.shape[1]
@@ -106,7 +106,7 @@ def _compute_quant_and_scale(src_tensor, valid_src_mask, mx_tensor_dtype: tl.con
         quant_tensor = quant_tensor.to(tl.uint32, bitcast=True)
         signs = quant_tensor & 0x80000000
         exponents = (quant_tensor >> 23) & 0xFF
-        mantissas = (quant_tensor & 0x7FFFFF)
+        mantissas = quant_tensor & 0x7FFFFF
 
         # 0.25 <= x < 0.75 maps to 0.5, a denormal number
         E8_BIAS = 127
@@ -129,25 +129,39 @@ def _compute_quant_and_scale(src_tensor, valid_src_mask, mx_tensor_dtype: tl.con
 
     return out_tensor, dequant_scale_exponent
 
-@triton.jit
-def _downcast_to_mxfp(mx_tensor_ptr, stride_mxt_outer, stride_mxt_quant: tl.constexpr,
-                      mx_scale_ptr, stride_mx_scale_outer, stride_mx_scale_quant,
-                      src_ptr, stride_src_outer, stride_src_quant,
-                      outer_dim, quant_dim,
-                      BLOCK_SIZE_OUT_DIM: tl.constexpr, BLOCK_SIZE_QUANT_DIM: tl.constexpr,
-                      DEQUANT_SCALE_ROUNDING_MODE: tl.constexpr):
 
+@triton.jit
+def _downcast_to_mxfp(
+    mx_tensor_ptr,
+    stride_mxt_outer,
+    stride_mxt_quant: tl.constexpr,
+    mx_scale_ptr,
+    stride_mx_scale_outer,
+    stride_mx_scale_quant,
+    src_ptr,
+    stride_src_outer,
+    stride_src_quant,
+    outer_dim,
+    quant_dim,
+    BLOCK_SIZE_OUT_DIM: tl.constexpr,
+    BLOCK_SIZE_QUANT_DIM: tl.constexpr,
+    DEQUANT_SCALE_ROUNDING_MODE: tl.constexpr,
+):
     tl.static_assert(stride_mxt_quant == 1, f"Output stride, {stride_mxt_quant=} must be 1.")
     tl.static_assert(BLOCK_SIZE_QUANT_DIM % 32 == 0, f"{BLOCK_SIZE_QUANT_DIM=} must be a multiple of 32")
 
     # uint8 signifies two fp4 e2m1 values packed into a single byte
     mx_tensor_dtype: tl.constexpr = mx_tensor_ptr.dtype.element_ty
-    tl.static_assert(mx_tensor_dtype == tl.uint8 or (mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5),
-                     f"Invalid {mx_tensor_dtype=}. Must be uint8 or float8.")
+    tl.static_assert(
+        mx_tensor_dtype == tl.uint8 or (mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5),
+        f"Invalid {mx_tensor_dtype=}. Must be uint8 or float8.",
+    )
 
     src_dtype: tl.constexpr = src_ptr.dtype.element_ty
     tl.static_assert(mx_scale_ptr.dtype.element_ty == tl.uint8, f"{mx_scale_ptr.dtype.element_ty=} must be uint8")
-    tl.static_assert((src_dtype == tl.bfloat16) or (src_dtype == tl.float16), f"{src_dtype=} must be bfloat16 or float16")
+    tl.static_assert(
+        (src_dtype == tl.bfloat16) or (src_dtype == tl.float16), f"{src_dtype=} must be bfloat16 or float16"
+    )
     is_fp8: tl.constexpr = mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5
 
     outer_block = tl.program_id(0).to(tl.int64)
@@ -186,28 +200,40 @@ def _downcast_to_mxfp(mx_tensor_ptr, stride_mxt_outer, stride_mxt_quant: tl.cons
     mx_tensor_offsets = offs_mxt_quant * stride_mxt_quant + offs_outer * stride_mxt_outer
     src_tensor = tl.load(src_ptr + src_tensor_offsets, mask=full_mask_src)
 
-    out_tensor, scale_tensor = _compute_quant_and_scale(src_tensor, full_mask_src, mx_tensor_dtype,
-                                                        DEQUANT_SCALE_ROUNDING_MODE)
+    out_tensor, scale_tensor = _compute_quant_and_scale(
+        src_tensor, full_mask_src, mx_tensor_dtype, DEQUANT_SCALE_ROUNDING_MODE
+    )
 
     tl.store(mx_scale_ptr + mx_scale_offsets, scale_tensor, mask=full_scale_mask)
     tl.store(mx_tensor_ptr + mx_tensor_offsets, out_tensor, mask=full_mask_mxt)
 
 
 @triton.jit
-def _upcast_from_mxfp(out_ptr, stride_o_outer, stride_o_quant: tl.constexpr,
-                      mx_scale_ptr, stride_scale_outer, stride_scale_quant,
-                      mx_tensor_ptr, stride_tensor_outer, stride_tensor_quant: tl.constexpr,
-                      outer_dim, quant_dim,
-                      BLOCK_SIZE_OUT_DIM: tl.constexpr, BLOCK_SIZE_QUANT_DIM: tl.constexpr):
-
+def _upcast_from_mxfp(
+    out_ptr,
+    stride_o_outer,
+    stride_o_quant: tl.constexpr,
+    mx_scale_ptr,
+    stride_scale_outer,
+    stride_scale_quant,
+    mx_tensor_ptr,
+    stride_tensor_outer,
+    stride_tensor_quant: tl.constexpr,
+    outer_dim,
+    quant_dim,
+    BLOCK_SIZE_OUT_DIM: tl.constexpr,
+    BLOCK_SIZE_QUANT_DIM: tl.constexpr,
+):
     tl.static_assert(stride_o_quant == 1, "the weight must be contiguous in the k dimension for mx")
     tl.static_assert(BLOCK_SIZE_QUANT_DIM % 32 == 0, "BLOCK_SIZE_K must be a multiple of 32")
     # uint8 signifies two fp4 e2m1 values packed into a single byte
     mx_tensor_dtype: tl.constexpr = mx_tensor_ptr.dtype.element_ty
     dst_dtype: tl.constexpr = out_ptr.dtype.element_ty
     tl.static_assert(dst_dtype == tl.float16 or dst_dtype == tl.bfloat16)
-    tl.static_assert(mx_tensor_dtype == tl.uint8 or (mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5),
-                     "mx_tensor_ptr must be uint8")
+    tl.static_assert(
+        mx_tensor_dtype == tl.uint8 or (mx_tensor_dtype == tl.float8e4nv or mx_tensor_dtype == tl.float8e5),
+        "mx_tensor_ptr must be uint8",
+    )
     tl.static_assert(mx_scale_ptr.dtype.element_ty == tl.uint8, "mx_scale_ptr must be uint8")
 
     # Determine if we are dealing with fp8 types.
@@ -319,11 +345,14 @@ SWIZZLE_ALIGN_INNER = 8
 SWIZZLE_SIZE_INNER = 4
 SWIZZLE_SIZE_OUTER = 128
 
+
 @triton.jit
-def _unswizzle_mx_block(x,
-                        SIZE_OUTER: tl.constexpr = SWIZZLE_SIZE_OUTER,
-                        SIZE_INNER: tl.constexpr = SWIZZLE_SIZE_INNER,
-                        ALIGN_INNER: tl.constexpr = SWIZZLE_ALIGN_INNER):
+def _unswizzle_mx_block(
+    x,
+    SIZE_OUTER: tl.constexpr = SWIZZLE_SIZE_OUTER,
+    SIZE_INNER: tl.constexpr = SWIZZLE_SIZE_INNER,
+    ALIGN_INNER: tl.constexpr = SWIZZLE_ALIGN_INNER,
+):
     shape_0: tl.constexpr = x.shape[0]
     shape_1: tl.constexpr = x.shape[1]
     tl.static_assert(shape_1 % SIZE_OUTER == 0)
@@ -343,10 +372,15 @@ def axis_permute_order(ndim: int, axis: int, swizzle_axis: int | None = None) ->
         swizzle_axis = swizzle_axis if swizzle_axis >= 0 else swizzle_axis + ndim
         if swizzle_axis == ndim - 1:
             swizzle_axis = axis
-        scale_permute_order[swizzle_axis], scale_permute_order[-2] = scale_permute_order[-2], scale_permute_order[swizzle_axis]
+        scale_permute_order[swizzle_axis], scale_permute_order[-2] = (
+            scale_permute_order[-2],
+            scale_permute_order[swizzle_axis],
+        )
 
     convert_order = [i for i, (a, b) in enumerate(zip(permute_order, scale_permute_order, strict=False)) if a != b]
-    assert len(convert_order) == 0 or len(convert_order) == 2, "Exactly 0 or 1 swap should be required to transform permute_order to scale_permute_order."
+    assert len(convert_order) == 0 or len(convert_order) == 2, (
+        "Exactly 0 or 1 swap should be required to transform permute_order to scale_permute_order."
+    )
     return permute_order, scale_permute_order, convert_order
 
 
@@ -360,25 +394,32 @@ def permute_shape(shape: tuple[int, ...], permute_order: list[int]) -> tuple[int
     return tuple(shape[i] for i in permute_order)
 
 
-def downcast_to_mxfp(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis: int, swizzle_axis: int | None = None,
-                     out_quant_tensor: torch.Tensor | None = None, out_scale: torch.Tensor | None = None,
-                     DEQUANT_SCALE_ROUNDING_MODE: DequantScaleRoundingMode = DequantScaleRoundingMode.ROUND_UP,
-                     BLOCK_OUT_DIM: int = 128, BLOCK_QUANT_DIM: int = 32):
+def downcast_to_mxfp(
+    src_tensor: torch.Tensor,
+    out_quant_type: torch.dtype,
+    axis: int,
+    swizzle_axis: int | None = None,
+    out_quant_tensor: torch.Tensor | None = None,
+    out_scale: torch.Tensor | None = None,
+    DEQUANT_SCALE_ROUNDING_MODE: DequantScaleRoundingMode = DequantScaleRoundingMode.ROUND_UP,
+    BLOCK_OUT_DIM: int = 128,
+    BLOCK_QUANT_DIM: int = 32,
+):
     """
-         Convert the src weights to mx format. The src weight is quantized along the axis dimension.
+    Convert the src weights to mx format. The src weight is quantized along the axis dimension.
 
-         If weight_quant_type is torch.uint8, we output mxfp4 where two e2m1 values are packed into a single byte.
-         Note that this means the k_dim of the tensor will be half of the logical k_dim.
+    If weight_quant_type is torch.uint8, we output mxfp4 where two e2m1 values are packed into a single byte.
+    Note that this means the k_dim of the tensor will be half of the logical k_dim.
 
-         If weight_quant_type is torch.float8_e4m3fn or torch.float8_e5m2, we output mxfp8 with the float8s are stored
-         in their respective formats.
+    If weight_quant_type is torch.float8_e4m3fn or torch.float8_e5m2, we output mxfp8 with the float8s are stored
+    in their respective formats.
 
-         When swizzle_axis is provided, the downcast will quantize along the quantization axis and swizzle these values
-         with the swizzle_axis from layout (A, B, ..., N, K) to (A, B, ..., N // 128, K // 4, 32, 4, 4), where N is the
-         swizzle dimension and K is the quantization dimension. The swizzled scales are then reinterpreted back as
-         (A, B, ..., N, K), contiguous along K, and permuted back to the original input layout.
-         In order to swizzle in the target layout, the scales are padded to be divisible by 128 and 4 along the
-         swizzle and quantization dimensions, respectively.
+    When swizzle_axis is provided, the downcast will quantize along the quantization axis and swizzle these values
+    with the swizzle_axis from layout (A, B, ..., N, K) to (A, B, ..., N // 128, K // 4, 32, 4, 4), where N is the
+    swizzle dimension and K is the quantization dimension. The swizzled scales are then reinterpreted back as
+    (A, B, ..., N, K), contiguous along K, and permuted back to the original input layout.
+    In order to swizzle in the target layout, the scales are padded to be divisible by 128 and 4 along the
+    swizzle and quantization dimensions, respectively.
     """
     ndim = src_tensor.ndim
     assert -ndim <= axis < ndim, f"Invalid axis {axis=}"
@@ -409,7 +450,7 @@ def downcast_to_mxfp(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis
     if out_quant_tensor is None:
         out_quant_tensor = torch.empty(prmted_quant_tensor_shape, dtype=out_quant_type, device=device)
     else:
-        expected_shape = src_tensor.shape[:axis] + (packed_quant_dim,) + src_tensor.shape[axis + 1:]
+        expected_shape = src_tensor.shape[:axis] + (packed_quant_dim,) + src_tensor.shape[axis + 1 :]
         assert out_quant_tensor.shape == expected_shape, f"{out_quant_tensor.shape=} != {expected_shape=}"
         assert out_quant_tensor.dtype == out_quant_type, f"{out_quant_tensor.dtype=} != {out_quant_type=}"
         assert out_quant_tensor.stride(axis) == 1, f"{out_quant_tensor.stride(axis)=} != 1"
@@ -441,7 +482,11 @@ def downcast_to_mxfp(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis
         # Output shape is padded. Make a new unpadded tensor.
         assert swizzle_axis is not None  # padding only occurs in the swizzled case.
         # scales should be produced in `permute_order`.
-        unpadded_out_scale = torch.empty(transpose_shape(prmted_scale_shape, *convert_order) if convert_order else prmted_scale_shape, dtype=torch.uint8, device=device)
+        unpadded_out_scale = torch.empty(
+            transpose_shape(prmted_scale_shape, *convert_order) if convert_order else prmted_scale_shape,
+            dtype=torch.uint8,
+            device=device,
+        )
     else:
         unpadded_out_scale = out_scale
 
@@ -457,12 +502,17 @@ def downcast_to_mxfp(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis
     assert kernel_scale.data_ptr() == unpadded_out_scale.data_ptr()
 
     _downcast_to_mxfp[(blocks_out_dim, blocks_quant_dim)](
-        kernel_quant_tensor, *kernel_quant_tensor.stride(),
-        kernel_scale, *kernel_scale.stride(),
-        reshaped_src_tensor, *reshaped_src_tensor.stride(),
+        kernel_quant_tensor,
+        *kernel_quant_tensor.stride(),
+        kernel_scale,
+        *kernel_scale.stride(),
+        reshaped_src_tensor,
+        *reshaped_src_tensor.stride(),
         *reshaped_src_tensor.shape,
-        BLOCK_OUT_DIM, BLOCK_QUANT_DIM, DEQUANT_SCALE_ROUNDING_MODE.value,
-        num_warps=8
+        BLOCK_OUT_DIM,
+        BLOCK_QUANT_DIM,
+        DEQUANT_SCALE_ROUNDING_MODE.value,
+        num_warps=8,
     )
 
     if convert_order or prmted_scale_shape != out_scale.shape:
@@ -489,8 +539,15 @@ def downcast_to_mxfp(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis
     return out_quant_tensor, out_scale, permute_shape(prmted_scale_shape, scale_permute_order)
 
 
-def upcast_from_mxfp(tensor: torch.Tensor, scale: torch.Tensor, dtype: torch.dtype, axis: int, swizzle_axis: int | None = None,
-                     BLOCK_OUT_DIM: int = 128, BLOCK_QUANT_DIM: int = 32):
+def upcast_from_mxfp(
+    tensor: torch.Tensor,
+    scale: torch.Tensor,
+    dtype: torch.dtype,
+    axis: int,
+    swizzle_axis: int | None = None,
+    BLOCK_OUT_DIM: int = 128,
+    BLOCK_QUANT_DIM: int = 32,
+):
     """
     Upcasts an mxfp (packed) weight tensor back to float16 or bfloat16.
 
@@ -507,13 +564,16 @@ def upcast_from_mxfp(tensor: torch.Tensor, scale: torch.Tensor, dtype: torch.dty
 
     multiplier = 1 if "float8" in str(tensor.dtype) else 2
     logical_quant_dim_shape = tensor.shape[axis] * multiplier
-    assert tensor.ndim == scale.ndim, (f"Weight and scale must have the same number of dimensions. "
-                                       f"Got {tensor.ndim=} and {scale.ndim=}")
+    assert tensor.ndim == scale.ndim, (
+        f"Weight and scale must have the same number of dimensions. Got {tensor.ndim=} and {scale.ndim=}"
+    )
     quant_dim_align = SWIZZLE_ALIGN_INNER if swizzle_axis is not None else 1
-    assert triton.cdiv(triton.cdiv(logical_quant_dim_shape, 32), quant_dim_align) * quant_dim_align == scale.shape[axis], \
-        f"Tensor and scale mismatch along quantization axis. Got {tensor.shape[axis]=} and {scale.shape[axis]=}"
-    assert tensor.dtype in {torch.uint8, torch.float8_e5m2, torch.float8_e4m3fn}, \
+    assert (
+        triton.cdiv(triton.cdiv(logical_quant_dim_shape, 32), quant_dim_align) * quant_dim_align == scale.shape[axis]
+    ), f"Tensor and scale mismatch along quantization axis. Got {tensor.shape[axis]=} and {scale.shape[axis]=}"
+    assert tensor.dtype in {torch.uint8, torch.float8_e5m2, torch.float8_e4m3fn}, (
         f"Invalid tensor dtype {tensor.dtype=}"
+    )
     assert scale.dtype == torch.uint8, f"Invalid scale dtype {scale.dtype=}"
     assert dtype in {torch.float16, torch.bfloat16}, f"Invalid output dtype {dtype=}"
 
@@ -547,10 +607,20 @@ def upcast_from_mxfp(tensor: torch.Tensor, scale: torch.Tensor, dtype: torch.dty
 
     out = torch.empty((outer_dim, logical_quant_dim_shape), dtype=dtype, device=tensor.device)
     _upcast_from_mxfp[(blocks_out_dim, blocks_quant_dim)](
-        out, out.stride(0), out.stride(1),
-        reshaped_scale, reshaped_scale.stride(0), reshaped_scale.stride(1),
-        reshaped_tensor, reshaped_tensor.stride(0), reshaped_tensor.stride(1),
-        outer_dim, logical_quant_dim_shape, BLOCK_OUT_DIM, BLOCK_QUANT_DIM, num_warps=8
+        out,
+        out.stride(0),
+        out.stride(1),
+        reshaped_scale,
+        reshaped_scale.stride(0),
+        reshaped_scale.stride(1),
+        reshaped_tensor,
+        reshaped_tensor.stride(0),
+        reshaped_tensor.stride(1),
+        outer_dim,
+        logical_quant_dim_shape,
+        BLOCK_OUT_DIM,
+        BLOCK_QUANT_DIM,
+        num_warps=8,
     )
     # Reshape back to the permuted shape.
     out = out.view(*prmt_tensor.shape[:-1], logical_quant_dim_shape)
@@ -563,9 +633,15 @@ def right_shift_unsigned(x, shift):
     return (x >> shift) & ((1 << (32 - shift)) - 1)
 
 
-def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype, axis: int, swizzle_axis: int | None = None,
-                           out_quant_tensor: torch.Tensor | None = None, out_scale: torch.Tensor | None = None,
-                           DEQUANT_SCALE_ROUNDING_MODE: DequantScaleRoundingMode = DequantScaleRoundingMode.ROUND_UP):
+def downcast_to_mxfp_torch(
+    src_tensor: torch.Tensor,
+    out_quant_type: torch.dtype,
+    axis: int,
+    swizzle_axis: int | None = None,
+    out_quant_tensor: torch.Tensor | None = None,
+    out_scale: torch.Tensor | None = None,
+    DEQUANT_SCALE_ROUNDING_MODE: DequantScaleRoundingMode = DequantScaleRoundingMode.ROUND_UP,
+):
     """
     Converts the src tensor to the output format specified by out_quant_type.
       axis: The axis along which the tensors are contiguous and quantization is applied.
@@ -582,7 +658,9 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
 
     ndim = src_tensor.ndim
     assert -ndim <= axis < ndim, f"Invalid axis {axis=}"
-    assert src_tensor.dtype in {torch.float32, torch.bfloat16, torch.float16}, f"Invalid input tensor dtype {src_tensor.dtype}"
+    assert src_tensor.dtype in {torch.float32, torch.bfloat16, torch.float16}, (
+        f"Invalid input tensor dtype {src_tensor.dtype}"
+    )
 
     axis = axis if axis >= 0 else axis + ndim
     if swizzle_axis is not None:
@@ -608,12 +686,12 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
     # Pad the axis to be divisible by 32, in case it is not.
     next_multiple = (axis_shape + 31) // 32 * 32
     pad_amount = next_multiple - axis_shape
-    padded_src = F.pad(src, (0, pad_amount))
-    valid_mask = F.pad(torch.ones_like(src, dtype=torch.bool), (0, pad_amount))
+    padded_src = torch.nn.functional.pad(src, (0, pad_amount))
+    valid_mask = torch.nn.functional.pad(torch.ones_like(src, dtype=torch.bool), (0, pad_amount))
     padded_axis_shape = padded_src.size(-1)  # now divisible by 32
 
     # --- Compute per-group maximums for scale ---
-    # Set padded entries to -1 so they don't affect the max.
+    # Set padded entries to -1 so they don’t affect the max.
     abs_f = torch.abs(padded_src)
     abs_f = torch.where(valid_mask, abs_f, torch.tensor(-1.0, device=device, dtype=padded_src.dtype))
     # Reshape the last dimension into groups of 32.
@@ -636,9 +714,7 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
     dequant_scale_rounded = ds_int_rounded.view(torch.float32)
 
     # Compute the quantization scale.
-    quant_scale = torch.where(dequant_scale_rounded == 0,
-                              torch.tensor(0.0, device=device),
-                              1.0 / dequant_scale_rounded)
+    quant_scale = torch.where(dequant_scale_rounded == 0, torch.tensor(0.0, device=device), 1.0 / dequant_scale_rounded)
 
     # Quantize the tensor
     orig_padded_shape = padded_src.shape
@@ -666,11 +742,10 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
         E8_BIAS = 127
         E2_BIAS = 1
         # Adjust mantissas for subnormals.
-        mantissas = torch.where(exponents < E8_BIAS,
-                                (0x400000 | right_shift_unsigned(mantissas, 1)) >> (E8_BIAS - exponents - 1),
-                                mantissas)
-        exponents = torch.maximum(exponents,
-                                  torch.tensor(E8_BIAS - E2_BIAS, device=device)) - (E8_BIAS - E2_BIAS)
+        mantissas = torch.where(
+            exponents < E8_BIAS, (0x400000 | right_shift_unsigned(mantissas, 1)) >> (E8_BIAS - exponents - 1), mantissas
+        )
+        exponents = torch.maximum(exponents, torch.tensor(E8_BIAS - E2_BIAS, device=device)) - (E8_BIAS - E2_BIAS)
         e2m1_tmp = right_shift_unsigned(((exponents << 2) | right_shift_unsigned(mantissas, 21)) + 1, 1)
         e2m1_tmp = torch.minimum(e2m1_tmp, torch.tensor(0x7, device=device))
         e2m1_value = (right_shift_unsigned(signs, 28) | e2m1_tmp).to(torch.uint8)  # shape: (..., even_axis_shape)
@@ -697,8 +772,12 @@ def downcast_to_mxfp_torch(src_tensor: torch.Tensor, out_quant_type: torch.dtype
     dq_scale = dq_scale.permute(scale_permute_order)
 
     if out_quant_tensor is not None:
-        assert out_quant_tensor.shape == out_weight.shape, f"Invalid shape {out_quant_tensor.shape} != {out_weight.shape}"
-        assert out_quant_tensor.dtype == out_weight.dtype, f"Invalid dtype {out_quant_tensor.dtype} != {out_weight.dtype}"
+        assert out_quant_tensor.shape == out_weight.shape, (
+            f"Invalid shape {out_quant_tensor.shape} != {out_weight.shape}"
+        )
+        assert out_quant_tensor.dtype == out_weight.dtype, (
+            f"Invalid dtype {out_quant_tensor.dtype} != {out_weight.dtype}"
+        )
         out_quant_tensor.copy_(out_weight)
     else:
         out_quant_tensor = out_weight
@@ -731,7 +810,9 @@ def cvt_e2m1_to_fp32(input_tensor):
     return output_tensor
 
 
-def upcast_from_mxfp_torch(tensor: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype, axis: int, swizzle_axis: int | None = None):
+def upcast_from_mxfp_torch(
+    tensor: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype, axis: int, swizzle_axis: int | None = None
+):
     """
     Converts the mxfp4/mxfp8 tensor to the target format specified by target_dtype.
       axis: The axis along which dequantization is applied.
@@ -772,14 +853,14 @@ def upcast_from_mxfp_torch(tensor: torch.Tensor, scale: torch.Tensor, target_dty
         fp_tensor_shape = transpose_shape(fp_tensor_shape, *convert_order)
 
     # Trim padding
-    dq_scale = dq_scale[..., :fp_tensor_shape[-2], :(fp_tensor_shape[-1] + 31) // 32]
+    dq_scale = dq_scale[..., : fp_tensor_shape[-2], : (fp_tensor_shape[-1] + 31) // 32]
     if convert_order:
         dq_scale = dq_scale.transpose(*convert_order)
 
     axis_shape = fp32_tensor.size(-1)
     padded_axis_shape = dq_scale.size(-1) * 32
     pad_size = padded_axis_shape - axis_shape
-    padded_tensor = F.pad(fp32_tensor, (0, pad_size))
+    padded_tensor = torch.nn.functional.pad(fp32_tensor, (0, pad_size))
 
     new_axis_shape = padded_tensor.shape[-1]
     new_shape = padded_tensor.shape[:-1] + (new_axis_shape // 32, 32)
@@ -801,14 +882,25 @@ def swizzle_mx(tensor: torch.Tensor, allow_pad=True):
     Padding is applied if N and K are not multiples of 128 and 4 respectively.
     Returns the swizzled tensor repacked as (A, B, ... N, K), with padding.
     """
-    *leading_shape, N, K, = tensor.shape
+    (
+        *leading_shape,
+        N,
+        K,
+    ) = tensor.shape
     pad_k = (SWIZZLE_ALIGN_INNER - (K % SWIZZLE_ALIGN_INNER)) % SWIZZLE_ALIGN_INNER
     pad_n = (SWIZZLE_SIZE_OUTER - (N % SWIZZLE_SIZE_OUTER)) % SWIZZLE_SIZE_OUTER
     if pad_k or pad_n > 0:
         assert allow_pad, "Padding is required for swizzling, but it was explicitly disabled."
         tensor = torch.nn.functional.pad(tensor, (0, pad_k, 0, pad_n))
     padded_shape = tensor.shape
-    tensor = tensor.reshape(*leading_shape, padded_shape[-2] // SWIZZLE_SIZE_OUTER, SWIZZLE_SIZE_OUTER // 32, 32, padded_shape[-1] // SWIZZLE_SIZE_INNER, SWIZZLE_SIZE_INNER)
+    tensor = tensor.reshape(
+        *leading_shape,
+        padded_shape[-2] // SWIZZLE_SIZE_OUTER,
+        SWIZZLE_SIZE_OUTER // 32,
+        32,
+        padded_shape[-1] // SWIZZLE_SIZE_INNER,
+        SWIZZLE_SIZE_INNER,
+    )
     permute_order = list(range(len(tensor.shape)))
     permute_order[-2], permute_order[-4] = permute_order[-4], permute_order[-2]
     return tensor.permute(permute_order).reshape(*padded_shape)
@@ -820,28 +912,48 @@ def unswizzle_mx(tensor: torch.Tensor):
     """
     assert tensor.shape[-1] % SWIZZLE_SIZE_INNER == 0, f"{tensor.shape[-1]=} must be a multiple of {SWIZZLE_SIZE_INNER}"
     assert tensor.shape[-2] % SWIZZLE_SIZE_OUTER == 0, f"{tensor.shape[-2]=} must be a multiple of {SWIZZLE_SIZE_OUTER}"
-    *leading_shape, N, K, = tensor.shape
-    tensor = tensor.reshape(*leading_shape, N // SWIZZLE_SIZE_OUTER, K // SWIZZLE_SIZE_INNER, 32, SWIZZLE_SIZE_OUTER // 32, SWIZZLE_SIZE_INNER)
+    (
+        *leading_shape,
+        N,
+        K,
+    ) = tensor.shape
+    tensor = tensor.reshape(
+        *leading_shape,
+        N // SWIZZLE_SIZE_OUTER,
+        K // SWIZZLE_SIZE_INNER,
+        32,
+        SWIZZLE_SIZE_OUTER // 32,
+        SWIZZLE_SIZE_INNER,
+    )
     permute_order = list(range(len(tensor.shape)))
     permute_order[-2], permute_order[-4] = permute_order[-4], permute_order[-2]
     return tensor.permute(permute_order).reshape(*leading_shape, N, K)
 
+
 def dq_mxfp4_triton(x: torch.Tensor, scale: torch.Tensor, float_dtype: torch.dtype) -> torch.Tensor:
-    return upcast_from_mxfp(x, scale, float_dtype, axis=-1, swizzle_axis=None)
+    # Context manager to bypass `ValueError: Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)` in multi-device settings, see https://github.com/Dao-AILab/flash-attention/issues/523, in case
+    # `CUDA_VISIBLE_DEVICES="1,2"` is set.
+    with torch.cuda.device(x.device):
+        return upcast_from_mxfp(x, scale, float_dtype, axis=-1, swizzle_axis=None)
+
 
 def qdq_mxfp4_triton(x: torch.Tensor, scale_calculation_mode: str = "even") -> torch.Tensor:
     if scale_calculation_mode == "even":
         triton_scale_calculation_mode = DequantScaleRoundingMode.EVEN
     else:
         raise NotImplementedError(f"Unsupported scale calculation mode {scale_calculation_mode}")
-    x_mxfp4, scale_e8m0, _ = downcast_to_mxfp(
-        x,
-        torch.uint8,
-        axis=-1,
-        swizzle_axis=None,
-        out_quant_tensor=None,
-        out_scale=None,
-        DEQUANT_SCALE_ROUNDING_MODE=triton_scale_calculation_mode,
-    )
-    x_qdq = upcast_from_mxfp(x_mxfp4, scale_e8m0, x.dtype, axis=-1, swizzle_axis=None)
+
+    # Context manager to bypass `ValueError: Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)` in multi-device settings, see https://github.com/Dao-AILab/flash-attention/issues/523, in case
+    # `CUDA_VISIBLE_DEVICES="1,2"` is set.
+    with torch.cuda.device(x.device):
+        x_mxfp4, scale_e8m0, _ = downcast_to_mxfp(
+            x,
+            torch.uint8,
+            axis=-1,
+            swizzle_axis=None,
+            out_quant_tensor=None,
+            out_scale=None,
+            DEQUANT_SCALE_ROUNDING_MODE=triton_scale_calculation_mode,
+        )
+        x_qdq = upcast_from_mxfp(x_mxfp4, scale_e8m0, x.dtype, axis=-1, swizzle_axis=None)
     return x_qdq

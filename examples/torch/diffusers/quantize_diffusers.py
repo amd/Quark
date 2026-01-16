@@ -32,7 +32,6 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from quark.torch import ModelQuantizer, export_onnx, load_params
-from quark.torch.export import ExporterConfig, OnnxExporterConfig
 from quark.torch.quantization import (
     Bfloat16Spec,
     FP8E4M3PerTensorSpec,
@@ -41,7 +40,7 @@ from quark.torch.quantization import (
     Int8PerChannelSpec,
     Int8PerTensorSpec,
 )
-from quark.torch.quantization.config.config import Config, QuantizationConfig
+from quark.torch.quantization.config.config import QConfig, QLayerConfig
 
 FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
 
@@ -192,12 +191,6 @@ def replace_lora_layers(module, exclude_layers, parent_name=""):
                 replace_lora_layers(sub_child, exclude_layers, full_name)
 
 
-def get_export_config() -> ExporterConfig:
-    export_config = ExporterConfig(json_export_config=None, onnx_export_config=OnnxExporterConfig())
-    # export_config.json_export_config.min_kv_scale = 1.0
-    return export_config
-
-
 class CustomizedExit(Exception):
     pass
 
@@ -235,9 +228,9 @@ class WrappingModelForDumpData(torch.nn.Module):
             raise CustomizedExit
 
     def __getattr__(self, name):
-        if name in self.__dict__.keys():
+        if name in self.__dict__:
             return self.__dict__[name]
-        if name in self._modules.keys():
+        if name in self._modules:
             return self._modules[name]
         return getattr(self.inner_model, name)
 
@@ -251,9 +244,9 @@ class WrappingModelForExtendInterface(torch.nn.Module):
         return self.inner_model(*data[0][0], **data[0][1])
 
     def __getattr__(self, name):
-        if name in self.__dict__.keys():
+        if name in self.__dict__:
             return self.__dict__[name]
-        if name in self._modules.keys():
+        if name in self._modules:
             return self._modules[name]
         return getattr(self.inner_model, name)
 
@@ -434,6 +427,7 @@ def get_image_by_prompt(prompt, pipe, latents=None):
             image = image[:, :, None]
             image = np.concatenate([image, image, image], axis=2)
             image = Image.fromarray(image)
+            os.makedirs(g_args.export_path, exist_ok=True)
             image.save(os.path.join(g_args.export_path, "sd15_canny_control.png"))
         elif "diffusers/controlnet-canny-sdxl-1.0" in g_args.controlnet_id:
             # load image: input str or PIL.Image.Image
@@ -585,20 +579,20 @@ def main(g_args: argparse.Namespace):
             quant_scheme = module_quant_config["quant_scheme"]
             layer_type_quant_config = {}
             if quant_scheme == "w_fp8_a_fp8":
-                config = QuantizationConfig(weight=FP8_PER_TENSOR_SPEC, input_tensors=FP8_PER_TENSOR_SPEC)
+                config = QLayerConfig(weight=FP8_PER_TENSOR_SPEC, input_tensors=FP8_PER_TENSOR_SPEC)
             elif quant_scheme == "w_int4_per_channel_sym":
-                config = QuantizationConfig(weight=INT4_PER_CHANNEL_SPEC)
+                config = QLayerConfig(weight=INT4_PER_CHANNEL_SPEC)
             elif quant_scheme == "w_int8_per_tensor_sym":
-                config = QuantizationConfig(weight=INT8_PER_TENSOR_SPEC)
+                config = QLayerConfig(weight=INT8_PER_TENSOR_SPEC)
             elif quant_scheme == "w_int8_a_int8":
-                ConvConfig = QuantizationConfig(weight=INT8_PER_CHANNEL_SPEC, input_tensors=INT8_PER_TENSOR_SPEC)
-                config = QuantizationConfig(weight=INT8_PER_CHANNEL_SPEC, input_tensors=INT8_PER_TENSOR_SPEC)
+                ConvConfig = QLayerConfig(weight=INT8_PER_CHANNEL_SPEC, input_tensors=INT8_PER_TENSOR_SPEC)
+                config = QLayerConfig(weight=INT8_PER_CHANNEL_SPEC, input_tensors=INT8_PER_TENSOR_SPEC)
                 layer_type_quant_config = {torch.nn.Conv2d: ConvConfig}
             elif quant_scheme == "bf16":
-                config = QuantizationConfig(weight=BFLOAT16_SPEC, input_tensors=BFLOAT16_SPEC)
+                config = QLayerConfig(weight=BFLOAT16_SPEC, input_tensors=BFLOAT16_SPEC)
             else:
                 config = None
-            quant_config = Config(global_quant_config=config, layer_type_quant_config=layer_type_quant_config)
+            quant_config = QConfig(global_quant_config=config, layer_type_quant_config=layer_type_quant_config)
 
             # 4-2. Set exclude layers
             exclude_layers = module_quant_config["exclude_layers"]
@@ -653,12 +647,7 @@ def main(g_args: argparse.Namespace):
                     with torch.inference_mode():
                         dataloader = DumpDatasetFrom(module_name)
                         input_data = dataloader.__getitem__(0)
-                        if quant_scheme in [
-                            "w_int4_per_channel_sym",
-                            "w_uint4_per_group_asym",
-                            "w_int4_per_group_sym",
-                            "w_uint4_a_bfloat16_per_group_asym",
-                        ]:
+                        if "uint4" in quant_scheme or "int4" in quant_scheme:
                             uint4_int4_flag = True
                         else:
                             uint4_int4_flag = False
@@ -679,7 +668,9 @@ def main(g_args: argparse.Namespace):
                 print(f"\n[INFO]: Exporting {module_name} to safetensors ...")
                 dataloader = DumpDatasetFrom("vae.decoder") if module_name == "vae" else DumpDatasetFrom(module_name)
                 input_data = dataloader.__getitem__(0)
-                save_params(pipe.__dict__[module_name], model_type=module_name, export_dir=g_args.export_path)
+
+                frozen_module = ModelQuantizer.freeze(pipe.__dict__[module_name])
+                save_params(frozen_module, model_type=module_name, export_dir=g_args.export_path)
 
     if len(g_args.prompt.strip()) != 0:
         image = get_image_by_prompt(g_args.prompt, pipe, latents)

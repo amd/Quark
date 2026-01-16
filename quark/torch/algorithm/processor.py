@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -19,9 +19,9 @@ class BaseAlgoProcessor(ABC):
         self,
         model: nn.Module,
         quant_algo_config: Any,
-        calib_data: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ],
+        calib_data: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]],
     ) -> None:
         pass
 

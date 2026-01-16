@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Pruning Config API for PyTorch"""
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T", bound="ConfigBase")
 
@@ -35,7 +35,6 @@ class Config(ConfigBase):
     A class that encapsulates comprehensive pruning configurations for a machine learning model, allowing for detailed and hierarchical control over pruning parameters across different model components.
 
     :param Optional[AlgoConfig] algo_config: Optional configuration for the pruning algorithm, such as OSSCAR. After this process, the params will be reduced. Default is None.
-    :param Optional[int] log_severity_level: 0:DEBUG, 1:INFO, 2:WARNING. 3:ERROR, 4:CRITICAL/FATAL. Default is 1.
     """
 
     # Optional configuration for the pruning algorithm, such as OSSCAR
@@ -44,8 +43,7 @@ class Config(ConfigBase):
 
     blockwise_tuning_config: AlgoConfig | None = None
 
-    # Log level for printing on screen
-    log_severity_level: int | None = 1
+    log_severity_level: None = None  # deprecated. TODO: remove.
 
 
 @dataclass

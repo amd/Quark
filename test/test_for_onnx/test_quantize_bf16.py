@@ -15,10 +15,9 @@ from onnx import TensorProto, helper
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quant_utils import convert_to_bf16
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import BF16_CONFIG
+from quark.onnx.quantization.quant_utils import convert_to_bf16
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
@@ -132,7 +131,13 @@ def prepare_conv_model(tmp_path):
     onnx_model_path = Path(tmp_path, "double_conv_model.onnx").as_posix()
     onnx_quantized_model_path = Path(tmp_path, "bf16.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -281,7 +286,7 @@ def tensor_quantize_bf16_with_cast(tmp_path):
     data_reader = prepare_data()
     quant_config = prepare_bf16_with_cast_config()
     quantizer = prepare_quantizer(quant_config)
-    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    _ = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
 
 
 def tensor_quantize(tmp_path):

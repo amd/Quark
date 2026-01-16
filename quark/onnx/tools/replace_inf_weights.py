@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -11,7 +11,7 @@ A tool for replace `inf` and `-inf` values in ONNX model weights with specified 
 
 import argparse
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -23,8 +23,8 @@ logger = ScreenLogger(__name__)
 
 
 def replace_inf_in_onnx_weights(
-    input_model: Union[str, Path, onnx.ModelProto],
-    output_model: Union[str, Path] | None = None,
+    input_model: str | Path | onnx.ModelProto,
+    output_model: str | Path | None = None,
     replace_inf_value: float = 10000.0,
 ) -> Any:
     """

@@ -13,11 +13,11 @@ from quark.shares.utils.testing_utils import (
     torch_device,
 )
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import AWQConfig, Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import AWQConfig, QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
 
-DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QTensorConfig(
     dtype=Dtype.uint4,
     observer_cls=PerGroupMinMaxObserver,
     symmetric=False,
@@ -29,10 +29,10 @@ DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
     group_size=128,
 )
 
-DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
+DEFAULT_W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
 
 
-DEFAULT_AWQ_CONFIG = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQConfig()])
+DEFAULT_AWQ_CONFIG = QConfig(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQConfig()])
 
 
 def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
@@ -57,7 +57,7 @@ def test_smoke_multi_gpu_load_to_cpu_or_disk():
     model.eval()
     calib_dataloader = get_dataloader("facebook/opt-125m", model.device)
     try:
-        quant_model = quantizer.quantize_model(model, calib_dataloader)
+        _ = quantizer.quantize_model(model, calib_dataloader)
     except MemoryError as e:
         assert "Out of memory. The available GPU memory is insufficient to load the entire model." in str(e)
     else:

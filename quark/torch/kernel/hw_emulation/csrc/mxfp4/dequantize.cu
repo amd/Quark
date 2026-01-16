@@ -56,8 +56,8 @@ __global__ void dq_uint8_mxfp4_to_half_kernel(uint8_t* inp, scale_type* scales, 
 
         // Tensor packed as [elem0, elem1], but the logical order is [elem1, elem0].
         // TODO: We could probably use half2 dtype here.
-        out_thread[2 * i + 1] = __hmul(elem0_half, scale_half);
-        out_thread[2 * i] = __hmul(elem1_half, scale_half);
+        out_thread[2 * i + 1] = hmul_impl(elem0_half, scale_half);
+        out_thread[2 * i] = hmul_impl(elem1_half, scale_half);
     }
 
     // Maps to a global_store_dwordx4 (4 * 4 = 16 bytes = 8 half)
@@ -109,7 +109,6 @@ void dq_uint8_mxfp4_to_half(torch::Tensor inp, torch::Tensor scales, torch::Tens
         }
     }
     else if (out.scalar_type() == at::ScalarType::BFloat16) {
-#if BFLOAT16_SUPPORTED
         if (scales.scalar_type() == at::ScalarType::BFloat16) {
             dq_uint8_mxfp4_to_half_kernel<__nv_bfloat16, __nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS><<<dimGrid, dimBlock, 0, stream>>>(
                 (uint8_t*) inp.data_ptr(),
@@ -127,9 +126,6 @@ void dq_uint8_mxfp4_to_half(torch::Tensor inp, torch::Tensor scales, torch::Tens
         else {
             TORCH_CHECK(false, "Wrong scale dtype in dq_uint8_mxfp4_to_half!");
         }
-#else
-        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
-#endif
     }
     else {
         TORCH_CHECK(false, "Wrong output dtype in dq_uint8_mxfp4_to_half!");

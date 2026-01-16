@@ -1,10 +1,35 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Base Data Type Classes"""
 
-from typing import Union
+from abc import ABC
+from enum import Enum
+
+
+class BaseDtype(Enum):
+    pass
+
+
+class BaseQSchemeType(Enum):
+    pass
+
+
+class BaseRoundType(Enum):
+    pass
+
+
+class BaseScaleType(Enum):
+    pass
+
+
+class BaseZeroPointType(Enum):
+    pass
+
+
+class BaseObserverBase(ABC):
+    pass
 
 
 class BaseDataType:
@@ -18,8 +43,30 @@ class BaseDataType:
     """
 
     bitwidth: int
-    min_value: Union[float, int]
-    max_value: Union[float, int]
+    min_value: float | int
+    max_value: float | int
+
+
+class BaseMX(BaseDataType):
+    """Microscaling data type."""
+
+    pass
+
+
+class BaseInt2(BaseDataType):
+    """Signed 2-bit integer quantization data type."""
+
+    bitwidth = 2
+    min_value = -2
+    max_value = 1
+
+
+class BaseInt3(BaseDataType):
+    """Signed 3-bit integer quantization data type."""
+
+    bitwidth = 3
+    min_value = -4
+    max_value = 3
 
 
 class BaseInt4(BaseDataType):
@@ -104,30 +151,16 @@ class BaseBFP16(BaseDataType):
     bitwidth = 16
 
 
-class BaseInt2(BaseDataType):
-    """Signed 2-bit integer quantization data type."""
-
-    bitwidth = 2
-    min_value = -2
-    max_value = 1
-
-
-class BaseMX(BaseDataType):
-    """Microscaling data type."""
-
-    pass
-
-
-class BaseInt3(BaseDataType):
-    """Signed 3-bit integer quantization data type."""
-
-    bitwidth = 3
-    min_value = -4
-    max_value = 3
-
-
 class BaseFP8_E5M2(BaseDataType):
     """8-bit floating point with E5M2 format."""
+
+    bitwidth = 8
+    min_value = -57344.0
+    max_value = 57344.0
+
+
+class BaseMXFP8_E5M2(BaseDataType):
+    """8-bit floating point with E5M2 format using microscaling data type."""
 
     bitwidth = 8
     min_value = -57344.0
@@ -142,8 +175,24 @@ class BaseFP8_E4M3(BaseDataType):
     max_value = 448.0
 
 
+class BaseMXFP8_E4M3(BaseDataType):
+    """8-bit floating point with E4M3 format using microscaling data type."""
+
+    bitwidth = 8
+    min_value = -448.0
+    max_value = 448.0
+
+
 class BaseFP6_E3M2(BaseDataType):
     """6-bit floating point with E3M2 format."""
+
+    bitwidth = 6
+    min_value = -28.0
+    max_value = 28.0
+
+
+class BaseMXFP6_E3M2(BaseDataType):
+    """6-bit floating point with E3M2 format using microscaling data type."""
 
     bitwidth = 6
     min_value = -28.0
@@ -158,6 +207,14 @@ class BaseFP6_E2M3(BaseDataType):
     max_value = 7.5
 
 
+class BaseMXFP6_E2M3(BaseDataType):
+    """6-bit floating point with E2M3 format using microscaling data type."""
+
+    bitwidth = 6
+    min_value = -7.5
+    max_value = 7.5
+
+
 class BaseFP4(BaseDataType):
     """4-bit floating point quantization data type."""
 
@@ -166,16 +223,35 @@ class BaseFP4(BaseDataType):
     max_value = 6.0
 
 
-class BaseMX6(BaseDataType):
-    """6-bit microscaling data type."""
+class BaseMXFP4_E2M1(BaseDataType):
+    """4-bit floating point quantization data type using microscaling data type."""
 
-    bitwidth = 6
+    bitwidth = 4
+    min_value = -6.0
+    max_value = 6.0
+
+
+class BaseMX4(BaseDataType):
+    """shared 4-bit microscaling data type."""
+
+    bitwidth = 11
+
+
+class BaseMX6(BaseDataType):
+    """shared 6-bit microscaling data type."""
+
+    bitwidth = 13
 
 
 class BaseMX9(BaseDataType):
-    """9-bit microscaling data type."""
+    """shared 9-bit microscaling data type."""
 
-    bitwidth = 9
+    bitwidth = 16
 
 
-# TODO: Add Quark ONNX MX data type classes.
+class BaseMXInt8(BaseDataType):
+    """8-bit int microscaling data type."""
+
+    bitwidth = 8
+    min_value = -128
+    max_value = 127

@@ -1,11 +1,14 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import os
 import unittest
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable
+
+import pytest
+import torch
 
 from quark.shares.utils.log import ScreenLogger
 
@@ -22,18 +25,14 @@ TEST_SKIP_FAST = os.getenv("QUARK_TEST_SKIP_FAST", "0") == "1"
 
 def slow_test(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
     """Marks the test as slow and skip it if QUARK_TEST_WITH_SLOW env var is not set
-
     Note: When the test has multiple decorators, `slow_test` must be the first decorator (at the top)
     """
 
     @wraps(fn)
     def wrapper(*args: tuple[Any] | None, **kwargs: dict[Any, Any] | None) -> None:
         if not TEST_WITH_SLOW:  # noqa: F821
-            raise unittest.SkipTest(
-                "tests cases decorated with '@slow_test' will be skipped; run with QUARK_TEST_WITH_SLOW=1 to enable these tests."
-            )
-        else:
-            fn(*args, **kwargs)
+            pytest.skip("Skipping slow test; set QUARK_TEST_WITH_SLOW=1 to enable.")
+        return fn(*args, **kwargs)
 
     wrapper.__dict__["slow_test"] = True  # Use by class TestCase(unittest.TestCase).setUp
     return wrapper
@@ -45,22 +44,18 @@ def slow_test_if(condition: bool) -> Callable[[Any], Any]:
 
 
 def skip_if_no_gpu(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    """Decorator to skip the test if no GPU is available"""
+    """Decorator to skip the test if no GPU is available."""
+    from functools import wraps
 
     @wraps(fn)
-    def wrapper(*args: tuple[Any] | None, **kwargs: dict[Any, Any] | None) -> None:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
-            import torch
-
             if not torch.cuda.is_available():
-                raise unittest.SkipTest(
-                    "test requires GPU support and will be skipped; run with QUARK_TEST_WITH_SLOW to enable this test."
-                )
-            else:
-                fn(*args, **kwargs)
+                pytest.skip("Test requires GPU; skipping.")
+            return fn(*args, **kwargs)
         except ImportError:
-            logger.warning("\nPyTorch not detected. skip_if_no_gpu will be a no-op.")
-            fn(*args, **kwargs)
+            logger.warning("PyTorch not detected. skip_if_no_gpu will be a no-op.")
+            return fn(*args, **kwargs)
 
     return wrapper
 

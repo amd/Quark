@@ -27,7 +27,7 @@ template <
   typename float_type, typename scale_type, uint32_t half_exp_bits,
   uint32_t half_mantissa_bits, uint32_t half_exp_bias>
 __global__ void dq_uint8_mxfp4_to_half_kernel(
-  uint8_t *inp, scale_type *scales, float_type *out
+  uint8_t* inp, scale_type* scales, float_type* out
 );
 
 void dq_uint8_mxfp4_to_half(
@@ -41,8 +41,8 @@ void dq_uint8_mxfp4_to_half(
 ) {
   TORCH_CHECK(
     false,
-    "dq_uint8_mxfp4_to_half is only implemented in CUDA "
-    "devices! Please check your installation."
+    "dq_uint8_mxfp4_to_half is only implemented in CUDA devices! Please check "
+    "your installation."
   )
 }
 #endif

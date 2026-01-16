@@ -6,7 +6,6 @@
 import json
 import os
 import shutil
-from typing import Tuple
 from unittest.mock import Mock
 
 import pytest

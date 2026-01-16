@@ -1,0 +1,47 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "stx_LLM_TPS_10bo_mladf_2x4x4_bfp16_gemm_mlp_flat_rms_conv_mul"
+    op_namespaces: "hybrid"
+    is_bfp16: "flat"
+    is_llm: true
+    enable_ctrl_pkt: true
+    fuse_qk_mha: false
+    dynamic_shape_list:
+        - attention_mask_padded: 256
+        - attention_mask_padded: 384
+        - attention_mask_padded: 512
+        - attention_mask_padded: 1024
+        - attention_mask_padded: 1536
+        - attention_mask_padded: 2048
+        - attention_mask_padded: 2304
+        - attention_mask_padded: 3072
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+    - normalize_matmulnbits
+    - quickgelu_to_sigmoid_mul
+    - hybrid_llm_split_qkv
+    - hybrid_llm_kv_cache_to_bf16
+    - hybrid_llm_pad_attention_mask
+    - hybrid_llm_skipsimplifiedlayernorm
+    - phi3_5.conv_to_nhwc_conv
+    - gather_transposes
+    - simplify_transposes
+    - hybrid_llm_gqa
+    - hybrid_llm_gqa_flatmha
+    - hybrid_llm_flatmlp
+    - hybrid_llm_flatrmsadd
+    - hybrid_llm_to_dd
+    - simplify_casts
+    - remove_parallel_casts
+    - flatmha_external_bufs
+    # - remove_io_casts
+    - dd.lfm2_1_2B
+    - hybrid_llm_cast_logits
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_dynamic_pad_update

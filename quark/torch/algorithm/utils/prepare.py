@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import fnmatch
 import inspect
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -24,7 +24,7 @@ def cache_model_inps(
     model: nn.Module, modules: nn.ModuleList, samples: DataLoader[torch.Tensor]
 ) -> tuple[nn.ModuleList, dict[str, Any], list[torch.Tensor]]:
     inps: list[torch.Tensor] = []
-    layer_args: list[Union[torch.Tensor, None]] = []
+    layer_args: list[torch.Tensor | None] = []
     layer_kwargs: dict[str, Any] = {}
 
     # get input and kwargs to layer 0
@@ -35,7 +35,7 @@ def cache_model_inps(
             self,
             module: nn.Module,
             inps: list[torch.Tensor],
-            layer_args: list[Union[torch.Tensor, None]],
+            layer_args: list[torch.Tensor | None],
             layer_kwargs: dict[str, Any],
         ) -> None:
             super().__init__()
@@ -109,7 +109,7 @@ def cache_model_inps(
 
 
 def move_embed(
-    model: nn.Module, embedding_layer_name_list: list[str], device: Union[dict[str, torch.device], torch.device]
+    model: nn.Module, embedding_layer_name_list: list[str], device: dict[str, torch.device] | torch.device
 ) -> None:
     for embedding_layer_name in embedding_layer_name_list:
         embedding_layer = get_nested_attr_from_module(model, embedding_layer_name)
@@ -135,11 +135,11 @@ def get_layers_for_scaling(
             for i in range(len(layer["layers"])):
                 linear_layers.append(get_nested_attr_from_module(module, layer["layers"][i]))
 
-            layer_dict = dict(
-                prev_op=get_nested_attr_from_module(module, layer["prev_op"]),
-                layers=linear_layers,
-                inp=input_feat[layer["inp"]],
-            )
+            layer_dict = {
+                "prev_op": get_nested_attr_from_module(module, layer["prev_op"]),
+                "layers": linear_layers,
+                "inp": input_feat[layer["inp"]],
+            }
 
             if "module2inspect" in layer and layer["module2inspect"] is not None:
                 if layer["module2inspect"] == "":
@@ -170,11 +170,11 @@ def get_layers_for_scaling(
 
             inp = input_feat[prefix + "." + layer["inp"]]
 
-            layer_dict = dict(
-                prev_op=prev_op,
-                layers=[linear_layer],
-                inp=inp,
-            )
+            layer_dict = {
+                "prev_op": prev_op,
+                "layers": [linear_layer],
+                "inp": inp,
+            }
 
             layers.append(layer_dict)
 
@@ -183,7 +183,7 @@ def get_layers_for_scaling(
 
     for layer in scaling_layers:
         try:  # dense
-            _ = get_nested_attr_from_module(module, layer["layers"][0])  # check is_moe
+            _ = get_nested_attr_from_module(module, layer["layers"][0])  # OK for dense, and exception for moe
             has_kwargs = get_dense_layers(module, input_feat, module_kwargs, layer, layers, has_kwargs)
 
         except (AttributeError, KeyError):  # moe
@@ -193,7 +193,8 @@ def get_layers_for_scaling(
                 for layer_name in layer["layers"]:
                     matched_layers += fnmatch.filter(input_feat.keys(), "*" + layer_name)
 
-                try:
+                # moe gate/up_proj cannot use AWQ/SQ/ASQ, because moe has the pattern: post_attention_layernorm + (router, gate_proj, up_proj)
+                try:  # moe down_proj
                     get_moe_down_proj_layers(module, input_feat, module_kwargs, matched_layers, layers)
 
                 except (AttributeError, KeyError):  # no matched patten

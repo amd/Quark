@@ -1,16 +1,16 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
 import torch
 
 if TYPE_CHECKING:
-    from quark.torch.quantization.config.config import QuantizationSpec
+    from quark.torch.quantization.config.config import QTensorConfig
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.quantization.observer.observer import UniformScalingObserver
 from quark.torch.quantization.utils import calculate_qmin_qmax, get_num_bits
@@ -19,7 +19,7 @@ logger = ScreenLogger(__name__)
 
 
 class LSQObserver(UniformScalingObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         _bitwidth = get_num_bits(qspec.dtype)
         assert isinstance(_bitwidth, int)

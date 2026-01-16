@@ -1,11 +1,10 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Pre-quantization optimization and post quantization algorithms for Brevitas API."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 import torch.utils
@@ -100,14 +99,16 @@ class ActivationEqualization(PreQuantOptConfig):
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
 
-        with torch.no_grad():
-            with brevitas.graph.equalize.activation_equalization_mode(
+        with (
+            torch.no_grad(),
+            brevitas.graph.equalize.activation_equalization_mode(
                 model, alpha=self.alpha, layerwise=self.is_layerwise, add_mul_node=self.is_layerwise
-            ):
-                for i, (images, target) in enumerate(tqdm(calib_loader)):
-                    images = images.to(device)
-                    images = images.to(dtype)
-                    model(images)
+            ),
+        ):
+            for i, (images, target) in enumerate(tqdm(calib_loader)):
+                images = images.to(device)
+                images = images.to(dtype)
+                model(images)
 
         return model
 
@@ -133,22 +134,24 @@ class GPFQ(AlgoConfig):
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
 
-        with torch.no_grad():
-            with brevitas.graph.gpfq.gpfq_mode(
+        with (
+            torch.no_grad(),
+            brevitas.graph.gpfq.gpfq_mode(
                 model,
                 p=self.percentage_of_processed_inputs,
                 use_quant_activations=True,
                 act_order=self.act_order,
                 use_gpfa2q=False,
                 accumulator_bit_width=None,
-            ) as gpfq:
-                gpfq_model = gpfq.model
-                for i in tqdm(range(gpfq.num_layers)):
-                    for i, (images, target) in enumerate(calib_loader):
-                        images = images.to(device)
-                        images = images.to(dtype)
-                        gpfq_model(images)
-                    gpfq.update()
+            ) as gpfq,
+        ):
+            gpfq_model = gpfq.model
+            for i in tqdm(range(gpfq.num_layers)):
+                for i, (images, target) in enumerate(calib_loader):
+                    images = images.to(device)
+                    images = images.to(dtype)
+                    gpfq_model(images)
+                gpfq.update()
 
         return model
 
@@ -175,22 +178,24 @@ class GPFA2Q(AlgoConfig):
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
 
-        with torch.no_grad():
-            with brevitas.graph.gpfq.gpfq_mode(
+        with (
+            torch.no_grad(),
+            brevitas.graph.gpfq.gpfq_mode(
                 model,
                 p=self.percentage_of_processed_inputs,
                 use_quant_activations=True,
                 act_order=self.act_order,
                 use_gpfa2q=True,
                 accumulator_bit_width=self.accumulator_bit_width,
-            ) as gpfq:
-                gpfq_model = gpfq.model
-                for i in tqdm(range(gpfq.num_layers)):
-                    for i, (images, target) in enumerate(calib_loader):
-                        images = images.to(device)
-                        images = images.to(dtype)
-                        gpfq_model(images)
-                    gpfq.update()
+            ) as gpfq,
+        ):
+            gpfq_model = gpfq.model
+            for i in tqdm(range(gpfq.num_layers)):
+                for i, (images, target) in enumerate(calib_loader):
+                    images = images.to(device)
+                    images = images.to(dtype)
+                    gpfq_model(images)
+                gpfq.update()
 
         return model
 
@@ -212,15 +217,17 @@ class GPTQ(AlgoConfig):
         model.eval()
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
-        with torch.no_grad():
-            with brevitas.graph.gptq.gptq_mode(model, act_order=self.act_order, use_quant_activations=False) as gptq:
-                gptq_model = gptq.model
-                for i in tqdm(range(gptq.num_layers)):
-                    for i, (images, target) in enumerate(calib_loader):
-                        images = images.to(device)
-                        images = images.to(dtype)
-                        gptq_model(images)
-                    gptq.update()
+        with (
+            torch.no_grad(),
+            brevitas.graph.gptq.gptq_mode(model, act_order=self.act_order, use_quant_activations=False) as gptq,
+        ):
+            gptq_model = gptq.model
+            for i in tqdm(range(gptq.num_layers)):
+                for i, (images, target) in enumerate(calib_loader):
+                    images = images.to(device)
+                    images = images.to(dtype)
+                    gptq_model(images)
+                gptq.update()
 
         return model
 
@@ -235,12 +242,11 @@ class CalibrateBatchNorm(AlgoConfig):
         model.eval()
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
-        with torch.no_grad():
-            with brevitas.graph.calibrate.norm_correction_mode(model):
-                for i, (images, target) in enumerate(tqdm(calib_loader)):
-                    images = images.to(device)
-                    images = images.to(dtype)
-                    model(images)
+        with torch.no_grad(), brevitas.graph.calibrate.norm_correction_mode(model):
+            for i, (images, target) in enumerate(tqdm(calib_loader)):
+                images = images.to(device)
+                images = images.to(dtype)
+                model(images)
 
         return model
 
@@ -259,12 +265,11 @@ class BiasCorrection(AlgoConfig):
         model.eval()
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
-        with torch.no_grad():
-            with brevitas.graph.calibrate.bias_correction_mode(model):
-                for i, (images, target) in enumerate(tqdm(calib_loader)):
-                    images = images.to(device)
-                    images = images.to(dtype)
-                    model(images)
+        with torch.no_grad(), brevitas.graph.calibrate.bias_correction_mode(model):
+            for i, (images, target) in enumerate(tqdm(calib_loader)):
+                images = images.to(device)
+                images = images.to(dtype)
+                model(images)
 
         return model
 
@@ -276,10 +281,9 @@ def _calibrate(
     model.eval()
     dtype = next(model.parameters()).dtype
     device = next(model.parameters()).device
-    with torch.no_grad():
-        with brevitas.graph.calibrate.calibration_mode(model):
-            for i, (images, target) in enumerate(tqdm(calib_loader)):
-                images = images.to(device)
-                images = images.to(dtype)
-                model(images)
+    with torch.no_grad(), brevitas.graph.calibrate.calibration_mode(model):
+        for i, (images, target) in enumerate(tqdm(calib_loader)):
+            images = images.to(device)
+            images = images.to(dtype)
+            model(images)
     return model

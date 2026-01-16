@@ -5,14 +5,11 @@
 import os
 import subprocess
 import sys
-import zipfile
-import tempfile
 from datetime import datetime
 from setuptools import find_packages, setup
 from distutils import core
 from distutils.core import Distribution
 from distutils.errors import DistutilsArgError
-from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 """
   To make a wheel package:
@@ -64,35 +61,6 @@ if is_nightly:
 # local pyproject.toml needs to be updated to rename wheel package in additional to setup.py
 # https://discuss.python.org/t/dynamic-project-names-and-pep-621/21359/13
 update_pyproject_toml_project_name(package_name)
-class CustomBdistWheel(_bdist_wheel):
-    def run(self):
-        super().run()
-        dist_dir = os.path.abspath(self.dist_dir)
-        wheel_files = [f for f in os.listdir(dist_dir) if f.endswith('.whl')]
-        wheel_file = os.path.join(dist_dir, wheel_files[0])
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with zipfile.ZipFile(wheel_file, 'r') as zf:
-                zf.extractall(temp_dir)
-
-            dist_info = os.path.join(temp_dir, f"{self.wheel_dist_name}.dist-info")
-            record_path = os.path.join(dist_info, "RECORD")
-
-            with open(record_path, 'a') as record_file:
-                library_dir = "quark/onnx/operators/custom_ops/lib"
-                library_files = [
-                    "libcustom_ops.so",
-                    "libcustom_ops_gpu.so",
-                    "custom_ops.dll",
-                    "custom_ops_gpu.dll"
-                ]
-                for library_file in library_files:
-                    library_path = os.path.join(library_dir, library_file)
-                    record_file.write(f"{library_path},,\n")
-
-            with zipfile.ZipFile(wheel_file, 'a') as zf:
-                arcname = os.path.join(f"{self.wheel_dist_name}.dist-info", "RECORD")
-                zf.write(record_path, arcname)
 
 
 def os_path_join(*args, **kwargs):
@@ -125,7 +93,7 @@ def read_requirements():
 
 
 def build_config_setup():
-    cmdclass={"bdist_wheel": CustomBdistWheel}
+    cmdclass={}
     return cmdclass
 
 

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -8,7 +8,7 @@ Replace BFloat16 QDQ with Cast op.
 
 import argparse
 import os
-from typing import Any, Tuple
+from typing import Any
 
 import numpy as np
 import onnx

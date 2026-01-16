@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -39,7 +39,7 @@ It is recommended to use onnx-simplifier to remove these redundant nodes.
 from argparse import ArgumentParser, Namespace
 
 import onnx
-import onnxsim
+from onnxslim import slim
 
 from . import float16
 
@@ -57,8 +57,7 @@ def convert(args: Namespace) -> None:
     model = onnx.load(args.input)
     model_fp32 = float16.convert_float16_to_float(model)
     try:
-        model_simp, check = onnxsim.simplify(model_fp32)
-        assert check, "Simplified ONNX model could not be validated"
+        model_simp = slim(model_fp32)
     except Exception as e:
         print(f"Fail to Simplify ONNX model because of {e}.")
         model_simp = model_fp32

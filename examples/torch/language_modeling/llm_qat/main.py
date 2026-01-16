@@ -22,16 +22,15 @@ from transformers import (
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from dataclasses import dataclass, field
 from pprint import pformat
-from typing import Optional
 
 import evaluate
-from llm_eval.evaluation import task_eval
-from llm_utils.data_preparation import get_loader, get_trainer_dataset
 from util.api import weight_only_quantize
 
+from quark.contrib.llm_eval import task_eval
 from quark.torch import export_safetensors, import_model_from_safetensors
 from quark.torch.export.safetensors import _load_weights_from_safetensors
 from quark.torch.quantization.tensor_quantize import FrozenScaledFakeQuantize
+from quark.torch.utils.llm import get_loader, get_trainer_dataset
 
 
 def preprocess_logits_for_metrics(logits, labels):
@@ -98,13 +97,6 @@ class TrainingArguments(TrainingArguments):
         default=False, metadata={"help": "Whether to merge weight matrix when dump llm-specific quantized model"}
     )
     model_reload: bool = field(default=False, metadata={"help": "Safetensors or pth model reload"})
-    import_file_format: str = field(
-        default="hf_format",
-        metadata={
-            "help": "file_format for importing. If you export hf_format, you should use 'hf_format' for reloading.",
-            "choices": ["quark_format", "hf_format"],
-        },
-    )
     import_model_dir: str | None = field(metadata={"help": "directory of hf or quark model"}, default=None)
     skip_evaluation: bool = field(default=False)
     eval_task: str = field(
@@ -133,7 +125,7 @@ class TrainingArguments(TrainingArguments):
 class ExportArguments:
     model_export: str | None = field(
         default=None,
-        metadata={"help": "Model export format.", "choices": ["onnx", "quark_format", "hf_format", "gguf", None]},
+        metadata={"help": "Model export format.", "choices": ["onnx", "hf_format", "gguf", None]},
     )
     model_export_dir: str = field(default="exported_model")
     export_weight_format: str = field(
@@ -388,11 +380,11 @@ def run(training_args, data_args, export_args):
             task_eval(
                 model,
                 tokenizer,
-                training_args.per_device_eval_batch_size,
-                training_args.max_eval_batch_size,
-                training_args.eval_task,
-                num_fewshot,
-                apply_chat_template,
+                batch_size=training_args.per_device_eval_batch_size,
+                max_batch_size=training_args.max_eval_batch_size,
+                tasks=training_args.eval_task,
+                num_fewshot=num_fewshot,
+                apply_chat_template=apply_chat_template,
                 output_path=training_args.eval_result_output_path,
             )
 

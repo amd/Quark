@@ -1,11 +1,18 @@
-accelerate<1.8
+accelerate<1.12
 brevitas==0.10.3
 gguf==0.6.0
+huggingface_hub
 importlib-metadata
 matplotlib
 onnx>=1.16.0,<=1.19
 onnxoptimizer
-onnxruntime>=1.20.1,<=1.22.1
-pytest
+onnxruntime_extensions>=0.4.2
+optuna
+plotly
+pytest>=9.0
 pytest-cov>=6.0.0
-transformers<4.53
+torchsummary
+# transformers is NOT listed here - it's installed separately in CI with specific versions from workflow matrix
+# Policy: Test 2 versions - chosen stable version and latest version for future compatibility
+# See .github/workflows/ci_unittest_main_{torch,onnx}.yml for tested versions (currently 4.55.4 and 4.57.0)
+# Installation happens in tools/ci/install_quark.sh:set_conda() using the transformers-version parameter

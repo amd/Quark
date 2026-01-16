@@ -1,18 +1,18 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Remove QDQ in the `mul + q + dq + add` structure operators."""
 
 import argparse
 import os
-from typing import Any, List, Optional
+from typing import Any
 
 import onnx
 from onnx import ModelProto, NodeProto
 from onnxruntime.quantization.onnx_model import ONNXModel
 
-from quark.onnx.quant_utils import get_tensor_to_consumer
+from quark.onnx.quantization.quant_utils import get_tensor_to_consumer
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)

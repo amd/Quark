@@ -33,7 +33,13 @@ if [[ -z "${torch_version}" ]]; then
     exit 1
 fi
 
-hardware_type=${5,,}
+transformers_version=${5}
+if [[ -z "${transformers_version}" ]]; then
+    echo "ERROR: The input transformers_version must be set, but is not set."
+    exit 1
+fi
+
+hardware_type=${6,,}
 if [[ -z "${hardware_type}" ]]; then
     echo "ERROR: The input hardware_type must be set, but is not set."
     exit 1
@@ -42,9 +48,8 @@ fi
 # Common functions needed by the unit test script
 cd ${workspace_root_dir}
 source ./tools/ci/install_quark.sh ${python_version} ${workspace_root_dir} ${hardware_type}
-
-conda_env_name="quark_docs_py${python_version//./}_onnxruntime${onnxruntime_version//./}_torch${torch_version//./}"
-set_conda ${python_version} ${conda_env_name} ${workspace_root_dir} ${onnxruntime_version} ${torch_version} ${hardware_type}
+conda_env_name="quark-env"
+set_conda ${python_version} ${conda_env_name} ${workspace_root_dir} ${onnxruntime_version} ${torch_version} ${hardware_type} ${transformers_version} "activate"
 cd ${workspace_root_dir}/docs
 ./install_requirements.sh
 pip uninstall -y amd-quark

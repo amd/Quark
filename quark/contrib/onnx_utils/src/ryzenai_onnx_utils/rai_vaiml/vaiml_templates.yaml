@@ -1,0 +1,78 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+llama2-unified:
+  TRANSACTION_PATTERNS:
+    - regex: ".*mharope_v1_input_trans_a16_(\\d+)_(\\d+)_(\\d+)"
+      params:
+        - B0
+        - M
+        - K
+      op_type: rope_bmk_bmk
+      naming_template: mharope_v1_input_trans_a16_B0_M_K
+
+    - regex: ".*silu_v1_a16_(\\d+)_(\\d+)"
+      params:
+        - M
+        - K
+      op_type: silu
+      naming_template: silu_v1_a16_M_K
+
+    - regex: ".*elwmul_v1_a16a16_(\\d+)_(\\d+)"
+      params:
+        - M
+        - K
+      op_type: mul
+      naming_template: elwmul_v1_a16a16_M_K
+
+    - regex: ".*mladfadd_v1_a16a16_(\\d+)_(\\d+)"
+      params:
+        - M
+        - K
+      op_type: add
+      naming_template: mladfadd_v1_a16a16_M_K
+
+    - regex: ".*rmsnorm_v1_a16_(\\d+)_(\\d+)"
+      params:
+        - M
+        - K
+      op_type: rmsnorm
+      naming_template: rmsnorm_v1_a16_M_K
+
+    - regex: ".*bmm_v1_trans_a16w16_(\\d+)_(\\d+)_(\\d+)_(\\d+)_(\\d+)_(\\d+)"
+      params:
+        - B0
+        - M
+        - K
+        - B1
+        - K
+        - N
+      op_type: bmm1
+      naming_template: bmm_v1_trans_a16w16_B0_M_K_B1_K_N
+
+    - regex: ".*bmm_v1_a16w16_(\\d+)_(\\d+)_(\\d+)_(\\d+)_(\\d+)_(\\d+)"
+      params:
+        - B0
+        - M
+        - K
+        - B1
+        - M
+        - N
+      op_type: bmm2
+      naming_template: bmm_v1_a16w16_B0_M_K_B1_M_N
+
+    - regex: ".*maskedsoftmax_v1_a16_(\\d+)_(\\d+)_(\\d+)_(\\d+)"
+      params:
+        - B0
+        - M
+        - M
+        - HS
+      op_type: masked_softmax
+      naming_template: maskedsoftmax_v1_a16_B0_M_M_HS
+
+  JSON_TEMPLATE:
+    xclbin: llama2-unified.xclbin
+    overlay_json: overlay_2x4x4.json
+    overlay: 2x4x4
+    plugin_name: default_plugin
+    comment: Generated from missing transactions
+    op_types: []

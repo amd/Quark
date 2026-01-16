@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from quark.shares.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, Int8PerTensorSpec, QuantizationConfig
+from quark.torch.quantization.config.config import Int8PerTensorSpec, QConfig, QLayerConfig
 
 
 class TestModel(nn.Module):
@@ -30,9 +30,7 @@ class TestModel(nn.Module):
         return down_proj
 
 
-INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(
-    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-).to_quantization_spec()
+INT8_PER_TENSOR_SYM_SPEC = Int8PerTensorSpec(is_dynamic=False).to_quantization_spec()
 
 
 tempdir = tempfile.TemporaryDirectory()
@@ -42,10 +40,10 @@ tempdir = tempfile.TemporaryDirectory()
 def test_smoke_check_scale_stats():
     model = TestModel()
     model = model.to(torch.float16).to(torch_device)
-    global_quant_config = QuantizationConfig(
+    global_quant_config = QLayerConfig(
         input_tensors=INT8_PER_TENSOR_SYM_SPEC, output_tensors=INT8_PER_TENSOR_SYM_SPEC, weight=INT8_PER_TENSOR_SYM_SPEC
     )
-    config = Config(global_quant_config=global_quant_config)
+    config = QConfig(global_quant_config=global_quant_config)
     quantizer = ModelQuantizer(config)
     dataloader = DataLoader([torch.rand((12, 12), dtype=torch.float16).to(torch_device)] * 2)
 

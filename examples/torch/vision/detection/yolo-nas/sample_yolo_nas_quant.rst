@@ -317,19 +317,19 @@ At this phase, the original ``torch.nn.Module``` will be translated to `torch.fx
 .. code-block:: python
 
     # we adopt INT8, power of 2 format scale, symmetric configuration for weight, bias and activation.
-    INT8_PER_TENSOR_SPEC = QuantizationSpec(dtype=Dtype.int8,
-                                            qscheme=QSchemeType.per_tensor,
-                                            observer_cls=PerTensorPowOf2MinMaxObserver,
-                                            symmetric=True,
-                                            scale_type=ScaleType.float,
-                                            round_method=RoundType.half_even,
-                                            is_dynamic=False)
-    quant_config = QuantizationConfig(weight=INT8_PER_TENSOR_SPEC,
-                                      input_tensors=INT8_PER_TENSOR_SPEC,
-                                      output_tensors=INT8_PER_TENSOR_SPEC,
-                                      bias=INT8_PER_TENSOR_SPEC)
-    quant_config = Config(global_quant_config=quant_config,
-                          quant_mode=QuantizationMode.fx_graph_mode)
+    INT8_PER_TENSOR_SPEC = QTensorConfig(dtype=Dtype.int8,
+                                         qscheme=QSchemeType.per_tensor,
+                                         observer_cls=PerTensorPowOf2MinMaxObserver,
+                                         symmetric=True,
+                                         scale_type=ScaleType.float,
+                                         round_method=RoundType.half_even,
+                                         is_dynamic=False)
+    quant_config = QLayerConfig(weight=INT8_PER_TENSOR_SPEC,
+                                input_tensors=INT8_PER_TENSOR_SPEC,
+                                output_tensors=INT8_PER_TENSOR_SPEC,
+                                bias=INT8_PER_TENSOR_SPEC)
+    quant_config = QConfig(global_quant_config=quant_config,
+                           quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(quant_config)
 
 
@@ -407,9 +407,9 @@ After quantization, visualize the onnx model to check whether quantization meet 
 
 .. code-block:: python
 
-    from onnxsim import simplify
+    from onnxslim import slim
     quantized_model = onnx.load(exported_onnx_model)
-    model_simp, check = simplify(quantized_model)
+    model_simp = slim(quantized_model)
     onnx.save_model(model_simp, "./quant_result/sample_quark_model.onnx")
 
 

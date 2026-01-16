@@ -72,7 +72,7 @@ static int64_t HandleNegativeAxis(int64_t axis, int64_t tensor_rank) {
  * Returns true if given shape is empty or a scalar that has no size, or a
  * vector with one element.
  */
-static bool IsScalarOr1ElementVector(std::vector<int64_t> &dims) {
+static bool IsScalarOr1ElementVector(std::vector<int64_t>& dims) {
   if (dims.empty() || dims.size() == 0 || (dims.size() == 1 && dims[0] == 1))
     return true;
   else
@@ -83,11 +83,11 @@ static bool IsScalarOr1ElementVector(std::vector<int64_t> &dims) {
  * Calculate block count and size according to per-tensor or per-channel
  */
 static void PrepareForQDQ(
-  const Ort::ConstValue &input, const Ort::ConstValue &scale,
-  const Ort::ConstValue *pzero_point, int64_t axis,
-  int64_t &block_count,    // can be understood as batch size
-  int64_t &broadcast_dim,  // channels
-  int64_t &block_size
+  const Ort::ConstValue& input, const Ort::ConstValue& scale,
+  const Ort::ConstValue* pzero_point, int64_t axis,
+  int64_t& block_count,    // can be understood as batch size
+  int64_t& broadcast_dim,  // channels
+  int64_t& block_size
 ) {  // can be understood as (height * width)
   auto input_info = input.GetTensorTypeAndShapeInfo();
   auto scale_info = scale.GetTensorTypeAndShapeInfo();
@@ -108,8 +108,8 @@ static void PrepareForQDQ(
     // enforce that zero point are scalars
     if ((pzero_point == nullptr || IsScalarOr1ElementVector(zp_shape)) == false)
       ORT_CXX_API_THROW(
-        "PrepareForQDQ zero_point must be null or a scalar or "
-        "1D tensor or size 1.",
+        "PrepareForQDQ zero_point must be null or a scalar or 1D tensor or "
+        "size 1.",
         OrtErrorCode::ORT_INVALID_GRAPH
       );
   } else {  // per-channel QuantizeLinear/DequantizeLinear
@@ -123,8 +123,7 @@ static void PrepareForQDQ(
     const int64_t axis_no_neg = HandleNegativeAxis(axis, tensor_rank);
     if ((axis_no_neg >= 0 && axis_no_neg < input_shape.size()) == false)
       ORT_CXX_API_THROW(
-        "PrepareForQDQ axis_no_neg must be within the input "
-        "shape dimensions.",
+        "PrepareForQDQ axis_no_neg must be within the input shape dimensions.",
         OrtErrorCode::ORT_INVALID_GRAPH
       );
 
@@ -136,8 +135,8 @@ static void PrepareForQDQ(
     if ((scale_info.GetDimensionsCount() == 1 &&
          scale_shape[0] == broadcast_dim) == false)
       ORT_CXX_API_THROW(
-        "PrepareForQDQ scale must be 1D tensor with the size "
-        "equals broadcast_dim.",
+        "PrepareForQDQ scale must be 1D tensor with the size equals "
+        "broadcast_dim.",
         OrtErrorCode::ORT_INVALID_GRAPH
       );
 
@@ -145,18 +144,18 @@ static void PrepareForQDQ(
          (pzero_point->GetTensorTypeAndShapeInfo().GetDimensionsCount() == 1 &&
           zp_shape[0] == broadcast_dim)) == false)
       ORT_CXX_API_THROW(
-        "PrepareForQDQ zero_point must be null or 1D tensor "
-        "with the size equals broadcast_dim.",
+        "PrepareForQDQ zero_point must be null or 1D tensor with the size "
+        "equals broadcast_dim.",
         OrtErrorCode::ORT_INVALID_GRAPH
       );
   }
 }
 
 Ort::Op NativeCastOpCreate(
-  Ort::KernelInfo &info, ONNXTensorElementDataType in_type,
+  Ort::KernelInfo& info, ONNXTensorElementDataType in_type,
   ONNXTensorElementDataType out_type
 ) {
-  const char *add_type_constraint_names[] = {"T"};
+  const char* add_type_constraint_names[] = {"T"};
   ONNXTensorElementDataType add_type_constraint_values[] = {in_type};
   size_t type_constraint_count = 0;  // TODO : set 1 here, it will raise error
 
@@ -169,13 +168,13 @@ Ort::Op NativeCastOpCreate(
   );
 }
 
-void NativeCastOpInvokeToFloat16(OrtKernelContext *context, Ort::Op &op) {
+void NativeCastOpInvokeToFloat16(OrtKernelContext* context, Ort::Op& op) {
   Ort::KernelContext ctx(context);
 
   auto input = ctx.GetInput(0);
 
   // clip input to avoid overflow
-  float *clipped_input = (float *)malloc(
+  float* clipped_input = (float*)malloc(
     input.GetTensorTypeAndShapeInfo().GetElementCount() * sizeof(float)
   );
   memcpy(
@@ -193,7 +192,7 @@ void NativeCastOpInvokeToFloat16(OrtKernelContext *context, Ort::Op &op) {
   auto input_value = Ort::Value::CreateTensor(
     input.GetTensorMemoryInfo(),
     //(void*)input.GetTensorData<float>(),
-    (void *)clipped_input,
+    (void*)clipped_input,
     input.GetTensorTypeAndShapeInfo().GetElementCount() * sizeof(float),
     dimensions.data(), dimensions.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
   );
@@ -201,7 +200,7 @@ void NativeCastOpInvokeToFloat16(OrtKernelContext *context, Ort::Op &op) {
   auto output = ctx.GetOutput(0, dimensions);
   auto output_value = Ort::Value::CreateTensor(
     input.GetTensorMemoryInfo(),
-    (void *)output.GetTensorMutableData<onnxruntime::MLFloat16>(),
+    (void*)output.GetTensorMutableData<onnxruntime::MLFloat16>(),
     input.GetTensorTypeAndShapeInfo().GetElementCount() *
       sizeof(onnxruntime::MLFloat16),
     dimensions.data(), dimensions.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
@@ -216,7 +215,7 @@ void NativeCastOpInvokeToFloat16(OrtKernelContext *context, Ort::Op &op) {
   }
 }
 
-void NativeCastOpInvokeFromFloat16(OrtKernelContext *context, Ort::Op &op) {
+void NativeCastOpInvokeFromFloat16(OrtKernelContext* context, Ort::Op& op) {
   Ort::KernelContext ctx(context);
 
   auto input = ctx.GetInput(0);
@@ -224,7 +223,7 @@ void NativeCastOpInvokeFromFloat16(OrtKernelContext *context, Ort::Op &op) {
     input.GetTensorTypeAndShapeInfo().GetShape();
   auto input_value = Ort::Value::CreateTensor(
     input.GetTensorMemoryInfo(),
-    (void *)input.GetTensorData<onnxruntime::MLFloat16>(),
+    (void*)input.GetTensorData<onnxruntime::MLFloat16>(),
     input.GetTensorTypeAndShapeInfo().GetElementCount() *
       sizeof(onnxruntime::MLFloat16),
     dimensions.data(), dimensions.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
@@ -232,7 +231,7 @@ void NativeCastOpInvokeFromFloat16(OrtKernelContext *context, Ort::Op &op) {
 
   auto output = ctx.GetOutput(0, dimensions);
   auto output_value = Ort::Value::CreateTensor(
-    input.GetTensorMemoryInfo(), (void *)output.GetTensorMutableData<float>(),
+    input.GetTensorMemoryInfo(), (void*)output.GetTensorMutableData<float>(),
     input.GetTensorTypeAndShapeInfo().GetElementCount() * sizeof(float),
     dimensions.data(), dimensions.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
   );
@@ -244,7 +243,7 @@ QUANTIZE_LINEAR_APPLY(float)
 QUANTIZE_LINEAR_APPLY_FP16(float)
 QUANTIZE_LINEAR_APPLY_BF16(float)
 
-void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
+void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   const size_t num_inputs = ctx.GetInputCount();
@@ -263,15 +262,15 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
   int64_t block_size;
   PrepareForQDQ(x, y_scale, &y_zero_point, axis_, N, broadcast_dim, block_size);
 
-  const float *x_data = x.GetTensorData<float>();
-  const float *y_scale_data = y_scale.GetTensorData<float>();
+  const float* x_data = x.GetTensorData<float>();
+  const float* y_scale_data = y_scale.GetTensorData<float>();
 
   auto dimensions = x.GetTensorTypeAndShapeInfo().GetShape();
   auto y = ctx.GetOutput(0, dimensions);
 
 #ifdef USE_CUDA
-  void *compute_stream = nullptr;
-  OrtStatus *status =
+  void* compute_stream = nullptr;
+  OrtStatus* status =
     api_.KernelContext_GetGPUComputeStream(context, &compute_stream);
   if (status != nullptr) {
     api_.ReleaseStatus(status);
@@ -283,15 +282,15 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
 
   cudaStream_t stream = static_cast<cudaStream_t>(compute_stream);
 #else
-  void *stream = nullptr;  // To be consistent with CUDA
+  void* stream = nullptr;  // To be consistent with CUDA
 #endif
 
   ONNXTensorElementDataType zp_type =
     y_zero_point.GetTensorTypeAndShapeInfo().GetElementType();
   switch (zp_type) {
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8: {
-      const uint8_t *y_zero_point_data = y_zero_point.GetTensorData<uint8_t>();
-      uint8_t *y_data = y.GetTensorMutableData<uint8_t>();
+      const uint8_t* y_zero_point_data = y_zero_point.GetTensorData<uint8_t>();
+      uint8_t* y_data = y.GetTensorMutableData<uint8_t>();
       QuantizeLinearApply<uint8_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -299,8 +298,8 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8: {
-      const int8_t *y_zero_point_data = y_zero_point.GetTensorData<int8_t>();
-      int8_t *y_data = y.GetTensorMutableData<int8_t>();
+      const int8_t* y_zero_point_data = y_zero_point.GetTensorData<int8_t>();
+      int8_t* y_data = y.GetTensorMutableData<int8_t>();
       QuantizeLinearApply<int8_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -308,9 +307,9 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16: {
-      const uint16_t *y_zero_point_data =
+      const uint16_t* y_zero_point_data =
         y_zero_point.GetTensorData<uint16_t>();
-      uint16_t *y_data = y.GetTensorMutableData<uint16_t>();
+      uint16_t* y_data = y.GetTensorMutableData<uint16_t>();
       QuantizeLinearApply<uint16_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -318,8 +317,8 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16: {
-      const int16_t *y_zero_point_data = y_zero_point.GetTensorData<int16_t>();
-      int16_t *y_data = y.GetTensorMutableData<int16_t>();
+      const int16_t* y_zero_point_data = y_zero_point.GetTensorData<int16_t>();
+      int16_t* y_data = y.GetTensorMutableData<int16_t>();
       QuantizeLinearApply<int16_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -327,9 +326,9 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32: {
-      const uint32_t *y_zero_point_data =
+      const uint32_t* y_zero_point_data =
         y_zero_point.GetTensorData<uint32_t>();
-      uint32_t *y_data = y.GetTensorMutableData<uint32_t>();
+      uint32_t* y_data = y.GetTensorMutableData<uint32_t>();
       QuantizeLinearApply<uint32_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -337,8 +336,8 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: {
-      const int32_t *y_zero_point_data = y_zero_point.GetTensorData<int32_t>();
-      int32_t *y_data = y.GetTensorMutableData<int32_t>();
+      const int32_t* y_zero_point_data = y_zero_point.GetTensorData<int32_t>();
+      int32_t* y_data = y.GetTensorMutableData<int32_t>();
       QuantizeLinearApply<int32_t>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
         y_zero_point_data
@@ -352,9 +351,9 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
     }
 #else
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: {
-      const onnxruntime::MLFloat16 *y_zero_point_data =
+      const onnxruntime::MLFloat16* y_zero_point_data =
         y_zero_point.GetTensorData<onnxruntime::MLFloat16>();
-      onnxruntime::MLFloat16 *y_data =
+      onnxruntime::MLFloat16* y_data =
         y.GetTensorMutableData<onnxruntime::MLFloat16>();
       QuantizeLinearApplyFp16<onnxruntime::MLFloat16>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
@@ -364,9 +363,9 @@ void KernelCustomQuantizeLinear::ComputeBase(OrtKernelContext *context) {
     }
 #endif
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: {
-      const onnxruntime::BFloat16 *y_zero_point_data =
+      const onnxruntime::BFloat16* y_zero_point_data =
         y_zero_point.GetTensorData<onnxruntime::BFloat16>();
-      onnxruntime::BFloat16 *y_data =
+      onnxruntime::BFloat16* y_data =
         y.GetTensorMutableData<onnxruntime::BFloat16>();
       QuantizeLinearApplyBf16<onnxruntime::BFloat16>().op(
         stream, N, broadcast_dim, block_size, x_data, y_scale_data, y_data,
@@ -388,7 +387,7 @@ DEQUANTIZE_LINEAR_APPLY(float)
 DEQUANTIZE_LINEAR_APPLY_FP16(float)
 DEQUANTIZE_LINEAR_APPLY_BF16(float)
 
-void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
+void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   const size_t num_inputs = ctx.GetInputCount();
@@ -407,15 +406,15 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
   int64_t block_size;
   PrepareForQDQ(x, x_scale, &x_zero_point, axis_, N, broadcast_dim, block_size);
 
-  const float *x_scale_data = x_scale.GetTensorData<float>();
+  const float* x_scale_data = x_scale.GetTensorData<float>();
 
   auto dimensions = x.GetTensorTypeAndShapeInfo().GetShape();
   auto y = ctx.GetOutput(0, dimensions);
-  float *y_data = y.GetTensorMutableData<float>();
+  float* y_data = y.GetTensorMutableData<float>();
 
 #ifdef USE_CUDA
-  void *compute_stream = nullptr;
-  OrtStatus *status =
+  void* compute_stream = nullptr;
+  OrtStatus* status =
     api_.KernelContext_GetGPUComputeStream(context, &compute_stream);
   if (status != nullptr) {
     api_.ReleaseStatus(status);
@@ -427,15 +426,15 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
 
   cudaStream_t stream = static_cast<cudaStream_t>(compute_stream);
 #else
-  void *stream = nullptr;  // To be consistent with CUDA
+  void* stream = nullptr;  // To be consistent with CUDA
 #endif
 
   ONNXTensorElementDataType zp_type =
     x_zero_point.GetTensorTypeAndShapeInfo().GetElementType();
   switch (zp_type) {
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8: {
-      const uint8_t *x_data = x.GetTensorData<uint8_t>();
-      const uint8_t *x_zero_point_data = x_zero_point.GetTensorData<uint8_t>();
+      const uint8_t* x_data = x.GetTensorData<uint8_t>();
+      const uint8_t* x_zero_point_data = x_zero_point.GetTensorData<uint8_t>();
       DequantizeLinearApply<uint8_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
         x_zero_point_data
@@ -443,8 +442,8 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8: {
-      const int8_t *x_data = x.GetTensorData<int8_t>();
-      const int8_t *x_zero_point_data = x_zero_point.GetTensorData<int8_t>();
+      const int8_t* x_data = x.GetTensorData<int8_t>();
+      const int8_t* x_zero_point_data = x_zero_point.GetTensorData<int8_t>();
       DequantizeLinearApply<int8_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
         x_zero_point_data
@@ -452,8 +451,8 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16: {
-      const uint16_t *x_data = x.GetTensorData<uint16_t>();
-      const uint16_t *x_zero_point_data =
+      const uint16_t* x_data = x.GetTensorData<uint16_t>();
+      const uint16_t* x_zero_point_data =
         x_zero_point.GetTensorData<uint16_t>();
       DequantizeLinearApply<uint16_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
@@ -462,8 +461,8 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16: {
-      const int16_t *x_data = x.GetTensorData<int16_t>();
-      const int16_t *x_zero_point_data = x_zero_point.GetTensorData<int16_t>();
+      const int16_t* x_data = x.GetTensorData<int16_t>();
+      const int16_t* x_zero_point_data = x_zero_point.GetTensorData<int16_t>();
       DequantizeLinearApply<int16_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
         x_zero_point_data
@@ -471,8 +470,8 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32: {
-      const uint32_t *x_data = x.GetTensorData<uint32_t>();
-      const uint32_t *x_zero_point_data =
+      const uint32_t* x_data = x.GetTensorData<uint32_t>();
+      const uint32_t* x_zero_point_data =
         x_zero_point.GetTensorData<uint32_t>();
       DequantizeLinearApply<uint32_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
@@ -481,8 +480,8 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
       break;
     }
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: {
-      const int32_t *x_data = x.GetTensorData<int32_t>();
-      const int32_t *x_zero_point_data = x_zero_point.GetTensorData<int32_t>();
+      const int32_t* x_data = x.GetTensorData<int32_t>();
+      const int32_t* x_zero_point_data = x_zero_point.GetTensorData<int32_t>();
       DequantizeLinearApply<int32_t>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
         x_zero_point_data
@@ -496,9 +495,9 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
     }
 #else
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: {
-      const onnxruntime::MLFloat16 *x_data =
+      const onnxruntime::MLFloat16* x_data =
         x.GetTensorData<onnxruntime::MLFloat16>();
-      const onnxruntime::MLFloat16 *x_zero_point_data =
+      const onnxruntime::MLFloat16* x_zero_point_data =
         x_zero_point.GetTensorData<onnxruntime::MLFloat16>();
       DequantizeLinearApplyFp16<onnxruntime::MLFloat16>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
@@ -508,9 +507,9 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
     }
 #endif
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: {
-      const onnxruntime::BFloat16 *x_data =
+      const onnxruntime::BFloat16* x_data =
         x.GetTensorData<onnxruntime::BFloat16>();
-      const onnxruntime::BFloat16 *x_zero_point_data =
+      const onnxruntime::BFloat16* x_zero_point_data =
         x_zero_point.GetTensorData<onnxruntime::BFloat16>();
       DequantizeLinearApplyBf16<onnxruntime::BFloat16>().op(
         stream, N, broadcast_dim, block_size, x_data, x_scale_data, y_data,
@@ -531,7 +530,7 @@ void KernelCustomDequantizeLinear::ComputeBase(OrtKernelContext *context) {
 /////////////////////////////////////////////////////////////////////////////////////////////
 
 KernelCustomQuantizeLinear::KernelCustomQuantizeLinear(
-  const OrtApi &api, const OrtKernelInfo *info
+  const OrtApi& api, const OrtKernelInfo* info
 )
   : api_(api) {
   Ort::ConstKernelInfo const_info{info};
@@ -550,7 +549,7 @@ KernelCustomQuantizeLinear::KernelCustomQuantizeLinear(
 
 KernelCustomQuantizeLinear::~KernelCustomQuantizeLinear() {};
 
-void KernelCustomQuantizeLinear::Compute(OrtKernelContext *context) {
+void KernelCustomQuantizeLinear::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   auto scale = ctx.GetInput(1);
@@ -566,7 +565,7 @@ void KernelCustomQuantizeLinear::Compute(OrtKernelContext *context) {
 }
 
 KernelCustomDequantizeLinear::KernelCustomDequantizeLinear(
-  const OrtApi &api, const OrtKernelInfo *info
+  const OrtApi& api, const OrtKernelInfo* info
 )
   : api_(api) {
   Ort::ConstKernelInfo const_info{info};
@@ -585,7 +584,7 @@ KernelCustomDequantizeLinear::KernelCustomDequantizeLinear(
 
 KernelCustomDequantizeLinear::~KernelCustomDequantizeLinear() {};
 
-void KernelCustomDequantizeLinear::Compute(OrtKernelContext *context) {
+void KernelCustomDequantizeLinear::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   auto scale = ctx.GetInput(1);

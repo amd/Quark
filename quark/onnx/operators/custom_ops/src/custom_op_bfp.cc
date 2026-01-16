@@ -28,7 +28,7 @@ Buffer::Buffer(size_t size) {
 #endif
 }
 
-void *Buffer::get_data_ptr() { return data_; }
+void* Buffer::get_data_ptr() { return data_; }
 
 void Buffer::release() {
 #ifdef USE_CUDA
@@ -39,7 +39,7 @@ void Buffer::release() {
 }
 
 BFPFixNeuronKernel::BFPFixNeuronKernel(
-  const OrtApi &ort_api, const OrtKernelInfo *k_info, std::string bfp_method,
+  const OrtApi& ort_api, const OrtKernelInfo* k_info, std::string bfp_method,
   int64_t axis, int64_t bit_width, int64_t block_size, int64_t rounding_mode,
   int64_t sub_block_size, int64_t sub_block_shift_bits,
   int64_t convert_to_bfloat_before_bfp, int64_t use_compiler_version_cpu_kernel
@@ -58,14 +58,14 @@ BFPFixNeuronKernel::BFPFixNeuronKernel(
   info_copy_ = info.Copy();
 }
 
-Ort::Value BFPFixNeuronKernel::do_bfp(Ort::Value &input) {
+Ort::Value BFPFixNeuronKernel::do_bfp(Ort::Value& input) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
   size_t element_count = input.GetTensorTypeAndShapeInfo().GetElementCount();
   Buffer b(element_count * 4);
   tmp_buffers_.push_back(b);
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
@@ -96,14 +96,14 @@ Ort::Value BFPFixNeuronKernel::do_bfp(Ort::Value &input) {
   return output;
 }
 
-void BFPFixNeuronKernel::Compute(OrtKernelContext *context) {
+void BFPFixNeuronKernel::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
   auto input_value = ctx.GetInput(0);
   std::vector<int64_t> dimensions =
     input_value.GetTensorTypeAndShapeInfo().GetShape();
   auto input_tensor = Ort::Value::CreateTensor<float>(
     input_value.GetTensorMemoryInfo(),
-    const_cast<float *>(input_value.GetTensorData<float>()),
+    const_cast<float*>(input_value.GetTensorData<float>()),
     input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
     dimensions.data(), dimensions.size()
   );
@@ -120,7 +120,7 @@ void BFPFixNeuronKernel::Compute(OrtKernelContext *context) {
   if (input_tensor.GetTensorTypeAndShapeInfo().GetElementCount() == 1) {
     ret = Ort::Value::CreateTensor<float>(
       input_value.GetTensorMemoryInfo(),
-      const_cast<float *>(input_value.GetTensorData<float>()),
+      const_cast<float*>(input_value.GetTensorData<float>()),
       input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
       dimensions.data(), dimensions.size()
     );
@@ -163,7 +163,7 @@ void BFPFixNeuronKernel::Compute(OrtKernelContext *context) {
 BFPFixNeuronKernel::~BFPFixNeuronKernel() {}
 
 void BFPFixNeuronKernel::create_pad_op() {
-  const char *add_type_constraint_names[] = {"T", "T", "T"};
+  const char* add_type_constraint_names[] = {"T", "T", "T"};
   ONNXTensorElementDataType add_type_constraint_values[] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
@@ -186,7 +186,7 @@ void BFPFixNeuronKernel::create_pad_op() {
 }
 
 Ort::Value BFPFixNeuronKernel::pad(
-  OrtKernelContext *context, Ort::Value &input, int block_size
+  OrtKernelContext* context, Ort::Value& input, int block_size
 ) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
@@ -220,12 +220,12 @@ Ort::Value BFPFixNeuronKernel::pad(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[3] = {input, pad_tensor, const_value_tensor};
-  OrtValue *outputs[1] = {output};
+  const OrtValue* inputs[3] = {input, pad_tensor, const_value_tensor};
+  OrtValue* outputs[1] = {output};
   op_pad_.Invoke(context, inputs, 3, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
@@ -236,7 +236,7 @@ Ort::Value BFPFixNeuronKernel::pad(
 void BFPFixNeuronKernel::create_transpose_op(
   size_t num_dims, int from, int to
 ) {
-  const char *add_type_constraint_names[1] = {"T"};
+  const char* add_type_constraint_names[1] = {"T"};
   ONNXTensorElementDataType add_type_constraint_values[1] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
   };
@@ -259,7 +259,7 @@ void BFPFixNeuronKernel::create_transpose_op(
 }
 
 Ort::Value BFPFixNeuronKernel::transpose(
-  OrtKernelContext *context, Ort::Value &input, int from, int to
+  OrtKernelContext* context, Ort::Value& input, int from, int to
 ) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
@@ -275,12 +275,12 @@ Ort::Value BFPFixNeuronKernel::transpose(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[1] = {input};
-  OrtValue *outputs[1] = {output};
+  const OrtValue* inputs[1] = {input};
+  OrtValue* outputs[1] = {output};
   op_transpose_.Invoke(context, inputs, 1, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
@@ -289,7 +289,7 @@ Ort::Value BFPFixNeuronKernel::transpose(
 }
 
 void BFPFixNeuronKernel::create_slice_op() {
-  const char *add_type_constraint_names[] = {"T", "T", "T", "T", "T"};
+  const char* add_type_constraint_names[] = {"T", "T", "T", "T", "T"};
   ONNXTensorElementDataType add_type_constraint_values[] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
     ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
@@ -303,7 +303,7 @@ void BFPFixNeuronKernel::create_slice_op() {
 }
 
 Ort::Value BFPFixNeuronKernel::slice(
-  OrtKernelContext *context, Ort::Value &input, size_t last_dim
+  OrtKernelContext* context, Ort::Value& input, size_t last_dim
 ) {
   if (!op_slice_init_) {
     create_slice_op();
@@ -342,14 +342,14 @@ Ort::Value BFPFixNeuronKernel::slice(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[] = {
+  const OrtValue* inputs[] = {
     input, start_tensor, end_tensor, axes_tensor, steps_tensor
   };
-  OrtValue *outputs[] = {output};
+  OrtValue* outputs[] = {output};
   op_slice_.Invoke(context, inputs, 5, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();

@@ -8,9 +8,9 @@ import pytest
 import torch
 from torch import ops
 from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerChannelMinMaxObserver
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, SequentialQuantize
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
 from quark.torch.kernel import quant_fp8_e4m3, dequant_fp8_e4m3, quant_fp8_e5m2, dequant_fp8_e5m2
 from quark.shares.utils.testing_utils import torch_device
 
@@ -31,7 +31,7 @@ input_tensor = torch.tensor(
 
 
 def process_int_per_tensor_quantize(quantization_spec, device, scale, zero_point):
-    fake_quantize = ScaledFakeQuantize(quantization_spec)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(quantization_spec)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
     fake_quantize.scale = scale.to(device)
     fake_quantize.zero_point = zero_point.to(device)
@@ -45,7 +45,7 @@ def process_int_per_tensor_quantize(quantization_spec, device, scale, zero_point
 
 
 def test_int_per_tensor_quantize():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -60,7 +60,7 @@ def test_int_per_tensor_quantize():
 
 
 def process_int_per_channel_quantize(quantization_spec, device, scale, zero_point):
-    fake_quantize = ScaledFakeQuantize(quantization_spec)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(quantization_spec)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
     fake_quantize.scale = scale.to(device)
     fake_quantize.zero_point = zero_point.to(device)
@@ -74,7 +74,7 @@ def process_int_per_channel_quantize(quantization_spec, device, scale, zero_poin
 
 
 def test_int_per_channel_quantize():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -90,7 +90,7 @@ def test_int_per_channel_quantize():
 
 
 def process_fp8_per_tensor_quantize(quantization_spec, device, scale, zero_point, torch_dtype, max_norm):
-    fake_quantize = ScaledFakeQuantize(quantization_spec)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(quantization_spec)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
     fake_quantize.scale = scale.to(device)
     fake_quantize.zero_point = zero_point.to(device)
@@ -114,7 +114,7 @@ def process_fp8_per_tensor_quantize(quantization_spec, device, scale, zero_point
     ],
 )
 def test_fp8_per_tensor_quantize(dtype, max_norm, torch_dtype):
-    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -198,8 +198,8 @@ def test_fp4_per_group_fp8_per_tensor_scale_quantize():
     from quark.torch.quantization import FP4PerGroupSpec, FP8E4M3PerTensorSpec, ScaleQuantSpec
 
     FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC = ScaleQuantSpec(
-        first_stage=FP4PerGroupSpec(group_size=5, is_dynamic=False),
-        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False),
+        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=5, is_dynamic=False),
+        second_stage=FP8E4M3PerTensorSpec(is_dynamic=False),
     ).to_quantization_spec()
 
     scale1 = torch.tensor(
@@ -285,7 +285,7 @@ def process_fp8_int4_perchannel_quantize(quantization_spec, device, scale1, scal
 def test_fp8_int4_perchannel_quantize():
     from quark.torch.quantization import ProgressiveSpec
 
-    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -294,7 +294,7 @@ def test_fp8_int4_perchannel_quantize():
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    DEFAULT_INT4_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT4_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int4,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -318,7 +318,7 @@ def test_fp8_int4_perchannel_quantize():
 
 
 def test_int3_per_tensor_quantize():
-    DEFAULT_INT3_PER_TENSOR_SPEC = QuantizationSpec(
+    DEFAULT_INT3_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int3,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -328,7 +328,7 @@ def test_int3_per_tensor_quantize():
         is_dynamic=False,
     )
 
-    fake_quantize = ScaledFakeQuantize(DEFAULT_INT3_PER_TENSOR_SPEC)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(DEFAULT_INT3_PER_TENSOR_SPEC)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
 
     scale = torch.tensor([0.25])
@@ -359,7 +359,7 @@ def test_int3_per_tensor_quantize():
 
 
 def test_int3_per_channel_quantize():
-    DEFAULT_INT3_PER_CHANNEL_SPEC = QuantizationSpec(
+    DEFAULT_INT3_PER_CHANNEL_SPEC = QTensorConfig(
         dtype=Dtype.int3,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -370,7 +370,7 @@ def test_int3_per_channel_quantize():
         is_dynamic=False,
     )
 
-    fake_quantize = ScaledFakeQuantize(DEFAULT_INT3_PER_CHANNEL_SPEC)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(DEFAULT_INT3_PER_CHANNEL_SPEC)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
 
     int3_input = torch.tensor(
@@ -406,7 +406,7 @@ def test_int3_per_channel_quantize():
 def test_int3_per_group_quantize():
     from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
 
-    DEFAULT_INT3_PER_GROUP_SPEC = QuantizationSpec(
+    DEFAULT_INT3_PER_GROUP_SPEC = QTensorConfig(
         dtype=Dtype.int3,
         qscheme=QSchemeType.per_group,
         observer_cls=PerGroupMinMaxObserver,
@@ -418,7 +418,7 @@ def test_int3_per_group_quantize():
         group_size=4,
     )
 
-    fake_quantize = ScaledFakeQuantize(DEFAULT_INT3_PER_GROUP_SPEC)
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(DEFAULT_INT3_PER_GROUP_SPEC)
     fake_quantize.observer_enabled = torch.tensor([1], dtype=torch.uint8)
 
     scale = torch.tensor([[0.25, 0.3], [0.28, 0.32]], dtype=torch.float32)

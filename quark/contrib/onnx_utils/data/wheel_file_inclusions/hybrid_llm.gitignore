@@ -1,0 +1,62 @@
+# Copyright (c) 2024 Advanced Micro Devices, Inc.
+
+# exclude everything
+src/ryzenai_onnx_utils
+
+# strategy
+!src/ryzenai_onnx_utils/data/partition_strategies/hybrid_llm*.yaml
+!src/ryzenai_onnx_utils/data/partition_strategies/hybrid_llm_prefill_fusion*.yaml
+!src/ryzenai_onnx_utils/data/partition_strategies/hybrid_llm_token_fusion*.yaml
+!src/ryzenai_onnx_utils/data/partition_strategies/cleanup.yaml
+
+# passes
+!src/ryzenai_onnx_utils/passes/__init__.py
+!src/ryzenai_onnx_utils/passes/dd/__init__.py
+!src/ryzenai_onnx_utils/passes/dd/llm_*.py
+!src/ryzenai_onnx_utils/passes/dd/llama_*.py
+!src/ryzenai_onnx_utils/passes/fastgelu_to_gelu.py
+!src/ryzenai_onnx_utils/passes/flatmha_external_bufs*.py
+!src/ryzenai_onnx_utils/passes/hybrid_llm_*
+!src/ryzenai_onnx_utils/passes/initializers_to_bfloat16/*
+!src/ryzenai_onnx_utils/passes/initializers_to_float16/*
+!src/ryzenai_onnx_utils/passes/normalize_gqa.py
+!src/ryzenai_onnx_utils/passes/normalize_matmulnbits.py
+!src/ryzenai_onnx_utils/passes/remove_dangling_nodes.py
+!src/ryzenai_onnx_utils/passes/remove_parallel_casts.py
+!src/ryzenai_onnx_utils/passes/remove_unused_io.py
+!src/ryzenai_onnx_utils/passes/sort_graph_io.py
+!src/ryzenai_onnx_utils/passes/simplify_casts.py
+!src/ryzenai_onnx_utils/passes/simplify_matmulnbits.py
+!src/ryzenai_onnx_utils/transform/__init__.py
+!src/ryzenai_onnx_utils/transform/cast.py
+!src/ryzenai_onnx_utils/transform/dd.py
+!src/ryzenai_onnx_utils/transform/hybrid_llm.py
+!src/ryzenai_onnx_utils/transform/reshape.py
+!src/ryzenai_onnx_utils/transform/transpose.py
+
+# pre processing
+!src/ryzenai_onnx_utils/shape_inference/Cast.py
+!src/ryzenai_onnx_utils/shape_inference/Gather.py
+!src/ryzenai_onnx_utils/shape_inference/SimplifiedLayerNormalization.py
+
+# post processing
+!src/ryzenai_onnx_utils/model_postprocessing/__init__.py
+!src/ryzenai_onnx_utils/model_postprocessing/combine_llm*.py
+
+# basic files
+!src/ryzenai_onnx_utils/__init__.py
+!src/ryzenai_onnx_utils/lexer.py
+!src/ryzenai_onnx_utils/lora.py
+!src/ryzenai_onnx_utils/matcher.py
+!src/ryzenai_onnx_utils/partitioner.py
+!src/ryzenai_onnx_utils/pattern_generator.py
+!src/ryzenai_onnx_utils/pattern.py
+!src/ryzenai_onnx_utils/postprocess.py
+!src/ryzenai_onnx_utils/preprocess.py
+!src/ryzenai_onnx_utils/typing.py
+!src/ryzenai_onnx_utils/utils.py
+!src/ryzenai_onnx_utils/vaiml.py
+!src/ryzenai_onnx_utils/proto/__init__.py
+
+# vaiml
+!src/ryzenai_onnx_utils/data/vaiml/*

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -16,16 +16,15 @@ python convert_fp16_to_bf16.py --input $FLOAT_16_ONNX_MODEL_PATH --output $BFLOA
 import copy
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Dict, List
 
 import onnx
 from onnx import onnx_pb as onnx_proto
 from onnx.onnx_ml_pb2 import ModelProto, NodeProto
 
-from quark.onnx.quant_utils import convert_to_bf16, create_tmp_dir
-from quark.onnx.quantization.api import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import BF16_CONFIG
+from quark.onnx.quantization.quant_utils import convert_to_bf16
+from quark.onnx.utils.system_utils import create_tmp_dir
 
 from . import float16
 

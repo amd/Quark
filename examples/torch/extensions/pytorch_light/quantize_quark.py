@@ -13,13 +13,12 @@ from pytorchlight_config import (
     BRECQ,
     Config,
     Dtype,
-    ExporterConfig,
-    PytorchlightModelExporter,
     PytorchlightModelQuantizer,
+    pytorchlight_export_onnx_model,
 )
 from transformers import AutoModelForCausalLM
 
-from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import QSchemeType
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
@@ -69,19 +68,19 @@ def main():
     q_opt_data, val_data = get_dataloader(args.model_path, args)
 
     if args.example == "int_k":
-        GLOBAL_SPEC = QuantizationSpec(
+        GLOBAL_SPEC = QTensorConfig(
             dtype=Dtype.int8, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
         )
-        GLOBAL_CONFIG = QuantizationConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
+        GLOBAL_CONFIG = QLayerConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
         quant_config = Config(global_quant_config=GLOBAL_CONFIG)
         quantizer = PytorchlightModelQuantizer(quant_config)
         qmodel = quantizer.quantize_model(model, q_opt_data)
 
     if args.example == "bfp16":
-        GLOBAL_SPEC = QuantizationSpec(
+        GLOBAL_SPEC = QTensorConfig(
             dtype=Dtype.bfp16, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
         )
-        GLOBAL_CONFIG = QuantizationConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
+        GLOBAL_CONFIG = QLayerConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
         quant_config = Config(global_quant_config=GLOBAL_CONFIG)
         quantizer = PytorchlightModelQuantizer(quant_config)
         qmodel = quantizer.quantize_model(model, None)
@@ -89,17 +88,15 @@ def main():
     # Export onnx
     if args.export:
         freeze_model = quantizer.freeze(qmodel)
-        export_config = ExporterConfig(pytorch_light_export_config={}, json_export_config={})
-        exporter = PytorchlightModelExporter(config=export_config, export_dir="./")
         input_args = next(iter(q_opt_data))[0].to(device=device)
-        exporter.export_onnx_model(freeze_model, input_args)
+        pytorchlight_export_onnx_model(freeze_model, input_args)
 
     # Run brecq
     if args.example == "brecq":
-        GLOBAL_SPEC = QuantizationSpec(
+        GLOBAL_SPEC = QTensorConfig(
             dtype=Dtype.int8, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
         )
-        GLOBAL_CONFIG = QuantizationConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
+        GLOBAL_CONFIG = QLayerConfig(weight=GLOBAL_SPEC, input_tensors=GLOBAL_SPEC)
         quant_config = Config(global_quant_config=GLOBAL_CONFIG)
         quant_config.algo_config = BRECQ()
         quantizer = PytorchlightModelQuantizer(quant_config)

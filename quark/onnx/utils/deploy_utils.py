@@ -1,11 +1,10 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Union
 
 import numpy as np
 import onnx
@@ -13,7 +12,7 @@ import onnxruntime
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 
 from quark.onnx.calibration import RandomDataReader
-from quark.onnx.quant_utils import create_infer_session_for_onnx_model
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
@@ -21,7 +20,7 @@ logger = ScreenLogger(__name__)
 
 @log_errors
 def dump_model(
-    model_input: Union[str, Path, onnx.ModelProto],
+    model_input: str | Path | onnx.ModelProto,
     dump_data_reader: object | None = None,
     random_data_reader_input_shape: dict[str, list[int]] = {},
     dump_float: bool = False,

@@ -1,0 +1,11 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+# These passes perform some general graph cleanup steps that are broadly
+# applicable across many strategies
+
+---
+
+passes:
+    - remove_dangling_nodes
+    - remove_unused_io
+    - sort_graph_io

@@ -8,11 +8,11 @@ import time
 
 import torch
 from datasets import load_dataset
-from llm_eval.evaluation import ppl_eval
 from torch import nn
 
+from quark.contrib.llm_eval import ppl_eval
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver
 
@@ -23,7 +23,7 @@ def weight_only_quantize(model, loader, quant_scheme, group_size):
     if quant_scheme in ["w_uint4_asym", "w_int4_sym"]:
         dtype = Dtype.uint4 if "unint4" in quant_scheme else Dtype.int4
         symmetric = False if "asym" in quant_scheme else True
-        WEIGHT_SPEC = QuantizationSpec(
+        WEIGHT_SPEC = QTensorConfig(
             dtype=dtype,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=symmetric,
@@ -37,8 +37,8 @@ def weight_only_quantize(model, loader, quant_scheme, group_size):
     else:
         raise Exception(f"Not implement for other quant scheme {quant_scheme}")
 
-    QUANT_SPEC = QuantizationConfig(weight=WEIGHT_SPEC)
-    quant_config = Config(global_quant_config=QUANT_SPEC)
+    QUANT_SPEC = QLayerConfig(weight=WEIGHT_SPEC)
+    quant_config = QConfig(global_quant_config=QUANT_SPEC)
 
     quantizer = ModelQuantizer(quant_config)
 

@@ -11,9 +11,9 @@ import sys
 from quark.torch.pruning.config import BlockwiseTuningConfig, Config, OSSCARConfig
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from llm_eval.evaluation import eval_model
-from llm_utils.data_preparation import get_calib_dataloader
-from llm_utils.model_preparation import get_model, get_model_type, get_tokenizer, save_model, set_seed
+
+from quark.contrib.llm_eval import eval_model
+from quark.torch.utils.llm import get_calib_dataloader, get_model, get_tokenizer, save_model, set_seed
 
 
 def get_config(args: argparse.Namespace, model_type: str) -> Config:
@@ -48,14 +48,10 @@ def main(args: argparse.Namespace) -> None:
     model, model_dtype = get_model(
         args.model_dir, args.data_type, args.device, args.multi_gpu, trust_remote_code=args.trust_remote_code
     )
-    model_type = get_model_type(model)
+    model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
     tokenizer = get_tokenizer(
         args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
     )
-
-    from quark.shares.utils.log import ScreenLogger
-
-    logger = ScreenLogger(__name__)
 
     # 3. Define calibration dataloader.
     print("\n[INFO]: Loading dataset ...")

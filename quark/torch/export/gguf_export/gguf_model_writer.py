@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # Copyright (c) 2023-2024 The ggml authors
@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Dict, Iterator, Optional, Sequence, TypeVar, cast
+from typing import Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast
 
 import torch
 
@@ -24,21 +24,20 @@ from quark.shares.utils.import_utils import (
     is_transformers_available,
 )
 from quark.shares.utils.log import ScreenLogger, log_errors
-
-from .tensor_convert import convert_to_gguf
+from quark.torch.export.gguf_export.tensor_convert import convert_to_gguf
+from quark.torch.export.gguf_export.utils import permute
 
 if is_transformers_available():
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer  # type: ignore[attr-defined]
 
 if is_safetensors_available():
     from safetensors import safe_open
 
-logger = ScreenLogger(__name__)
 
 if is_gguf_available_and_version_0_6_0():
     import gguf  # type: ignore
 
-from .utils import permute
+logger = ScreenLogger(__name__)
 
 
 class QuantSpec:
@@ -146,6 +145,7 @@ class ModelWriter(ABC):
             return None
         raise KeyError(f"could not find any of: {keys}")
 
+    @abstractmethod
     def set_vocab(self) -> None:
         pass
 
@@ -154,7 +154,7 @@ class ModelWriter(ABC):
         ctx = cast(ContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))  # type: ignore
 
         with ctx as model_part:
-            for name in model_part.keys():
+            for name in model_part.keys():  # noqa
                 data = model_part.get_tensor(name)
                 yield name, data
 
@@ -246,7 +246,7 @@ class ModelWriter(ABC):
     def from_model_architecture(cls: type[ModelWriter], arch: str) -> type[ModelWriter]:
         try:
             return cls._model_classes[arch]
-        except KeyError as e:
+        except KeyError:
             raise NotImplementedError(f"Architecture {arch!r} not supported!")
 
     # used for GPT-2 BPE and WordPiece vocabs

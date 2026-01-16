@@ -1,11 +1,10 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
 
 import torch
 

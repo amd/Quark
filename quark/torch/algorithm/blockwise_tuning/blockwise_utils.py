@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Tuple, Union, cast
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -26,7 +26,7 @@ logger = ScreenLogger(__name__)
 def block_batch_forward(
     layer: nn.Module, module_kwargs: dict[str, Any], input: torch.Tensor, device: torch.device
 ) -> torch.Tensor:
-    additional_layer_inputs: dict[str, Union[None, torch.Tensor, nn.Module]] = {}
+    additional_layer_inputs: dict[str, None | torch.Tensor | nn.Module] = {}
     for k, v in module_kwargs.items():
         if isinstance(v, torch.Tensor):
             additional_layer_inputs[k] = move_to_device(v, device)

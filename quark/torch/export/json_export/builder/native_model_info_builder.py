@@ -1,16 +1,20 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Any, Dict, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
 
 import quark.torch.kernel
 from quark.torch.export.config.config import JsonExporterConfig
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.utils.pack import create_pack_method
+from quark.torch.quantization.tensor_quantize import (
+    FrozenScaledFakeQuantize,
+    ScaledFakeQuantize,
+    StaticScaledFakeQuantize,
+)
+from quark.torch.utils import create_pack_method
 
 
 class NativeModelInfoBuilder:
@@ -31,14 +35,15 @@ class NativeModelInfoBuilder:
     @staticmethod
     def _build_quant_info(
         quantizer: ScaledFakeQuantize, param_dict: dict[str, torch.Tensor], tensor_type: str, node_name: str
-    ) -> dict[str, Union[str, int, float, None]]:
-        scale_name = f"{tensor_type}_scale"
-        tensor_name = f"{node_name}.{scale_name}"
-        param_dict[tensor_name] = quantizer.scale.detach()
+    ) -> dict[str, str | int | float | None]:
+        if isinstance(quantizer, (StaticScaledFakeQuantize, FrozenScaledFakeQuantize)):
+            scale_name = f"{tensor_type}_scale"
+            tensor_name = f"{node_name}.{scale_name}"
+            param_dict[tensor_name] = quantizer.scale.detach()
 
-        zero_point_name = f"{tensor_type}_zero_point"
-        tensor_name = f"{node_name}.{zero_point_name}"
-        param_dict[tensor_name] = quantizer.zero_point.detach()
+            zero_point_name = f"{tensor_type}_zero_point"
+            tensor_name = f"{node_name}.{zero_point_name}"
+            param_dict[tensor_name] = quantizer.zero_point.detach()
 
         quant_dict = quantizer.quant_spec.to_dict()
 
@@ -53,6 +58,7 @@ class NativeModelInfoBuilder:
         reorder: bool = True,
     ) -> dict[str, Any]:
         module_dict = {}
+
         if not list(module.named_children()) or NativeModelInfoBuilder._contain_quantizer(module):
             module_dict["name"] = name
             module_dict["type"] = module.__class__.__name__
@@ -88,6 +94,7 @@ class NativeModelInfoBuilder:
                 module_dict["output_quant"] = quant_info  # type: ignore
 
             return module_dict
+
         for key, child_module in module.named_children():
             mod_name = name + "." + key
             child_result = NativeModelInfoBuilder._module_to_dict(

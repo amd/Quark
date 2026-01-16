@@ -5,13 +5,11 @@
 
 from quark.torch.quantization.config.config import Int4PerGroupSpec
 
-INT4_PER_GROUP_SYM_SPEC = Int4PerGroupSpec(
-    scale_type="float", ch_axis=1, is_dynamic=False, group_size=128
-).to_quantization_spec()
+INT4_PER_GROUP_SYM_SPEC = Int4PerGroupSpec(ch_axis=1, is_dynamic=False, group_size=128).to_quantization_spec()
 
 
 def test_set_group_size():
-    # Create an instance of QuantizationSpec
+    # Create an instance of QTensorConfig
 
     # Set group size
     new_group_size = 8

@@ -6,7 +6,7 @@ import os
 
 import onnx
 from onnx import helper
-from onnxsim import simplify
+from onnxslim import slim
 
 
 # facility code: used for counding target op in a onnx model
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     onnx_contains_op_num(exported_onnx_model, "DequantizeLinear")
 
     quant_model = onnx.load(exported_onnx_model)
-    model_simp, check = simplify(quant_model)
+    model_simp = slim(quant_model)
     onnx.save_model(model_simp, "./quant_result/sample_quark_model.onnx")  # NOTE modify the path
 
     model = model_simp

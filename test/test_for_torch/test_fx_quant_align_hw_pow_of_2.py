@@ -20,7 +20,7 @@ import quark.torch.quantization.graph.optimization.pre_quant.opt_pass_before_qua
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
 from quark.torch.quantization.graph.optimization.model_optimization import trans_opsfunc_2_quant_module
@@ -64,7 +64,7 @@ logger = ScreenLogger(__name__)
 
 TEST_TOPIC = "torch FX graph mode quantization, align with hw deploy need\n"
 ABSOLUTE_TOL = 1e-6
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -73,13 +73,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_tensor_config = QuantizationConfig(
+quant_tensor_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=quant_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=quant_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 def onnx_contains_op_type(model_path: str, target_op_type: str) -> bool:
@@ -188,7 +188,7 @@ class TinyShareLinearModel(nn.Module):
 @retry_flaky_test()
 def test_use_over_once_module_optim():
     """
-    In optmized Graph, will has two QuantizedConvBatchNorm2d/or similiar module
+    In optimized Graph, will has two QuantizedConvBatchNorm2d/or similiar module
     """
     torch.cuda.empty_cache()
     float_model1 = TinyShareConvbnModel().to(torch_device).eval()
@@ -327,7 +327,7 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
     test torch model that if one submodel that contain parameter used over once
     , test code will show how the fx graph model is optimized for better deployment.
     """
-    INT8_PER_TENSOR_MSE_POW2_SPEC = QuantizationSpec(
+    INT8_PER_TENSOR_MSE_POW2_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorPowOf2MinMSEObserver,
@@ -336,13 +336,13 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    powof2_mse_tensor_config = QuantizationConfig(
+    powof2_mse_tensor_config = QLayerConfig(
         input_tensors=INT8_PER_TENSOR_MSE_POW2_SPEC,
         output_tensors=INT8_PER_TENSOR_MSE_POW2_SPEC,
         weight=INT8_PER_TENSOR_MSE_POW2_SPEC,
         bias=INT8_PER_TENSOR_MSE_POW2_SPEC,
     )
-    mse_pow2_config = Config(global_quant_config=powof2_mse_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
+    mse_pow2_config = QConfig(global_quant_config=powof2_mse_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
 
     torch.cuda.empty_cache()
     float_model = TinyShareWeightModel().to(torch_device).eval()
@@ -380,8 +380,8 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
     assert fx_contain_module_num(opt_fx_before_qt, QuantLinear) == 2
     assert torch.allclose(out_fp32, out_opt_fx_graph)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [mse_pow2_config, emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -398,7 +398,7 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(*example_inputs)
         onnx_dir = tmpdir + "/module_called_over_once.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, onnx_dir)
+        torch.onnx.export(opt_graph_module, example_inputs, onnx_dir, dynamo=False)
         assert onnx_contains_op_num(onnx_dir, "Conv") == 6
         assert onnx_contains_op_num(onnx_dir, "ConvTranspose") == 6
         assert onnx_contains_op_num(onnx_dir, "Gemm") == 5
@@ -502,7 +502,7 @@ def test_torch_clip_2_relu_optim_strategy(tmpdir: str):
     quantizer = ModelQuantizer(quant_config)
     graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
-    out_2 = quantized_model.eval()(*example_inputs)
+    _ = quantized_model.eval()(*example_inputs)
     assert fx_contains_op_num(quantized_model, is_relu_act_node) == 1
     assert fx_contains_op_num(quantized_model, is_clip_node) == 4
     assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 8
@@ -511,7 +511,7 @@ def test_torch_clip_2_relu_optim_strategy(tmpdir: str):
     assert fx_contains_op_num(opt_graph_module, is_clip_node) == 3
     opt_graph_module(*example_inputs)
     onnx_dir = tmpdir + "/clip_2_relu.onnx"
-    torch.onnx.export(opt_graph_module, example_inputs, onnx_dir)
+    torch.onnx.export(opt_graph_module, example_inputs, onnx_dir, dynamo=False)
     assert onnx_contains_op_num(onnx_dir, "Relu") == 2
     assert onnx_contains_op_num(onnx_dir, "Clip") == 3
     torch.cuda.empty_cache()
@@ -589,8 +589,8 @@ def test_mean_2_pooling_strategy(tmpdir: str):
     graph_out = graph_model(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, graph_out, strict=False)])
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -611,7 +611,7 @@ def test_mean_2_pooling_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(*example_inputs)
         onnx_dir = tmpdir + "/mean_2_pooling.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, onnx_dir)
+        torch.onnx.export(opt_graph_module, example_inputs, onnx_dir, dynamo=False)
         assert onnx_contains_op_num(onnx_dir, "GlobalAveragePool") == 4
         assert onnx_contains_op_num(onnx_dir, "ReduceMean") == 2
         assert onnx_contains_op_num(onnx_dir, "AveragePool") == 2
@@ -672,8 +672,8 @@ def test_torch_convert_split_2_slice_strategy(tmpdir: str):
         graph_out = graph_model(example_inputs[0])
         assert all([torch.allclose(x[0], x[1]) for x in zip(out, graph_out, strict=False)])
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -688,7 +688,7 @@ def test_torch_convert_split_2_slice_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(example_inputs[0])
         onnx_dir = tmpdir + "/split_2_slice.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir)
+        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir, dynamo=False)
         assert onnx_contains_op_num(onnx_dir, "Slice") == 16
         assert onnx_contains_op_num(onnx_dir, "Conv") == 2
     torch.cuda.empty_cache()
@@ -786,8 +786,8 @@ def test_torch_fold_bn_after_concat_strategy(tmpdir: str):
     assert fx_contain_module_num(graph_model, QuantizedConvBatchNorm2d) == 2
     assert fx_contain_module_num(graph_model, QuantConvTransposeBatchNorm2d) == 3
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_config, emp_quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -801,7 +801,7 @@ def test_torch_fold_bn_after_concat_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(example_inputs[0])
         onnx_dir = tmpdir + "/fold_bn_afterconcat.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir)
+        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir, dynamo=False)
         assert onnx_contains_op_num(onnx_dir, "ConvTranspose") == 6
         assert onnx_contains_op_num(onnx_dir, "Conv") == 5
     torch.cuda.empty_cache()
@@ -865,8 +865,8 @@ def test_not_fold_bn_after_concat_strategy(tmpdir: str):
     assert torch.allclose(out, out1, atol=ABSOLUTE_TOL)
     assert fx_contains_op_num(graph_model, is_batchnorm_node) == 3
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -879,7 +879,7 @@ def test_not_fold_bn_after_concat_strategy(tmpdir: str):
         assert fx_contain_module_num(quantized_model, QuantConv2d) == 3
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         onnx_dir = tmpdir + "/not_fold_bn_afterconcat.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir)
+        torch.onnx.export(opt_graph_module, *example_inputs, onnx_dir, dynamo=False)
         assert onnx_contains_op_num(onnx_dir, "Conv") == 3
         assert onnx_contains_op_num(onnx_dir, "ConvTranspose") == 5
     torch.cuda.empty_cache()
@@ -915,8 +915,8 @@ def test_torch_layerNorm_strategy(tmpdir: str):
     example_inputs = (torch.rand(4, 32).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -928,7 +928,7 @@ def test_torch_layerNorm_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(example_inputs[0])
         out_onnx_dir = tmpdir + "/lm.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_dir)
+        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_dir, dynamo=False)
         assert onnx_contains_op_num(out_onnx_dir, "LayerNormalization") == 1
     torch.cuda.empty_cache()
 
@@ -958,8 +958,8 @@ def test_torch_fuse_gelu_strategy(tmpdir: str):
     out = float_model(example_inputs[0])
     # graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -972,7 +972,7 @@ def test_torch_fuse_gelu_strategy(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(example_inputs[0])
         out_onnx_path = tmpdir + "/gelu_layer.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_path, dynamo=False)
         # TODO Gelu should be done in onnx level
     torch.cuda.empty_cache()
 
@@ -1019,8 +1019,8 @@ def test_torch_split_large_kernel_pool_strategy(tmpdir: str):
     assert torch.allclose(out, out1)
     assert torch.allclose(out, out2)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -1034,7 +1034,7 @@ def test_torch_split_large_kernel_pool_strategy(tmpdir: str):
         assert fx_contain_module_num(opt_graph_module, QuantAdaptiveAvgPool2d) == 2
         assert fx_contain_module_num(opt_graph_module, QuantAvgPool2d) == 2
         out_onnx_path = tmpdir + "/split_large_gap_pooling.onnx"
-        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, *example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "GlobalAveragePool") == 2
         assert onnx_contains_op_num(out_onnx_path, "AveragePool") == 2
         assert onnx_contains_op_num(out_onnx_path, "Mul") == 4
@@ -1078,15 +1078,15 @@ def test_torch_delete_slice_strategy(tmpdir: str):
     fp_out = float_model(*example_inputs)
     graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
-    assert fx_contains_op_num(graph_model, is_slice_node) == 11
+    assert fx_contains_op_num(graph_model, is_slice_node) in [11, 6]  # NOTE in torch2.9 this bug fixed
     opt_model = opt_befor_qt.ConvertDeleteRedundantSliceQOPass()(graph_model)
     assert fx_contains_op_num(graph_model, is_slice_node) == 6
     out1 = opt_model.eval()(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -1099,7 +1099,7 @@ def test_torch_delete_slice_strategy(tmpdir: str):
         opt_graph_module(*example_inputs)
         assert fx_contains_op_num(opt_graph_module, is_slice_node) == 6
         out_onnx_path = tmpdir + "/slice.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "Slice") == 6
     torch.cuda.empty_cache()
 
@@ -1138,8 +1138,8 @@ def test_torch_sigmoid_2_hardsigmoid_strategy(tmpdir: str):
     assert fx_contains_op_num(opt_model, is_hardsigmoid_node) == 2
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1160,7 +1160,7 @@ def test_torch_sigmoid_2_hardsigmoid_strategy(tmpdir: str):
                 freeze_graph_module(*example_inputs)
                 assert fx_contains_op_num(freeze_graph_module, is_hardsigmoid_node) == 2
                 out_onnx_path = tmpdir + "/hardsigmoid.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path)
+                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path, dynamo=False)
                 assert onnx_contains_op_num(out_onnx_path, "HardSigmoid") == 2
     torch.cuda.empty_cache()
 
@@ -1200,8 +1200,8 @@ def test_torch_silu_2_hardswish_strategy(tmpdir: str):
     assert fx_contains_op_num(opt_model, is_silu_node) == 0
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1223,7 +1223,7 @@ def test_torch_silu_2_hardswish_strategy(tmpdir: str):
                 assert fx_contains_op_num(freeze_graph_module, is_hardswish_node) == 1
                 assert fx_contains_op_num(freeze_graph_module, is_hardsigmoid_node) == 1
                 out_onnx_path = tmpdir + "/hardswish.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path)
+                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path, dynamo=False)
                 assert onnx_contains_op_num(out_onnx_path, "HardSwish") == 1
                 assert onnx_contains_op_num(out_onnx_path, "HardSigmoid") == 1
                 assert onnx_contains_op_num(out_onnx_path, "Mul") in [2, 1]
@@ -1285,11 +1285,11 @@ def test_torch_adaptiveavgpool2d_2_qtadaptiveavgpool2d_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, gp_out, strict=False)]) is True
     opt_graph = opt_befor_qt.ConvertAdaptiveavgpool2d2Quantadaptiveavgpool2DQOPass()(graph_model)
-    fx_contain_module_num(opt_graph, QuantAdaptiveAvgPool2d) == 6
+    assert fx_contain_module_num(opt_graph, QuantAdaptiveAvgPool2d) == 6
     opt_graph(*example_inputs)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1310,7 +1310,7 @@ def test_torch_adaptiveavgpool2d_2_qtadaptiveavgpool2d_strategy(tmpdir: str):
                 freeze_graph_module(*example_inputs)
                 assert fx_contain_module_num(freeze_graph_module, QuantAdaptiveAvgPool2d) == 6
                 out_onnx_path = tmpdir + "/adaptivepooling2d.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path)
+                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path, dynamo=False)
                 assert onnx_contains_op_num(out_onnx_path, "GlobalAveragePool") == 6
     torch.cuda.empty_cache()
 
@@ -1362,11 +1362,11 @@ def test_torch_avgpool2d_2_qtavgpool2d_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, gp_out, strict=False)]) is True
     opt_graph = opt_befor_qt.ConverAvgpool2d2QuantAvgPool2dQOPass()(graph_model)
-    fx_contain_module_num(opt_graph, QuantAvgPool2d) == 6
+    assert fx_contain_module_num(opt_graph, QuantAvgPool2d) == 6
     opt_graph(*example_inputs)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1387,7 +1387,7 @@ def test_torch_avgpool2d_2_qtavgpool2d_strategy(tmpdir: str):
                 freeze_graph_module(*example_inputs)
                 assert fx_contain_module_num(freeze_graph_module, QuantAvgPool2d) == 6
                 out_onnx_path = tmpdir + "/avgpooling2d.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path)
+                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path, dynamo=False)
                 assert onnx_contains_op_num(out_onnx_path, "AveragePool") == 6
                 assert onnx_contains_op_num(out_onnx_path, "Mul") == 6
     torch.cuda.empty_cache()
@@ -1422,11 +1422,11 @@ def test_torch_leakyrelu_2_qtleakyrelu_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_befor_qt.ConvertLeakyReLu2QuantLeakyReLuQOPass()(graph_model)
-    fx_contain_module_num(opt_graph, QuantLeakyReLU) == 1
+    assert fx_contain_module_num(opt_graph, QuantLeakyReLU) == 1
     opt_graph(*example_inputs)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1447,7 +1447,7 @@ def test_torch_leakyrelu_2_qtleakyrelu_strategy(tmpdir: str):
                 freeze_graph_module(*example_inputs)
                 assert fx_contain_module_num(freeze_graph_module, QuantLeakyReLU) == 1
                 out_onnx_path = tmpdir + "/leaky_relu.onnx"
-                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path)
+                torch.onnx.export(freeze_graph_module, example_inputs, out_onnx_path, dynamo=False)
                 assert onnx_contains_op_num(out_onnx_path, "LeakyRelu") == 1
                 assert onnx_contains_op_num(out_onnx_path, "Conv") == 1
     torch.cuda.empty_cache()
@@ -1485,8 +1485,8 @@ def test_torch_postquant_concat_strategy(tmpdir: str):
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.ApplyConstrain2ConcatQOPass()(graph_model)  # skip
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -1509,12 +1509,12 @@ def test_torch_postquant_concat_strategy(tmpdir: str):
                     scale_3 = quantized_model.fake_quantizer_3.scale.item()
                     min_scale = min(min(scale_0, scale_2), scale_3)
                     quantized_model.fake_quantizer_3.scale.fill_(min_scale)
-                    assert len(set([scale_0, scale_2, scale_3])) == 2
+                    assert len({scale_0, scale_2, scale_3}) == 2
                     opt_graph = opt_after_qt_pow2_s.ApplyConstrain2ConcatQOPass()(quantized_model)
                     new_scale_0 = opt_graph.fake_quantizer_0.scale.item()
                     new_scale_2 = opt_graph.fake_quantizer_2.scale.item()
                     new_scale_3 = opt_graph.fake_quantizer_3.scale.item()
-                    assert len(set([new_scale_0, new_scale_2, new_scale_3])) == 1
+                    assert len({new_scale_0, new_scale_2, new_scale_3}) == 1
                     opt_graph.fake_quantizer_0 = nn.Identity()
                     opt_graph = opt_after_qt_pow2_s.ApplyConstrain2ConcatQOPass()(opt_graph)
     torch.cuda.empty_cache()
@@ -1553,8 +1553,8 @@ def test_torch_align_single_in_out_strategy(tmpdir: str):
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.AlignSingleInOutOpScaleQOPass([torch.ops.aten.sigmoid.default])(graph_model)  # skip
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AlignSingleInOutOpScaleQOPass([torch.ops.aten.hardsigmoid.default])
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1576,19 +1576,19 @@ def test_torch_align_single_in_out_strategy(tmpdir: str):
                     scale_1 = quantized_model.fake_quantizer_1.scale.item()
                     quantized_model.fake_quantizer_2.scale.fill_(scale_1 * 2)
                     scale_2 = quantized_model.fake_quantizer_2.scale.item()
-                    assert len(set([scale_1, scale_2])) == 2
+                    assert len({scale_1, scale_2}) == 2
                     opt_graph = opt_module(quantized_model)
                     new_scale_1 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([new_scale_1, new_scale_2])) == 1
+                    assert len({new_scale_1, new_scale_2}) == 1
                     opt_graph.fake_quantizer_1.scale.fill_(new_scale_2 * 2)
                     new_scale_1 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([scale_1, scale_2])) == 2
+                    assert len({scale_1, scale_2}) == 2
                     opt_graph = opt_module(opt_graph)
                     new_scale_1 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([new_scale_1, new_scale_2])) == 1
+                    assert len({new_scale_1, new_scale_2}) == 1
                     opt_graph.fake_quantizer_1 = nn.Identity()
                     opt_graph = opt_module(opt_graph)
     torch.cuda.empty_cache()
@@ -1629,8 +1629,8 @@ def test_torch_align_single_in_out_module_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AlignSingleInOutModuleScaleQOPass((QuantAvgPool2d, QuantAdaptiveAvgPool2d))
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1652,15 +1652,15 @@ def test_torch_align_single_in_out_module_strategy(tmpdir: str):
                     opt_graph = opt_module(quantized_model)
                     new_scale_1_1 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2_1 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([new_scale_1_1, new_scale_2_1])) == 1
+                    assert len({new_scale_1_1, new_scale_2_1}) == 1
                     opt_graph.fake_quantizer_2.scale.fill_(new_scale_2_1 * 2)
                     new_scale_1_2 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2_2 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([new_scale_1_2, new_scale_2_2])) == 2
+                    assert len({new_scale_1_2, new_scale_2_2}) == 2
                     opt_graph = opt_module(opt_graph)
                     new_scale_1_3 = opt_graph.fake_quantizer_1.scale.item()
                     new_scale_2_3 = opt_graph.fake_quantizer_2.scale.item()
-                    assert len(set([new_scale_1_3, new_scale_2_3])) == 1
+                    assert len({new_scale_1_3, new_scale_2_3}) == 1
                     opt_graph.fake_quantizer_1 = nn.Identity()
                     opt_graph = opt_module(opt_graph)
     torch.cuda.empty_cache()
@@ -1699,8 +1699,8 @@ def test_torch_adjust_shift_read_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustShiftReadQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1775,8 +1775,8 @@ def test_torch_adjust_shift_write_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustShiftWriteQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1856,8 +1856,8 @@ def test_torch_adjust_shift_cut_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustShiftCutQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1929,8 +1929,8 @@ def test_torch_adjust_shift_bias_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustShiftBiasQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -1996,8 +1996,8 @@ def test_torch_adjust_hard_sigmoid_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustHardSigmoidQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -2066,8 +2066,8 @@ def test_torch_adjust_shift_swishd_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.AdjustShiftSwishQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -2092,7 +2092,7 @@ def test_torch_adjust_shift_swishd_strategy(tmpdir: str):
                     quantized_model.fake_quantizer_3.scale.fill_(1 / 2**9)
                     opt_graph = opt_module(quantized_model)
                     onnx_dir = tmpdir + "/module_shift_swish.onnx"
-                    torch.onnx.export(opt_graph, example_inputs, onnx_dir)
+                    torch.onnx.export(opt_graph, example_inputs, onnx_dir, dynamo=False)
                     assert onnx_contains_op_num(onnx_dir, "QuantizeLinear") == 14
                     assert onnx_contains_op_num(onnx_dir, "Mul") == (3 + 2)  # 2 from adgpool adjust
                     assert onnx_contains_op_num(onnx_dir, "Conv") == 1
@@ -2140,8 +2140,8 @@ def test_torch_convert_hard_sigmoid_dpu_strategy(tmpdir: str):
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.ConvertHardSigmoidDpuVersionQOPass()(graph_model)  # skip
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_pow2_s.ConvertHardSigmoidDpuVersionQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -2165,7 +2165,7 @@ def test_torch_convert_hard_sigmoid_dpu_strategy(tmpdir: str):
                 else:
                     assert fx_contains_op_num(opt_graph, is_mul_node) == 0
                 onnx_dir = tmpdir + "/module_Dpu_hardsigmoid.onnx"
-                torch.onnx.export(opt_graph, example_inputs, onnx_dir)
+                torch.onnx.export(opt_graph, example_inputs, onnx_dir, dynamo=False)
                 assert onnx_contains_op_num(onnx_dir, "Conv") == 1
                 assert onnx_contains_op_num(onnx_dir, "Mul") in [1, 0]
     torch.cuda.empty_cache()
@@ -2204,8 +2204,8 @@ def test_torch_convert_silu_strategy(tmpdir: str):
     opt_out = opt_graph_model(*example_inputs)
     assert torch.allclose(gp_out, opt_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -2225,7 +2225,7 @@ def test_torch_convert_silu_strategy(tmpdir: str):
                 quantized_model.eval()
                 assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [6, 0]
                 onnx_dir = tmpdir + "/module_x_mul_sigmoid.onnx"
-                torch.onnx.export(quantized_model, example_inputs, onnx_dir)
+                torch.onnx.export(quantized_model, example_inputs, onnx_dir, dynamo=False)
                 assert onnx_contains_op_num(onnx_dir, "QuantizeLinear") in [6, 0]
                 assert onnx_contains_op_num(onnx_dir, "HardSigmoid") == 1
                 assert onnx_contains_op_num(onnx_dir, "Mul") == 1
@@ -2264,8 +2264,8 @@ def test_torch_delete_dropout_strategy(tmpdir: str):
     assert torch.allclose(fp_out, gp_out)
     opt_model_func = RemoveDropoutNode()
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_W_A_8_B_32_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -2294,7 +2294,7 @@ def test_torch_delete_dropout_strategy(tmpdir: str):
 # conddition:
 #    1. if bias -> int32 format quant -> then -> bias_scale = weight_scale * activation_scale
 
-INT8_PER_TENSOR_SPEC_W_A = QuantizationSpec(
+INT8_PER_TENSOR_SPEC_W_A = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -2303,7 +2303,7 @@ INT8_PER_TENSOR_SPEC_W_A = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-INT8_PER_TENSOR_SPEC_BIAS = QuantizationSpec(
+INT8_PER_TENSOR_SPEC_BIAS = QTensorConfig(
     dtype=Dtype.int32,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -2312,13 +2312,13 @@ INT8_PER_TENSOR_SPEC_BIAS = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_tensor_W_A_8_B_32_config = QuantizationConfig(
+quant_tensor_W_A_8_B_32_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC_W_A,
     output_tensors=INT8_PER_TENSOR_SPEC_W_A,
     weight=INT8_PER_TENSOR_SPEC_W_A,
     bias=INT8_PER_TENSOR_SPEC_BIAS,
 )
-quant_W_A_8_B_32_config = Config(
+quant_W_A_8_B_32_config = QConfig(
     global_quant_config=quant_tensor_W_A_8_B_32_config, quant_mode=QuantizationMode.fx_graph_mode
 )
 
@@ -2345,8 +2345,8 @@ def test_torch_bias_int32_strategy(tmpdir: str):
     assert torch.allclose(fp_out, gp_out)
     opt_model_func = AdjustBiasScaleQOPass()
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_W_A_8_B_32_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -2403,7 +2403,7 @@ def test_torch_bias_int32_strategy(tmpdir: str):
                     opt_graph = opt_model_func(opt_graph)
                 onnx_dir = tmpdir + "/module_bias_int32.onnx"
                 # freeze_model = quantizer.freeze(copyed_quantized_model.eval())
-                torch.onnx.export(copyed_quantized_model.eval(), example_inputs, onnx_dir)
+                torch.onnx.export(copyed_quantized_model.eval(), example_inputs, onnx_dir, dynamo=False)
                 assert onnx_contains_op_num(onnx_dir, "QuantizeLinear") in [4, 0]
     torch.cuda.empty_cache()
 

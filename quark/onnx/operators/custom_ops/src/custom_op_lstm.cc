@@ -21,7 +21,7 @@
 
 namespace quark_onnx {
 
-KernelCustomLSTM::KernelCustomLSTM(const OrtApi &api, const OrtKernelInfo *info)
+KernelCustomLSTM::KernelCustomLSTM(const OrtApi& api, const OrtKernelInfo* info)
   : api_(api) {
   Ort::ConstKernelInfo const_info{info};
   info_ = const_info.Copy();
@@ -151,7 +151,7 @@ QUANTIZE_LINEAR_APPLY(float)
 
 template <typename T>
 static void QuantizeData(
-  Ort::ConstValue &input, float scale, T zp, T *&quantized_data
+  Ort::ConstValue& input, float scale, T zp, T*& quantized_data
 ) {
   ONNXTensorElementDataType type =
     input.GetTensorTypeAndShapeInfo().GetElementType();
@@ -162,9 +162,9 @@ static void QuantizeData(
     );
   }
 
-  const float *data = input.GetTensorData<float>();
+  const float* data = input.GetTensorData<float>();
   int data_len = input.GetTensorTypeAndShapeInfo().GetElementCount();
-  quantized_data = (T *)malloc(data_len * sizeof(T));
+  quantized_data = (T*)malloc(data_len * sizeof(T));
   if (!quantized_data) {
     ORT_CXX_API_THROW(
       "KernelCustomLSTM supports float input only.",
@@ -187,7 +187,7 @@ DEQUANTIZE_LINEAR_APPLY(float)
 
 template <typename T>
 static void DequantizeData(
-  T *quantized_data, int data_len, float scale, T zp, float *data
+  T* quantized_data, int data_len, float scale, T zp, float* data
 ) {
   // Only supports per-tensor quantization
   int block_count = 1;
@@ -200,14 +200,14 @@ static void DequantizeData(
   );
 };
 
-void KernelCustomLSTM::Compute(OrtKernelContext *context) {
+void KernelCustomLSTM::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
 
   // Quantize X
   auto x = ctx.GetInput(0);
   int x_data_len = x.GetTensorTypeAndShapeInfo().GetElementCount();
 
-  uint16_t *x_quantized_data = nullptr;
+  uint16_t* x_quantized_data = nullptr;
   QuantizeData<uint16_t>(
     x, x_scale_, (uint16_t)x_zero_point_, x_quantized_data
   );
@@ -227,7 +227,7 @@ void KernelCustomLSTM::Compute(OrtKernelContext *context) {
   auto w = ctx.GetInput(1);
   int w_data_len = w.GetTensorTypeAndShapeInfo().GetElementCount();
 
-  uint16_t *w_quantized_data = nullptr;
+  uint16_t* w_quantized_data = nullptr;
   QuantizeData<uint16_t>(
     w, w_scale_, (uint16_t)w_zero_point_, w_quantized_data
   );
@@ -236,7 +236,7 @@ void KernelCustomLSTM::Compute(OrtKernelContext *context) {
   auto r = ctx.GetInput(2);
   int r_data_len = r.GetTensorTypeAndShapeInfo().GetElementCount();
 
-  uint16_t *r_quantized_data = nullptr;
+  uint16_t* r_quantized_data = nullptr;
   QuantizeData<uint16_t>(
     r, r_scale_, (uint16_t)r_zero_point_, r_quantized_data
   );
@@ -245,7 +245,7 @@ void KernelCustomLSTM::Compute(OrtKernelContext *context) {
   auto b = ctx.GetInput(3);
   int b_data_len = b.GetTensorTypeAndShapeInfo().GetElementCount();
 
-  uint16_t *b_quantized_data = nullptr;
+  uint16_t* b_quantized_data = nullptr;
   QuantizeData<uint16_t>(
     b, b_scale_, (uint16_t)b_zero_point_, b_quantized_data
   );
@@ -256,10 +256,9 @@ void KernelCustomLSTM::Compute(OrtKernelContext *context) {
   };
   auto y = ctx.GetOutput(0, output_shape);
 
-  float *y_data = y.GetTensorMutableData<float>();
+  float* y_data = y.GetTensorMutableData<float>();
   int y_data_len = y.GetTensorTypeAndShapeInfo().GetElementCount();
-  uint16_t *y_quantized_data =
-    (uint16_t *)malloc(y_data_len * sizeof(uint16_t));
+  uint16_t* y_quantized_data = (uint16_t*)malloc(y_data_len * sizeof(uint16_t));
   if (!y_quantized_data) {
     ORT_CXX_API_THROW(
       "KernelCustomLSTM supports float input only.",

@@ -1,18 +1,21 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import copy
-from typing import Any, Dict
+from typing import Any
 
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
-from quark.onnx.calibration import PowerOfTwoMethod
-from quark.onnx.quant_utils import ExtendedQuantFormat, ExtendedQuantType
+from quark.onnx.calibration.methods import PowerOfTwoMethod
+from quark.onnx.quantization.quant_utils import ExtendedQuantFormat, ExtendedQuantType
 
-from . import QuantizationConfig
+from .algorithm import AdaQuantConfig, AdaRoundConfig
+from .config import QConfig
+from .legacy import QuantizationConfig
+from .spec import BFloat16Spec, BFP16Spec, Int8Spec, Int16Spec, QLayerConfig, XInt8Spec
 
 DEFAULT_ADAROUND_PARAMS = {
     "DataSize": 1000,
@@ -62,6 +65,81 @@ DEFAULT_MICROSCALING_PARAMS = {
     "block_size": 32,
     "rounding_mode": 2,
 }
+
+# configs for new api
+adaround_algo = AdaRoundConfig(
+    learning_rate=0.1,
+    num_iterations=1000,
+)
+
+adaquant_algo = AdaQuantConfig(
+    learning_rate=0.00001,
+    num_iterations=3000,
+)
+
+XINT8_QCONFIG = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()))
+
+XINT8_ADAROUND_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()), algo_config=[adaround_algo]
+)
+
+XINT8_ADAQUANT_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()), algo_config=[adaquant_algo]
+)
+
+A8W8_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+)
+
+A8W8_ADAROUND_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+    algo_config=[adaround_algo],
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+)
+
+A8W8_ADAQUANT_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+    algo_config=[adaquant_algo],
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+)
+
+A16W8_QCONFIG = QConfig(
+    QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+    AlignEltwiseQuantType=True,
+)
+
+A16W8_ADAROUND_QCONFIG = QConfig(
+    QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
+    algo_config=[adaround_algo],
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+    AlignEltwiseQuantType=True,
+)
+
+A16W8_ADAQUANT_QCONFIG = QConfig(
+    QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
+    algo_config=[adaquant_algo],
+    AlignSlice=False,
+    FoldRelu=True,
+    AlignConcat=True,
+    AlignEltwiseQuantType=True,
+)
+
+BF16_QCONFIG = QConfig(QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()))
+
+BFP16_QCONFIG = QConfig(QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()))
+
 
 # configs for pro
 UINT8_DYNAMIC_QUANT_CONFIG = QuantizationConfig(weight_type=QuantType.QUInt8, use_dynamic_quant=True)
@@ -120,6 +198,7 @@ VINT8_CONFIG = QuantizationConfig(
         "RemoveQDQConvPRelu": False,
         "RemoveQDQConvRelu": False,
         "RemoveQDQConvLeakyRelu": False,
+        "Int32Bias": False,
     },
 )
 

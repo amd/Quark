@@ -1,10 +1,16 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import torch
+from packaging import version
 from torch.onnx import register_custom_op_symbolic
-from torch.onnx._internal import jit_utils
+
+# PyTorch 2.9 made some TorchScript APIs private
+if version.parse(torch.__version__) >= version.parse("2.9"):
+    from torch.onnx._internal.torchscript_exporter import jit_utils
+else:
+    from torch.onnx._internal import jit_utils
 
 """
 when export tot onnx model,

@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from quark.shares.utils.testing_utils import use_temporary_directory
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
@@ -28,7 +28,7 @@ class MyModel(nn.Module):
         return self.lin2(self.relu(self.lin1(x)))
 
 
-UINT8_PER_TENSOR_ASYM_SPEC = QuantizationSpec(
+UINT8_PER_TENSOR_ASYM_SPEC = QTensorConfig(
     dtype=Dtype.uint8,
     observer_cls=PerTensorMinMaxObserver,
     symmetric=False,
@@ -76,8 +76,8 @@ REFERENCE_FILES = [
 @use_temporary_directory
 @patch("quark.torch.quantization.debug.SAVE_ACTIVATIONS_HISTOGRAM", True)
 def test_smoke_debug(tmpdir: str):
-    global_quant_config = QuantizationConfig(weight=UINT8_PER_TENSOR_ASYM_SPEC)
-    config = Config(global_quant_config=global_quant_config)
+    global_quant_config = QLayerConfig(weight=UINT8_PER_TENSOR_ASYM_SPEC)
+    config = QConfig(global_quant_config=global_quant_config)
 
     quantizer = ModelQuantizer(config)
 
@@ -109,10 +109,10 @@ def test_smoke_debug_all(tmpdir: str):
 
     dataloader = DataLoader([torch.rand(10, dtype=torch.float16), torch.rand(10, dtype=torch.float16)])
 
-    global_quant_config = QuantizationConfig(
+    global_quant_config = QLayerConfig(
         weight=quant_spec, input_tensors=quant_spec, bias=quant_spec, output_tensors=quant_spec
     )
-    config = Config(global_quant_config=global_quant_config)
+    config = QConfig(global_quant_config=global_quant_config)
 
     quantizer = ModelQuantizer(config)
 

@@ -1,17 +1,22 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Transformations pipeline for onnx model conversion."""
 
-from typing import Any, Tuple
+from typing import Any
 
 import onnx
 
-from quark.onnx.graph_transformations import model_transformer, transforms_pipeline
-from quark.onnx.optimizations import convert_transforms as convert_transforms_mod
-
-TransformsPipeline = transforms_pipeline.TransformsPipeline
+from .convert_transforms import (
+    AddQDQToQOPTransform,
+    MatMulQDQToQOPTransform,
+    MulQDQToQOPTransform,
+    RemoveQDQTransform,
+    SigmoidQDQToQOPTransform,
+)
+from .model_transformer import ModelTransformer
+from .transforms_pipeline import TransformsPipeline
 
 
 class ConvertQDQToQOPTransformsPipeline(TransformsPipeline):
@@ -26,16 +31,14 @@ class ConvertQDQToQOPTransformsPipeline(TransformsPipeline):
         Returns:
             Conveted onnx model.
         """
-        configs = self.get_configs()
-
         convert_transforms = [
-            #  convert_transforms_mod.ConvQDQToQOPTransform(),
-            convert_transforms_mod.MatMulQDQToQOPTransform(),
-            convert_transforms_mod.AddQDQToQOPTransform(),
-            convert_transforms_mod.MulQDQToQOPTransform(),
-            convert_transforms_mod.SigmoidQDQToQOPTransform(),
+            # ConvQDQToQOPTransform(),
+            MatMulQDQToQOPTransform(),
+            AddQDQToQOPTransform(),
+            MulQDQToQOPTransform(),
+            SigmoidQDQToQOPTransform(),
         ]
-        converted_model, metadata = model_transformer.ModelTransformer(
+        converted_model, metadata = ModelTransformer(
             model, convert_transforms, candidate_nodes, node_metadata
         ).transform()
         return converted_model, metadata
@@ -53,12 +56,10 @@ class RemoveQDQTransformsPipeline(TransformsPipeline):
         Returns:
             Conveted onnx model.
         """
-        configs = self.get_configs()
-
         convert_transforms = [
-            convert_transforms_mod.RemoveQDQTransform(),
+            RemoveQDQTransform(),
         ]
-        converted_model, metadata = model_transformer.ModelTransformer(
+        converted_model, metadata = ModelTransformer(
             model, convert_transforms, candidate_nodes, node_metadata
         ).transform()
         return converted_model, metadata

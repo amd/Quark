@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for PyTorch"""
@@ -7,15 +7,16 @@
 from __future__ import annotations
 
 import json
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar, Union, cast
+from abc import abstractmethod
+from dataclasses import dataclass, field, fields
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import torch.nn as nn
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.template import LLMTemplate
 
+from quark.shares.config import BaseAlgoConfig, BaseConfigImpl, BaseQConfig, BaseQLayerConfig, BaseQTensorConfig
 from quark.shares.utils.doc import add_start_docstring
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.quantization.config.type import (
@@ -49,11 +50,10 @@ from quark.torch.quantization.observer import (
     PerTensorPercentileObserver,
     PlaceholderObserver,
 )
-from quark.version import __version__
 
 logger = ScreenLogger(__name__)
 
-DATA_TYPE_SPEC_DOCSTRING = r"""Helper class to define a :py:class:`.QuantizationSpec` using {0}.
+DATA_TYPE_SPEC_DOCSTRING = r"""Helper class to define a :py:class:`.QTensorConfig` using {0}.
 
 Example:
 
@@ -119,52 +119,34 @@ def get_zero_point_type(zero_point_type: str | None = None) -> ZeroPointType | N
     return ret
 
 
-T = TypeVar("T", bound="ConfigBase")
+QCT = TypeVar("QCT", bound="QConfig")
 
 
 @dataclass(eq=True)
-class ConfigBase(ABC):
-    name = ""
-
-    @classmethod
-    def from_dict(cls: type[T], data: dict[str, Any]) -> T:
-        return cls(**data)
-
-    def update_from_dict(self, data: dict[str, Any]) -> None:
-        for field_name in data:
-            setattr(self, field_name, data[field_name])
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(eq=True)
-class Config(ConfigBase):
+class QConfig(BaseConfigImpl, BaseQConfig):
     """
     A class that encapsulates comprehensive quantization configurations for a machine learning model, allowing for detailed and hierarchical control over quantization parameters across different model components.
 
-    :param QuantizationConfig global_quant_config: Global quantization configuration applied to the entire model unless overridden at the layer level.
-    :param Dict[torch.nn.Module, QuantizationConfig] layer_type_quant_config: A dictionary mapping from layer types (e.g., nn.Conv2d, nn.Linear) to their quantization configurations.
-    :param Dict[str, QuantizationConfig] layer_quant_config: A dictionary mapping from layer names to their quantization configurations, allowing for per-layer customization. Default is ``{}``.
-    :param Dict[str, QuantizationConfig] kv_cache_quant_config: A dictionary mapping from layer names to kv_cache quantization configurations. Default is ``{}``.
-    :param Optional[QuantizationSpec] softmax_quant_spec: A quantization specifications of nn.functional.softmax output. Default is ``None``.
+    :param QLayerConfig global_quant_config: Global quantization configuration applied to the entire model unless overridden at the layer level.
+    :param Dict[torch.nn.Module, QLayerConfig] layer_type_quant_config: A dictionary mapping from layer types (e.g., nn.Conv2d, nn.Linear) to their quantization configurations.
+    :param Dict[str, QLayerConfig] layer_quant_config: A dictionary mapping from layer names to their quantization configurations, allowing for per-layer customization. Default is ``{}``.
+    :param Dict[str, QLayerConfig] kv_cache_quant_config: A dictionary mapping from layer names to kv_cache quantization configurations. Default is ``{}``.
+    :param Optional[QTensorConfig] softmax_quant_spec: A quantization specifications of nn.functional.softmax output. Default is ``None``.
     :param List[str] exclude: A list of layer names to be excluded from quantization, enabling selective quantization of the model. Default is ``[]``.
     :param Optional[AlgoConfig] algo_config: Optional configuration for the quantization algorithm, such as GPTQ, AWQ and Qronos. After this process, the datatype/fake_datatype of weights will be changed with quantization scales. Default is ``None``.
     :param QuantizationMode quant_mode: The quantization mode to be used (``eager_mode`` or ``fx_graph_mode``). Default is ``QuantizationMode.eager_mode``.
-    :param Optional[int] log_severity_level: 0:DEBUG, 1:INFO, 2:WARNING. 3:ERROR, 4:CRITICAL/FATAL. Default is ``1``.
     """
 
-    # Global quantization configuration applied to the entire model unless overridden at the layer level.
-    global_quant_config: QuantizationConfig
+    # Note: `global_quant_config`, `exclude`, `algo_config`, `log_severity_level`, `version` are inherited from `BaseQConfig`
 
     # A dictionary mapping from layer types (e.g., nn.Conv2d, nn.Linear) to their quantization configurations.
-    layer_type_quant_config: dict[type[nn.Module], QuantizationConfig] = field(default_factory=dict)
+    layer_type_quant_config: dict[type[nn.Module], QLayerConfig] = field(default_factory=dict)
 
     # A dictionary mapping from layer names to their quantization configurations, allowing for per-layer customization.
-    layer_quant_config: dict[str, QuantizationConfig] = field(default_factory=dict)
+    layer_quant_config: dict[str, QLayerConfig] = field(default_factory=dict)
 
     # A dictionary mapping from layer names to kv_cache quantization configurations.
-    kv_cache_quant_config: dict[str, QuantizationConfig] = field(default_factory=dict)
+    kv_cache_quant_config: dict[str, QLayerConfig] = field(default_factory=dict)
 
     # A list of layer names to be grouped for kv_cache quantization, enabling per-group customization.
     kv_cache_group: list[str] = field(default_factory=list)
@@ -172,24 +154,15 @@ class Config(ConfigBase):
     # The minimum scale of kv_cache quantization.
     min_kv_scale: float = 0.0
 
+    # Control whether KV-cache quantization is applied post-RoPE (inside HF Cache.update).
+    # When False (default), legacy pre-RoPE behaviour applies (module-level K/V output quantizers).
+    kv_cache_post_rope: bool = False
+
     # A quantization specifications of nn.functional.softmax output.
-    softmax_quant_spec: QuantizationSpec | None = None
-
-    # A list of layer names to be excluded from quantization, enabling selective quantization of the model.
-    exclude: list[str] = field(default_factory=list)
-
-    # Optional configuration for the quantization algorithm, such as GPTQ, AWQ and Qronos
-    # After this process, the datatype/fake_datatype of weights will be changed with quantization scales.
-    algo_config: list[AlgoConfig] | None = None
+    softmax_quant_spec: QTensorConfig | None = None
 
     # The quantization mode to be used (eager_mode or fx_graph_mode)
     quant_mode: QuantizationMode = QuantizationMode.eager_mode
-
-    # Log level for printing on screen
-    log_severity_level: int | None = 1
-
-    # Version of the quantization tool
-    version: str | None = __version__
 
     def to_dict(self) -> dict[str, Any]:
         config_dict: dict[str, Any] = {
@@ -215,6 +188,10 @@ class Config(ConfigBase):
             kv_cache_quant_config_dict[name] = config.to_dict()
         config_dict["kv_cache_quant_config"] = kv_cache_quant_config_dict
 
+        # Only serialize kv_cache_post_rope - it's needed to determine cache integration behavior during import
+        # kv_cache_group and min_kv_scale are export-time processing parameters and not needed for import
+        config_dict["kv_cache_post_rope"] = self.kv_cache_post_rope
+
         config_dict["quant_mode"] = self.quant_mode.name
 
         config_dict["version"] = self.version
@@ -226,8 +203,8 @@ class Config(ConfigBase):
         return s
 
     @classmethod
-    def from_dict(cls, config_dict: dict[str, Any]) -> Config:
-        global_quant_config = QuantizationConfig.from_dict(config_dict["global_quant_config"])
+    def from_dict(cls: type[QCT], config_dict: dict[str, Any]) -> QCT:
+        global_quant_config = QLayerConfig.from_dict(config_dict["global_quant_config"])
 
         # TODO: Deprecate legacy configuration and remove the None check here.
         # Legacy (quark<1.0) configuration used to allow layer_type_quant_config=None in the serialized config, inconstitant with
@@ -236,7 +213,7 @@ class Config(ConfigBase):
         if config_dict["layer_type_quant_config"] is not None:
             for layer_type_name, layer_type_quantization_config in config_dict["layer_type_quant_config"].items():
                 if layer_type_name in QUARK_LAYER_TYPES:
-                    layer_type_quant_config[QUARK_LAYER_TYPES[layer_type_name]] = QuantizationConfig.from_dict(
+                    layer_type_quant_config[QUARK_LAYER_TYPES[layer_type_name]] = QLayerConfig.from_dict(
                         layer_type_quantization_config
                     )
                 else:
@@ -249,7 +226,7 @@ class Config(ConfigBase):
         # the type hints of the dataclass.
         if config_dict["layer_quant_config"] is not None:
             layer_quant_config = {
-                layer_name: QuantizationConfig.from_dict(quant_config_dict)
+                layer_name: QLayerConfig.from_dict(quant_config_dict)
                 for layer_name, quant_config_dict in config_dict["layer_quant_config"].items()
             }
         else:
@@ -257,7 +234,7 @@ class Config(ConfigBase):
 
         if config_dict.get("kv_cache_quant_config") is not None:
             kv_cache_quant_config = {
-                kv_cache_name: QuantizationConfig.from_dict(kv_cache_config_dict)
+                kv_cache_name: QLayerConfig.from_dict(kv_cache_config_dict)
                 for kv_cache_name, kv_cache_config_dict in config_dict["kv_cache_quant_config"].items()
             }
         else:
@@ -280,7 +257,7 @@ class Config(ConfigBase):
 
         # Get softmax_quant_spec configuration from config_dict
         softmax_quant_spec = (
-            QuantizationSpec.from_dict(config_dict["softmax_quant_spec"])
+            QTensorConfig.from_dict(config_dict["softmax_quant_spec"])
             if ("softmax_quant_spec" in config_dict and config_dict["softmax_quant_spec"] is not None)
             else None
         )
@@ -293,21 +270,21 @@ class Config(ConfigBase):
             # the type hints of the dataclass.
             quant_mode = QuantizationMode.eager_mode
 
-        log_severity_level = 1  # `log_severity_level` is not saved.
-
         # get version from config_dict, if not found (e.g. models exported with amd-quark<=0.8), set it to `None`.
         version = config_dict["version"] if "version" in config_dict else None
+
+        kv_cache_post_rope = config_dict.get("kv_cache_post_rope", False)
 
         return cls(
             global_quant_config=global_quant_config,
             layer_type_quant_config=layer_type_quant_config,
             layer_quant_config=layer_quant_config,
             kv_cache_quant_config=kv_cache_quant_config,
+            kv_cache_post_rope=kv_cache_post_rope,
             exclude=exclude,
             algo_config=algo_config,
             softmax_quant_spec=softmax_quant_spec,
             quant_mode=quant_mode,
-            log_severity_level=log_severity_level,
             version=version,
         )
 
@@ -335,52 +312,79 @@ class Config(ConfigBase):
         )
 
     def __post_init__(self) -> None:
+        if self.__class__ is Config:
+            logger.warning(
+                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QConfig instead."
+            )
         if self.algo_config is not None:
             for algo_config in self.algo_config:
-                if algo_config.name == "quarot":
+                if algo_config.name in ["rotation", "quarot"]:
+                    algo_config_cls_name = algo_config.__class__.__name__
                     if len(self.kv_cache_quant_config) > 0 and not algo_config.r3:  # type: ignore
                         logger.warning(
-                            f"Quarot R3 rotation is disabled, but the KV cache is configured to quantized with: {self.kv_cache_quant_config}. KV cache quantization may benefit from R3 rotation if keys are quantized. Consider using `r3=True` in Quarot configuration."
+                            f"The R3 rotation is disabled, but the KV cache is configured to quantized with: {self.kv_cache_quant_config}. KV cache quantization may benefit from R3 rotation if keys are quantized. Consider using `r3=True` in {algo_config_cls_name} configuration."
                         )
 
                     if len(self.kv_cache_quant_config) == 0 and algo_config.r3:  # type: ignore
                         logger.warning(
-                            "No KV cache quantization configuration provided, but `QuaRotConfig.r3` is set to `True`. This setting is only useful in case KV cache quantization is used. Consider using `r3=False`."
+                            f"No KV cache quantization configuration provided, but `{algo_config_cls_name}.r3` is set to `True`. This setting is only useful in case KV cache quantization is used. Consider using `r3=False`."
                         )
+
+    def get_rotation_config(self) -> RotationConfig | None:
+        rotation_config = None
+        if self.algo_config is not None:
+            for algo_config in self.algo_config:
+                if isinstance(algo_config, RotationConfig):
+                    rotation_config = algo_config
+                    break
+
+        return rotation_config
+
+
+QLT = TypeVar("QLT", bound="QLayerConfig")
 
 
 @dataclass(eq=True)
-class QuantizationConfig:
+class QLayerConfig(BaseQLayerConfig):
     """
     A data class that specifies quantization configurations for different components of a module, allowing hierarchical control over how each tensor type is quantized.
 
-    :param Optional[Union[QuantizationSpec, List[QuantizationSpec]]] input_tensors: Input tensors quantization specification. If None, following the hierarchical quantization setup. e.g. If the ``input_tensors`` in ``layer_type_quant_config`` is ``None``, the configuration from ``global_quant_config`` will be used instead. Defaults to ``None``. If None in ``global_quant_config``, ``input_tensors`` are not quantized.
-    :param Optional[Union[QuantizationSpec, List[QuantizationSpec]]] output_tensors: Output tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
-    :param Optional[Union[QuantizationSpec, List[QuantizationSpec]]] weight: The weights tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
-    :param Optional[Union[QuantizationSpec, List[QuantizationSpec]]] bias: The bias tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
+    :param Optional[Union[QTensorConfig, List[QTensorConfig]]] input_tensors: Input tensors quantization specification. If None, following the hierarchical quantization setup. e.g. If the ``input_tensors`` in ``layer_type_quant_config`` is ``None``, the configuration from ``global_quant_config`` will be used instead. Defaults to ``None``. If None in ``global_quant_config``, ``input_tensors`` are not quantized.
+    :param Optional[Union[QTensorConfig, List[QTensorConfig]]] output_tensors: Output tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
+    :param Optional[Union[QTensorConfig, List[QTensorConfig]]] weight: The weights tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
+    :param Optional[Union[QTensorConfig, List[QTensorConfig]]] bias: The bias tensors quantization specification. Defaults to ``None``. If ``None``, the same as above.
     :param Optional[DeviceType] target_device: Configuration specifying the target device (e.g., CPU, GPU, IPU) for the quantized model.
     """
 
-    input_tensors: Union[QuantizationSpec, list[QuantizationSpec]] | None = None
-
-    output_tensors: Union[QuantizationSpec, list[QuantizationSpec]] | None = None
-
-    weight: Union[QuantizationSpec, list[QuantizationSpec]] | None = None
-
-    bias: Union[QuantizationSpec, list[QuantizationSpec]] | None = None
+    # Note: `input_tensors`, ou`tput_tensors, wei`ght, and bi`as are inherited from `BaseQLayerConfig`
+    # with type Union[BaseQTensorConfig, list[BaseQTensorConfig]] | None
+    # They are not redeclared here to avoid type incompatibility issues
 
     target_device: DeviceType | None = None
 
+    def __post_init__(self) -> None:
+        if self.__class__ is QuantizationConfig:
+            logger.warning(
+                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QLayerConfig instead."
+            )
+        for tensor_name, quantization_spec in [
+            ("input_tensors", self.input_tensors),
+            ("output_tensors", self.output_tensors),
+        ]:
+            if quantization_spec is not None:
+                if isinstance(quantization_spec, QTensorConfig):
+                    quantization_spec = [quantization_spec]
+                assert isinstance(quantization_spec, list), "quantization_spec must a list"
+                for quant_spec in quantization_spec:
+                    if quant_spec.qscheme == QSchemeType.per_group and not quant_spec.is_dynamic:
+                        raise ValueError(
+                            f"The parameterization `qscheme=QSchemeType.per_group` along with `is_dynamic=False` is currently not supported in AMD Quark for `QLayerConfig.input_tensors` and `QLayerConfig.output_tensors`, got `QLayerConfig.{tensor_name}.qscheme={quant_spec.qscheme}` and `QLayerConfig.{tensor_name}.is_dynamic={quant_spec.is_dynamic}`. Consider using `QLayerConfig.{tensor_name}.is_dynamic=True` as static per-group quantization for activations is rarely relevant."
+                        )
+
     def to_dict(self) -> dict[str, Any]:
-        # TODO need to solve circle import problem
-        # let the check_and_adjust_quant_config to be self.check_and_adjust_quant_config()
-        from quark.torch.quantization.config.config_verification import check_and_adjust_quant_config
-
-        self = check_and_adjust_quant_config(self)
-
         def convert_spec_to_dict(
-            spec: Union[QuantizationSpec, list[QuantizationSpec]] | None,
-        ) -> Union[dict[str, Any], list[dict[str, Any]]] | None:
+            spec: QTensorConfig | list[QTensorConfig] | None,
+        ) -> dict[str, Any] | list[dict[str, Any]] | None:
             if spec is None:
                 return None
             elif isinstance(spec, list):
@@ -397,19 +401,19 @@ class QuantizationConfig:
         }
 
     @classmethod
-    def from_dict(cls, quantization_config: dict[str, Any]) -> QuantizationConfig:
+    def from_dict(cls: type[QLT], quantization_config: dict[str, Any]) -> QLT:
         def convert_dict_to_spec(
-            config: Union[dict[str, Any], list[dict[str, Any]]] | None,
-        ) -> Union[QuantizationSpec, list[QuantizationSpec]] | None:
+            config: dict[str, Any] | list[dict[str, Any]] | None,
+        ) -> QTensorConfig | list[QTensorConfig] | None:
             if config is None:
                 return None
             elif isinstance(config, list):
-                specs = [QuantizationSpec.from_dict(c) for c in config]
+                specs = [QTensorConfig.from_dict(c) for c in config]
                 assert all(spec is not None for spec in specs), "all quantization specs must be valid (not None)"
-                # Cast to remove Optional after we've verified no None values exist
-                return cast(list[QuantizationSpec], specs)
+                # After verification, all items are guaranteed to be QTensorConfig
+                return specs  # type: ignore[return-value]
             else:
-                return QuantizationSpec.from_dict(config)
+                return QTensorConfig.from_dict(config)
 
         input_tensors = convert_dict_to_spec(quantization_config["input_tensors"])
         output_tensors = convert_dict_to_spec(quantization_config["output_tensors"])
@@ -431,17 +435,17 @@ class QuantizationConfig:
 
 
 @dataclass
-class TwoStageSpec(ConfigBase):
+class TwoStageSpec(BaseConfigImpl):
     """
     A data class that specifies two-stage quantization configurations for different components of a module,
     allowing hierarchical control over how each tensor type is quantized.
     """
 
-    first_stage: Union[DataTypeSpec, QuantizationSpec]
-    second_stage: Union[DataTypeSpec, QuantizationSpec]
+    first_stage: DataTypeSpec | QTensorConfig
+    second_stage: DataTypeSpec | QTensorConfig
 
     @abstractmethod
-    def to_quantization_spec(self) -> list[QuantizationSpec]:
+    def to_quantization_spec(self) -> list[QTensorConfig]:
         pass
 
 
@@ -471,7 +475,7 @@ class ProgressiveSpec(TwoStageSpec):
         ).to_quantization_spec()
     """
 
-    def to_quantization_spec(self) -> list[QuantizationSpec]:
+    def to_quantization_spec(self) -> list[QTensorConfig]:
         return [
             self.first_stage.to_quantization_spec() if isinstance(self.first_stage, DataTypeSpec) else self.first_stage,
             self.second_stage.to_quantization_spec()
@@ -505,7 +509,7 @@ class ScaleQuantSpec(TwoStageSpec):
         ).to_quantization_spec()
     """
 
-    def to_quantization_spec(self) -> list[QuantizationSpec]:
+    def to_quantization_spec(self) -> list[QTensorConfig]:
         second_stage_spec = (
             self.second_stage.to_quantization_spec()
             if isinstance(self.second_stage, DataTypeSpec)
@@ -518,9 +522,9 @@ class ScaleQuantSpec(TwoStageSpec):
         ]
 
 
-class DataTypeSpec(ConfigBase):
+class DataTypeSpec(BaseConfigImpl):
     @abstractmethod
-    def to_quantization_spec(self) -> QuantizationSpec:
+    def to_quantization_spec(self) -> QTensorConfig:
         pass
 
 
@@ -531,14 +535,14 @@ class DataTypeSpec(ConfigBase):
     )
 )
 class Uint4PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    is_dynamic: bool | None = None
+    observer_method: str | None = "min_max"
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint4,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=self.symmetric,
@@ -564,15 +568,15 @@ class Uint4PerTensorSpec(DataTypeSpec):
     )
 )
 class Uint4PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
+    ch_axis: int
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
     is_dynamic: bool | None = None
     zero_point_type: str | None = "int32"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint4,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -601,15 +605,15 @@ class Uint4PerChannelSpec(DataTypeSpec):
     )
 )
 class Uint4PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     symmetric: bool = False
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    scale_type: str | None = None
+    is_dynamic: bool | None = False
+    scale_type: str | None = "float"
     round_method: str | None = "half_even"
-    group_size: int | None = None
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint4,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -637,15 +641,15 @@ class Uint4PerGroupSpec(DataTypeSpec):
     )
 )
 class Int3PerGroupSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    ch_axis: int
+    group_size: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int3,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -673,14 +677,14 @@ class Int3PerGroupSpec(DataTypeSpec):
     )
 )
 class Int3PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int3,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -707,15 +711,15 @@ class Int3PerChannelSpec(DataTypeSpec):
     )
 )
 class Int2PerGroupSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    ch_axis: int
+    group_size: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int2,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -743,14 +747,14 @@ class Int2PerGroupSpec(DataTypeSpec):
     )
 )
 class Int4PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    is_dynamic: bool | None = None
+    observer_method: str | None = "min_max"
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int4,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=self.symmetric,
@@ -776,14 +780,14 @@ class Int4PerTensorSpec(DataTypeSpec):
     )
 )
 class Int4PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int4,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -811,15 +815,15 @@ class Int4PerChannelSpec(DataTypeSpec):
     )
 )
 class Int4PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     symmetric: bool = True
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    scale_type: str | None = None
+    is_dynamic: bool | None = False
+    scale_type: str | None = "float"
     round_method: str | None = "half_even"
-    group_size: int | None = None
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int4,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -847,14 +851,14 @@ class Int4PerGroupSpec(DataTypeSpec):
     )
 )
 class Uint8PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    is_dynamic: bool | None = None
+    observer_method: str | None = "min_max"
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint8,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=self.symmetric,
@@ -880,14 +884,14 @@ class Uint8PerTensorSpec(DataTypeSpec):
     )
 )
 class Uint8PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint8,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -915,15 +919,15 @@ class Uint8PerChannelSpec(DataTypeSpec):
     )
 )
 class Uint8PerGroupSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    ch_axis: int
+    group_size: int
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.uint8,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -951,14 +955,14 @@ class Uint8PerGroupSpec(DataTypeSpec):
     )
 )
 class Int8PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    is_dynamic: bool | None = None
+    observer_method: str | None = "min_max"
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int8,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=self.symmetric,
@@ -984,14 +988,14 @@ class Int8PerTensorSpec(DataTypeSpec):
     )
 )
 class Int8PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = False
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int8,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -1019,15 +1023,15 @@ class Int8PerChannelSpec(DataTypeSpec):
     )
 )
 class Int8PerGroupSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    ch_axis: int
+    group_size: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.int8,
             observer_cls=PerGroupMinMaxObserver,
             symmetric=self.symmetric,
@@ -1052,12 +1056,12 @@ class Int8PerGroupSpec(DataTypeSpec):
     )
 )
 class FP8E4M3PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
+    observer_method: str | None = "min_max"
     scale_type: str | None = None
-    is_dynamic: bool | None = None
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e4m3,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=True,
@@ -1075,14 +1079,14 @@ class FP8E4M3PerTensorSpec(DataTypeSpec):
     )
 )
 class FP8E4M3PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e4m3,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -1107,14 +1111,14 @@ class FP8E4M3PerChannelSpec(DataTypeSpec):
     )
 )
 class FP8E4M3PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
-    ch_axis: int | None = -1
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    is_dynamic: bool | None = True
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e4m3,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
@@ -1141,14 +1145,14 @@ class FP8E4M3PerGroupSpec(DataTypeSpec):
     )
 )
 class FP8E5M2PerTensorSpec(DataTypeSpec):
-    observer_method: str | None = None
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    is_dynamic: bool | None = None
+    observer_method: str | None = "min_max"
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e5m2,
             observer_cls=get_per_tensor_observer(self.observer_method),
             symmetric=self.symmetric,
@@ -1166,14 +1170,14 @@ class FP8E5M2PerTensorSpec(DataTypeSpec):
     )
 )
 class FP8E5M2PerChannelSpec(DataTypeSpec):
-    symmetric: bool | None = None
-    scale_type: str | None = None
-    round_method: str | None = None
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    symmetric: bool | None = True
+    scale_type: str | None = "float"
+    round_method: str | None = "half_even"
+    is_dynamic: bool | None = False
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e5m2,
             observer_cls=PerChannelMinMaxObserver,
             symmetric=self.symmetric,
@@ -1198,14 +1202,15 @@ class FP8E5M2PerChannelSpec(DataTypeSpec):
     )
 )
 class FP8E5M2PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
+
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
-    ch_axis: int | None = -1
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    is_dynamic: bool | None = True
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e5m2,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
@@ -1233,14 +1238,14 @@ class FP8E5M2PerGroupSpec(DataTypeSpec):
     )
 )
 class FP4PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
-    ch_axis: int | None = -1
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    is_dynamic: bool | None = True
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp4,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
@@ -1257,14 +1262,14 @@ class FP4PerGroupSpec(DataTypeSpec):
 
 @dataclass
 class FP6E2M3PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
-    ch_axis: int | None = -1
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    is_dynamic: bool | None = True
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp6_e2m3,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
@@ -1281,14 +1286,14 @@ class FP6E2M3PerGroupSpec(DataTypeSpec):
 
 @dataclass
 class FP6E3M2PerGroupSpec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
-    ch_axis: int | None = -1
-    is_dynamic: bool | None = None
-    group_size: int | None = None
+    is_dynamic: bool | None = True
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp6_e3m2,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
@@ -1306,23 +1311,23 @@ class FP6E3M2PerGroupSpec(DataTypeSpec):
 @dataclass(eq=True)
 @add_start_docstring(
     DATA_TYPE_SPEC_DOCSTRING.format(
-        "float16 data type. The resulting QuantizationSpec does not quantize the tensor.", "Float16Spec", ""
+        "float16 data type. The resulting QTensorConfig does not quantize the tensor.", "Float16Spec", ""
     )
 )
 class Float16Spec(DataTypeSpec):
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(dtype=Dtype.float16)
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
 
 
 @dataclass(eq=True)
 @add_start_docstring(
     DATA_TYPE_SPEC_DOCSTRING.format(
-        "bfloat16 data type. The resulting QuantizationSpec does not quantize the tensor.", "Bfloat16Spec", ""
+        "bfloat16 data type. The resulting QTensorConfig does not quantize the tensor.", "Bfloat16Spec", ""
     )
 )
 class Bfloat16Spec(DataTypeSpec):
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(dtype=Dtype.bfloat16)
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(dtype=Dtype.bfloat16, observer_cls=PlaceholderObserver)
 
 
 class OCP_MXSpec(DataTypeSpec):
@@ -1349,12 +1354,12 @@ class OCP_MXSpec(DataTypeSpec):
     )
 )
 class OCP_MXFP8E4M3Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e4m3,
             scale_calculation_mode=self.scale_calculation_mode,
             is_dynamic=self.is_dynamic,
@@ -1375,12 +1380,12 @@ class OCP_MXFP8E4M3Spec(OCP_MXSpec):
     )
 )
 class OCP_MXFP8E5M2Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp8_e5m2,
             scale_calculation_mode=self.scale_calculation_mode,
             is_dynamic=self.is_dynamic,
@@ -1401,12 +1406,12 @@ class OCP_MXFP8E5M2Spec(OCP_MXSpec):
     )
 )
 class OCP_MXFP6E3M2Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp6_e3m2,
             scale_calculation_mode=self.scale_calculation_mode,
             is_dynamic=self.is_dynamic,
@@ -1427,12 +1432,12 @@ class OCP_MXFP6E3M2Spec(OCP_MXSpec):
     )
 )
 class OCP_MXFP6E2M3Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp6_e2m3,
             scale_calculation_mode=self.scale_calculation_mode,
             is_dynamic=self.is_dynamic,
@@ -1453,12 +1458,12 @@ class OCP_MXFP6E2M3Spec(OCP_MXSpec):
     )
 )
 class OCP_MXFP4Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp4,
             scale_calculation_mode=self.scale_calculation_mode,
             is_dynamic=self.is_dynamic,
@@ -1479,15 +1484,15 @@ class OCP_MXFP4Spec(OCP_MXSpec):
     )
 )
 class OCP_MXINT8Spec(OCP_MXSpec):
+    ch_axis: int
     is_dynamic: bool = True
-    ch_axis: int = -1
     scale_calculation_mode: str = "even"
 
     # TODO: support Dtype.int8 in PerBlockMXObserver.
     # Dtype.int8 still uses NonScaledFakeQuantize (see tensor_quantize.py),
     # which it needs not to.
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.mx,
             mx_element_dtype=Dtype.int8,
             scale_calculation_mode=self.scale_calculation_mode,
@@ -1498,12 +1503,12 @@ class OCP_MXINT8Spec(OCP_MXSpec):
 
 @dataclass
 class OCP_MXFP4DiffsSpec(DataTypeSpec):
-    ch_axis: int | None = None
-    is_dynamic: bool | None = None
+    ch_axis: int
+    is_dynamic: bool | None = False
     scale_calculation_mode: str | None = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.fp4,
             observer_cls=PerBlockMXDiffsObserver,
             symmetric=None,
@@ -1527,12 +1532,12 @@ class OCP_MXFP4DiffsSpec(DataTypeSpec):
     )
 )
 class MX6Spec(DataTypeSpec):
-    ch_axis: int = -1
-    block_size: int = 32
+    ch_axis: int
+    block_size: int
     scale_calculation_mode: str | None = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.mx6,
             ch_axis=self.ch_axis,
             group_size=self.block_size,
@@ -1549,12 +1554,12 @@ class MX6Spec(DataTypeSpec):
     )
 )
 class MX9Spec(DataTypeSpec):
-    ch_axis: int = -1
-    block_size: int = 32
+    ch_axis: int
+    block_size: int
     scale_calculation_mode: str | None = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.mx9,
             ch_axis=self.ch_axis,
             group_size=self.block_size,
@@ -1565,17 +1570,20 @@ class MX9Spec(DataTypeSpec):
 @dataclass
 @add_start_docstring(DATA_TYPE_SPEC_DOCSTRING.format("bfp16 data type", "BFP16Spec", "is_dynamic=False"))
 class BFP16Spec(DataTypeSpec):
-    ch_axis: int = -1
+    ch_axis: int
     scale_calculation_mode: str | None = "even"
 
-    def to_quantization_spec(self) -> QuantizationSpec:
-        return QuantizationSpec(
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
             dtype=Dtype.bfp16, ch_axis=self.ch_axis, group_size=8, scale_calculation_mode=self.scale_calculation_mode
         )
 
 
+QTT = TypeVar("QTT", bound="QTensorConfig")
+
+
 @dataclass(eq=True)
-class QuantizationSpec:
+class QTensorConfig(BaseQTensorConfig):
     """
     A data class that defines the specifications for quantizing tensors within a model.
 
@@ -1596,10 +1604,10 @@ class QuantizationSpec:
     .. code-block:: python
 
         from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
-        from quark.torch.quantization.config.config import QuantizationSpec
+        from quark.torch.quantization.config.config import QTensorConfig
         from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
 
-        quantization_spec = QuantizationSpec(
+        quantization_spec = QTensorConfig(
             dtype=Dtype.int8,
             qscheme=QSchemeType.per_channel,
             observer_cls=PerChannelMinMaxObserver,
@@ -1611,52 +1619,25 @@ class QuantizationSpec:
         )
     """
 
-    ###################################################################################################
-    # Quantization Specification for Dtype in [Bfloat16, FP8, Int, MX]
-
-    dtype: Dtype
-
-    observer_cls: type[ObserverBase] | None = None
-
-    ###################################################################################################
-    # Quantization Specification for Dtype in [FP8, Int, MX]
-
-    is_dynamic: bool | None = None
+    # Note: `dtype`, `observer_cls`, `is_dynamic`, `qscheme`, `ch_axis`, `group_size`, `symmetric`, `round_method`, `scale_type`, `scale_format`, `scale_calculation_mode`, `qat_spec`, `mx_element_dtype`, `zero_point_type` are inherited from `BaseQTensorConfig`
 
     qscheme: QSchemeType | None = None
 
-    ch_axis: int | None = None
+    observer_cls: type[ObserverBase] | None = None
 
-    group_size: int | None = None
-
-    ###################################################################################################
-    # Quantization Specification for Dtype in [Int]
-
-    symmetric: bool | None = None
-
-    round_method: RoundType | None = None
+    dtype: Dtype
 
     scale_type: ScaleType | None = None
 
-    scale_format: str | None = None
-
-    scale_calculation_mode: str | None = None
-
-    qat_spec: QATSpec | None = None
-    ###################################################################################################
-    # Quantization Specification for Dtype in [MX]
     mx_element_dtype: Dtype | None = None
-    ###################################################################################################
-    # Quantization zero point Specification for Dtype
+
     zero_point_type: ZeroPointType | None = ZeroPointType.int32
 
-    ###################################################################################################
-    # Indicates whether this spec is for quantizing scales rather than tensors
     is_scale_quant: bool = False
 
     def __post_init__(self) -> None:
         """
-        When the user init a QuantizationSpec, we need to check whether the config is valid.
+        When the user init a QTensorConfig, we need to check whether the config is valid.
         for example:
             1. observer_cls -> PerTensorPowOf2MinMSEObserver
             2. qscheme      -> QSchemeType.per_channel
@@ -1666,7 +1647,18 @@ class QuantizationSpec:
             Once user config a Config like above that contains any conflict, we need to \
                 throw an exception and tell the user what the conflict is.
         """
+        if self.__class__ is QuantizationSpec:
+            logger.warning(
+                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QTensorConfig instead."
+            )
+
         # NOTE: for developers, every time a new dtype is added, please add the corresponding check for the new dtype.
+
+        if self.dtype in ONLY_DTYPE_CHANGE and self.observer_cls != PlaceholderObserver:
+            raise ValueError(
+                f"{self.dtype} only supports observer_cls=PlaceholderObserver (as only type casting is used), got observer_cls={self.observer_cls}."
+            )
+
         if self.dtype not in ALL_DATA_TYPES:
             raise ValueError(f"The value dtype={self.dtype} is not among the supported dtypes {ALL_DATA_TYPES}.")
 
@@ -1691,15 +1683,15 @@ class QuantizationSpec:
         ]:
             if self.is_dynamic is None:
                 raise ValueError(
-                    f"The field `is_dynamic` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec."
+                    f"The field `is_dynamic` cannot be None when Dtype is {self.dtype.name} in QTensorConfig."
                 )
             if self.observer_cls is None:
                 raise ValueError(
-                    f"The field `observer_cls` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec."
+                    f"The field `observer_cls` cannot be None when Dtype is {self.dtype.name} in QTensorConfig."
                 )
             if self.qscheme is None:
                 raise ValueError(
-                    f"The field `qscheme` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec. Please reconfigure the quantization settings accordingly."
+                    f"The field `qscheme` cannot be None when Dtype is {self.dtype.name} in QTensorConfig. Please reconfigure the quantization settings accordingly."
                 )
         if self.dtype in [
             Dtype.int8,
@@ -1713,15 +1705,15 @@ class QuantizationSpec:
         ]:
             if self.symmetric is None:
                 raise ValueError(
-                    f"The field `symmetric` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec. Please reconfigure the quantization settings accordingly."
+                    f"The field `symmetric` cannot be None when Dtype is {self.dtype.name} in QTensorConfig. Please reconfigure the quantization settings accordingly."
                 )
             if self.round_method is None:
                 raise ValueError(
-                    f"The field `round_method` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec. Please reconfigure the quantization settings accordingly."
+                    f"The field `round_method` cannot be None when Dtype is {self.dtype.name} in QTensorConfig. Please reconfigure the quantization settings accordingly."
                 )
             if self.scale_type is None:
                 raise ValueError(
-                    f"The field `scale_type` cannot be None when Dtype is {self.dtype.name} in QuantizationSpec. Please reconfigure the quantization settings accordingly."
+                    f"The field `scale_type` cannot be None when Dtype is {self.dtype.name} in QTensorConfig. Please reconfigure the quantization settings accordingly."
                 )
 
         # CASE 1:  will only init NonScaledFakeQuantize and PlaceholderObserver,
@@ -1734,7 +1726,7 @@ class QuantizationSpec:
             #   During quantization: the following needed
             #    1.input_tensor 2.quant_dtype 2.mx_element_dtype 3.axis 4.block_size 5.scale_calculation_mode needed
             # 2.In init PlaceholderObserver, only qspec.dtype needed
-            # Summary for QuantizationSpec: 1.dtype(r) 2.mx_element_dtype(o) 3.axis(r) 4.group_size(r) 5.scale_calculation_mode(o)
+            # Summary for QTensorConfig: 1.dtype(r) 2.mx_element_dtype(o) 3.axis(r) 4.group_size(r) 5.scale_calculation_mode(o)
 
             required_fields = ["dtype", "ch_axis", "group_size"]
             oprional_fields = ["mx_element_dtype", "scale_calculation_mode"]
@@ -1760,21 +1752,21 @@ class QuantizationSpec:
                     default_value = each_field.default
                     if value != default_value:
                         logger.warning(
-                            f"When using dtype={self.dtype}, QuantizationSpec.{each_field.name} will not take effect. Got {each_field.name}={value} but the default is {each_field.name}={default_value}."
+                            f"When using dtype={self.dtype}, QTensorConfig.{each_field.name} will not take effect. Got {each_field.name}={value} but the default is {each_field.name}={default_value}."
                         )
             return
 
         # CASE 2: # NOTE only quantization_spec.dtype is needed
         # in quantization actually call: fake_quantize_with_dtype_convert
         if self.dtype in ONLY_DTYPE_CHANGE:
-            required_fields = ["dtype"]
+            required_fields = ["dtype", "observer_cls"]
             for each_field in fields(self):
                 if each_field.name not in required_fields:
                     value = getattr(self, each_field.name)
                     default_value = each_field.default
                     if value != default_value:
                         logger.warning(
-                            f"In {self.dtype} quant, QuantizationSpec.{each_field.name} will not take effect. User supplied: {value} User should skip setting this field"
+                            f"In {self.dtype} quant, QTensorConfig.{each_field.name} will not take effect. User supplied: {value} User should skip setting this field"
                         )
 
             return
@@ -1787,8 +1779,8 @@ class QuantizationSpec:
         #    2. fake_quantize_fp8_e4m3: qscheme, axis (if channel/group), group_size
         #    3. fake_quantize_fp8_e5m2: qscheme, axis (if channel/group), group_size
         #    4. fake_quantize_fp4_fp6:  qscheme, axis (if channel/group), group_size, quant_dtype(channel/group)
-        assert self.observer_cls is not None, "Supplied QuantizationSpec's observer_cls is None"
-        assert self.qscheme is not None, "Supplied QuantizationSpec's qscheme is None"
+        assert self.observer_cls is not None, "Supplied QTensorConfig's observer_cls is None"
+        assert self.qscheme is not None, "Supplied QTensorConfig's qscheme is None"
 
         if self.qscheme == QSchemeType.per_tensor:
             assert self.observer_cls in PER_TENSOR_OBSERVERS, (
@@ -1796,23 +1788,27 @@ class QuantizationSpec:
             )
 
         elif self.qscheme == QSchemeType.per_channel:
-            assert self.observer_cls in PER_CHANNEL_OBSERVERS, (
-                f"You select channel wise quant, the observer_cls you select is {self.observer_cls} not support channel wise quant."
-            )
-            assert isinstance(self.ch_axis, int), (
-                "You select channel wise quant, user must assigned int num to ch_axis."
-            )
+            if self.observer_cls not in PER_CHANNEL_OBSERVERS:
+                raise ValueError(
+                    f"You select channel wise quant, the observer_cls you select is {self.observer_cls} not support channel wise quant."
+                )
+
+            if not isinstance(self.ch_axis, int):
+                raise ValueError("You select channel wise quant, user must assigned int num to ch_axis.")
 
         elif self.qscheme == QSchemeType.per_group:
-            assert self.observer_cls in PER_GROUP_OBSERVERS, (
-                f"You select block wise quant, the observer_cls you select is {self.observer_cls} not support block wise quant."
-            )
-            assert isinstance(self.ch_axis, int), (
-                "You select block/channel wise quant, user must assigned int num to ch_axis."
-            )
-            assert isinstance(self.group_size, int), (
-                "You select block/channel wise quant, user must assigned int num to group_size."
-            )
+            if self.observer_cls not in PER_GROUP_OBSERVERS:
+                raise ValueError(
+                    f"The combination qscheme={self.qscheme} and observer_cls={self.observer_cls} is not supported. For per group quantization, please use an observer from {PER_GROUP_OBSERVERS}."
+                )
+            if not isinstance(self.ch_axis, int):
+                raise ValueError(
+                    f"Got ch_axis={self.ch_axis} in QTensorConfig initialization with qscheme={self.qscheme}. A correct positive integer value is required for per-group quantization."
+                )
+            if not isinstance(self.group_size, int):
+                raise ValueError(
+                    f"Got group_size={self.group_size} in QTensorConfig initialization with qscheme={self.qscheme}. A correct positive integer value is required for per-group quantization."
+                )
         else:  # NOTE for developer
             raise ModuleNotFoundError(
                 f"Please decide {self.observer_cls.__name__} belongs to which kind of quant (tensor/channel/group)."
@@ -1843,38 +1839,35 @@ class QuantizationSpec:
         }
 
     @classmethod
-    def from_dict(cls, config_dict: dict[str, Any] | None) -> QuantizationSpec | None:
-        if config_dict is None:
-            return None
-
+    def from_dict(cls: type[QTT], config_dict: dict[str, Any]) -> QTT:
         dtype = Dtype[config_dict["dtype"]]
 
-        if config_dict.get("mx_element_dtype", None) is not None:
+        if config_dict.get("mx_element_dtype") is not None:
             mx_element_dtype = Dtype[config_dict["mx_element_dtype"]]
         else:
             mx_element_dtype = None
 
-        if config_dict.get("qscheme", None) is not None:
+        if config_dict.get("qscheme") is not None:
             qscheme = QSchemeType[config_dict["qscheme"]]
         else:
             qscheme = None
 
-        if config_dict.get("round_method", None) is not None:
+        if config_dict.get("round_method") is not None:
             round_method = RoundType[config_dict["round_method"]]
         else:
             round_method = None
 
-        if config_dict.get("scale_type", None) is not None:
+        if config_dict.get("scale_type") is not None:
             scale_type = ScaleType[config_dict["scale_type"]]
         else:
             scale_type = None
 
-        if config_dict.get("scale_format", None) is not None:
+        if config_dict.get("scale_format") is not None:
             scale_format = config_dict["scale_format"]
         else:
             scale_format = None
 
-        if config_dict.get("scale_calculation_mode", None) is not None:
+        if config_dict.get("scale_calculation_mode") is not None:
             scale_calculation_mode = config_dict["scale_calculation_mode"]
         else:
             scale_calculation_mode = None
@@ -1892,11 +1885,11 @@ class QuantizationSpec:
                 observer_cls = OBSERVER_MAP[config_dict["observer_cls"]]
             else:  # pragma: no cover
                 logger.warning(
-                    f"Unknown observer_cls={config_dict['observer_cls']}. Loading the QuantizationSpec with observer_cls=PlaceholderObserver."
+                    f"Unknown observer_cls={config_dict['observer_cls']}. Loading the QTensorConfig with observer_cls=PlaceholderObserver."
                 )
                 observer_cls = PlaceholderObserver
         else:  # pragma: no cover
-            # quark<1.0 used not to save the `observer_cls` in `QuantizationSpec.to_dict()`.
+            # quark<1.0 used not to save the `observer_cls` in `QTensorConfig.to_dict()`.
             observer_cls = PlaceholderObserver
 
         is_scale_quant = config_dict.get("is_scale_quant", False)
@@ -1917,9 +1910,21 @@ class QuantizationSpec:
             is_scale_quant=is_scale_quant,
         )
 
+    def is_ocp_mxfp4(self) -> bool:
+        quant_spec_is_mxfp4 = True
+        for key, value in OCP_MXSpec.OCP_MX_SPEC_KWARGS.items():
+            if getattr(self, key) != value:
+                quant_spec_is_mxfp4 = False
+                break
+
+        if self.dtype != Dtype.fp4:
+            quant_spec_is_mxfp4 = False
+
+        return quant_spec_is_mxfp4
+
 
 @dataclass
-class QATSpec(ConfigBase):
+class QATSpec(BaseConfigImpl):
     pass
 
 
@@ -2008,6 +2013,8 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
         return cast(AlgoConfig, AWQConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "gptq":  # pragma: no cover
         return cast(AlgoConfig, GPTQConfig.from_dict(algo_config_dict))
+    elif algo_config_dict["name"] == "gptaq":  # pragma: no cover
+        return cast(AlgoConfig, GPTAQConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "autosmoothquant":  # pragma: no cover:
         return cast(AlgoConfig, AutoSmoothQuantConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "qronos":  # pragma: no cover
@@ -2017,17 +2024,12 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
 
 
 @dataclass
-class AlgoConfigBase(ConfigBase):
+class PreQuantOptConfig(BaseAlgoConfig):
     pass
 
 
 @dataclass
-class PreQuantOptConfig(AlgoConfigBase):
-    pass
-
-
-@dataclass
-class AlgoConfig(AlgoConfigBase):
+class AlgoConfig(BaseAlgoConfig):
     pass
 
 
@@ -2081,81 +2083,232 @@ class SmoothQuantConfig(AlgoConfig):
 @dataclass
 class RotationConfig(AlgoConfig):
     """
-    A data class that defines the specifications for rotation settings in processing algorithms.
+    A data class that defines the specifications for the rotation algorithms.
 
     :param str name: The name of the configuration, typically used to identify different rotation settings. Default is ``"rotation"``.
-    :param bool random: A boolean flag indicating whether the rotation should be applied randomly. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``.
-    :param List[Dict[str, Any]] scaling_layers: Specific settings for scaling layers, allowing customization of quantization parameters for different layers within the model. Default is ``[]``.
-
-    Example:
-
-    .. code-block:: python
-
-        from quark.torch.quantization.config.config import RotationConfig
-
-        scaling_layers=[
-            {
-                "prev_op": "input_layernorm",
-                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
-                "inp": "self_attn.q_proj",
-                "module2inspect": "self_attn"
-            },
-            {
-                "prev_op": "post_attention_layernorm",
-                "layers": ["mlp.gate_proj", "mlp.up_proj"],
-                "inp": "mlp.gate_proj",
-                "module2inspect": "mlp"
-            }
-        ]
-
-        rotation_config = RotationConfig(
-            scaling_layers=scaling_layers,
-            model_decoder_layers="model.layers"
-        )
-    """
-
-    model_decoder_layers: str
-    scaling_layers: dict[str, list[dict[str, Any]]]
-    name: str = "rotation"
-    random: bool = False
-
-
-@dataclass
-class QuaRotConfig(AlgoConfig):
-    """
-    A data class that defines the specifications for the QuaRot algorithm.
-
-    :param str name: The name of the configuration, typically used to identify different rotation settings. Default is ``"quarot"``.
     :param bool r1: Whether to apply ``R1`` rotation. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param bool r2: Whether to apply ``R2`` rotation. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param bool r3: Whether to apply ``R3`` rotation. It is only useful when using KV cache quantization. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param bool r4: Whether to apply ``R4`` rotation. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param Optional[int] rotation_size: The size of rotations to apply on activations/weights. By default, the activation last dimension (e.g. ``hidden_size``), or weight input/output channel dimension is used as rotation size. In case the parameter ``rotation_size`` is specified, smaller rotations of size ``(rotation_size, rotation_size)`` are applied per-block. Defaults to ``None``.
+    :param Optional[bool] random: Deprecated. Use ``random_r1`` and ``random_r2`` instead. Defaults to ``None``.
     :param bool random_r1: A boolean flag indicating whether ``R1`` should be a random Hadamard matrix. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``.
-    :param bool random_r2: A boolean flag indicating whether ``R2`` should be a random Hadamard matrix. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``. ``random_r1`` and ``random_r2`` are only relevant if we are using Hadamard rotations for ``R1`` and ``R2``. If the argument ``optimized_rotation_path`` is specified, then we will load ``R1`` and ``R2`` matrices from a file instad of using Hadamard matrices.
-    :param List[Dict[str, str]] scaling_layers: Specific settings for scaling layers, allowing customization of quantization parameters for different layers within the model. Default is ``None``.
-    :param Optional[str] optimized_rotation_path: The path to the file 'R.bin' that has saved optimized ``R1`` (per model) and ``R2`` (per decoder) matrices. If this is specified, ``R1`` and ``R2`` rotations will be loaded from this file. Otherwise they will be Hadamard matrices.
+    :param bool random_r2: A boolean flag indicating whether ``R2`` should be a random Hadamard matrix. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``. ``random_r1`` and ``random_r2`` are only relevant if we are using Hadamard rotations for ``R1`` and ``R2``.
+    :param List[Dict[str, str]] scaling_layers: Specific settings for scaling layers, specifying the layer names where ``R1`` rotations must be applied if chosen, or where smoothing scales must be trained, if ``train_smooth=True``. It is a dictionary with keys ``"first_layer"``, ``"middle_layers"`` and ``"last_layer"``, which are dictionaries specifying:
+
+        - ``"prev_modules"``: The list of previous modules the activation rotation may be fused into. **This is optional/unused for online R1**.
+        - ``"norm_module"``: The list of normalization layer that is in between the modules in ``"prev_modules"`` and ``"next_modules"``. The normalization weight will typically need to be merged first into the modules of ``"next_modules"`` in order to permute the activation rotation with the normalization, and fuse the activation rotation in the modules of ``"prev_modules"``.  **This is optional/unused for online R1**.
+        - ``"next_modules"``: The list of modules to fuse inverse rotation into, on the input features dimension. This corresponds to weight rotation on the input features dimension.  **This is optional/unused for online R1**.
+        - ``"target_modules"``: If specified, the list of modules to apply online rotation on, this may be only on a subset of ``"next_modules"``. This is for example useful for MOE models, in case the experts gate/router is not quantized (skipping online rotation for it). **Useful only for online ``R1`` rotations, optional.** If not provided, ``"next_modules"`` is used instead as the list of modules to apply rotation on.
+
     :param str backbone: A string indicating the path to the model backbone.
     :param str model_decoder_layers: A string indicating the path to the list of decoder layers.
     :param str v_proj: A string indicating the path to the v projection layer, starting from the decoder layer it is in.
     :param str o_proj: A string indicating the path to the o projection layer, starting from the decoder layer it is in.
     :param str self_attn: A string indicating the path to the self attention block, starting from the decoder layer it is in.
     :param str mlp: A string indicating the path to the multilayer perceptron layer, starting from the decoder layer it is in.
+    :param Optional[bool] online_r1_rotation: Whether the activation rotation ``R1`` should be kept online instead of being fused into the preceding layer weights. In case ``online_r1_rotation=False``, a single ``R1`` rotation is shared across all layers, whereas specialized rotations can be used per linear layer in case the activation rotation is done online. Defaults to ``False``, i.e. ``R1`` is fused offline. If `R1` is not used, defaults to ``None``.
+    :param bool trainable: Whether to insert trainable rotations.
+    :param Optional[OnlineRotationConfig] online_config: Configuration specific to online rotations. Refer to :py:class:`.OnlineRotationConfig`. Defaults to ``OnlineRotationConfig(shared_parallel=False)`` for online trainable ``R1``, otherwise defaults to ``None`` (no effect).
+    :param Optional[bool] train_smooth: Whether to train SmoothQuant scales. The trainable transform is then ``T = D @ R`` (or ``T = R @ D``) with the rotation ``R`` and the SmoothQuant scales ``D`` (seen as a 1D vector, or a diagonal matrix). This parameter is similar to the approach in `OSTQuant <https://arxiv.org/abs/2501.13987>`__ paper. Defaults to ``None``. In case ``trainable=True``, defaults to ``False``.
+    :param Optional[List[str]] smooth_positions: A list of rotation positions to train smoothing scales for. Acceptable list values are ``"r1"``, ``"r2"``, ``"r4"``. Defaults to ``None``. In case ``trainable=True``, defaults to ``[]``.
 
-    Example:
+    Example for llama model, offline rotations:
 
     .. code-block:: python
 
-        from quark.torch.quantization.config.config import QuaRotConfig
+        from quark.torch.quantization.config.config import RotationConfig
 
-        quarot_config = QuaRotConfig(
+        scaling_layers = {
+            "first_layer": [
+                {
+                    "prev_modules": ["model.embed_tokens"],
+                    "norm_module": "model.layers.layer_id.input_layernorm",
+                    "next_modules": [
+                        "model.layers.layer_id.self_attn.q_proj",
+                        "model.layers.layer_id.self_attn.k_proj",
+                        "model.layers.layer_id.self_attn.v_proj",
+                    ],
+                },
+                {
+                    "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                    "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                    "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"],
+                },
+            ],
+            "middle_layers": [
+                {
+                    "prev_modules": ["model.layers.pre_layer_id.mlp.down_proj"],
+                    "norm_module": "model.layers.layer_id.input_layernorm",
+                    "next_modules": [
+                        "model.layers.layer_id.self_attn.q_proj",
+                        "model.layers.layer_id.self_attn.k_proj",
+                        "model.layers.layer_id.self_attn.v_proj",
+                    ],
+                },
+                {
+                    "prev_modules": ["model.layers.layer_id.self_attn.o_proj"],
+                    "norm_module": "model.layers.layer_id.post_attention_layernorm",
+                    "next_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"],
+                },
+            ],
+            "last_layer": [
+                {
+                    "prev_modules": ["model.layers.layer_id.mlp.down_proj"],
+                    "norm_module": "model.norm",
+                    "next_modules": ["lm_head"],
+                }
+            ],
+        }
+
+        rotation_config = RotationConfig(
             model_decoder_layers="model.layers",
             v_proj="self_attn.v_proj",
             o_proj="self_attn.o_proj",
             self_attn="self_attn",
-            mlp="mlp"
+            mlp="mlp",
+            scaling_layers=scaling_layers,
+            r1=True,
+            r2=True,
+        )
+
+    Example for llama model, online rotations:
+
+    .. code-block:: python
+
+        from quark.torch.quantization.config.config import RotationConfig
+
+        scaling_layers = {
+            "first_layer": [
+                {
+                    "target_modules": [
+                        "model.layers.layer_id.self_attn.q_proj",
+                        "model.layers.layer_id.self_attn.k_proj",
+                        "model.layers.layer_id.self_attn.v_proj",
+                    ]
+                },
+                {
+                    "target_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+                },
+            ],
+            "middle_layers": [
+                {
+                    "target_modules": [
+                        "model.layers.layer_id.self_attn.q_proj",
+                        "model.layers.layer_id.self_attn.k_proj",
+                        "model.layers.layer_id.self_attn.v_proj",
+                    ]
+                },
+                {
+                    "target_modules": ["model.layers.layer_id.mlp.up_proj", "model.layers.layer_id.mlp.gate_proj"]
+                },
+            ],
+            "last_layer": [
+                {
+                    "target_modules": [],
+                }
+            ],
+        }
+
+        rotation_config = RotationConfig(
+            model_decoder_layers="model.layers",
+            v_proj="self_attn.v_proj",
+            o_proj="self_attn.o_proj",
+            self_attn="self_attn",
+            mlp="mlp",
+            scaling_layers=scaling_layers,
+            r1=True,
+            r2=True,
+            online_r1_rotation=True,
+            rotation_size=32,
         )
     """
+
+    scaling_layers: dict[str, list[dict[str, Any]]]
+    name: str = "rotation"
+    r1: bool = True
+    r2: bool = False
+    r3: bool = False
+    r4: bool = False
+    rotation_size: int | None = None
+    random: bool | None = None  # TODO: deprecated, remove in 0.12
+    random_r1: bool = False
+    random_r2: bool = False
+    backbone: str = "model"
+    model_decoder_layers: str = "model.layers"
+    v_proj: str = "self_attn.v_proj"
+    o_proj: str = "self_attn.o_proj"
+    self_attn: str = "self_attn"
+    mlp: str = "mlp"
+    online_r1_rotation: bool | None = None
+    online_config: OnlineRotationConfig | None = None
+    trainable: bool = False
+    train_smooth: bool | None = None
+    smooth_positions: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.random is not None:
+            logger.warning(
+                f"quark.torch.config.config.RotationConfig argument `random` is deprecated and will be removed in v0.12, please use `random_r1` and `random_r2` instead. Got `random={self.random}`. Setting `random_r1={self.random}` and `random_r2={self.random}`."
+            )
+            self.random_r1 = self.random
+            self.random_r2 = self.random
+
+        if (self.random_r1 or self.random_r2) and self.rotation_size is not None:
+            raise NotImplementedError(
+                f"random_r1=True or random_r2=True along with a custom rotation_size={self.rotation_size} is not supported at the moment in RotationConfig. Please open an issue."
+            )
+
+        if self.r1:
+            if self.online_r1_rotation is None:
+                self.online_r1_rotation = False
+        else:
+            if self.online_r1_rotation is not None:
+                raise ValueError(
+                    f"The configuration online_r1_rotation={self.online_r1_rotation} has no effect along r1={self.r1}."
+                )
+
+        if self.trainable and self.r3:
+            raise NotImplementedError("trainable=True along `r3=True` is not implemented.")
+
+        if self.online_config is not None:
+            if not self.online_r1_rotation or not self.r1 or not self.trainable:
+                raise ValueError(
+                    f"Got online_config={self.online_config}, r1={self.r1}, trainable={self.trainable}, for which online_config={self.online_config} has no effect."
+                )
+        else:
+            if self.trainable and self.r1 and self.online_r1_rotation:
+                self.online_config = OnlineRotationConfig(shared_parallel=False)
+
+        if self.trainable and self.train_smooth is None:
+            self.train_smooth = False
+            self.smooth_positions = []
+
+        if self.train_smooth and not self.trainable:
+            raise ValueError(f"train_smooth={self.train_smooth} along trainable={self.trainable} is not supported.")
+
+        if self.train_smooth and self.smooth_positions is None:
+            raise ValueError(
+                "RotationConfig.smooth_positions needs to be set in case RotationConfig.train_smooth=True, got None."
+            )
+
+    @classmethod
+    def from_dict(cls, rotation_dict: dict[str, Any]) -> RotationConfig:
+        if "online_config" in rotation_dict and isinstance(rotation_dict["online_config"], dict):
+            online_config = OnlineRotationConfig(**rotation_dict["online_config"])
+            rotation_dict["online_config"] = online_config
+
+        return cls(**rotation_dict)
+
+
+@dataclass
+class OnlineRotationConfig:
+    shared_parallel: bool
+
+
+@dataclass
+class QuaRotConfig(AlgoConfig):
+    # TODO: deprecated, remove in 0.12 release.
 
     scaling_layers: dict[str, list[dict[str, Any]]]
     name: str = "quarot"
@@ -2163,7 +2316,7 @@ class QuaRotConfig(AlgoConfig):
     r2: bool = True
     r3: bool = True
     r4: bool = True
-    rotation_size: bool | None = None
+    rotation_size: int | None = None
     random_r1: bool = False
     random_r2: bool = False
     optimized_rotation_path: str | None = None
@@ -2175,6 +2328,11 @@ class QuaRotConfig(AlgoConfig):
     mlp: str = "mlp"
 
     def __post_init__(self) -> None:
+        if self.__class__ is QuaRotConfig:
+            logger.warning(
+                "quark.torch.config.config.QuaRotConfig is deprecated and will be removed in AMD Quark v0.12. Please use `quark.torch.quantization.config.config.RotationConfig` instead."
+            )
+
         if (self.random_r1 or self.random_r2) and self.rotation_size is not None:
             raise NotImplementedError(
                 f"random_r1=True or random_r2=True along with a custom rotation_size={self.rotation_size} is not supported at the moment in QuaRotConfig. Please open an issue."
@@ -2332,6 +2490,56 @@ class GPTQConfig(AlgoConfig):
 
 
 @dataclass
+class GPTAQConfig(AlgoConfig):
+    """
+    A data class that defines the specifications for Accurate Post-Training Quantization for Generative Pre-trained Transformers (GPTQ).
+
+    :param str name: The configuration name. Default is ``"gptaq"``.
+    :param int block_size: GPTAQ divides the columns into blocks of size block_size and quantizes each block separately. Default is ``128``.
+    :param float damp_percent: The percentage used to dampen the quantization effect, aiding in the maintenance of accuracy post-quantization. Default is ``0.01``.
+    :param bool desc_act: Indicates whether descending activation is used, typically to enhance model performance with quantization. Default is ``True``.
+    :param bool static_groups: Specifies whether the order of groups for quantization are static or can be dynamically adjusted. Default is ``True``. Quark export only support static_groups as True.
+    :param List[str] inside_layer_modules: Lists the names of internal layer modules within the model that require specific quantization handling. Default is ``None``.
+    :param str model_decoder_layers: Specifies custom settings for quantization on specific decoder layers of the model. Default is ``None``.
+
+    Example:
+
+    .. code-block:: python
+
+        from quark.torch.quantization.config.config import GPTAQConfig
+
+        gptq_config = GPTAQConfig(
+            inside_layer_modules=[
+                "self_attn.k_proj",
+                "self_attn.v_proj",
+                "self_attn.q_proj",
+                "self_attn.o_proj",
+                "mlp.up_proj",
+                "mlp.gate_proj",
+                "mlp.down_proj"
+            ],
+            model_decoder_layers="model.layers"
+        )
+
+    """
+
+    name: str = "gptaq"
+    block_size: int = 128
+    damp_percent: float = 0.01
+    alpha: float = 0.25
+    desc_act: bool = True
+    static_groups: bool = True
+    inside_layer_modules: list[str] = field(default_factory=list)
+    model_decoder_layers: str = field(default_factory=str)
+
+    def __post_init__(self) -> None:
+        if self.desc_act and not self.static_groups:
+            raise ValueError(
+                "AMD Quark does not support using GPTAQ with `desc_act=True` and `static_groups=False`. Please use `static_groups=True`, or disable `desc_act`."
+            )
+
+
+@dataclass
 class QronosConfig(AlgoConfig):
     """
     Configuration for Qronos, an advanced post-training quantization algorithm. Implemented as proposed in https://arxiv.org/pdf/2505.11695
@@ -2382,3 +2590,18 @@ class QronosConfig(AlgoConfig):
 
         if self.block_size <= 0:
             raise ValueError(f"Number of blocks must be positive, got {self.block_size}.")
+
+
+@dataclass(eq=True)
+class QuantizationSpec(QTensorConfig):
+    pass
+
+
+@dataclass(eq=True)
+class QuantizationConfig(QLayerConfig):
+    pass
+
+
+@dataclass(eq=True)
+class Config(QConfig):
+    pass

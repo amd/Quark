@@ -11,8 +11,7 @@ import onnxruntime
 import torch
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
 
-from quark.onnx import ExtendedQuantFormat, ExtendedQuantType, ModelQuantizer
-from quark.onnx.quantization.config.config import Config, QuantizationConfig
+from quark.onnx import Config, ExtendedQuantFormat, ExtendedQuantType, ModelQuantizer, QuantizationConfig
 from quark.onnx.quantization.config.custom_config import BF16_MIXED_MXINT8_CONFIG, BF16_MXINT8_CONFIG
 from quark.shares.utils.testing_utils import use_temporary_directory
 
@@ -212,7 +211,13 @@ def prepare_model(output_dir):
     quant_onnx_model_path = Path(output_dir, "simple_conv_model_quantized.onnx").as_posix()
 
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -255,11 +260,8 @@ def prepare_tensorwise_config():
         quant_format=ExtendedQuantFormat.QDQ,
         activation_type=ExtendedQuantType.QBFloat16,
         weight_type=ExtendedQuantType.QBFloat16,
-        specific_tensor_precision=True,
         extra_options={
-            "MixedPrecisionTensor": {
-                ExtendedQuantType.QMX: ["/conv1/Conv_output_0"]  # This is a specific name
-            },
+            "TensorQuantOverrides": {"/conv1/Conv_output_0": [{"quant_type": ExtendedQuantType.QMX}]},
             "MXAttributes": {
                 "element_dtype": "int8",
                 "axis": 1,
@@ -512,7 +514,7 @@ class TestTensorQuantize(unittest.TestCase):
             output = tensor_quantize(tmpdir, quant_config)
             comp_equal = np.allclose(output, MXandInt8_custom_mp_output_tensor, atol=1e-2)
             self.assertEqual(np.all(comp_equal), True)
-        except Exception as e:
+        except Exception:
             # TODO: Support running ai.onnx.contrib Q or DQ
             print("This config will use ai.onnx.contrib Q or DQ, which has no implementation yet")
 
@@ -523,7 +525,7 @@ class TestTensorQuantize(unittest.TestCase):
             output = tensor_quantize(tmpdir, quant_config)
             comp_equal = np.allclose(output, MXQOperator_custom_mp_output_tensor, atol=1e-2)
             self.assertEqual(np.all(comp_equal), True)
-        except Exception as e:
+        except Exception:
             # TODO: Support running the customized QOperator
             print("This config will generate customized QOperator, which has no implementation yet")
 

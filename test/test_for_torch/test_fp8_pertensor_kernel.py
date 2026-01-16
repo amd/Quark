@@ -11,7 +11,7 @@ from torch import nn
 from quark.shares.utils.testing_utils import PatchEverywhere
 from quark.torch.export.constants import _check_scaled_mm_available_dev
 from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
-from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 
@@ -19,7 +19,7 @@ from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 # We simulate GPU-less devices
 def test_check_scaled_mm_available_dev():
     with patch("torch.cuda.is_available", return_value=False):
-        result = _check_scaled_mm_available_dev()
+        _ = _check_scaled_mm_available_dev()
 
     with (
         patch("torch.cuda.is_available", return_value=True),
@@ -28,17 +28,17 @@ def test_check_scaled_mm_available_dev():
         patch("subprocess.run") as mock_subprocess,
     ):
         mock_subprocess.return_value = Mock(returncode=0, stdout="gfx940")
-        result = _check_scaled_mm_available_dev()
+        _ = _check_scaled_mm_available_dev()
 
     with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch("torch.version.cuda", new=True):
-        result = _check_scaled_mm_available_dev()
+        _ = _check_scaled_mm_available_dev()
 
     # The ci machine does not have the hardware to support the torch._scaled_mm function,
     # so the following functions are designed to test as many functions as possible and increase coverage
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
     float_module = nn.Linear(in_features=512, out_features=512, bias=True, dtype=dtype).to(device)
@@ -52,7 +52,7 @@ def test_check_scaled_mm_available_dev():
 
     with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", "hip", module_name_prefix="quark"):
         try:
-            out = qparam_linear(input)
+            _ = qparam_linear(input)
         except ValueError as e:
             assert "Bias is not supported when out_dtype is set to Float32" in str(e)
         else:

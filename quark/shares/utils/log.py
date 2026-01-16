@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,29 +7,11 @@ import logging
 import os
 from functools import wraps
 from logging import LogRecord
-from typing import Any, Callable, List, Set, TypeVar, cast
+from typing import Any, Callable, TypeVar, cast
 
 _C = TypeVar("_C", bound=Callable[..., Any])  # pragma: no cover
 
-
-class DebugLogger:
-    def __init__(self, name: str, debug_file_dir: str = "quark_logs") -> None:
-        self.logger = logging.getLogger(f"{name}_debug")
-        self.logger.setLevel(logging.DEBUG)
-
-        if not os.path.exists(debug_file_dir):
-            os.makedirs(debug_file_dir)
-
-        file_handler = logging.FileHandler(os.path.join(debug_file_dir, f"{name}_debug.log"), mode="w")
-        file_handler.setLevel(logging.DEBUG)
-        self.logger.propagate = False
-        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        file_handler.setFormatter(formatter)
-
-        self.logger.addHandler(file_handler)
-
-    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        self.logger.debug(msg, *args, **kwargs)
+QUARK_LOG_LEVEL = os.environ.get("QUARK_LOG_LEVEL", "info").lower()
 
 
 class CustomFormatter(logging.Formatter):
@@ -87,6 +69,22 @@ class ScreenLogger:
         self.logger.addHandler(console_handler)
         self.logger.setLevel(self._shared_level)
         self._instances.append(self)
+
+        if QUARK_LOG_LEVEL != "info":
+            if QUARK_LOG_LEVEL == "debug":
+                level = logging.DEBUG
+            elif QUARK_LOG_LEVEL == "warning":
+                level = logging.WARNING
+            elif QUARK_LOG_LEVEL == "error":
+                level = logging.ERROR
+            elif QUARK_LOG_LEVEL == "critical":
+                level = logging.CRITICAL
+            else:
+                raise ValueError(
+                    f"Unsupported environment value QUARK_LOG_LEVEL={QUARK_LOG_LEVEL}, only 'debug', 'info', 'warning', 'error', 'critical' are supported."
+                )
+
+            self.set_shared_level(level)
 
     def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
         allow_duplicate = True

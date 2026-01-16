@@ -13,13 +13,12 @@
 #include <vector>
 
 #include "mx/mx.h"
-
 #ifdef USE_CUDA
 #include "cuda_runtime_api.h"
 #endif
 
 void ParseElementDataTypeString(
-  std::string &dtype, std::vector<int> &bits, std::vector<float> &range
+  std::string& dtype, std::vector<int>& bits, std::vector<float>& range
 ) {
   int ebits = 0;  // bit numbers of exponent
   int mbits = 0;  // bit numbers of mantissa
@@ -83,8 +82,8 @@ void ParseElementDataTypeString(
 }
 
 MXFixNeuronKernel::MXFixNeuronKernel(
-  const OrtApi &ort_api, const OrtKernelInfo *k_info, std::string &scale_dtype,
-  std::string &element_dtype, int64_t axis, int64_t block_size,
+  const OrtApi& ort_api, const OrtKernelInfo* k_info, std::string& scale_dtype,
+  std::string& element_dtype, int64_t axis, int64_t block_size,
   int64_t rounding_mode
 )
   : ort_(ort_api),
@@ -97,14 +96,14 @@ MXFixNeuronKernel::MXFixNeuronKernel(
   info_copy_ = info.Copy();
 }
 
-Ort::Value MXFixNeuronKernel::do_mx(Ort::Value &input) {
+Ort::Value MXFixNeuronKernel::do_mx(Ort::Value& input) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
   size_t element_count = input.GetTensorTypeAndShapeInfo().GetElementCount();
   Buffer b(element_count * 4);
   tmp_buffers_.push_back(b);
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
   to_mx(
@@ -116,14 +115,14 @@ Ort::Value MXFixNeuronKernel::do_mx(Ort::Value &input) {
   return output;
 }
 
-void MXFixNeuronKernel::Compute(OrtKernelContext *context) {
+void MXFixNeuronKernel::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
   auto input_value = ctx.GetInput(0);
   std::vector<int64_t> dimensions =
     input_value.GetTensorTypeAndShapeInfo().GetShape();
   auto input_tensor = Ort::Value::CreateTensor<float>(
     input_value.GetTensorMemoryInfo(),
-    const_cast<float *>(input_value.GetTensorData<float>()),
+    const_cast<float*>(input_value.GetTensorData<float>()),
     input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
     dimensions.data(), dimensions.size()
   );
@@ -135,7 +134,7 @@ void MXFixNeuronKernel::Compute(OrtKernelContext *context) {
   if (input_tensor.GetTensorTypeAndShapeInfo().GetElementCount() == 1) {
     ret = Ort::Value::CreateTensor<float>(
       input_value.GetTensorMemoryInfo(),
-      const_cast<float *>(input_value.GetTensorData<float>()),
+      const_cast<float*>(input_value.GetTensorData<float>()),
       input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
       dimensions.data(), dimensions.size()
     );
@@ -179,7 +178,7 @@ void MXFixNeuronKernel::Compute(OrtKernelContext *context) {
 MXFixNeuronKernel::~MXFixNeuronKernel() {}
 
 void MXFixNeuronKernel::create_pad_op() {
-  const char *add_type_constraint_names[] = {"T", "T", "T"};
+  const char* add_type_constraint_names[] = {"T", "T", "T"};
   ONNXTensorElementDataType add_type_constraint_values[] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
@@ -196,7 +195,7 @@ void MXFixNeuronKernel::create_pad_op() {
 }
 
 Ort::Value MXFixNeuronKernel::pad(
-  OrtKernelContext *context, Ort::Value &input, int block_size
+  OrtKernelContext* context, Ort::Value& input, int block_size
 ) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
@@ -230,12 +229,12 @@ Ort::Value MXFixNeuronKernel::pad(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[3] = {input, pad_tensor, const_value_tensor};
-  OrtValue *outputs[1] = {output};
+  const OrtValue* inputs[3] = {input, pad_tensor, const_value_tensor};
+  OrtValue* outputs[1] = {output};
   op_pad_.Invoke(context, inputs, 3, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
@@ -244,7 +243,7 @@ Ort::Value MXFixNeuronKernel::pad(
 }
 
 void MXFixNeuronKernel::create_transpose_op(size_t num_dims, int from, int to) {
-  const char *add_type_constraint_names[1] = {"T"};
+  const char* add_type_constraint_names[1] = {"T"};
   ONNXTensorElementDataType add_type_constraint_values[1] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
   };
@@ -267,7 +266,7 @@ void MXFixNeuronKernel::create_transpose_op(size_t num_dims, int from, int to) {
 }
 
 Ort::Value MXFixNeuronKernel::transpose(
-  OrtKernelContext *context, Ort::Value &input, int from, int to
+  OrtKernelContext* context, Ort::Value& input, int from, int to
 ) {
   std::vector<int64_t> dimensions =
     input.GetTensorTypeAndShapeInfo().GetShape();
@@ -283,12 +282,12 @@ Ort::Value MXFixNeuronKernel::transpose(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[1] = {input};
-  OrtValue *outputs[1] = {output};
+  const OrtValue* inputs[1] = {input};
+  OrtValue* outputs[1] = {output};
   op_transpose_.Invoke(context, inputs, 1, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
@@ -297,7 +296,7 @@ Ort::Value MXFixNeuronKernel::transpose(
 }
 
 void MXFixNeuronKernel::create_slice_op() {
-  const char *add_type_constraint_names[] = {"T", "T", "T", "T", "T"};
+  const char* add_type_constraint_names[] = {"T", "T", "T", "T", "T"};
   ONNXTensorElementDataType add_type_constraint_values[] = {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
     ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
@@ -311,7 +310,7 @@ void MXFixNeuronKernel::create_slice_op() {
 }
 
 Ort::Value MXFixNeuronKernel::slice(
-  OrtKernelContext *context, Ort::Value &input, size_t last_dim
+  OrtKernelContext* context, Ort::Value& input, size_t last_dim
 ) {
   if (!op_slice_init_) {
     create_slice_op();
@@ -350,14 +349,14 @@ Ort::Value MXFixNeuronKernel::slice(
   tmp_buffers_.push_back(b);
 
   auto output = Ort::Value::CreateTensor<float>(
-    input.GetTensorMemoryInfo(), (float *)b.get_data_ptr(), element_count,
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
     dimensions.data(), dimensions.size()
   );
 
-  const OrtValue *inputs[] = {
+  const OrtValue* inputs[] = {
     input, start_tensor, end_tensor, axes_tensor, steps_tensor
   };
-  OrtValue *outputs[] = {output};
+  OrtValue* outputs[] = {output};
   op_slice_.Invoke(context, inputs, 5, outputs, 1);
 #ifdef USE_CUDA
   cudaDeviceSynchronize();

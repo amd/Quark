@@ -12,7 +12,7 @@ import quark.torch.quantization.config.type as quark_type
 
 
 def test_valid_default_config():
-    config = brevitas_config.Config(global_quant_config=brevitas_config.QuantizationConfig())
+    config = brevitas_config.Config(global_quant_config=brevitas_config.QLayerConfig())
 
     try:
         brevitas_verify.ConfigVerifier.verify_config(config)
@@ -21,15 +21,15 @@ def test_valid_default_config():
 
 
 def test_unsupported_backend():
-    config = brevitas_config.Config(global_quant_config=brevitas_config.QuantizationConfig(), backend=None)
+    config = brevitas_config.Config(global_quant_config=brevitas_config.QLayerConfig(), backend=None)
     with pytest.raises(ValueError):
         brevitas_verify.ConfigVerifier.verify_config(config)
 
 
 def test_missing_floating_point_parameters():
     # exponent and mantissa must be specified if float_quant selected
-    weight_spec = brevitas_config.QuantizationSpec(quant_type=brevitas_config.QuantType.float_quant)
-    global_config = brevitas_config.QuantizationConfig(weight=weight_spec)
+    weight_spec = brevitas_config.QTensorConfig(quant_type=brevitas_config.QuantType.float_quant)
+    global_config = brevitas_config.QLayerConfig(weight=weight_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     with pytest.raises(ValueError):
@@ -37,7 +37,7 @@ def test_missing_floating_point_parameters():
 
 
 def test_invalid_incorrect_algorithm_parameter():
-    global_config = brevitas_config.QuantizationConfig()
+    global_config = brevitas_config.QLayerConfig()
     config = brevitas_config.Config(
         global_quant_config=global_config,
         # laywise must be true if the backend type is layerwise
@@ -59,7 +59,7 @@ invalid_combinations = [
 
 @pytest.mark.parametrize("algo_combinations", invalid_combinations)
 def test_invalid_algorithm_combinations(algo_combinations):
-    global_config = brevitas_config.QuantizationConfig()
+    global_config = brevitas_config.QLayerConfig()
     config = brevitas_config.Config(global_quant_config=global_config, algo_config=algo_combinations)
 
     with pytest.raises(ValueError):
@@ -76,8 +76,8 @@ valid_combinations = [
 
 @pytest.mark.parametrize("algo_combinations", valid_combinations)
 def test_valid_algorithm_combinations(algo_combinations):
-    global_config = brevitas_config.QuantizationConfig(
-        weight=brevitas_config.QuantizationSpec(), input_tensors=brevitas_config.QuantizationSpec()
+    global_config = brevitas_config.QLayerConfig(
+        weight=brevitas_config.QTensorConfig(), input_tensors=brevitas_config.QTensorConfig()
     )
     config = brevitas_config.Config(global_quant_config=global_config, algo_config=algo_combinations)
 
@@ -95,7 +95,7 @@ algos_needing_input_quant = [
 
 @pytest.mark.parametrize("algo", algos_needing_input_quant)
 def test_missing_input_quant(algo):
-    global_config = brevitas_config.QuantizationConfig(weight=brevitas_config.QuantizationSpec(), input_tensors=None)
+    global_config = brevitas_config.QLayerConfig(weight=brevitas_config.QTensorConfig(), input_tensors=None)
     config = brevitas_config.Config(global_quant_config=global_config, algo_config=algo)
 
     with pytest.raises(ValueError):
@@ -103,14 +103,14 @@ def test_missing_input_quant(algo):
 
 
 def test_invalid_asym_float_quant():
-    weight_spec = brevitas_config.QuantizationSpec(
+    weight_spec = brevitas_config.QTensorConfig(
         quant_type=brevitas_config.QuantType.float_quant,
         exponent_bit_width=4,
         mantissa_bit_width=3,
         # must be symmetric with floating point quantization
         symmetric=False,
     )
-    global_config = brevitas_config.QuantizationConfig(weight=weight_spec)
+    global_config = brevitas_config.QLayerConfig(weight=weight_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     with pytest.raises(ValueError):
@@ -118,8 +118,8 @@ def test_invalid_asym_float_quant():
 
 
 def test_invalid_bias_without_input_quant():
-    bias_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(bias=bias_spec)
+    bias_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(bias=bias_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     with pytest.raises(ValueError):
@@ -127,9 +127,9 @@ def test_invalid_bias_without_input_quant():
 
 
 def test_valid_input_bias_quant():
-    input_spec = brevitas_config.QuantizationSpec()
-    bias_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(input_tensors=input_spec, bias=bias_spec)
+    input_spec = brevitas_config.QTensorConfig()
+    bias_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(input_tensors=input_spec, bias=bias_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     try:
@@ -139,11 +139,11 @@ def test_valid_input_bias_quant():
 
 
 def test_invalid_bias_quant_type():
-    input_spec = brevitas_config.QuantizationSpec()
-    bias_spec = brevitas_config.QuantizationSpec(
+    input_spec = brevitas_config.QTensorConfig()
+    bias_spec = brevitas_config.QTensorConfig(
         quant_type=brevitas_config.QuantType.float_quant, exponent_bit_width=4, mantissa_bit_width=3
     )
-    global_config = brevitas_config.QuantizationConfig(input_tensors=input_spec, bias=bias_spec)
+    global_config = brevitas_config.QLayerConfig(input_tensors=input_spec, bias=bias_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     with pytest.raises(ValueError):
@@ -152,7 +152,7 @@ def test_invalid_bias_quant_type():
 
 def test_verify_bias_spec_no_error():
     # these arguments are ignored but generated a series of warning dialogs to tell the user
-    spec = brevitas_config.QuantizationSpec(
+    spec = brevitas_config.QTensorConfig(
         qscheme=quark_type.QSchemeType.per_channel,
         symmetric=False,
         scale_type=quark_type.ScaleType.pof2,
@@ -167,7 +167,7 @@ def test_verify_bias_spec_no_error():
 
 
 def test_verify_preprocess_wrong_order_no_error():
-    global_config = brevitas_config.QuantizationConfig()
+    global_config = brevitas_config.QLayerConfig()
     config = brevitas_config.Config(
         global_quant_config=global_config,
         pre_quant_opt_config=[brevitas_algos.PreQuantOptConfig(), brevitas_algos.Preprocess()],

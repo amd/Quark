@@ -1,21 +1,22 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Any, Dict, List, Union
+from typing import Any
 
 import torch
 
-from quark.torch.quantization.config.config import QuantizationConfig, QuantizationSpec
+from quark.torch.quantization import QLayerConfig, QTensorConfig
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
 
 
 class QuantMixin(torch.nn.Module):
-    def init_quantizer(self, quant_config: QuantizationConfig, device: torch.device, **kwargs: Any) -> None:
+    def init_quantizer(self, quant_config: QLayerConfig, device: torch.device, **kwargs: Any) -> None:
         self._input_qspec = quant_config.input_tensors
         self._output_qspec = quant_config.output_tensors
         self._weight_qspec = quant_config.weight
         self._bias_qspec = quant_config.bias
+        self.device = device
         self._input_quantizer = (
             FakeQuantizeBase.get_fake_quantize(self._input_qspec, device, **kwargs)
             if self._input_qspec is not None
@@ -38,36 +39,37 @@ class QuantMixin(torch.nn.Module):
         )
 
     @property
-    def input_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
+    def input_quantizer(self) -> FakeQuantizeBase | SequentialQuantize | None:
         return self._input_quantizer
 
     @property
-    def weight_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
+    def weight_quantizer(self) -> FakeQuantizeBase | SequentialQuantize | None:
         return self._weight_quantizer
 
     @property
-    def output_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
+    def output_quantizer(self) -> FakeQuantizeBase | SequentialQuantize | None:
         return self._output_quantizer
 
     @property
-    def bias_quantizer(self) -> Union[FakeQuantizeBase, SequentialQuantize, None]:
+    def bias_quantizer(self) -> FakeQuantizeBase | SequentialQuantize | None:
         return self._bias_quantizer
 
     @property
-    def input_qspec(self) -> Union[QuantizationSpec, list[QuantizationSpec], None]:
-        return self._input_qspec
+    def input_qspec(self) -> QTensorConfig | list[QTensorConfig] | None:
+        # TODO: `self._input_qspec` is type hinted as `BaseQTensorConfig | list[BaseQTensorConfig] | None`, which is not correct.
+        return self._input_qspec  # type: ignore
 
     @property
-    def output_qspec(self) -> Union[QuantizationSpec, list[QuantizationSpec], None]:
-        return self._output_qspec
+    def output_qspec(self) -> QTensorConfig | list[QTensorConfig] | None:
+        return self._output_qspec  # type: ignore
 
     @property
-    def weight_qspec(self) -> Union[QuantizationSpec, list[QuantizationSpec], None]:
-        return self._weight_qspec
+    def weight_qspec(self) -> QTensorConfig | list[QTensorConfig] | None:
+        return self._weight_qspec  # type: ignore
 
     @property
-    def bias_qspec(self) -> Union[QuantizationSpec, list[QuantizationSpec], None]:
-        return self._bias_qspec
+    def bias_qspec(self) -> QTensorConfig | list[QTensorConfig] | None:
+        return self._bias_qspec  # type: ignore
 
     def get_quant_input(self, x: torch.Tensor) -> torch.Tensor:
         if self._input_quantizer is not None:
@@ -86,7 +88,7 @@ class QuantMixin(torch.nn.Module):
             return x
 
     def get_quant_weight(self, x: torch.Tensor) -> torch.Tensor:
-        if self._weight_quantizer is not None:
+        if self._weight_quantizer is not None and not self._weight_quantizer.frozen_params:
             x = self._weight_quantizer(x)
             assert isinstance(x, torch.Tensor)
             return x
@@ -94,7 +96,7 @@ class QuantMixin(torch.nn.Module):
             return x
 
     def get_quant_bias(self, x: Any) -> Any:
-        if self._bias_quantizer and x is not None:
+        if self._bias_quantizer is not None and x is not None and not self._bias_quantizer.frozen_params:
             x = self._bias_quantizer(x)
             assert isinstance(x, torch.Tensor)
             return x

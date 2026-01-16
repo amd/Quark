@@ -10,14 +10,14 @@ import quark.torch.kernel  # noqa
 import torch
 import torch.nn as nn
 import quark.torch.quantization.nn.modules.quantize_conv_bn_fused as conv_bn_fused
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
+from quark.torch.quantization.config.config import QTensorConfig, QLayerConfig, QConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConvTranspose2d
 from quark.torch import ModelQuantizer
 from quark.shares.utils.testing_utils import torch_device
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -37,7 +37,7 @@ def test_QuantizedConvBatchNorm2d():
         # torch.nn.Conv3d: (torch.nn.BatchNorm3d, (1, 3, 16, 16, 16), conv_bn_fused.QuantizedConvBatchNorm3d),
         # torch.nn.ConvTranspose3d: (torch.nn.BatchNorm3d, (1, 3, 16, 16, 16), conv_bn_fused.QuantizedConvTransposeBatchNorm3d),
     }
-    empty_config = QuantizationConfig()
+    empty_config = QLayerConfig()
     for conv, (bn, input_size, q_conv) in conv_map.items():
         input = torch.ones(input_size).to(torch_device)
         float_conv = conv(in_channels=3, out_channels=16, kernel_size=3, stride=1, bias=False).to(torch_device)
@@ -53,7 +53,7 @@ def test_QuantizedConvBatchNorm2d():
         )
 
     # test forward
-    quant_config = QuantizationConfig(weight=INT8_PER_TENSOR_SPEC, bias=INT8_PER_TENSOR_SPEC)
+    quant_config = QLayerConfig(weight=INT8_PER_TENSOR_SPEC, bias=INT8_PER_TENSOR_SPEC)
     for conv, (bn, input_size, q_conv) in conv_map.items():
         input = torch.randn(input_size).to(torch_device)
         float_conv = conv(in_channels=3, out_channels=16, kernel_size=3, stride=1, bias=True).to(torch_device)
@@ -71,7 +71,7 @@ def test_transpose_conv():
     transposeconv = torch.nn.ConvTranspose2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1).to(
         torch_device
     )
-    quant_config = QuantizationConfig()
+    quant_config = QLayerConfig()
     quant_transpose_conv = QuantConvTranspose2d.from_float(
         transposeconv, quant_config, True, transposeconv.weight, transposeconv.bias
     )
@@ -115,9 +115,9 @@ def test_transpose_model_quant():
     torch.cuda.empty_cache()
     batch_shape = [4, 3, 56, 56]
     example_inputs = torch.rand(batch_shape).to(torch_device)
-    quant_config = QuantizationConfig(input_tensors=None, output_tensors=None, weight=None, bias=None)
+    quant_config = QLayerConfig(input_tensors=None, output_tensors=None, weight=None, bias=None)
     # eager mode quant
-    eager_quant_conf = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.eager_mode)
+    eager_quant_conf = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.eager_mode)
     quantizer = ModelQuantizer(eager_quant_conf)
     model = SimpleCNNWithTransposeConv().eval().to(torch_device)
     quantized_model = quantizer.quantize_model(model, [example_inputs for _ in range(2)])
@@ -132,7 +132,7 @@ def test_transpose_model_quant():
     float_model = SimpleCNNWithTransposeConv().to(torch_device).eval()
     float_out = float_model(example_inputs)
     graph_model = torch.export.export_for_training(float_model, (example_inputs,)).module()
-    fx_quant_conf = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+    fx_quant_conf = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(fx_quant_conf)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])
     quant_out = quantized_model(example_inputs)
@@ -142,7 +142,7 @@ def test_transpose_model_quant():
     print("Finish test: SimpleCNNWithTransposeConv model FX mode quant(no quant)")
 
     # fx model quant with int8 quant
-    int8_quant_config = QuantizationConfig(
+    int8_quant_config = QLayerConfig(
         weight=INT8_PER_TENSOR_SPEC,
         bias=INT8_PER_TENSOR_SPEC,
         output_tensors=INT8_PER_TENSOR_SPEC,
@@ -150,7 +150,7 @@ def test_transpose_model_quant():
     )
     float_model = SimpleCNNWithTransposeConv().to(torch_device).eval()
     graph_model = torch.export.export_for_training(float_model, (example_inputs,)).module()
-    fx_quant_conf = Config(global_quant_config=int8_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+    fx_quant_conf = QConfig(global_quant_config=int8_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(fx_quant_conf)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])
     quant_out = quantized_model(example_inputs)

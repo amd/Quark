@@ -12,9 +12,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
+from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
@@ -124,6 +124,7 @@ def prepare_model(output_dir):
         keep_initializers_as_inputs=False,
         do_constant_folding=False,
         opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -170,12 +171,14 @@ def infer_quantized_model(input_data, quantized_model_path):
 
 
 def tensor_quantize(input_data, betweenops, output_dir):
+    original_log_level = ScreenLogger._shared_level
     data_reader = prepare_data(input_data)
     input_model_path, output_model_path = prepare_model(output_dir)
     quant_config = prepare_config(XINT8_CONFIG, betweenops)
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(input_data, quantized_model_path)
+    ScreenLogger.set_shared_level(original_log_level)  # Restore the original log level
     return output, quantized_model_path
 
 
@@ -194,13 +197,10 @@ class TestTensorQuantize(unittest.TestCase):
 
     @use_temporary_directory
     def test_quantize_MultiMulAddModel_raise_config(self, tmpdir: str):
-        with self.assertLogs("quark.onnx.quantize_screen", level="WARNING") as cm:
+        with self.assertLogs("quark.onnx.postprocess.postproc_screen", level="WARNING") as cm:
             output, quantized_model_path = tensor_quantize(input_data, ("Conv", "Relu"), tmpdir)
         self.assertTrue(
-            any(
-                "'RemoveQDQBetweenOps' should be a list of (str, str) tuples. Actual: " in message
-                for message in cm.output
-            )
+            any("'RemoveQDQBetweenOps' should be a list of (str, str) tuples" in message for message in cm.output)
         )
         comp_equal = np.allclose(output, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)

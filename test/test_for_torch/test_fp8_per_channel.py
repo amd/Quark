@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Dataset
 
 import quark.torch.kernel  # noqa
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
 
@@ -54,20 +54,20 @@ class MyDataset(Dataset):
     ],
 )
 def test_weight_scale_dim(dtype, dim):
-    FP8_WEIGHT_PER_CHANNEL_SPEC = QuantizationSpec(
+    FP8_WEIGHT_PER_CHANNEL_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
         ch_axis=dim,
         is_dynamic=False,
     )
-    TEST_WEIGHT = QuantizationConfig(weight=FP8_WEIGHT_PER_CHANNEL_SPEC)
+    TEST_WEIGHT = QLayerConfig(weight=FP8_WEIGHT_PER_CHANNEL_SPEC)
     model = SimpleCNN()
     model.fc.weight = torch.nn.Parameter(torch.ones([2, 4]) * 0.1)
     model(input_tensor)
     dataset = MyDataset()
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
-    quant_config = Config(global_quant_config=TEST_WEIGHT)
+    quant_config = QConfig(global_quant_config=TEST_WEIGHT)
     quantizer = ModelQuantizer(quant_config)
     quant_model = quantizer.quantize_model(model, dataloader)
     assert quant_model.fc._weight_quantizer.scale.shape[0] == model.fc.weight.shape[dim]

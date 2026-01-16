@@ -6,7 +6,7 @@
 import pytest
 import torch
 
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType
 from quark.torch.quantization.observer.observer import PerBlockBFPObserver
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize
@@ -2989,7 +2989,7 @@ def load_bfp_kernel_result():
 def fake_quantize_bfp(test_scene, is_dynamic: bool = True):
     test_tensor = generate_test_case_input().get(test_scene)
     test_tensor = test_tensor.view(torch.float32)
-    spec = QuantizationSpec(
+    spec = QTensorConfig(
         dtype=Dtype.bfp16,
         observer_cls=PerBlockBFPObserver,
         qscheme=QSchemeType.per_group,
@@ -3007,17 +3007,17 @@ def fake_quantize_bfp(test_scene, is_dynamic: bool = True):
     return quark_output
 
 
-test_scenes = [k for k in generate_test_case_input().keys()]
+test_scenes = [k for k in generate_test_case_input()]
 
 
 @pytest.mark.parametrize("test_scene", test_scenes)
 def test_fake_quantize_bfp(test_scene):
-    quark_output = fake_quantize_bfp(test_scene)
+    _ = fake_quantize_bfp(test_scene)
 
 
 @pytest.mark.parametrize("test_scene", test_scenes)
 def test_fake_quantize_bfp_static(test_scene):
-    quark_output = fake_quantize_bfp(test_scene, is_dynamic=False)
+    _ = fake_quantize_bfp(test_scene, is_dynamic=False)
 
 
 compare_scenes = ["normal", "zeros", "nan", "inf", "maximum"]

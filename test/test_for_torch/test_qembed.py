@@ -11,14 +11,14 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from quark.torch import ModelQuantizer, load_params, save_params
 from quark.torch.quantization import (
-    Config,
     Int8PerChannelSpec,
     Int8PerTensorSpec,
-    QuantizationConfig,
+    QConfig,
+    QLayerConfig,
     Uint4PerChannelSpec,
     Uint4PerTensorSpec,
     Uint8PerTensorSpec,
@@ -32,7 +32,7 @@ offsets = torch.tensor([0], dtype=torch.long)
 
 class SimpleDLRM(nn.Module):
     def __init__(self, padding_idx):
-        super(SimpleDLRM, self).__init__()
+        super().__init__()
         self.embedding_bag = nn.EmbeddingBag(4, 128, mode="sum", padding_idx=padding_idx)
         self.fc = nn.Sequential(
             nn.Linear(in_features=128, out_features=10), nn.ReLU(), nn.Linear(in_features=10, out_features=10)
@@ -46,7 +46,7 @@ class SimpleDLRM(nn.Module):
 
 class SimpleEmbed(nn.Module):
     def __init__(self, padding_idx):
-        super(SimpleEmbed, self).__init__()
+        super().__init__()
         self.embedding = nn.Embedding(4, 128, padding_idx=padding_idx)
         self.fc = nn.Sequential(
             nn.Linear(in_features=128, out_features=10), nn.ReLU(), nn.Linear(in_features=10, out_features=10)
@@ -82,16 +82,12 @@ class EmbeddingBagDataset(Dataset):
 
 def test_net():
     INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(
-        observer_method="histogrampro", symmetric=False, scale_type="float", round_method="half_even", is_dynamic=False
+        observer_method="histogrampro", symmetric=False, is_dynamic=False
     ).to_quantization_spec()
 
-    UINT8_PER_TENSOR_SPEC = Uint8PerTensorSpec(
-        observer_method="histogrampro", symmetric=False, scale_type="float", round_method="half_even", is_dynamic=False
-    ).to_quantization_spec()
+    UINT8_PER_TENSOR_SPEC = Uint8PerTensorSpec(observer_method="histogrampro", is_dynamic=False).to_quantization_spec()
 
-    UINT4_PER_TENSOR_SPEC = Uint4PerTensorSpec(
-        observer_method="histogrampro", symmetric=False, scale_type="float", round_method="half_even", is_dynamic=True
-    ).to_quantization_spec()
+    UINT4_PER_TENSOR_SPEC = Uint4PerTensorSpec(observer_method="histogrampro", is_dynamic=True).to_quantization_spec()
     params = []
     for observal_val in [INT8_PER_TENSOR_SPEC, UINT8_PER_TENSOR_SPEC, UINT4_PER_TENSOR_SPEC]:
         for zero_point_type in ["int32", "float32"]:
@@ -101,26 +97,21 @@ def test_net():
     for para in params:
         observal_val, zero_point_type, padding_idx = para
         print(f"observal_val is {observal_val}, zero_point_type is {zero_point_type}, padding_idx is {padding_idx}")
-        INT8_PER_CHANNEL_SPEC = Int8PerChannelSpec(
-            symmetric=True, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-        ).to_quantization_spec()
-        quant_config = QuantizationConfig(
+        INT8_PER_CHANNEL_SPEC = Int8PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
+        quant_config = QLayerConfig(
             input_tensors=observal_val, weight=INT8_PER_CHANNEL_SPEC, output_tensors=observal_val, bias=observal_val
         )
 
         INT4_PER_TENSOR_SPEC = Uint4PerChannelSpec(
-            symmetric=False,
-            scale_type="float",
-            round_method="half_even",
             ch_axis=0,
             is_dynamic=False,
             zero_point_type=zero_point_type,
         ).to_quantization_spec()
         layer_type_quant_config = {
-            torch.nn.modules.sparse.EmbeddingBag: QuantizationConfig(weight=INT4_PER_TENSOR_SPEC),
-            torch.nn.modules.sparse.Embedding: QuantizationConfig(weight=INT4_PER_TENSOR_SPEC),
+            torch.nn.modules.sparse.EmbeddingBag: QLayerConfig(weight=INT4_PER_TENSOR_SPEC),
+            torch.nn.modules.sparse.Embedding: QLayerConfig(weight=INT4_PER_TENSOR_SPEC),
         }
-        quant_config = Config(
+        quant_config = QConfig(
             global_quant_config=quant_config,
             layer_type_quant_config=layer_type_quant_config,
             quant_mode=QuantizationMode.eager_mode,
@@ -128,8 +119,6 @@ def test_net():
 
         print("==================================Begin test embeddingbag =================================")
         model = SimpleDLRM(padding_idx)
-        dataset = EmbeddingDataset()
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
         quantizer = ModelQuantizer(quant_config)
         quant_model = quantizer.quantize_model(model, [])
@@ -155,8 +144,6 @@ def test_net():
 
         print("==============================Begin test embedding ========================================")
         model = SimpleEmbed(padding_idx)
-        dataset = EmbeddingBagDataset()
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
         quantizer = ModelQuantizer(quant_config)
         quant_model = quantizer.quantize_model(model, [])

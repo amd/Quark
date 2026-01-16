@@ -8,12 +8,12 @@
 #include "bfp/cuda/bfp_kernel.h"
 
 void to_bfp(
-  const Ort::Value &tensor, int64_t bit_width, int64_t block_size,
-  int64_t rounding_mode, Ort::Value &out,
+  const Ort::Value& tensor, int64_t bit_width, int64_t block_size,
+  int64_t rounding_mode, Ort::Value& out,
   int64_t use_compiler_version_cpu_kernel
 ) {
-  const float *input = tensor.GetTensorData<float>();
-  float *output = out.GetTensorMutableData<float>();
+  const float* input = tensor.GetTensorData<float>();
+  float* output = out.GetTensorMutableData<float>();
   size_t element_count = out.GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<int64_t> dimensions =
     tensor.GetTensorTypeAndShapeInfo().GetShape();
@@ -25,20 +25,20 @@ void to_bfp(
   );
 }
 
-void to_bfloat(Ort::Value &tensor) {
-  float *input = tensor.GetTensorMutableData<float>();
+void to_bfloat(Ort::Value& tensor) {
+  float* input = tensor.GetTensorMutableData<float>();
   size_t element_count = tensor.GetTensorTypeAndShapeInfo().GetElementCount();
 
   LaunchBFloatCUDAKernel(input, element_count);
 }
 
 void to_bfp_prime_cuda(
-  const Ort::Value &tensor, int64_t bit_width, int64_t block_size,
+  const Ort::Value& tensor, int64_t bit_width, int64_t block_size,
   int64_t sub_block_size, int64_t sub_block_shift_bits, int64_t rounding_mode,
-  Ort::Value &out
+  Ort::Value& out
 ) {
-  const float *input = tensor.GetTensorData<float>();
-  float *output = out.GetTensorMutableData<float>();
+  const float* input = tensor.GetTensorData<float>();
+  float* output = out.GetTensorMutableData<float>();
   size_t element_count = out.GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<int64_t> dimensions =
     tensor.GetTensorTypeAndShapeInfo().GetShape();
@@ -51,12 +51,12 @@ void to_bfp_prime_cuda(
 }
 
 void to_bfp_prime(
-  const Ort::Value &tensor, int64_t bit_width, int64_t block_size,
+  const Ort::Value& tensor, int64_t bit_width, int64_t block_size,
   int64_t sub_block_size, int64_t sub_block_shift_bits, int64_t rounding_mode,
-  Ort::Value &out
+  Ort::Value& out
 ) {
-  const float *input = tensor.GetTensorData<float>();
-  float *output = out.GetTensorMutableData<float>();
+  const float* input = tensor.GetTensorData<float>();
+  float* output = out.GetTensorMutableData<float>();
   size_t element_count = out.GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<int64_t> dimensions =
     tensor.GetTensorTypeAndShapeInfo().GetShape();

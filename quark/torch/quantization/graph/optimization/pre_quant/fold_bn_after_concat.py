@@ -1,16 +1,15 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import operator
-from typing import List
 
 import torch
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
     is_all_nodes_save_parameters,
@@ -200,7 +199,7 @@ def fold_bn_after_concat(m: GraphModule) -> GraphModule:
                         bn_eps,
                         bn_momentum,
                         False,
-                        QuantizationConfig(),
+                        QLayerConfig(),
                     ).to(device=device)
                 elif target_node.target in Target_Ops and is_convtranspose2d_node(target_node):
                     transposeconv2d_n = target_node
@@ -249,7 +248,7 @@ def fold_bn_after_concat(m: GraphModule) -> GraphModule:
                         eps=bn_eps,
                         momentum=bn_momentum,
                         freeze_bn_stats=False,
-                        quant_config=QuantizationConfig(),
+                        quant_config=QLayerConfig(),
                     ).to(device=device)
                 # elif target_node.target in Target_Ops and is_linear_node(target_node):
                 #     '''

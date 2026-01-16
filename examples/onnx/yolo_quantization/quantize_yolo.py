@@ -5,14 +5,13 @@
 import argparse
 import os
 from argparse import Namespace
-from typing import Tuple
 
 import numpy as np
 import onnx
 import onnxruntime as ort
 import torch
 from evalution import Trainer
-from onnxsim import simplify
+from onnxslim import slim
 from super_gradients.common.object_names import Models
 from super_gradients.training import models
 from super_gradients.training.dataloaders import coco2017_val_yolo_nas, coco2017_val_yolox
@@ -20,11 +19,8 @@ from super_gradients.training.metrics import DetectionMetrics, DetectionMetrics_
 from super_gradients.training.models import YoloXPostPredictionCallback
 from super_gradients.training.models.detection_models.pp_yolo_e import PPYoloEPostPredictionCallback
 
-from quark.onnx import ModelQuantizer
+from quark.onnx import CLEConfig, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.onnx.operators.custom_ops import get_library_path
-from quark.onnx.quantization.config.algorithm import CLEConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
 
 
 class ImageDataReader:
@@ -107,11 +103,11 @@ def export_onnx_model(model_name: str) -> tuple[str, str]:
         do_constant_folding=True,
         opset_version=18,
         input_names=["input.1"],
+        dynamo=False,
     )
 
     model = onnx.load(input_model_path)
-    model_simp, check = simplify(model)
-    assert check, "Simplified ONNX model could not be validated"
+    model_simp = slim(model)
     onnx.save_model(model_simp, input_model_path)
     print(f"ONNX model has been exported successfully at {input_model_path}.")
     return input_model_path, quantize_model_path

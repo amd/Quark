@@ -21,68 +21,35 @@
 from typing import Optional
 import scipy.linalg
 import torch
-import torch.nn.functional as F
 
 
-__all__ = ["random_hadamard_matrix", "get_hadamard_matrices", "hardmard_transform"]
+__all__ = ["random_hadamard_matrix", "get_hadamard_matrices"]
 
 
 def is_pow2(n: int) -> bool:
     return (n & (n - 1) == 0) and (n > 0)
 
 
-def _get_hadamard_K(n: int, transpose: bool = False, force: bool = False) -> tuple[torch.Tensor, int]:
+def _get_hadamard_K(n: int) -> tuple[torch.Tensor, int]:
     """Get the Hadamard matrix and its dimension for a given input size."""
     hadamard_K, K = None, None
-    if n % 172 == 0:  # llama-2-7b up
-        assert (is_pow2(n // 172))
-        K = 172
-        hadamard_K = _get_hadamard_172().T if transpose else _get_hadamard_172()
-    elif n % 156 == 0:  # llama-1-30b 3x hidden
-        assert (is_pow2(n // 156))
-        K = 156
-        hadamard_K = _get_hadamard_156().T if transpose else _get_hadamard_156()
-    elif n % 140 == 0:  # llama-1-30b intermediate
-        assert (is_pow2(n // 140))
-        K = 140
-        hadamard_K = _get_hadamard_140().T if transpose else _get_hadamard_140()
-    elif n % 108 == 0:  # llama-1-13b intermediate
-        assert (is_pow2(n // 108))
-        K = 108
-        hadamard_K = _get_hadamard_108().T if transpose else _get_hadamard_108()
-    elif n % 60 == 0:  # llama-1-13b 3x hidden
-        assert (is_pow2(n // 60))
-        K = 60
-        hadamard_K = _get_hadamard_60().T if transpose else _get_hadamard_60()
-    elif n % 52 == 0:  # llama-1-13b 1x hidden
-        assert (is_pow2(n // 52))
-        K = 52
-        hadamard_K = _get_hadamard_52().T if transpose else _get_hadamard_52()
-    elif n % 36 == 0:
-        assert (is_pow2(n // 36))
-        K = 36
-        hadamard_K = _get_hadamard_36().T if transpose else _get_hadamard_36()
-    elif n % 28 == 0:
-        assert (is_pow2(n // 28))
-        K = 28
-        hadamard_K = _get_hadamard_28().T if transpose else _get_hadamard_28()
-    elif n % 40 == 0:
-        assert (is_pow2(n // 40))
-        K = 40
-        hadamard_K = _get_hadamard_40().T if transpose else _get_hadamard_40()
-    elif n % 20 == 0:
-        assert (is_pow2(n // 20))
-        K = 20
-        hadamard_K = _get_hadamard_20().T if transpose else _get_hadamard_20()
-    elif n % 12 == 0:
-        assert (is_pow2(n // 12))
-        K = 12
-        hadamard_K = _get_hadamard_12().T if transpose else _get_hadamard_12()
-    else:
-        assert (is_pow2(n))
-        if force:
-            hadamard_K = torch.Tensor(scipy.linalg.hadamard(n))
+
+
+    if is_pow2(n):
+        hadamard_K = torch.Tensor(scipy.linalg.hadamard(n))
         K = 1
+    else:
+        for size in KNOWN_HADAMARD_MATRICES.keys():
+            if n % size == 0 and is_pow2(n // size):
+                K = size
+
+                get_hadamard_func = KNOWN_HADAMARD_MATRICES[size]
+
+                hadamard_K = get_hadamard_func()
+
+                break
+        else:
+            raise ValueError(f"Could not find an Hadamard matrix for the size n={n}.")
 
     assert isinstance(hadamard_K, torch.Tensor)
     return hadamard_K, K
@@ -91,33 +58,61 @@ def _get_hadamard_K(n: int, transpose: bool = False, force: bool = False) -> tup
 def _matmul_hadU(X: torch.Tensor, hadamard_K: torch.Tensor, K: int) -> torch.Tensor:
     """Apply Hadamard matrix to the input tensor."""
     n = X.shape[-1]
-    input = X.clone().view(-1, n, 1)
-    output = input.clone()
-    while input.shape[1] > K:
-        input = input.view(input.shape[0], input.shape[1] // 2, 2, input.shape[2])
-        output = output.view(input.shape)
-        output[:, :, 0, :] = input[:, :, 0, :] + input[:, :, 1, :]
-        output[:, :, 1, :] = input[:, :, 0, :] - input[:, :, 1, :]
-        output = output.view(input.shape[0], input.shape[1], -1)
-        (input, output) = (output, input)
+
+    # Cloning as X should not be modified in place, and reshape attempts to return a view by default.
+    inp = X.clone().reshape(-1, n, 1)
+
+    output = inp.clone()
+    while inp.shape[1] > K:
+        inp = inp.view(inp.shape[0], inp.shape[1] // 2, 2, inp.shape[2])
+        output = output.view(inp.shape)
+        output[:, :, 0, :] = inp[:, :, 0, :] + inp[:, :, 1, :]
+        output[:, :, 1, :] = inp[:, :, 0, :] - inp[:, :, 1, :]
+        output = output.view(inp.shape[0], inp.shape[1], -1)
+        (inp, output) = (output, inp)
     del output
 
     if K > 1:
         # Do not explicitly repeat - OOM
-        # input = torch.bmm(
-        #     hadK.repeat(len(input), 1, 1).to(input.device).to(input.dtype), input)
+        # inp = torch.bmm(
+        #     hadK.repeat(len(inp), 1, 1).to(inp.device).to(inp.dtype), inp)
         # Use bcast instead
-        input = hadamard_K.view(1, K, K).to(input) @ input
 
-    return input.view(X.shape) / torch.tensor(n).sqrt()
+        # Transpose hadamard_K to match `get_rotation_matrix`, as we moved (x @ R) to (R.T @ x.T) here.
+        inp = hadamard_K.T.view(1, K, K).to(inp) @ inp
+
+    return inp.view(X.shape) / torch.tensor(n).sqrt()
 
 
-def matmul_hadU(X: torch.Tensor, hadamard_K: Optional[torch.Tensor] = None, K: Optional[int] = None) -> torch.Tensor:
-    """ Find Hadamard matrix and apply to the input tensor."""
+def matmul_hadU(X: torch.Tensor, hadamard_K: Optional[torch.Tensor] = None, K: Optional[int] = None, inverse: bool = False) -> torch.Tensor:
+    """
+    Find Hadamard matrix and apply to the input tensor.
+
+    This is equivalent to using:
+
+    .. code-block:: python
+
+        rotation = get_rotation_matrix(X.shape[-1])
+
+        X = X @ rotation
+
+    but in a slight more memory-efficient way.
+
+    The option `inverse=True` is equivalent to
+
+    .. code-block:: python
+
+        rotation = get_rotation_matrix(X.shape[-1])
+
+        X = X @ rotation.T
+    """
     n = X.shape[-1]
 
     if hadamard_K is None or K is None:
-        hadamard_K, K = _get_hadamard_K(n, force=True)
+        hadamard_K, K = _get_hadamard_K(n)
+
+    if inverse:
+        hadamard_K = hadamard_K.T
 
     return _matmul_hadU(X, hadamard_K, K)
 
@@ -133,31 +128,17 @@ def random_hadamard_matrix(size: int) -> torch.Tensor:
 
 def get_hadamard_matrices(n: int) -> tuple[torch.Tensor, Optional[torch.Tensor], int]:
     """Get the Hadamard matrix and its dimension for a given input size."""
-    H2, K2 = _get_hadamard_K(n, force=True)
+    H2, K2 = _get_hadamard_K(n)
+
     if K2 > 1:
-        H1, K1 = _get_hadamard_K(n // K2, force=True)
+        # Case where `n` is not not a power of two.
+        H1, K1 = _get_hadamard_K(n // K2)
+
         assert K1 == 1
     else:
-        H1, K1 = H2, K2
+        H1 = H2
+
     return H1, H2, K2
-
-
-def hardmard_transform(X: torch.Tensor,
-                       H1: torch.Tensor,
-                       H2: Optional[torch.Tensor],
-                       K: int,
-                       scaled: bool = False) -> torch.Tensor:
-    """Apply Hadamard matrix to the input tensor."""
-    shape = X.shape
-    n = shape[-1]
-    XH = X.view(-1, K, n // K)
-    XH = F.linear(XH, H1)
-    if not scaled:
-        XH = XH.mul_(1.0 / torch.tensor(n).sqrt().to(XH.device, XH.dtype))
-    if K > 1:
-        XH = H2 @ XH
-    return XH.view(shape)
-
 
 # region hadamard matrices
 # hadamard matrices for had12, had36.pal2, had52,will, had60.pal, had108.pal, had140.pal, had156.will, had172.will:
@@ -4284,3 +4265,17 @@ def _get_hadamard_172() -> torch.Tensor:
          -1, +1, -1, +1, +1, +1, -1, +1, +1, -1, -1, +1, +1, -1, +1, +1, +1, -1, +1, -1, +1, +1, +1, +1, -1, -1, +1, +1,
          -1, -1, -1, +1, ],
     ])
+
+KNOWN_HADAMARD_MATRICES = {
+    172: _get_hadamard_172,  # llama-2-7b up
+    156: _get_hadamard_156,  # llama-1-30b 3x hidden
+    140: _get_hadamard_140,  # llama-1-30b intermediate
+    108: _get_hadamard_108,  # llama-1-13b 3x hidden
+    60: _get_hadamard_60,  # llama-1-13b 1x hidden
+    52: _get_hadamard_52,
+    40: _get_hadamard_40,
+    36: _get_hadamard_36,
+    28: _get_hadamard_28,
+    20: _get_hadamard_20,
+    12: _get_hadamard_12
+}

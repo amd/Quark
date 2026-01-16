@@ -6,7 +6,7 @@ import copy
 import gc
 import math
 import time
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 import torch
@@ -18,16 +18,16 @@ from quark.testing import skip_if_no_gpu
 from quark.torch.algorithm.gptq.gptq import fasterquant_inner_graph, record_graphs, replay_fasterquant_inner_graphs
 from quark.torch.export.nn.modules import realquantizer
 from quark.torch.quantization import (
-    Config,
     FP4PerGroupSpec,
     GPTQConfig,
     OCP_MXFP4Spec,
-    QuantizationConfig,
+    QConfig,
+    QLayerConfig,
     Uint4PerChannelSpec,
     Uint4PerGroupSpec,
 )
 from quark.torch.quantization.api import ModelQuantizer
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
 
 
 @skip_if_no_gpu
@@ -76,9 +76,7 @@ def test_gptq_fasterquant_inner_correctness():
     group_size = 32
     percdamp = 0.01
 
-    qspec = Uint4PerChannelSpec(
-        symmetric=False, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-    ).to_quantization_spec()
+    qspec = Uint4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
 
     W = (torch.rand(rows, columns, device=torch_device) - 0.5) * 0.2
 
@@ -86,7 +84,7 @@ def test_gptq_fasterquant_inner_correctness():
 
     nsamples = 10
 
-    for i in range(nsamples):
+    for _ in range(nsamples):
         inp = torch.rand(1, columns, device=torch_device) - 0.5
 
         tmp = inp.shape[0]
@@ -115,11 +113,9 @@ def test_gptq_fasterquant_inner_correctness():
     H = torch.linalg.cholesky(H, upper=True)
     Hinv = H.contiguous()
 
-    qspec_per_group = Uint4PerGroupSpec(
-        group_size=group_size, scale_type="float", ch_axis=1, is_dynamic=False
-    ).to_quantization_spec()
+    qspec_per_group = Uint4PerGroupSpec(group_size=group_size, ch_axis=1, is_dynamic=False).to_quantization_spec()
 
-    quantizer = ScaledFakeQuantize(quant_spec=qspec_per_group, device=torch_device)
+    quantizer = FakeQuantizeBase.get_fake_quantize(quant_spec=qspec_per_group, device=torch_device)
 
     scale = []
     zero = []
@@ -134,7 +130,7 @@ def test_gptq_fasterquant_inner_correctness():
     scales = torch.cat([s.view(-1, 1) for s in scale], dim=1)
     zero_points = torch.cat([z.view(-1, 1) for z in zero], dim=1)
 
-    quantizer = ScaledFakeQuantize(quant_spec=qspec, device=torch_device)
+    quantizer = FakeQuantizeBase.get_fake_quantize(quant_spec=qspec, device=torch_device)
 
     inputs = {
         "Hinv": Hinv,
@@ -200,21 +196,17 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
 
     if dtype == "uint4":
         if qscheme == "per_group":
-            qspec = Uint4PerGroupSpec(
-                scale_type="float", ch_axis=1, is_dynamic=False, group_size=128
-            ).to_quantization_spec()
+            qspec = Uint4PerGroupSpec(ch_axis=1, is_dynamic=False, group_size=128).to_quantization_spec()
         elif qscheme == "per_channel":
             # actorder has no influence in this case.
-            qspec = Uint4PerChannelSpec(
-                symmetric=False, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-            ).to_quantization_spec()
+            qspec = Uint4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
     else:
         if qscheme == "per_group":
-            qspec = OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+            qspec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
         else:
             pytest.skip("ocp mxfp4 not compatible with per_channel, per_tensor")
 
-    global_quant_config = QuantizationConfig(weight=qspec)
+    global_quant_config = QLayerConfig(weight=qspec)
 
     gptq_config = GPTQConfig(
         model_decoder_layers="model.decoder.layers",
@@ -229,7 +221,7 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
         desc_act=act_order,
     )
 
-    config = Config(global_quant_config=global_quant_config, algo_config=[gptq_config])
+    config = QConfig(global_quant_config=global_quant_config, algo_config=[gptq_config])
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -237,7 +229,7 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
     tokenized_outputs = tokenizer(text, return_tensors="pt")
     calib_dataloader = DataLoader(tokenized_outputs["input_ids"])
 
-    model_graph = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+    model_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
     model_graph = model_graph.eval()
 
     # Make the model smaller just to speed up this test.
@@ -250,8 +242,8 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
         model_graph = quantizer.quantize_model(model_graph, calib_dataloader)
 
         # Run GPTQ without using CUDA Graph.
-        with PatchEverywhere("QUARK_GRAPH_DEBUG", True, module_name_prefix="quark"):
-            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id).to(torch_device)
+        with PatchEverywhere("QUARK_DISABLE_CUDA_GRAPH", True, module_name_prefix="quark"):
+            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto").to(torch_device)
             model_no_graph = model_no_graph.eval()
 
             model_no_graph.model.decoder.layers = model_no_graph.model.decoder.layers[:n_layers]
@@ -281,11 +273,9 @@ def test_gptq_cuda_graph_speed(model_id: str):
     else:
         device_map = "auto"
 
-    qspec = Uint4PerGroupSpec(
-        symmetric=False, scale_type="float", round_method="half_even", ch_axis=1, is_dynamic=False, group_size=128
-    ).to_quantization_spec()
+    qspec = Uint4PerGroupSpec(ch_axis=1, is_dynamic=False, group_size=128).to_quantization_spec()
 
-    global_quant_config = QuantizationConfig(weight=qspec)
+    global_quant_config = QLayerConfig(weight=qspec)
 
     if model_id == "facebook/opt-6.7b":
         gptq_config = GPTQConfig(
@@ -313,7 +303,7 @@ def test_gptq_cuda_graph_speed(model_id: str):
             ],
         )
 
-    config = Config(global_quant_config=global_quant_config, algo_config=[gptq_config])
+    config = QConfig(global_quant_config=global_quant_config, algo_config=[gptq_config])
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -321,7 +311,7 @@ def test_gptq_cuda_graph_speed(model_id: str):
     tokenized_outputs = tokenizer(text, return_tensors="pt")
     calib_dataloader = DataLoader(tokenized_outputs["input_ids"])
 
-    model_graph = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map)
+    model_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
     if device_map is None:
         model_graph = model_graph.to(torch_device)
 
@@ -341,8 +331,8 @@ def test_gptq_cuda_graph_speed(model_id: str):
         torch.cuda.empty_cache()
 
         # Run GPTQ without using CUDA Graph.
-        with PatchEverywhere("QUARK_GRAPH_DEBUG", True, module_name_prefix="quark"):
-            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map)
+        with PatchEverywhere("QUARK_DISABLE_CUDA_GRAPH", True, module_name_prefix="quark"):
+            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
             if device_map is None:
                 model_no_graph = model_no_graph.to(torch_device)
 

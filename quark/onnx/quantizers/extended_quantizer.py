@@ -8,7 +8,7 @@
 # license information.
 # --------------------------------------------------------------------------
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import onnx
@@ -17,6 +17,8 @@ from onnx import ModelProto, TensorProto
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.qdq_quantizer import QDQTensorQuantizedValue
 from onnxruntime.quantization.quant_utils import (
+    DEQUANT_OP_NAME,
+    QUANT_OP_NAME,
     QuantizationMode,
     QuantizedValue,
     QuantizedValueType,
@@ -29,9 +31,8 @@ from onnxruntime.quantization.quant_utils import (
     ms_domain,
 )
 
-from quark.shares.utils.log import ScreenLogger
-
-from ..quant_utils import (
+from quark.onnx.postprocess import align_quantize_info, simulate_transforms
+from quark.onnx.quantization.quant_utils import (
     BFP_OP_DEFAULT_ATTRS,
     COP_BFP_OP_NAME,
     COP_DEQUANT_OP_NAME,
@@ -39,26 +40,22 @@ from ..quant_utils import (
     COP_MX_OP_NAME,
     COP_QUANT_OP_NAME,
     MX_OP_DEFAULT_ATTRS,
-    ONNX_BFP_QTYPES_LIST,
-    ONNX_FP_QTYPES_LIST,
-    ExtendedQuantType,
     __producer__,
     __version__,
     get_annotate_tensors,
     get_qdq_to_remove,
-    get_tensor_type_from_qType,
     modified_annotate_input,
     remove_nodes,
 )
-from ..refine import align_quantize_info
-from ..registry import CreateNPUCnnQDQQuantizer
-from ..simulate_dpu import simulate_transforms
-from .qdq_quantizer import VitisQDQQuantizer
+from quark.shares.utils.log import ScreenLogger
+
+from .qdq_quantizer import BaseExtendedQDQQuantizer
+from .registry import CreateNPUCnnQDQQuantizer
 
 logger = ScreenLogger(__name__)
 
 
-class VitisExtendedQuantizer(VitisQDQQuantizer):
+class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
     def __init__(
         self,
         model: ModelProto,
@@ -73,11 +70,15 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         nodes_to_exclude: list[str],
         op_types_to_quantize: list[str],
         calibrate_method: Any,
-        quantized_tensor_type: dict[Any, Any],
         extra_options: dict[str, Any] | None = None,
     ):
+        # These extra assignments are for mypy to determine types
         self.calibrate_method = calibrate_method
-        VitisQDQQuantizer.__init__(
+        self.tensors_to_quantize = {}
+        self.model = ONNXModel(model)
+        self.nodes_to_exclude = nodes_to_exclude
+
+        BaseExtendedQDQQuantizer.__init__(
             self,
             model,
             per_channel,
@@ -91,27 +92,10 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             nodes_to_exclude,
             op_types_to_quantize,
             calibrate_method,
-            quantized_tensor_type,
             extra_options,
         )
-        self.tensors_to_quantize = {}
-        self.model = ONNXModel(model)
-        self.nodes_to_exclude = nodes_to_exclude
 
-        # We add Q/DQ pair to weight (and bias) for float16 and bfloat16 by default,
-        # which is aimed to avoid failure of data persistence check.
-        # For Interger quantization type, we fold Q to support fast finetune.
-        if self.weight_qType in ONNX_FP_QTYPES_LIST:
-            self.add_qdq_pair_to_weight = True
-        else:
-            self.add_qdq_pair_to_weight = False
-        if extra_options is not None and "AddQDQPairToWeight" in extra_options:
-            self.add_qdq_pair_to_weight = extra_options["AddQDQPairToWeight"]
-        self.quantized_tensor_type = quantized_tensor_type
         self.fold_relu = extra_options.get("FoldRelu", False) if extra_options is not None else False
-
-        self.fn_name_w, self.fn_attrs_w = self._fn_name_and_attrs(weight_qType)
-        self.fn_name_a, self.fn_attrs_a = self._fn_name_and_attrs(activation_qType)
 
     def quantize_model(self) -> Any:
         annotate_tensors = get_annotate_tensors(self.model.model)
@@ -154,6 +138,8 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         if "NPULimitationCheck" not in self.extra_options or self.extra_options["NPULimitationCheck"] is True:
             self._quantize_refine()
 
+        self._convert_qdq_nodes()
+
         self.model.clean_initializers()
 
         self.model.model.producer_name = __producer__
@@ -189,19 +175,21 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             return True
         return False
 
-    def _fn_name_and_attrs(self, qType: Any) -> tuple[str, dict[str, Any]]:
-        if qType == ExtendedQuantType.QBFP:
+    def _fn_name_and_attrs(self, fn_type: str) -> tuple[str, dict[str, Any]]:
+        if fn_type.endswith(COP_BFP_OP_NAME):
             fn_name = COP_BFP_OP_NAME
             fn_attrs = copy.deepcopy(BFP_OP_DEFAULT_ATTRS)
             # Get attributes for custom BFP ops
             if self.extra_options is not None and "BFPAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["BFPAttributes"])
-        else:
+        elif fn_type.endswith(COP_MX_OP_NAME):
             fn_name = COP_MX_OP_NAME
             fn_attrs = copy.deepcopy(MX_OP_DEFAULT_ATTRS)
             # Get attributes for custom MX ops
             if self.extra_options is not None and "MXAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["MXAttributes"])
+        else:
+            raise ValueError("Unknown type {fn_type} for BFP and MX quantization")
         return fn_name, fn_attrs
 
     def _create_fn_nodes(
@@ -211,13 +199,20 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         dequant_node_name: str,
         scale_name: str,
         zp_name: str,
-        fn_name: str,
-        fn_attrs: Any,
+        axis: Any = None,
+        convert_to: Any = None,
     ) -> None:
         """
-        create fix_neuron node
+        create a functional QuantizeDequantize node for BFP and MX quantization
         """
-        fix_neuron_node = onnx.helper.make_node(
+        fn_name, fn_attrs = self._fn_name_and_attrs(zp_name)
+        for key in fn_attrs:
+            if key == "axis" and isinstance(axis, int):
+                fn_attrs[key] = axis
+            if key == "convert_to_bfloat_before_bfp" and convert_to is not None:
+                fn_attrs[key] = convert_to
+
+        fn_node = onnx.helper.make_node(
             fn_name,
             [q_input],
             [dq_output],
@@ -226,9 +221,9 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         )
 
         for k, v in fn_attrs.items():
-            fix_neuron_node.attribute.append(onnx.helper.make_attribute(k, v))
+            fn_node.attribute.append(onnx.helper.make_attribute(k, v))
 
-        self.model.add_nodes([fix_neuron_node])
+        self.model.add_nodes([fn_node])
 
     def _create_customqdq_nodes(
         self,
@@ -260,48 +255,45 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
         )
         self.model.add_nodes([qlinear_node, dequant_node])
 
-    def _add_fn_pair_for_weight(self, weight_proto: TensorProto, axis: Any = None, zp_type: Any = None) -> None:
+    def _add_fn_pair_for_initializer(self, weight_proto: TensorProto, tensor_type: Any, axis: Any = None) -> None:
         weight_name = weight_proto.name
-
-        if zp_type is not None:
-            fn_name, fn_attrs = self._fn_name_and_attrs(zp_type)
-            zp_type = get_tensor_type_from_qType(zp_type)
-        else:
-            fn_name, fn_attrs = self.fn_name_w, self.fn_attrs_w
-            zp_type = self.weight_qType
-
-        for key in fn_attrs.keys():
-            if key == "axis" and len(weight_proto.dims) == 1:
-                fn_attrs[key] = 0  # For scalar, the axis should always be 0
-            if key == "convert_to_bfloat_before_bfp":
-                fn_attrs[key] = 0  # Initializer is a constant, no conversion required
-
         if axis is not None:
-            if zp_type in ONNX_BFP_QTYPES_LIST:
-                raise ValueError("Per-Channel does not support BFP data types and its variants.")
             if self.opset_version < 13:
                 raise ValueError("Per-Channel support with QDQ format requires onnx opset version 13 or above.")
+            qtype = self.weight_qType
+            if self.activation_qType == onnx.onnx_pb.TensorProto.UINT8:
+                qtype = onnx.onnx_pb.TensorProto.INT8
+                logger.warning(f"The type of weight {weight_name} is forced to be TensorProto.INT8 for per_channel.")
             q_weight_name, zp_name, scale_name = self.quantize_weight_per_channel(
-                weight_name, zp_type, axis, keep_float_weight=self.add_qdq_pair_to_weight
+                weight_name,
+                # Quantization type is forced to be TensorProto.INT8.
+                # when the expected value would be (see below)
+                # self.weight_qType if tensor_type is QDQQuantTensorType.WEIGHT else self.activation_qType.
+                # QLinearConv expects to have a unique value for all channels.
+                # This code does not enforce that but it is necessarily the case when the
+                # quantization is symmetric (as for INT8).
+                qtype,
+                axis,
+                keep_float_weight=self.add_qdq_pair_to_weight,
             )
         else:
             q_weight_name, zp_name, scale_name = self.quantize_initializer(
                 weight_proto,
-                zp_type,
+                self.weight_qType,
                 keep_float_weight=self.add_qdq_pair_to_weight,
             )
 
         weight_dequant_output = add_dequant_output_suffix(weight_name)
         self.model.replace_input_of_all_nodes(weight_name, weight_dequant_output)
-        if zp_type in ONNX_BFP_QTYPES_LIST:
+        if scale_name.endswith((COP_BFP_OP_NAME, COP_MX_OP_NAME)):
             self._create_fn_nodes(
                 weight_name,
                 weight_dequant_output,
                 add_dequant_suffix(weight_name),
                 scale_name,
                 zp_name,
-                fn_name,
-                fn_attrs,
+                axis=0 if len(weight_proto.dims) <= 1 else None,
+                convert_to=0,  # Initializer is a constant, no conversion required
             )
         elif self.add_qdq_pair_to_weight:
             weight_quant_output = add_quant_output_suffix(weight_name)
@@ -327,14 +319,9 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             )
             self.model.add_node(dequant_node)
 
-    def _add_fn_pair_for_activation(self, tensor_name: str, scale_name: str, zp_name: str, zp_type: Any = None) -> Any:
-        if zp_type is not None:
-            fn_name, fn_attrs = self._fn_name_and_attrs(zp_type)
-            zp_type = get_tensor_type_from_qType(zp_type)
-        else:
-            fn_name, fn_attrs = self.fn_name_a, self.fn_attrs_a
-            zp_type = self.activation_qType
-
+    def _add_fn_pair_for_activation(
+        self, tensor_name: str, scale_name: str, zp_name: str, data_type: Any = None
+    ) -> Any:
         if (
             self.dedicated_qdq_pair
             and tensor_name in self.tensor_to_its_receiving_nodes
@@ -347,15 +334,13 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                 tensor_name_dequant_output_postfix = add_dequant_output_suffix(tensor_name) + postfix
                 quant_node_name_postfix = add_quant_suffix(tensor_name) + postfix
                 dequant_node_name_postfix = add_dequant_suffix(tensor_name) + postfix
-                if zp_type in ONNX_BFP_QTYPES_LIST:
+                if scale_name.endswith((COP_BFP_OP_NAME, COP_MX_OP_NAME)):
                     self._create_fn_nodes(
                         tensor_name,
                         tensor_name_dequant_output_postfix,
                         dequant_node_name_postfix,
                         scale_name,
                         zp_name,
-                        fn_name,
-                        fn_attrs,
                     )
                 else:
                     self._create_customqdq_nodes(
@@ -378,6 +363,7 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                         scale_name,
                         zp_name,
                         QuantizedValueType.Input,
+                        scale_type=data_type,
                     )
                     self.quantized_value_map[tensor_name] = QDQTensorQuantizedValue(quantized_value, None, None)
         else:
@@ -390,9 +376,13 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             else:
                 self.model.replace_input_of_all_nodes(tensor_name, dq_output)
 
-            if zp_type in ONNX_BFP_QTYPES_LIST:
+            if scale_name.endswith((COP_BFP_OP_NAME, COP_MX_OP_NAME)):
                 self._create_fn_nodes(
-                    q_input, dq_output, add_dequant_suffix(tensor_name), scale_name, zp_name, fn_name, fn_attrs
+                    q_input,
+                    dq_output,
+                    add_dequant_suffix(tensor_name),
+                    scale_name,
+                    zp_name,
                 )
             else:
                 self._create_customqdq_nodes(
@@ -412,6 +402,7 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                 scale_name,
                 zp_name,
                 QuantizedValueType.Input,
+                scale_type=data_type,
             )
             self.quantized_value_map[tensor_name] = QDQTensorQuantizedValue(quantized_value, None, None)
 
@@ -421,14 +412,10 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                 continue
 
             if not tensor_info.is_shared:
-                # This is for tensor-wise mixed precision
-                zp_type = None
-                if tensor_name in self.quantized_tensor_type:
-                    zp_type = self.quantized_tensor_type[tensor_name]
-
                 # Quantize the input
                 initializer = find_by_name(tensor_name, self.model.initializer())
                 if initializer:
+                    # Below is a special treatment for bfloat16 to avoid the NaN issue due to overflow
                     if self.weight_qType == TensorProto.BFLOAT16:
                         weight = onnx.numpy_helper.to_array(initializer)
                         # clip weight to the range of BFLOAT16 [1.17549435e-38, 3.38953139e38]
@@ -439,20 +426,14 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                                 * np.clip(np.abs(original_weight), 1.17549435e-38, 3.38953139e38)
                             ).astype(original_weight.dtype)
                             logger.info(
-                                f"The original weight of {tensor_name}: {original_weight} has been clipped to new weight: {weight} because it is out of BFLOAT16 boundary."
+                                f"The original weight of {tensor_name}: {original_weight} has been clipped to "
+                                f"new weight: {weight} because it is out of BFLOAT16 boundary."
                             )
                         initializer_new = onnx.numpy_helper.from_array(weight, name=initializer.name)
                         initializer.CopyFrom(initializer_new)
-                    self._add_fn_pair_for_weight(initializer, tensor_info.axis, zp_type)
+
+                    self._add_fn_pair_for_initializer(initializer, tensor_info.tensor_type, tensor_info.axis)
                 else:
-                    if (zp_type is None and self.activation_qType in ONNX_BFP_QTYPES_LIST) or (
-                        zp_type is not None and zp_type in [ExtendedQuantType.QBFP, ExtendedQuantType.QMX]
-                    ):
-                        self._add_fn_pair_for_activation(
-                            tensor_name, "", "", zp_type
-                        )  # BFP doesn't need scale and zero point
-                        del self.tensors_to_quantize[tensor_name]
-                        continue
                     tensor_qparam_initializers = self._make_tensor_scale_zp_initializers(tensor_name)
                     if not tensor_qparam_initializers:
                         raise ValueError(
@@ -465,10 +446,10 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                             tensor_name,
                             tensor_qparam_initializers.original.scale.name,
                             tensor_qparam_initializers.original.zero_point.name,
-                            zp_type,
+                            data_type=tensor_info.data_type,
                         )
                     else:
-                        raise ValueError("Do not support conversion case.")
+                        raise ValueError("Do not support the conversion case of {tensor_name}.")
 
                 del self.tensors_to_quantize[tensor_name]
 
@@ -491,15 +472,33 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
                     if self.is_input_a_initializer(tensor_name):
                         raise ValueError("Quantization parameter shared mode is not supported for weight yet")
 
+                    scale_name = quantized_value.scale_name
+                    zp_name = quantized_value.zp_name
+
+                    # If the provider or the tensor has a quant override, the sharing process will be disabled
+                    # and the tensor will be quantized using independent parameters
+                    quant_overrides_provider = self.tensor_quant_overrides.get_per_tensor_overrides(
+                        quant_provider.input_name
+                    )
+                    quant_overrides = self.tensor_quant_overrides.get_per_tensor_overrides(tensor_name)
+                    if quant_overrides_provider or quant_overrides:
+                        tensor_qparam_initializers = self._make_tensor_scale_zp_initializers(tensor_name)
+                        if not tensor_qparam_initializers:
+                            raise ValueError(
+                                f"Quantization parameters are not specified for param {tensor_name}. "
+                                "In static mode quantization params for inputs and outputs of nodes to be quantized are required."
+                            )
+
+                        scale_name = tensor_qparam_initializers.original.scale.name
+                        zp_name = tensor_qparam_initializers.original.zero_point.name
+
                     # Need to check if this tensor's quant_type is converted for some consumers.
                     # If so, create new scale/zp initializers for these consumers.
                     converted_qparam_inits = None
 
                     if converted_qparam_inits is None:
                         # Normal case: <producer> --> Q_shared --> DQ_shared --> <consumers>
-                        self._add_fn_pair_for_activation(
-                            tensor_name, quantized_value.scale_name, quantized_value.zp_name
-                        )
+                        self._add_fn_pair_for_activation(tensor_name, scale_name, zp_name)
                     else:
                         # Conversion case: <producer> ---> Q_shared -+-> DQ_shared --> <consumers of original type>
                         #                                            |
@@ -619,3 +618,45 @@ class VitisExtendedQuantizer(VitisQDQQuantizer):
             convert_instance_norm_to_dpu_version=convert_instance_norm_to_dpu_version,
             convert_clip_to_dpu_version=convert_clip_to_dpu_version,
         )
+
+    def _convert_qdq_nodes(self) -> None:
+        """
+        This function is used to convert custom QDQ nodes to MS contributed version,
+        which is more widely adopted.
+        """
+        OpMapping = {
+            COP_QUANT_OP_NAME: QUANT_OP_NAME,
+            COP_DEQUANT_OP_NAME: DEQUANT_OP_NAME,
+        }
+        OpDomain = ms_domain
+        OpQuantType = (
+            onnx.TensorProto.INT4,
+            onnx.TensorProto.UINT4,
+            onnx.TensorProto.INT8,
+            onnx.TensorProto.UINT8,
+            onnx.TensorProto.INT16,
+            onnx.TensorProto.UINT16,
+            onnx.TensorProto.INT32,
+        )
+
+        converted_num = 0
+
+        for node in self.model.model.graph.node:
+            if node.op_type not in OpMapping:
+                continue
+
+            zp_init = self.model.get_initializer(node.input[2])
+            if zp_init is not None and zp_init.data_type in OpQuantType:
+                if zp_init.data_type == onnx.TensorProto.INT32:
+                    if node.op_type == COP_QUANT_OP_NAME:
+                        continue  # QuantizeLinear does not support int32 quantization
+                    elif np.count_nonzero(onnx.numpy_helper.to_array(zp_init)) != 0:
+                        continue  # DequantizeLinear does not support non-zero zero points
+
+                node.op_type = OpMapping[node.op_type]
+                node.domain = OpDomain
+
+                converted_num += 1
+
+        if converted_num > 0:
+            logger.info(f"Converted {converted_num} custom QDQs to MS contributed QDQs")

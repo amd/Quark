@@ -102,13 +102,13 @@ __global__ void qdq_mxfp4_kernel(float_type* inp, float_type* out) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     float_type elem = inp[idx];
-    float_type block_max = __habs(elem);
+    float_type block_max = habs_impl(elem);
 
     // Compute the max 32 lanes by 32 lanes.
     // Each thread handles a single value, thus applying `shfl_xor` 5 times.
     // (Max over 2**5 = 32 values).
     for (int i = 1; i < 32; i*=2) {
-        block_max = __hmax(block_max, __habs(shfl_xor_bf16_or_half(block_max, i)));
+        block_max = hmax_impl(block_max, habs_impl(shfl_xor_bf16_or_half(block_max, i)));
     }
 
     // TODO: fix as well in quantize kernel.
@@ -120,15 +120,15 @@ __global__ void qdq_mxfp4_kernel(float_type* inp, float_type* out) {
 
     uint8_t scale_exp = max(
         0,
-        FLOAT8_E8M0_MAX_EXP + min(bf16_or_half2int_rn<float_type>(hfloor(hlog2(block_max))) - 2, FLOAT8_E8M0_MAX_EXP)
+        FLOAT8_E8M0_MAX_EXP + min(bf16_or_half2int_rn<float_type>(hfloor_impl(hlog2_impl(block_max))) - 2, FLOAT8_E8M0_MAX_EXP)
     );
     float_type scale = float_to_bf16_or_half<float_type>(powf(2.0, scale_exp - FLOAT8_E8M0_MAX_EXP));
 
-    elem = __hdiv(elem, scale);
+    elem = hdiv_impl(elem, scale);
 
     float_type elem_fp4 = fp16_to_fp4_simulate<float_type, half_exp_bits, half_mantissa_bits, half_exp_bias>(&elem);
 
-    out[idx] = __hmul(elem_fp4, scale);
+    out[idx] = hmul_impl(elem_fp4, scale);
 }
 
 void qdq_mxfp4_(torch::Tensor a, int group_size) {
@@ -158,11 +158,7 @@ void qdq_mxfp4_(torch::Tensor a, int group_size) {
         qdq_mxfp4_kernel<__half, FLOAT16_EXP_BITS, FLOAT16_MANTISSA_BITS, FLOAT16_EXP_BIAS, FLOAT16_VAL_TO_ADD, FLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__half*) a.data_ptr(), (__half*) a.data_ptr());
     }
     else if (a.scalar_type() == at::ScalarType::BFloat16) {
-#if BFLOAT16_SUPPORTED
         qdq_mxfp4_kernel<__nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS, BFLOAT16_VAL_TO_ADD, BFLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__nv_bfloat16*) a.data_ptr(), (__nv_bfloat16*) a.data_ptr());
-#else
-        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
-#endif
     }
     else {
         TORCH_CHECK(false, "Wrong input dtype in qdq_mxfp4!");
@@ -197,11 +193,7 @@ torch::Tensor qdq_mxfp4(torch::Tensor a, int group_size) {
         qdq_mxfp4_kernel<__half, FLOAT16_EXP_BITS, FLOAT16_MANTISSA_BITS, FLOAT16_EXP_BIAS, FLOAT16_VAL_TO_ADD, FLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__half*) a.data_ptr(), (__half*) out.data_ptr());
     }
     else if (a.scalar_type() == at::ScalarType::BFloat16) {
-#if BFLOAT16_SUPPORTED
         qdq_mxfp4_kernel<__nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS, BFLOAT16_EXP_BIAS, BFLOAT16_VAL_TO_ADD, BFLOAT16_SIGN_EXPONENT_MASK><<<dimGrid, dimBlock, 0, stream>>>((__nv_bfloat16*) a.data_ptr(), (__nv_bfloat16*) out.data_ptr());
-#else
-        TORCH_CHECK(false, "BFloat16 operations are not supported on this GPU (requires compute capability >= 8.0 or AMD GPU).");
-#endif
     }
     else {
         TORCH_CHECK(false, "Wrong input dtype in qdq_mxfp4!");

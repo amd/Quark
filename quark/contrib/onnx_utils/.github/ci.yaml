@@ -1,0 +1,46 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+name: CI
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - docs/**
+      - "**.md"
+  pull_request:
+    branches: [ "main" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - docs/**
+      - "**.md"
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Cancel in-progress runs if a new event occurs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: [ self-hosted, Ubuntu-22.04 ]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+      - name: Install dependencies
+        run: |
+          # TODO: Install latest `pip` when https://github.com/jazzband/pip-tools/issues/2252 is fixed
+          python3 -m pip install --upgrade pip==25.2 pip-tools
+          pip3 install pre-commit
+          git remote set-branches origin main
+          git fetch origin main --depth 1
+      - name: Run pre-commit
+        run: |
+          pre-commit run --from-ref origin/main --to-ref ${GITHUB_SHA}

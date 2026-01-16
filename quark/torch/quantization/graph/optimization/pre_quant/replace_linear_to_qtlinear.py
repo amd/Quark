@@ -1,14 +1,13 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import List
 
 from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
     is_all_nodes_save_parameters,
@@ -68,7 +67,7 @@ def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
             in_features = linear_weight.shape[1]
             out_features = linear_weight.shape[0]
             bias = True if bias_node is not None else False
-            empty_config = QuantizationConfig()  # Note Set to empty config
+            empty_config = QLayerConfig()  # Note Set to empty config
 
             # init convbn
             quantized_linear = QuantLinear(in_features, out_features, device, bias, empty_config).to(device=device)

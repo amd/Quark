@@ -9,7 +9,6 @@ This file should live outside of Quark codebase.
 import argparse
 from functools import partial
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torchvision
@@ -226,14 +225,14 @@ def main():
         print("Evaluating the original float32 model...")
         validate(validation_dataloader, model)
 
-    weight_spec = brevitas_config.QuantizationSpec()
+    weight_spec = brevitas_config.QTensorConfig()
     input_spec = None
     output_spec = None
 
     if args.quant_scheme == "w_int8_a_int8_per_tensor_sym":
-        input_spec = brevitas_config.QuantizationSpec()
+        input_spec = brevitas_config.QTensorConfig()
 
-    global_config = brevitas_config.QuantizationConfig(
+    global_config = brevitas_config.QLayerConfig(
         weight=weight_spec, input_tensors=input_spec, output_tensors=output_spec
     )
     config = brevitas_config.Config(global_quant_config=global_config, pre_quant_opt_config=[])

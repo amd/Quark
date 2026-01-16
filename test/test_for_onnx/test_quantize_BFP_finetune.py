@@ -10,8 +10,7 @@ import onnxruntime
 from onnxruntime.quantization import CalibrationDataReader
 from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer, get_library_path
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import BFP16_CONFIG
 from quark.shares.utils.testing_utils import require_torch_cuda, use_temporary_directory
 

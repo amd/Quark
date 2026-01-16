@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -16,7 +16,7 @@ from torch.nn.modules.utils import _pair
 from torch.nn.parameter import Parameter
 from typing_extensions import Self
 
-from quark.torch.quantization.config.config import QuantizationConfig
+from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
 
@@ -57,7 +57,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant args
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
     ):
         nn.modules.conv._ConvNd.__init__(
             self,
@@ -352,16 +352,14 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         return True
 
     @classmethod
-    def from_float(
-        cls, conv: nn.Module, bn: nn.Module, quant_config: QuantizationConfig | None, **kwargs: Any
-    ) -> nn.Module:
+    def from_float(cls, conv: nn.Module, bn: nn.Module, quant_config: QLayerConfig | None, **kwargs: Any) -> nn.Module:
         """Create a qat module from a float module.
         Args:
             conv: The float module to be quantized.
                 Must be one of type [nn.Conv2d, nn.Conv3d]
             bn: The float module to be quantized.
                 Must be one of type [nn.BatchNorm2d, nn.BatchNorm3d]
-            quant_config: QuantizationConfig
+            quant_config: QLayerConfig
         """
         convbn = cls(
             conv.in_channels,
@@ -420,13 +418,13 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QuantizationConfig | None = QuantizationConfig(),
+        quant_config: QLayerConfig | None = QLayerConfig(),
     ) -> None:
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
-        quant_config = QuantizationConfig() if quant_config is None else quant_config
+        quant_config = QLayerConfig() if quant_config is None else quant_config
         _ConvBnNd.__init__(
             self,
             in_channels,
@@ -488,7 +486,7 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QuantizationConfig = QuantizationConfig(),
+        quant_config: QLayerConfig = QLayerConfig(),
     ):
         super().__init__(
             in_channels,
@@ -543,12 +541,10 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
         )
 
     @classmethod
-    def from_float(
-        cls, conv: nn.Module, bn: nn.Module, quant_config: QuantizationConfig | None, **kwargs: Any
-    ) -> nn.Module:
+    def from_float(cls, conv: nn.Module, bn: nn.Module, quant_config: QLayerConfig | None, **kwargs: Any) -> nn.Module:
         """Create a qat module from a float module."""
         dim = len(conv.weight.shape) - 2  # in_channel, out_channel, [H, W, D] (1/2/3)
-        quant_config = QuantizationConfig() if quant_config is None else quant_config
+        quant_config = QLayerConfig() if quant_config is None else quant_config
         convbn = cls(
             conv.in_channels,
             conv.out_channels,
@@ -597,14 +593,14 @@ class QuantConvTransposeBatchNorm2d(_ConvTransposeBnNd):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QuantizationConfig | None = QuantizationConfig(),
+        quant_config: QLayerConfig | None = QLayerConfig(),
     ) -> None:
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
         output_padding = _pair(output_padding)
-        quant_config = QuantizationConfig() if quant_config is None else quant_config
+        quant_config = QLayerConfig() if quant_config is None else quant_config
         super(QuantConvTransposeBatchNorm2d, self).__init__(
             in_channels,
             out_channels,

@@ -1,18 +1,22 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from abc import abstractmethod
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, no_type_check
+from typing import Any, no_type_check
 
 import torch
 import torch.nn as nn
 
 from quark.torch.export.config.config import JsonExporterConfig
 from quark.torch.export.utils import find_patterns_groups
-from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import (
+    DynamicScaledFakeQuantize,
+    ScaledFakeQuantize,
+    StaticScaledFakeQuantize,
+)
 
 from .llm_info import (
     CURRENT_VERSION,
@@ -85,24 +89,22 @@ class LLMInfoBuilder:
     @staticmethod
     def get_scale(quantizer: ScaledFakeQuantize) -> torch.Tensor | None:
         """Returns scale from the quantizer as torch.Tensor."""
-        if quantizer is None:
+        if isinstance(quantizer, DynamicScaledFakeQuantize):
             return None
-
-        if hasattr(quantizer, "scale") and quantizer.scale is not None and quantizer.scale.numel() > 0:
+        elif isinstance(quantizer, StaticScaledFakeQuantize):
             return quantizer.scale.detach().cpu()
-
-        return None
+        else:
+            raise RuntimeError("Unexpected. Please open an issue.")
 
     @staticmethod
     def get_zero_point(quantizer: ScaledFakeQuantize) -> torch.Tensor | None:
         """Returns zero point from the quantizer as torch.Tensor."""
-        if quantizer is None:
+        if isinstance(quantizer, DynamicScaledFakeQuantize):
             return None
-
-        if hasattr(quantizer, "zero_point") and quantizer.zero_point is not None and quantizer.zero_point.numel() > 0:
+        elif isinstance(quantizer, StaticScaledFakeQuantize):
             return quantizer.zero_point.detach().cpu()
-
-        return None
+        else:
+            raise RuntimeError("Unexpected. Please open an issue.")
 
     def is_linear(self, module: nn.Module) -> bool:
         return isinstance(module, nn.Linear)
@@ -247,7 +249,6 @@ class LLMInfoBuilder:
         if not symmetric_quant_or_not:
             return
 
-        weight_quant_name = linear_group[0].weight_quant_info.name
         weight_scale_list = [linear_info.weight_quant_info.scale for linear_info in linear_group]
 
         group_weight_scale = (
@@ -274,7 +275,6 @@ class LLMInfoBuilder:
         if not symmetric_quant_or_not:
             return
 
-        output_quant_name = linear_group[0].output_quant_info.name
         output_scale_list = [linear_info.output_quant_info.scale for linear_info in linear_group]
 
         group_output_scale = (

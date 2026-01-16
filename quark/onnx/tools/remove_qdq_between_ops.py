@@ -1,24 +1,24 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Remove QuantizeLinear (q) and DequantizeLinear (dq) nodes between specified operator pairs."""
 
 import argparse
 import os
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any
 
 import onnx
 from onnx import ModelProto, NodeProto
 from onnxruntime.quantization.onnx_model import ONNXModel
 
-from quark.onnx.quant_utils import get_tensor_to_consumer
+from quark.onnx.quantization.quant_utils import get_tensor_to_consumer
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 
-def remove_qdq_between_ops(model: ModelProto, between_ops: Union[list[tuple[str, str]], Any]) -> Any:
+def remove_qdq_between_ops(model: ModelProto, between_ops: list[tuple[str, str]] | Any) -> Any:
     """
     Modify an ONNX quantized model to remove q and dq ops between specified operation pairs.
     Start from `lower_op` nodes and traverse upwards to `upper_op`.

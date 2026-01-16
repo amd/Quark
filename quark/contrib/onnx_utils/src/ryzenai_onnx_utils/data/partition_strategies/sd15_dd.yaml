@@ -1,0 +1,9 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+    # dd is a composite pass that runs all the passes in passes.dd
+    # or you can specify them explicitly to run specific ones e.g.
+    - dd.single_noqdq_to_dd

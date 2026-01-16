@@ -12,9 +12,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int8Spec, QLayerConfig, XInt8Spec
+from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
@@ -477,6 +475,7 @@ def prepare_model(input_shape, model_type, output_dir: str):
         keep_initializers_as_inputs=True,
         do_constant_folding=False,
         opset_version=opset_version,
+        dynamo=False,
     )
 
     if model_type == "fuse_layer_norm_opset_17":

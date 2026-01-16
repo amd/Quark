@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Convert Quark extended custom ops to deprecated Vitis custom ops, or vice versa."""
 
 import argparse
 import os
-from typing import Any, Dict
+from typing import Any
 
 import onnx
 

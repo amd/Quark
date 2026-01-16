@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
@@ -135,15 +135,15 @@ void calculate_mean_var(const float* pinput,
 #else
 // This is a variance implementation referenced from VART
 void calculate_mean_var(
-  const float *pinput, int64_t batch, int64_t channel, int64_t size,
-  std::vector<float> &means, std::vector<float> &variances
+  const float* pinput, int64_t batch, int64_t channel, int64_t size,
+  std::vector<float>& means, std::vector<float>& variances
 ) {
   for (auto i = 0; i < batch * channel; i++) {
     float mean_sum = 0;
     float square_mean_sum = 0;
 
     for (auto j = 0; j < size; j++) {
-      const float *pdata = pinput + i * size + j;
+      const float* pdata = pinput + i * size + j;
 
       float input = float2bfloat_cpu(*pdata);
 
@@ -161,14 +161,14 @@ void calculate_mean_var(
 #endif
 
 void instance_normalization(
-  const float *pinput, int64_t batch, int64_t channel, int64_t size,
-  std::vector<float> &means, std::vector<float> &variances,
-  std::vector<float> &gamma, std::vector<float> &beta, float epsilon,
-  float *poutput
+  const float* pinput, int64_t batch, int64_t channel, int64_t size,
+  std::vector<float>& means, std::vector<float>& variances,
+  std::vector<float>& gamma, std::vector<float>& beta, float epsilon,
+  float* poutput
 ) {
   for (auto i = 0; i < batch * channel; i++) {
     for (auto j = 0; j < size; j++) {
-      const float *pdata = pinput + i * size + j;
+      const float* pdata = pinput + i * size + j;
 
       float mean = means[i];
       float variance = variances[i];

@@ -9,12 +9,13 @@ import torch
 
 import quark.torch.kernel
 from quark.shares.utils.testing_utils import torch_device
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
     PerChannelMinMaxObserver,
     PerGroupMinMaxObserver,
     PerTensorMinMaxObserver,
+    PlaceholderObserver,
 )
 from quark.torch.quantization.utils import calculate_qmin_qmax
 
@@ -68,7 +69,7 @@ def process_int_per_tensor_qdq(quantization_spec, device, scale, zero_point):
 
 
 def test_int_per_tensor_quantize():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -124,7 +125,7 @@ def test_int_per_tensor_quantize_2():
 
 # This is to test dtype conversion of scale and zeropoint
 def test_int_per_tensor_quantize_dtype_conversion():
-    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -173,7 +174,7 @@ def process_int_per_channel_qdq(quantization_spec, device, scale, zero_point):
 
 
 def test_int_per_channel_quantize():
-    DEFAULT_INT8_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -190,7 +191,7 @@ def test_int_per_channel_quantize():
 
 # This is to test dtype conversion of scale and zeropoint
 def test_int_per_channel_quantize_dtype_conversion():
-    DEFAULT_INT8_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -245,7 +246,7 @@ def process_int_per_group_qdq(quantization_spec, device, scale, zero_point):
 
 
 def test_int_per_group_quantize():
-    DEFAULT_INT8_PER_GROUP_SYM_SPEC = QuantizationSpec(
+    DEFAULT_INT8_PER_GROUP_SYM_SPEC = QTensorConfig(
         dtype=Dtype.int4,
         qscheme=QSchemeType.per_group,
         observer_cls=PerGroupMinMaxObserver,
@@ -329,7 +330,7 @@ def process_fp8_per_tensor_qdq(quantization_spec, device, scale, max_norm):
     ],
 )
 def test_fp8_per_tensor_quantize(dtype, max_norm):
-    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_TENSOR_SYM_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -393,7 +394,7 @@ def process_fp8_per_channel_qdq(quantization_spec, device, scale, max_norm):
     ],
 )
 def test_fp8_per_channel_quantize(dtype, max_norm):
-    DEFAULT_FP8_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -410,7 +411,7 @@ def test_fp8_per_channel_quantize(dtype, max_norm):
 # This test is to improve code coverage for nonpositive values of ch_axis
 @pytest.mark.parametrize("dtype,max_norm,ch_axis", [(Dtype.fp8_e4m3, 448, i) for i in range(0, -3, -1)])
 def test_fp8_per_channel_quantize_axis_range(dtype, max_norm, ch_axis):
-    DEFAULT_FP8_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP8_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -469,10 +470,10 @@ def process_fp16_per_channel_qdq(quantization_spec, device, scale, max_norm):
 
 @pytest.mark.parametrize("dtype,max_norm", [(Dtype.float16, 448), (Dtype.bfloat16, 448)])
 def test_fp16_per_channel_quantize_axis_range(dtype, max_norm):
-    DEFAULT_FP16_PER_CHANNEL_SYM_SPEC = QuantizationSpec(
+    DEFAULT_FP16_PER_CHANNEL_SYM_SPEC = QTensorConfig(
         dtype=dtype,
         qscheme=QSchemeType.per_channel,
-        observer_cls=PerChannelMinMaxObserver,
+        observer_cls=PlaceholderObserver,
         symmetric=True,
         scale_type=ScaleType.float,
         round_method=RoundType.half_even,

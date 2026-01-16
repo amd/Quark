@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -11,7 +11,7 @@ Convert resize op's float scale to pof2s.
 
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -74,7 +74,7 @@ def fs_to_pof2s(node: NodeProto, initializer_map: dict[str, TensorProto]) -> Non
 
 
 def convert_resize_fs_to_pof2s(
-    input_model: Union[str, Path, onnx.ModelProto], output_model: Union[str, Path] | None = None
+    input_model: str | Path | onnx.ModelProto, output_model: str | Path | None = None
 ) -> Any:
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
 

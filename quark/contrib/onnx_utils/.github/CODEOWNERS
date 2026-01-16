@@ -1,0 +1,13 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+#
+# This file defines code ownership
+#
+# Each line is a file pattern followed by one or more owners.
+# Order is important. The last matching pattern has the most precedence.
+#
+# <path>/ matches files under <path> and any of its subdirectories unless later match
+# <path>/* matches files under <path> but *not* further nested files.
+
+* @varunsh @aaronn @namalr
+
+/src/ryzenai_onnx_utils/ @varunsh @huisu

@@ -1,8 +1,7 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import List
 
 import torch
 from torch.fx import GraphModule, Node
@@ -56,7 +55,7 @@ def tag_quant_nodes(m: GraphModule) -> None:
 
         visited.append(node)
         _mark_node_skip_quant(node, False)
-        for user_node in node.users.keys():
+        for user_node in node.users:
             if not isinstance(user_node, Node):
                 continue
             if user_node not in visited:

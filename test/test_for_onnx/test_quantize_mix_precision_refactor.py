@@ -3,55 +3,57 @@
 # SPDX-License-Identifier: MIT
 #
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnxruntime
+import torch
+import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization import AutoMixprecisionConfig
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int16Spec, QLayerConfig
+from quark.onnx import (
+    AutoMixprecisionConfig,
+    CLEConfig,
+    Int8,
+    Int16Spec,
+    ModelQuantizer,
+    QConfig,
+    QLayerConfig,
+    XInt8Spec,
+)
 from quark.shares.utils.testing_utils import use_temporary_directory
 
-input_tensor = np.array(
-    [
-        [
-            [
-                [0.26921557, 0.79500909, 0.6102178, 0.04375664],
-                [0.06221361, 0.98258356, 0.38635129, 0.06492238],
-                [0.49631707, 0.35442799, 0.51719146, 0.52100111],
-                [0.04145599, 0.88960236, 0.50627326, 0.57204613],
-            ],
-            [
-                [0.99185097, 0.93582153, 0.13174529, 0.42896287],
-                [0.14552133, 0.02538564, 0.0732355, 0.25725371],
-                [0.09856916, 0.43015628, 0.55679755, 0.66560074],
-                [0.9439425, 0.45701841, 0.86791293, 0.64728276],
-            ],
-            [
-                [0.29159685, 0.79021383, 0.3117182, 0.11342342],
-                [0.16660495, 0.46426165, 0.31348552, 0.143383],
-                [0.96454802, 0.63258874, 0.30295267, 0.96720039],
-                [0.29879457, 0.79916527, 0.02905061, 0.20115725],
-            ],
-        ]
-    ]
-).astype(np.float32)
 
-output_tensor = np.array(
-    [
+def make_input_tensor():
+    return np.array(
         [
             [
-                [0.25203723, 0.06386399, -0.25977442, -0.2655323],
-                [0.14957722, -0.03911011, -0.21179609, -0.09916977],
-                [0.11968233, 0.09372032, 0.29732937, -0.07032879],
-                [0.1534201, 0.12304968, -0.07554691, 0.10896336],
+                [
+                    [0.26921557, 0.79500909, 0.6102178, 0.04375664],
+                    [0.06221361, 0.98258356, 0.38635129, 0.06492238],
+                    [0.49631707, 0.35442799, 0.51719146, 0.52100111],
+                    [0.04145599, 0.88960236, 0.50627326, 0.57204613],
+                ],
+                [
+                    [0.99185097, 0.93582153, 0.13174529, 0.42896287],
+                    [0.14552133, 0.02538564, 0.0732355, 0.25725371],
+                    [0.09856916, 0.43015628, 0.55679755, 0.66560074],
+                    [0.9439425, 0.45701841, 0.86791293, 0.64728276],
+                ],
+                [
+                    [0.29159685, 0.79021383, 0.3117182, 0.11342342],
+                    [0.16660495, 0.46426165, 0.31348552, 0.143383],
+                    [0.96454802, 0.63258874, 0.30295267, 0.96720039],
+                    [0.29879457, 0.79916527, 0.02905061, 0.20115725],
+                ],
             ]
         ]
-    ]
-).astype(np.float32)
+    ).astype(np.float32)
+
+
+auto_mix_precision_output_golden = np.array([[-0.4639878]], dtype=np.float32)
+
+mix_precision_output_golden = np.array([[-0.46404064]], dtype=np.float32)
 
 
 class DataReader(CalibrationDataReader):
@@ -72,24 +74,79 @@ class DataReader(CalibrationDataReader):
         self.index = 0
 
 
-def prepare_config():
-    from quark.onnx.quantization.config.data_type import Int8
+class DoubleConvModel(nn.Module):
+    def __init__(self):
+        super(DoubleConvModel, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(1, 1)
 
+        with torch.no_grad():
+            self.conv2.weight *= 100.0
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = torch.clip(x, 0, 6)
+        x = self.global_avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+def prepare_model(output_dir):
+    torch.manual_seed(42)
+    model = DoubleConvModel()
+    dummy_input = torch.randn(1, 3, 4, 4)
+    onnx_model_path = Path(output_dir, f"double_conv_model_{np.random.randint(0, 10000)}.onnx").as_posix()
+    onnx_quantized_model_path = Path(
+        output_dir, f"double_conv_model_quantized_{np.random.randint(0, 10000)}.onnx"
+    ).as_posix()
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
+    )
+    print(f"Model has been saved to {onnx_model_path}")
+    return onnx_model_path, onnx_quantized_model_path
+
+
+def prepare_auto_mix_precision_config():
     auto_mixprecision_algo = AutoMixprecisionConfig(
         act_target_quant_type=Int8, weight_target_quant_type=Int8, l2_target=10000, output_index=0
     )
     quant_config = QConfig(
-        QLayerConfig(activation=Int16Spec(), weight=Int16Spec()),
+        QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec()),
         algo_config=[auto_mixprecision_algo],
-        Percentile=99.9999,
-        Int32Bias=False,
-        Int16Bias=False,
+        extra_options={"Percentile": 99.9999, "Int32Bias": False, "Int16Bias": False},
+    )
+    return quant_config
+
+
+def prepare_mix_precision_config():
+    cle_algo = CLEConfig(cle_steps=2)
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec()),
+        specific_layer_config={QLayerConfig(weight=Int16Spec(), bias=Int16Spec()): ["/conv1/Conv", "/conv2/Conv"]},
+        layer_type_config={
+            QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec(), bias=Int16Spec()): ["Flatten"],
+            None: ["Gemm"],
+        },
+        algo_config=[cle_algo],
+        extra_options={"SimplifyModel": False, "Int32Bias": False},
     )
     return quant_config
 
 
 def prepare_data():
-    data_reader = DataReader(input_tensor)
+    data_reader = DataReader(make_input_tensor())
     return data_reader
 
 
@@ -108,16 +165,15 @@ def infer_quantized_model(quantized_model_path):
     sess = onnxruntime.InferenceSession(quantized_model_path)
     input_name = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
-    input_data = input_tensor
+    input_data = make_input_tensor()
     output = sess.run([output_name], {input_name: input_data})
     print(f"Model output: {output}")
     return output
 
 
-def tensor_quantize(output_dir):
+def tensor_quantize(output_dir, quant_config):
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
-    quant_config = prepare_config()
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -126,9 +182,17 @@ def tensor_quantize(output_dir):
 
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
+    def test_quantize_auto_mix_precision(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
     def test_quantize_mix_precision(self, tmpdir: str):
-        output = tensor_quantize(tmpdir)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
+        quant_config = prepare_mix_precision_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, mix_precision_output_golden, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
 
 

@@ -13,6 +13,7 @@ import torch.nn as nn
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.extensions.brevitas.api as brevitas_api
 import quark.torch.extensions.brevitas.config as brevitas_config
+from quark.shares.utils.testing_utils import require_torch_lower_or_equal
 
 
 class SimpleNetwork(nn.Module):
@@ -40,8 +41,8 @@ backends = [brevitas_config.Backend.layerwise]
 def test_basic_quantization_no_calibration_data(backend):
     model = SimpleNetwork().to("cpu")
 
-    weight_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(weight=weight_spec)
+    weight_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(weight=weight_spec)
     config = brevitas_config.Config(global_quant_config=global_config, backend=backend)
 
     quantizer = brevitas_api.ModelQuantizer(config)
@@ -62,9 +63,9 @@ def test_basic_quantization_no_calibration_data(backend):
 
 def test_missing_calibration_data():
     model = SimpleNetwork().to("cpu")
-    input_spec = brevitas_config.QuantizationSpec()
-    weight_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(input_tensors=input_spec, weight=weight_spec)
+    input_spec = brevitas_config.QTensorConfig()
+    weight_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(input_tensors=input_spec, weight=weight_spec)
     config = brevitas_config.Config(
         global_quant_config=global_config,
         # this algorithm needs calibration data
@@ -88,11 +89,12 @@ def test_export_path():
     assert exporter.export_path == path
 
 
+@require_torch_lower_or_equal("2.8")
 def test_basic_export_no_error():
     model = SimpleNetwork().to("cpu")
 
-    weight_spec = brevitas_config.QuantizationSpec()
-    global_config = brevitas_config.QuantizationConfig(weight=weight_spec)
+    weight_spec = brevitas_config.QTensorConfig()
+    global_config = brevitas_config.QLayerConfig(weight=weight_spec)
     config = brevitas_config.Config(global_quant_config=global_config)
 
     quantizer = brevitas_api.ModelQuantizer(config)
@@ -109,7 +111,7 @@ valid_bias_bit_widths = [8, 16, 24, 32]
 
 @pytest.mark.parametrize("bit_width", valid_bias_bit_widths)
 def test_parse_bias_spec(bit_width):
-    bias_spec = brevitas_config.QuantizationSpec(bit_width=bit_width)
+    bias_spec = brevitas_config.QTensorConfig(bit_width=bit_width)
 
     assert brevitas_api.ModelQuantizer._parse_bias_quant_spec(bias_spec) is not None, (
         "Bias quant spect wasn't parsed correctly."
@@ -117,13 +119,13 @@ def test_parse_bias_spec(bit_width):
 
 
 def test_parse_invaid_bias_spec():
-    bias_spec = brevitas_config.QuantizationSpec(bit_width=7)
+    bias_spec = brevitas_config.QTensorConfig(bit_width=7)
     with pytest.raises(KeyError):
         brevitas_api.ModelQuantizer._parse_bias_quant_spec(bias_spec)
 
 
 def parse_activation_float_invalid():
-    activation_spec = brevitas_config.QuantizationSpec(
+    activation_spec = brevitas_config.QTensorConfig(
         bit_width=8,
         quant_type=brevitas_config.QuantType.float_quant,
         exponent_bit_width=4,
@@ -135,7 +137,7 @@ def parse_activation_float_invalid():
 
 
 def parse_activation_float_bit_widths():
-    activation_spec = brevitas_config.QuantizationSpec(
+    activation_spec = brevitas_config.QTensorConfig(
         bit_width=8, quant_type=brevitas_config.QuantType.float_quant, exponent_bit_width=4, mantissa_bit_width=3
     )
     quant = brevitas_api.ModelQuantizer._parse_activation_quant_spec(activation_spec)
@@ -147,7 +149,7 @@ def parse_activation_float_bit_widths():
 
 
 def parse_activation_non_symmetric():
-    activation_spec = brevitas_config.QuantizationSpec(
+    activation_spec = brevitas_config.QTensorConfig(
         bit_width=8, quant_type=brevitas_config.QuantType.float_quant, exponent_bit_width=4, mantissa_bit_width=3
     )
     quant = brevitas_api.ModelQuantizer._parse_activation_quant_spec(activation_spec)
@@ -158,7 +160,7 @@ def parse_activation_non_symmetric():
 
 
 def parse_weight_float_bit_widths():
-    weight_spec = brevitas_config.QuantizationSpec(
+    weight_spec = brevitas_config.QTensorConfig(
         bit_width=8,
         quant_type=brevitas_config.QuantType.int_quant,
         exponent_bit_width=4,

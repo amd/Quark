@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any
 
 import torch
 
@@ -14,10 +14,10 @@ from .gguf_model_writer import ModelWriter
 
 def convert_exported_model_to_gguf(
     model_name: str,
-    json_path: Union[str, Path],
-    safetensor_path: Union[str, Path],
-    tokenizer_dir: Union[str, Path],
-    output_file_path: Union[str, Path],
+    json_path: str | Path,
+    safetensor_path: str | Path,
+    tokenizer_dir: str | Path,
+    output_file_path: str | Path,
 ) -> None:
     """This function is used to convert quark exported model to gguf model.
 

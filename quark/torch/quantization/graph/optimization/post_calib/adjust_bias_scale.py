@@ -1,8 +1,7 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Optional, Union
 
 import torch
 from torch.fx import GraphModule, Node
@@ -65,7 +64,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
 
     def _get_activation_quantizer(
         self, m: GraphModule, conv_node: Node
-    ) -> Union[ScaledFakeQuantize, FrozenScaledFakeQuantize] | None:
+    ) -> ScaledFakeQuantize | FrozenScaledFakeQuantize | None:
         """
         get input's quantizer
         """
@@ -85,7 +84,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
 
     def _get_weight_quantizer(
         self, m: GraphModule, conv_node: Node
-    ) -> Union[ScaledFakeQuantize, FrozenScaledFakeQuantize] | None:
+    ) -> ScaledFakeQuantize | FrozenScaledFakeQuantize | None:
         """
         two ocondition
         1. if call function:
@@ -112,7 +111,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
 
     def _get_bias_quantizer(
         self, m: GraphModule, conv_node: Node
-    ) -> Union[ScaledFakeQuantize, FrozenScaledFakeQuantize] | None:
+    ) -> ScaledFakeQuantize | FrozenScaledFakeQuantize | None:
         """
         two ocondition
         1. if call function:

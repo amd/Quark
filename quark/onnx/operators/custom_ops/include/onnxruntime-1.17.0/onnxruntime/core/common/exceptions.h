@@ -22,11 +22,11 @@ namespace onnxruntime {
 class NotImplementedException : public std::logic_error {
  public:
   explicit NotImplementedException(
-    const char *_Message = "Function not yet implemented"
+    const char* _Message = "Function not yet implemented"
   ) noexcept
     : std::logic_error(_Message) {};
   explicit NotImplementedException(
-    const std::string &_Message = "Function not yet implemented"
+    const std::string& _Message = "Function not yet implemented"
   ) noexcept
     : std::logic_error(_Message) {};
 };
@@ -39,7 +39,7 @@ class TypeMismatchException : public std::logic_error {
 class OnnxRuntimeException : public std::exception {
  public:
   OnnxRuntimeException(
-    const CodeLocation &location, const std::string &msg
+    const CodeLocation& location, const std::string& msg
   ) noexcept
     : OnnxRuntimeException(location, nullptr, msg) {}
 
@@ -53,16 +53,15 @@ class OnnxRuntimeException : public std::exception {
      cause.
   */
   OnnxRuntimeException(
-    const CodeLocation &location, const char *failed_condition,
-    const std::string &msg
+    const CodeLocation& location, const char* failed_condition,
+    const std::string& msg
   )
     : location_{location} {
     std::ostringstream ss;
 
     ss << location.ToString(
       CodeLocation::kFilenameAndPath
-    );  // output full path in case just the
-        // filename is ambiguous
+    );  // output full path in case just the filename is ambiguous
     if (failed_condition != nullptr) {
       ss << " " << failed_condition << " was false.";
     }
@@ -81,7 +80,7 @@ class OnnxRuntimeException : public std::exception {
     what_ = ss.str();
   }
 
-  const char *what() const noexcept override { return what_.c_str(); }
+  const char* what() const noexcept override { return what_.c_str(); }
 
  private:
   const CodeLocation location_;

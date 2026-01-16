@@ -1,8 +1,7 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Dict, Optional
 
 from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
 from torch.ao.quantization.pt2e.prepare import _get_edge_or_node_to_group_id, _get_edge_or_node_to_qspec
@@ -10,7 +9,7 @@ from torch.ao.quantization.quantizer import EdgeOrNode
 from torch.fx import GraphModule, Node
 
 from quark.shares.utils.log import ScreenLogger
-from quark.torch.quantization.config.config import QuantizationSpec
+from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.graph.torch_utils import QUANT_CONV_LIKE_MODULE, QUANT_CONV_WITH_BN
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 
@@ -21,17 +20,17 @@ logger = ScreenLogger(__name__)
 # NOTE: QuantizedConvBatchNorm2d and QuantConvTransposeBatchNorm2d has more parameters
 
 
-def _create_fakequantize_from_qspec(quantization_spec: QuantizationSpec | None) -> FakeQuantizeBase:
+def _create_fakequantize_from_qspec(quantization_spec: QTensorConfig | None) -> FakeQuantizeBase:
     """Create fake quantize objects based on quantization spec"""
     assert quantization_spec is not None
-    assert isinstance(quantization_spec, QuantizationSpec)
+    assert isinstance(quantization_spec, QTensorConfig)
     quantizer = FakeQuantizeBase.get_fake_quantize(quantization_spec)
     assert isinstance(quantizer, FakeQuantizeBase), "quantizer should be a FakeQuantizeBase instance"
     return quantizer
 
 
 def _get_node_to_fakequantize_map(
-    edge_or_node_to_group_id: dict[EdgeOrNode, int], edge_or_node_to_qspec: dict[EdgeOrNode, QuantizationSpec]
+    edge_or_node_to_group_id: dict[EdgeOrNode, int], edge_or_node_to_qspec: dict[EdgeOrNode, QTensorConfig]
 ) -> dict[EdgeOrNode, FakeQuantizeBase]:
     node_to_fakequantize_map: dict[EdgeOrNode, FakeQuantizeBase] = {}
     group_id_to_fakequantize_map: dict[int, FakeQuantizeBase] = {}
@@ -159,10 +158,10 @@ def insert_quantizer(model: GraphModule) -> GraphModule:
     Inserts FakeQuantize `call_module` nodes in the graph for input and/or output quantization, if necessary, based on the `quantization_annotation` metadata attached to nodes.
     """
     # Step 1: insert the FakeQuantize as node into the graph.
-    # `torch.ao` has its own `QuantizationSpec` class that `_get_edge_or_node_to_qspec` is supposed to give a map to,
-    # here we hint as `Dict[EdgeOrNode, QuantizationSpec]` instead as `torch.ao` functions are hijacked to use
-    # quark's `QuantizationSpec`.
-    edge_or_node_to_qspec: dict[EdgeOrNode, QuantizationSpec] = _get_edge_or_node_to_qspec(model)  # type: ignore
+    # `torch.ao` has its own `QTensorConfig` class that `_get_edge_or_node_to_qspec` is supposed to give a map to,
+    # here we hint as `Dict[EdgeOrNode, QTensorConfig]` instead as `torch.ao` functions are hijacked to use
+    # quark's `QTensorConfig`.
+    edge_or_node_to_qspec: dict[EdgeOrNode, QTensorConfig] = _get_edge_or_node_to_qspec(model)  # type: ignore
     edge_or_node_to_group_id = _get_edge_or_node_to_group_id(edge_or_node_to_qspec)  # type: ignore
 
     node_to_fakequantize_map = _get_node_to_fakequantize_map(edge_or_node_to_group_id, edge_or_node_to_qspec)

@@ -8,13 +8,13 @@ import os
 import tempfile
 from dataclasses import replace
 from pathlib import Path
-from typing import List, Optional
 
 import huggingface_hub
 import pytest
 import torch
 from dbrx_expert import DbrxExperts_
 from safetensors import safe_open
+from safetensors.torch import save_file
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.models.dbrx.modeling_dbrx import DbrxExperts, DbrxForCausalLM
@@ -26,6 +26,7 @@ from quark.shares.utils.testing_utils import (
     require_torch_higher_or_equal,
     require_torch_multi_gpu,
     retry_flaky_test,
+    skip_torch_version,
     torch_device,
     use_temporary_directory,
 )
@@ -34,7 +35,7 @@ from quark.torch import ModelQuantizer, export_safetensors, import_model_from_sa
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
 from quark.torch.export.safetensors import _load_weights_from_safetensors
-from quark.torch.export.utils import _build_quantized_model
+from quark.torch.export.utils import _build_quantized_model, _fix_loaded_weights_key_mismatch
 from quark.torch.quantization import (
     FP4PerGroupSpec,
     FP6E2M3PerGroupSpec,
@@ -45,14 +46,14 @@ from quark.torch.quantization import (
     OCP_MXFP8E4M3Spec,
     ScaleQuantSpec,
 )
-from quark.torch.quantization.config.config import AWQConfig, Config, GPTQConfig, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import AWQConfig, GPTQConfig, QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
     PerChannelMinMaxObserver,
     PerGroupMinMaxObserver,
     PerTensorMinMaxObserver,
 )
-from quark.torch.utils import setattr_recursive
+from quark.torch.utils import QPARAMSLINEAR_OVERRIDES_STATE_DICT, setattr_recursive
 
 MODEL_DIR = "facebook/opt-125m"
 torch.manual_seed(42)
@@ -70,7 +71,7 @@ GPTQ_CONFIG = GPTQConfig(
     ],
 )
 
-UINT4_PER_GROUP_ASYM_SPEC = QuantizationSpec(
+UINT4_PER_GROUP_ASYM_SPEC = QTensorConfig(
     dtype=Dtype.uint4,
     observer_cls=PerGroupMinMaxObserver,
     symmetric=False,
@@ -91,7 +92,13 @@ def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
     return calib_dataloader
 
 
-def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False, device_map: str | None = "auto"):
+def quantize_model(
+    quant_config,
+    model_name="facebook/opt-125m",
+    multi_gpu=False,
+    device_map: str | None = "auto",
+    torch_dtype: str | None = "auto",
+):
     # Get quantizer
     quantizer = ModelQuantizer(quant_config)
 
@@ -101,7 +108,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
         )
         model.eval()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch_dtype)
         model.eval()
         model = model.to(torch_device)
     # Get dataloader, if multi_gpu, give the first layer's device
@@ -120,7 +127,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
 @require_torch_multi_gpu
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
 def test_load_multi_device(weight_format: str):
-    INT8_PER_TENSER_SPEC = QuantizationSpec(
+    INT8_PER_TENSER_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -130,55 +137,54 @@ def test_load_multi_device(weight_format: str):
         is_dynamic=False,
     )
 
-    INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+    INT8_PER_TENSOR_CONFIG = QLayerConfig(
         weight=INT8_PER_TENSER_SPEC,
         input_tensors=INT8_PER_TENSER_SPEC,
         output_tensors=INT8_PER_TENSER_SPEC,
         bias=INT8_PER_TENSER_SPEC,
     )
-    quant_config = Config(global_quant_config=INT8_PER_TENSOR_CONFIG)
+    quant_config = QConfig(global_quant_config=INT8_PER_TENSOR_CONFIG)
 
     EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
 
-            with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
 
-            device_map = {
-                "model.decoder.embed_tokens": "cuda:0",
-                "model.decoder.embed_positions": "cuda:0",
-                "model.decoder.final_layer_norm": "cuda:0",
-                "model.decoder.layers": "cuda:1",
-                "lm_head": "cuda:0",
-            }
+        device_map = {
+            "model.decoder.embed_tokens": "cuda:0",
+            "model.decoder.embed_positions": "cuda:0",
+            "model.decoder.final_layer_norm": "cuda:0",
+            "model.decoder.layers": "cuda:1",
+            "lm_head": "cuda:0",
+        }
 
-            original_model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map=device_map)
+        original_model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map=device_map, torch_dtype="auto")
 
-            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-            q_model = q_model.eval()
+        q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+        q_model = q_model.eval()
 
-            with torch.no_grad():
-                outputs = q_model(INPUT_IDS).to_tuple()
+        with torch.no_grad():
+            outputs = q_model(INPUT_IDS).to_tuple()
 
-            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                assert torch.allclose(output, ref_output, atol=1e-4)
+        for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+            assert torch.allclose(output, ref_output, atol=1e-4)
 
-            # Make sure the quantized parameters are on the specified device
-            # in the original device_map.
-            for param_name, param in q_model.named_parameters():
-                for device_map_key, device_map_device in device_map.items():
-                    if device_map_key in param_name:
-                        assert param.device == torch.device(device_map_device)
-                        break
-                else:
-                    raise RuntimeError("should not go here")
+        # Make sure the quantized parameters are on the specified device
+        # in the original device_map.
+        for param_name, param in q_model.named_parameters():
+            for device_map_key, device_map_device in device_map.items():
+                if device_map_key in param_name:
+                    assert param.device == torch.device(device_map_device)
+                    break
+            else:
+                raise RuntimeError("should not go here")
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
@@ -208,7 +214,7 @@ def test_int2_import_export(qscheme: QSchemeType, weight_format: str):
         QSchemeType.per_channel: 0,
         QSchemeType.per_group: 1,
     }
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int2,
         qscheme=qscheme,
         observer_cls=qscheme_to_observer[qscheme],
@@ -220,7 +226,7 @@ def test_int2_import_export(qscheme: QSchemeType, weight_format: str):
         group_size=8 if qscheme == QSchemeType.per_group else None,
     )
 
-    quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
 
     quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False, device_map=None)
 
@@ -238,7 +244,12 @@ def test_int2_import_export(qscheme: QSchemeType, weight_format: str):
                 original_model = AutoModelForCausalLM.from_config(config)
 
             # Used for later comparison.
-            model_state_dict = _load_weights_from_safetensors(tmpdir)
+            weight_dict = _load_weights_from_safetensors(tmpdir)
+
+            if not QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+                weight_dict = _fix_loaded_weights_key_mismatch(
+                    weight_dict, weight_format=weight_format, custom_mode="quark"
+                )
 
             q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
             q_model = q_model.eval()
@@ -246,9 +257,9 @@ def test_int2_import_export(qscheme: QSchemeType, weight_format: str):
             q_model_state_dict = q_model.state_dict()
 
             if weight_format == "real_quantized":
-                for key in model_state_dict.keys():
-                    assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
-                    assert model_state_dict[key].shape == q_model_state_dict[key].shape
+                for key in weight_dict:
+                    assert weight_dict[key].dtype == q_model_state_dict[key].dtype
+                    assert weight_dict[key].shape == q_model_state_dict[key].shape
 
             for _, param in q_model.named_parameters():
                 assert param.device != "meta"
@@ -294,7 +305,7 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
         QSchemeType.per_channel: 0,
         QSchemeType.per_group: 1,
     }
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int4,
         qscheme=qscheme,
         observer_cls=qscheme_to_observer[qscheme],
@@ -306,7 +317,7 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
         group_size=8 if qscheme == QSchemeType.per_group else None,
     )
 
-    quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
 
     quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False, device_map=None)
 
@@ -324,7 +335,12 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
                 original_model = AutoModelForCausalLM.from_config(config)
 
             # Used for later comparison.
-            model_state_dict = _load_weights_from_safetensors(tmpdir)
+            weight_dict = _load_weights_from_safetensors(tmpdir)
+
+            if not QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+                weight_dict = _fix_loaded_weights_key_mismatch(
+                    weight_dict, weight_format=weight_format, custom_mode="quark"
+                )
 
             q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
             q_model = q_model.eval()
@@ -332,9 +348,9 @@ def test_int4_import_export(qscheme: QSchemeType, weight_format: str):
             q_model_state_dict = q_model.state_dict()
 
             if weight_format == "real_quantized":
-                for key in model_state_dict.keys():
-                    assert model_state_dict[key].dtype == q_model_state_dict[key].dtype
-                    assert model_state_dict[key].shape == q_model_state_dict[key].shape
+                for key in weight_dict:
+                    assert weight_dict[key].dtype == q_model_state_dict[key].dtype
+                    assert weight_dict[key].shape == q_model_state_dict[key].shape
 
             for _, param in q_model.named_parameters():
                 assert param.device != "meta"
@@ -380,7 +396,7 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
         QSchemeType.per_channel: 0,
         QSchemeType.per_group: 1,
     }
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=qscheme,
         observer_cls=qscheme_to_observer[qscheme],
@@ -392,46 +408,45 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str):
         group_size=8 if qscheme == QSchemeType.per_group else None,
     )
 
-    quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
 
     EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            for _, param in q_model.named_parameters():
+                assert param.device != "meta"
+            for _, param in q_model.named_buffers():
+                assert param.device != "meta"
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                for _, param in q_model.named_parameters():
-                    assert param.device != "meta"
-                for _, param in q_model.named_buffers():
-                    assert param.device != "meta"
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 @slow_test
@@ -461,84 +476,23 @@ def test_awq_import(weight_format: str):
     )
     EXCLUDE_LAYERS = ["lm_head"]
 
-    W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
-    quant_config = Config(
+    W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQ_CONFIG], exclude=EXCLUDE_LAYERS
     )
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            for custom_mode in ["awq", "quark"]:
-                if custom_mode == "awq" and weight_format == "fake_quantized":
-                    continue
-                quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
-
-                export_safetensors(
-                    model=quant_model,
-                    output_dir=tmpdir,
-                    weight_format=weight_format,
-                    pack_method="reorder",
-                    custom_mode=custom_mode,
-                )
-
-                quant_model(INPUT_IDS).to_tuple()
-
-                with torch.no_grad():
-                    ref_outputs = quant_model(INPUT_IDS).to_tuple()
-
-                for device in ["meta", torch_device]:
-                    config = AutoConfig.from_pretrained(MODEL_DIR)
-                    with torch.device(device):
-                        original_model = AutoModelForCausalLM.from_config(config)
-
-                    q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                    for _, param in q_model.named_parameters():
-                        assert param.device != "meta"
-                    for _, param in q_model.named_buffers():
-                        assert param.device != "meta"
-
-                    q_model = q_model.eval()
-
-                    if device == "meta":
-                        q_model = q_model.to(torch_device)
-
-                    with torch.no_grad():
-                        outputs = q_model(INPUT_IDS).to_tuple()
-                    for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                        if torch_device.type == "cpu":
-                            assert torch.equal(ref_output, output)
-                        else:
-                            assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
-
-
-# For torch requirement, refer to /pull/2529#issuecomment-235620
-@require_torch_higher_or_equal("2.6")
-@pytest.mark.parametrize(
-    "weight_format",
-    [pytest.param(weight_format, id=str(weight_format)) for weight_format in ["real_quantized", "fake_quantized"]],
-)
-@retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU with max abs diff ~0.1.
-def test_fp8_inp_weight_out_import(weight_format: str):
-    """
-    Test Features:
-        Import Format:            Json-safetensors
-        Quantization Method:      FP8
-    """
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
-        dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
-    )
-
-    EXCLUDE_LAYERS = ["lm_head"]
-
-    W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG = QuantizationConfig(
-        input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
-    )
-    quant_config = Config(global_quant_config=W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        for custom_mode in ["awq", "quark"]:
+            if custom_mode == "awq" and weight_format == "fake_quantized":
+                continue
             quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+            export_safetensors(
+                model=quant_model,
+                output_dir=tmpdir,
+                weight_format=weight_format,
+                pack_method="reorder",
+                custom_mode=custom_mode,
+            )
 
             quant_model(INPUT_IDS).to_tuple()
 
@@ -551,6 +505,7 @@ def test_fp8_inp_weight_out_import(weight_format: str):
                     original_model = AutoModelForCausalLM.from_config(config)
 
                 q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
                 for _, param in q_model.named_parameters():
                     assert param.device != "meta"
                 for _, param in q_model.named_buffers():
@@ -558,50 +513,126 @@ def test_fp8_inp_weight_out_import(weight_format: str):
 
                 q_model = q_model.eval()
 
-                # scaled_mm has exclusive tests, only naive mode is tested here.
-                with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", None, module_name_prefix="quark"):
-                    if device == "meta":
-                        q_model = q_model.to(torch_device)
+                if device == "meta":
+                    q_model = q_model.to(torch_device)
 
-                    with torch.no_grad():
-                        outputs = q_model(INPUT_IDS).to_tuple()
-
-                    for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                        if torch_device.type == "cpu":
-                            assert torch.equal(ref_output, output)
-                        else:
-                            assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+                with torch.no_grad():
+                    outputs = q_model(INPUT_IDS).to_tuple()
+                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                    if torch_device.type == "cpu":
+                        assert torch.equal(ref_output, output)
+                    else:
+                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
 @require_torch_higher_or_equal("2.6")
+@skip_torch_version("2.8")
 @pytest.mark.parametrize(
-    "kv_cache_group",
-    [pytest.param(kv_cache_group, id=str(kv_cache_group)) for kv_cache_group in [[], ["*k_proj", "*v_proj"]]],
+    "weight_format",
+    [pytest.param(val, id=f"weight_format:{val}") for val in ["real_quantized", "fake_quantized"]],
+)
+@pytest.mark.parametrize(
+    "torch_dtype",
+    [pytest.param(val, id=f"torch_dtype:{val}") for val in [torch.float16, torch.bfloat16, torch.float32]],
+)
+@retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU with max abs diff ~0.1.
+def test_fp8_inp_weight_out_import(weight_format: str, torch_dtype: torch.dtype):
+    """
+    Test Features:
+        Import Format:            Json-safetensors
+        Quantization Method:      FP8
+    """
+
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
+        dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
+    )
+
+    EXCLUDE_LAYERS = ["lm_head"]
+
+    W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG = QLayerConfig(
+        input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+    )
+
+    quant_config = QConfig(global_quant_config=W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False, torch_dtype=torch_dtype)
+
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch_dtype)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+            for _, param in q_model.named_parameters():
+                assert param.device != "meta"
+            for _, param in q_model.named_buffers():
+                assert param.device != "meta"
+
+            q_model = q_model.eval()
+
+            # scaled_mm has exclusive tests, only naive mode is tested here.
+            with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", None, module_name_prefix="quark"):
+                if device == "meta":
+                    q_model = q_model.to(torch_device)
+
+                with torch.no_grad():
+                    outputs = q_model(INPUT_IDS).to_tuple()
+
+                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                    if torch_device.type == "cpu":
+                        assert torch.equal(ref_output, output)
+                    else:
+                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+
+
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
+@skip_torch_version("2.8")
+@pytest.mark.parametrize(
+    "torch_dtype",
+    [pytest.param(val, id=f"torch_dtype:{val}") for val in [torch.float16, torch.bfloat16, torch.float32]],
+)
+@pytest.mark.parametrize(
+    "kv_cache_group,kv_cache_post_rope",
+    [
+        pytest.param([], False, id="no-kv"),
+        pytest.param(["*k_proj", "*v_proj"], False, id="kv-pre-rope"),
+        pytest.param(["*k_proj", "*v_proj"], True, id="kv-post-rope"),
+    ],
 )
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
 @retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU.
-def test_fp8_kv_cache_import(kv_cache_group: list[str], weight_format: str):
+def test_fp8_kv_cache_import(
+    kv_cache_group: list[str], kv_cache_post_rope: bool, weight_format: str, torch_dtype: torch.dtype
+):
     """
     Test Features:
         Import Format:            Json-safetensors
         Quantization Method:      FP8 KV_Cache_FP8
     """
 
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
 
     EXCLUDE_LAYERS = ["lm_head"]
 
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
     kv_cache_quant_config = {}
     if len(kv_cache_group) > 0:
         layer_quant_config = {
-            "*v_proj": QuantizationConfig(
+            "*v_proj": QLayerConfig(
                 input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
             ),
-            "*k_proj": QuantizationConfig(
+            "*k_proj": QLayerConfig(
                 input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
             ),
         }
@@ -609,15 +640,18 @@ def test_fp8_kv_cache_import(kv_cache_group: list[str], weight_format: str):
     else:
         layer_quant_config = {}
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
         layer_quant_config=layer_quant_config,
         kv_cache_quant_config=kv_cache_quant_config,
         kv_cache_group=kv_cache_group,
         exclude=EXCLUDE_LAYERS,
     )
+    # Toggle post-RoPE path only when kv cache is enabled
+    if len(kv_cache_group) > 0:
+        quant_config.kv_cache_post_rope = kv_cache_post_rope  # type: ignore[attr-defined]
     with torch.inference_mode():
-        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False, torch_dtype=torch_dtype)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             for custom_mode in ["quark", "fp8"]:
@@ -637,7 +671,7 @@ def test_fp8_kv_cache_import(kv_cache_group: list[str], weight_format: str):
                 for device in ["meta", torch_device]:
                     config = AutoConfig.from_pretrained(MODEL_DIR)
                     with torch.device(device):
-                        original_model = AutoModelForCausalLM.from_config(config)
+                        original_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch_dtype)
 
                     original_model.eval()
 
@@ -667,6 +701,167 @@ def test_fp8_kv_cache_import(kv_cache_group: list[str], weight_format: str):
                                     )  # This one appears not to be flaky.
 
 
+# For torch requirement, refer to /pull/2529#issuecomment-235620
+@require_torch_higher_or_equal("2.6")
+@pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
+@retry_flaky_test()
+def test_kv_cache_post_rope_integration(weight_format: str):
+    """
+    Test Features:
+        Specifically verify post-RoPE KV cache quantization integration.
+        This test validates that:
+        1. QuarkQuantizedCache is properly attached when kv_cache_post_rope=True
+        2. Output quantizers are moved from k_proj/v_proj to cache level
+        3. Cache quantization state is properly exported/imported
+        4. Cache works correctly during inference with use_cache=True
+    """
+    from pathlib import Path
+
+    from safetensors import safe_open
+
+    from quark.torch.quantization.cache_integration import QuarkQuantizedCache
+
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
+        dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
+    )
+
+    EXCLUDE_LAYERS = ["lm_head"]
+
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    layer_quant_config = {
+        "*v_proj": QLayerConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+        "*k_proj": QLayerConfig(
+            input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
+        ),
+    }
+    kv_cache_quant_config = layer_quant_config.copy()
+    kv_cache_group = ["*k_proj", "*v_proj"]
+
+    quant_config = QConfig(
+        global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
+        layer_quant_config=layer_quant_config,
+        kv_cache_quant_config=kv_cache_quant_config,
+        kv_cache_group=kv_cache_group,
+        exclude=EXCLUDE_LAYERS,
+    )
+    # Enable post-RoPE quantization
+    quant_config.kv_cache_post_rope = True  # type: ignore[attr-defined]
+
+    with torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+
+        # ✅ VERIFY 1: QuarkQuantizedCache is attached
+        assert hasattr(quant_model, "_quark_cache"), (
+            "Model should have _quark_cache attribute when kv_cache_post_rope=True"
+        )
+        assert isinstance(quant_model._quark_cache, QuarkQuantizedCache), "Cache should be QuarkQuantizedCache instance"
+        assert len(quant_model._quark_cache.quantized_layers) > 0, "Cache should have quantized layers configured"
+
+        # ✅ VERIFY 2: k_proj/v_proj output quantizers are disabled (moved to cache)
+        disabled_count = 0
+        preserved_count = 0
+        for name, module in quant_model.named_modules():
+            if ("k_proj" in name or "v_proj" in name) and hasattr(module, "_output_quantizer"):
+                # Output quantizer should be disabled
+                assert module._output_quantizer is None, (
+                    f"{name} output_quantizer should be None (disabled) with post-RoPE, "
+                    "as quantization now happens in cache"
+                )
+                disabled_count += 1
+
+                # But quantizer should be preserved for cache use
+                if hasattr(module, "_quark_cache_output_quantizer"):
+                    preserved_count += 1
+
+        assert disabled_count > 0, "Should have found and disabled k_proj/v_proj output quantizers"
+        assert preserved_count > 0, "Should have preserved quantizers for cache use"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_safetensors(
+                model=quant_model,
+                output_dir=tmpdir,
+                custom_mode="quark",
+                weight_format=weight_format,
+                pack_method="reorder",
+            )
+
+            # ✅ VERIFY 3: Cache quantization scales are exported to safetensors
+            with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as f:
+                checkpoint_keys = list(f.keys())
+
+                # Look for output_scale keys (these are the cache quantization scales)
+                output_scale_keys = [
+                    k for k in checkpoint_keys if ".output_scale" in k and ("k_proj" in k or "v_proj" in k)
+                ]
+
+                assert len(output_scale_keys) > 0, (
+                    f"Cache quantization scales should be exported with post-RoPE. "
+                    f"Found keys: {[k for k in checkpoint_keys if 'output_scale' in k]}"
+                )
+
+            # Get reference outputs before import
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+            # ✅ VERIFY 4: Test with use_cache=True
+            with torch.no_grad():
+                cached_output = quant_model(INPUT_IDS, use_cache=True)
+                assert cached_output.past_key_values is not None, "Should return past_key_values when use_cache=True"
+                # Verify it's our QuarkQuantizedCache
+                assert isinstance(cached_output.past_key_values, QuarkQuantizedCache), (
+                    "past_key_values should be QuarkQuantizedCache instance"
+                )
+                # Verify cache has layers populated after inference
+                assert len(cached_output.past_key_values.layers) > 0, (
+                    "Cache should have layers populated after inference"
+                )
+
+            # ✅ VERIFY 5: Import and verify cache integration is restored
+            for device in ["meta", torch_device]:
+                config = AutoConfig.from_pretrained(MODEL_DIR)
+                with torch.device(device):
+                    original_model = AutoModelForCausalLM.from_config(config)
+
+                original_model.eval()
+
+                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+                # Verify imported model has cache attached
+                assert hasattr(q_model, "_quark_cache"), "Imported model should have _quark_cache attribute restored"
+                assert isinstance(q_model._quark_cache, QuarkQuantizedCache), (
+                    "Imported cache should be QuarkQuantizedCache instance"
+                )
+
+            with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", None, module_name_prefix="quark"):
+                for _, param in q_model.named_parameters():
+                    assert param.device != "meta"
+                for _, param in q_model.named_buffers():
+                    assert param.device != "meta"
+
+                if device == "meta":
+                    q_model = q_model.to(torch_device)
+
+                # Test basic inference
+                outputs = q_model(INPUT_IDS).to_tuple()
+
+                # Verify outputs are valid (may differ slightly from ref due to export/import)
+                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                    assert output.shape == ref_output.shape, "Output shapes should match"
+                    assert not torch.isnan(output).any(), "Outputs should not contain NaN"
+                    assert not torch.isinf(output).any(), "Outputs should not contain Inf"
+
+                # ✅ VERIFY 6: Test use_cache=True on imported model
+                with torch.no_grad():
+                    cached_output_imported = q_model(INPUT_IDS, use_cache=True)
+                    assert cached_output_imported.past_key_values is not None, (
+                        "Imported model should support use_cache=True"
+                    )
+                    assert isinstance(cached_output_imported.past_key_values, QuarkQuantizedCache), (
+                        "Imported model should use QuarkQuantizedCache"
+                    )
+
+
 @slow_test
 @pytest.mark.parametrize(
     "weight_format",
@@ -678,54 +873,55 @@ def test_gptq_import(weight_format: str):
         Import Format:            Json-safetensors
         Quantization Method:      GPTQ
     """
-    W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
-    quant_config = Config(global_quant_config=W_UINT4_PER_GROUP_CONFIG, algo_config=[GPTQ_CONFIG])
+    W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
+    quant_config = QConfig(global_quant_config=W_UINT4_PER_GROUP_CONFIG, algo_config=[GPTQ_CONFIG])
 
     EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            for _, param in q_model.named_parameters():
+                assert param.device != "meta"
+            for _, param in q_model.named_buffers():
+                assert param.device != "meta"
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                for _, param in q_model.named_parameters():
-                    assert param.device != "meta"
-                for _, param in q_model.named_buffers():
-                    assert param.device != "meta"
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 @use_temporary_directory
 def test_non_quantized_import(tmpdir: str):
     with torch.inference_mode():
-        non_quantized_model = AutoModelForCausalLM.from_pretrained("haoyang-amd/non_quantized_model")
+        non_quantized_model = AutoModelForCausalLM.from_pretrained(
+            "haoyang-amd/non_quantized_model", torch_dtype="auto"
+        )
         non_quantized_model.save_pretrained(tmpdir)
         config = AutoConfig.from_pretrained(MODEL_DIR)
         with torch.device("meta"):
@@ -745,22 +941,22 @@ def test_dbrx_import(tmpdir: str):
         Import Format:            Json-safetensors
         Quantization Method:      FP8
     """
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
 
     EXCLUDE_LAYERS = ["lm_head"]
 
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(
         input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
     )
     layer_quant_config = {
-        "*Wqkv": QuantizationConfig(
+        "*Wqkv": QLayerConfig(
             input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
         ),
     }
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG, layer_quant_config=layer_quant_config, exclude=EXCLUDE_LAYERS
     )
 
@@ -813,7 +1009,7 @@ def test_dbrx_import(tmpdir: str):
 @use_temporary_directory
 def test_custom_mode_export(tmpdir: str):
     # AWQ model.
-    W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
+    W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
     AWQ_CONFIG = AWQConfig(
         scaling_layers=[
             {
@@ -830,7 +1026,7 @@ def test_custom_mode_export(tmpdir: str):
     )
 
     EXCLUDE_LAYERS = ["lm_head"]
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQ_CONFIG], exclude=EXCLUDE_LAYERS
     )
     quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
@@ -845,12 +1041,12 @@ def test_custom_mode_export(tmpdir: str):
     delete_directory_content(tmpdir)
 
     # FP8 model.
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
 
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
-    quant_config = Config(global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    quant_config = QConfig(global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
     quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
     export_safetensors(
@@ -867,7 +1063,7 @@ def test_custom_mode_export(tmpdir: str):
 @require_torch_higher_or_equal("2.6")
 def test_export_safetensors_invalid_parameters():
     """Test that export_safetensors raises ValueError for invalid custom_mode, weight_format, pack_method, and quant_config=None."""
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int4,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -876,7 +1072,7 @@ def test_export_safetensors_invalid_parameters():
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
     quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
     with tempfile.TemporaryDirectory() as tmpdir:
         # Invalid custom_mode
@@ -982,26 +1178,25 @@ def test_wmxfp4_afp8_export(weight_format: str):
         Import Format:            Json-safetensors
         Quantization Method:      wmxfp4_afp8
     """
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
-    MXFP4_PER_GROUP_SYM_SPEC = OCP_MXFP4Spec(is_dynamic=False).to_quantization_spec()
+    MXFP4_PER_GROUP_SYM_SPEC = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
     EXCLUDE_LAYERS = ["lm_head"]
 
-    W_MXFP4_A_FP8_PER_GROUP_SYM_CONFIG = QuantizationConfig(
+    W_MXFP4_A_FP8_PER_GROUP_SYM_CONFIG = QLayerConfig(
         weight=MXFP4_PER_GROUP_SYM_SPEC, input_tensors=FP8_PER_TENSOR_SPEC
     )
-    quant_config = Config(global_quant_config=W_MXFP4_A_FP8_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    quant_config = QConfig(global_quant_config=W_MXFP4_A_FP8_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
 
-            with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+        with torch.no_grad():
+            _ = quant_model(INPUT_IDS).to_tuple()
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
@@ -1021,74 +1216,75 @@ def test_wfp4_afp8_import(weight_format: str):
     MX_SEPARATED_FP4_PER_GROUP_SYM_SPEC = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
 
     EXCLUDE_LAYERS = ["lm_head"]
-    W_MXFP4_A_MXFP8 = QuantizationConfig(
+    W_MXFP4_A_MXFP8 = QLayerConfig(
         input_tensors=MX_SEPARATED_FP8_E4M3_PER_GROUP_SYM_SPEC, weight=MX_SEPARATED_FP4_PER_GROUP_SYM_SPEC
     )
 
-    quant_config = Config(global_quant_config=W_MXFP4_A_MXFP8, exclude=EXCLUDE_LAYERS)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    quant_config = QConfig(global_quant_config=W_MXFP4_A_MXFP8, exclude=EXCLUDE_LAYERS)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 @require_torch_higher_or_equal("2.6")
-def test_kv_layers_exclude_import():
+@pytest.mark.parametrize("kv_cache_post_rope", [False, True])
+def test_kv_layers_exclude_import(kv_cache_post_rope: bool):
     """
     Test Features:
         Import Format:            Json-safetensors
         Quantization Method:      wfp8_afp8, kv_layers excluded in quantization config, but kv cache still need to be quantized
     """
-    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
     )
 
     EXCLUDE_LAYERS = ["lm_head", "*.k_proj", "*.v_proj"]
 
-    W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
     layer_quant_config = {
-        "*v_proj": QuantizationConfig(
+        "*v_proj": QLayerConfig(
             input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
         ),
-        "*k_proj": QuantizationConfig(
+        "*k_proj": QLayerConfig(
             input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
         ),
     }
     kv_cache_quant_config = layer_quant_config.copy()
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=W_FP8_A_FP8_PER_TENSOR_CONFIG,
         layer_quant_config=layer_quant_config,
         kv_cache_quant_config=kv_cache_quant_config,
         exclude=EXCLUDE_LAYERS,
     )
+    quant_config.kv_cache_post_rope = kv_cache_post_rope  # type: ignore[attr-defined]
     with torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
@@ -1149,43 +1345,42 @@ def test_wfp6_e2m3_afp6_e2m3_import(weight_format: str):
         ).to_quantization_spec()
 
     EXCLUDE_LAYERS = ["lm_head"]
-    global_quant_config = QuantizationConfig(
+    global_quant_config = QLayerConfig(
         input_tensors=FP6_E2M3_PER_GROUP_SYM_SPEC(32, "e8m0", "even", True),
         weight=FP6_E2M3_PER_GROUP_SYM_SPEC(32, "e8m0", "even", False),
     )
-    quant_config = Config(global_quant_config=global_quant_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=global_quant_config, exclude=EXCLUDE_LAYERS)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
@@ -1212,57 +1407,60 @@ def test_wfp6_e3m2_afp6_e3m2_import(weight_format: str):
         ).to_quantization_spec()
 
     EXCLUDE_LAYERS = ["lm_head"]
-    global_quant_config = QuantizationConfig(
+    global_quant_config = QLayerConfig(
         input_tensors=FP6_E3M2_PER_GROUP_SYM_SPEC(32, "e8m0", "even", True),
         weight=FP6_E3M2_PER_GROUP_SYM_SPEC(32, "e8m0", "even", False),
     )
-    quant_config = Config(global_quant_config=global_quant_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=global_quant_config, exclude=EXCLUDE_LAYERS)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as f:
-                checkpoint_keys = f.keys()
+        with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as f:
+            checkpoint_keys = f.keys()
 
-                assert "model.decoder.layers.11.self_attn.k_proj.weight_scale" in checkpoint_keys
+            assert "model.decoder.layers.11.self_attn.k_proj.weight_scale" in checkpoint_keys
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
-@require_torch_higher_or_equal("2.6")
+# Before PyTorch 2.9.0, FP8 operations on AMD GPUs exhibited numerical instability,
+# causing slightly different outputs for the same inputs. PyTorch 2.9.0 has fixed
+# these issues, and FP8 computation is now deterministic.
+# Using `2.8.99` so that this test runs as well on e.g. 2.9.0a0+git1c57644.
+@require_torch_higher_or_equal("2.8.99")
 @pytest.mark.parametrize(
     "weight_format",
     [pytest.param(weight_format, id=str(weight_format)) for weight_format in ["real_quantized", "fake_quantized"]],
 )
-@retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU with max abs diff ~0.1.
+@retry_flaky_test()
 def test_fp4_per_group_fp8_per_tensor_scale_export_import(weight_format: str):
     """
     Test Features:
@@ -1270,121 +1468,122 @@ def test_fp4_per_group_fp8_per_tensor_scale_export_import(weight_format: str):
         Quantization Method:      w_fp4_per_group_fp8_per_tensor_scale_a_fp4_per_group_fp8_per_tensor_scale
     """
     FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC = ScaleQuantSpec(
-        first_stage=FP4PerGroupSpec(group_size=16, is_dynamic=False),
-        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False),
+        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=False),
+        second_stage=FP8E4M3PerTensorSpec(is_dynamic=False),
     ).to_quantization_spec()
 
     FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC_DYNAMIC = ScaleQuantSpec(
-        first_stage=FP4PerGroupSpec(group_size=16, is_dynamic=True),
-        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=True),
+        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=True),
+        second_stage=FP8E4M3PerTensorSpec(is_dynamic=True),
     ).to_quantization_spec()
 
     EXCLUDE_LAYERS = ["lm_head"]
-    W_FP4_A_FP4_SCALE_FP8_CONFIG = QuantizationConfig(
+    W_FP4_A_FP4_SCALE_FP8_CONFIG = QLayerConfig(
         input_tensors=FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC_DYNAMIC, weight=FP4_PER_GROUP_FP8_PER_TENSOR_SCALE_SPEC
     )
 
-    quant_config = Config(global_quant_config=W_FP4_A_FP4_SCALE_FP8_CONFIG, exclude=EXCLUDE_LAYERS)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    quant_config = QConfig(global_quant_config=W_FP4_A_FP4_SCALE_FP8_CONFIG, exclude=EXCLUDE_LAYERS)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False, torch_dtype=None)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as f:
-                checkpoint_keys = f.keys()
+        with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as f:
+            checkpoint_keys = f.keys()
 
-                assert "model.decoder.layers.11.self_attn.k_proj.weight_scale" in checkpoint_keys
-                assert "model.decoder.layers.11.self_attn.k_proj.weight_scale_2" in checkpoint_keys
+            assert "model.decoder.layers.11.self_attn.k_proj.weight_scale" in checkpoint_keys
+            assert "model.decoder.layers.11.self_attn.k_proj.weight_scale_2" in checkpoint_keys
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
 @require_torch_higher_or_equal("2.6")
+@skip_torch_version("2.8")
+@pytest.mark.parametrize(
+    "torch_dtype",
+    [pytest.param(val, id=f"torch_dtype:{val}") for val in [torch.float16, torch.bfloat16, torch.float32]],
+)
 @pytest.mark.parametrize(
     "weight_format",
     [pytest.param(weight_format, id=str(weight_format)) for weight_format in ["real_quantized", "fake_quantized"]],
 )
 @retry_flaky_test()  # Test is flaky (~1/50 fail on MI250) on GPU with max abs diff ~0.1.
-def test_wfp8_int4perchannel_afp8_import(weight_format: str):
+def test_wfp8_int4perchannel_afp8_import(weight_format: str, torch_dtype: torch.dtype):
     """
     Test Features:
         Import Format:            Json-safetensors
         Quantization Method:      wfp8_int4perchannel_afp8
     """
-    FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
-    INT4_PER_CHANNEL_SPEC = Int4PerChannelSpec(
-        symmetric=True, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-    ).to_quantization_spec()
+    FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(is_dynamic=False).to_quantization_spec()
+    INT4_PER_CHANNEL_SPEC = Int4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
     FP8_INT4_PER_CHANNEL_SPEC = [FP8_PER_TENSOR_SPEC, INT4_PER_CHANNEL_SPEC]
 
     EXCLUDE_LAYERS = ["lm_head"]
-    W_FP8_A_INT4_PER_CHANNEL = QuantizationConfig(weight=FP8_INT4_PER_CHANNEL_SPEC, input_tensors=FP8_PER_TENSOR_SPEC)
+    W_FP8_A_INT4_PER_CHANNEL = QLayerConfig(weight=FP8_INT4_PER_CHANNEL_SPEC, input_tensors=FP8_PER_TENSOR_SPEC)
 
-    quant_config = Config(global_quant_config=W_FP8_A_INT4_PER_CHANNEL, exclude=EXCLUDE_LAYERS)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False)
+    quant_config = QConfig(global_quant_config=W_FP8_A_INT4_PER_CHANNEL, exclude=EXCLUDE_LAYERS)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=MODEL_DIR, multi_gpu=False, torch_dtype=torch_dtype)
 
-            export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
-            quant_model(INPUT_IDS).to_tuple()
+        quant_model(INPUT_IDS).to_tuple()
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        for device in ["meta", torch_device]:
+            config = AutoConfig.from_pretrained(MODEL_DIR)
+            with torch.device(device):
+                original_model = AutoModelForCausalLM.from_config(config, torch_dtype=torch_dtype)
+
+            q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+
+            q_model = q_model.eval()
+
+            if device == "meta":
+                q_model = q_model.to(torch_device)
 
             with torch.no_grad():
-                ref_outputs = quant_model(INPUT_IDS).to_tuple()
+                outputs = q_model(INPUT_IDS).to_tuple()
 
-            for device in ["meta", torch_device]:
-                config = AutoConfig.from_pretrained(MODEL_DIR)
-                with torch.device(device):
-                    original_model = AutoModelForCausalLM.from_config(config)
-
-                q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
-
-                q_model = q_model.eval()
-
-                if device == "meta":
-                    q_model = q_model.to(torch_device)
-
-                with torch.no_grad():
-                    outputs = q_model(INPUT_IDS).to_tuple()
-
-                for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
-                    if torch_device.type == "cpu":
-                        assert torch.equal(ref_output, output)
-                    else:
-                        assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
+            for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+                if torch_device.type == "cpu":
+                    assert torch.equal(ref_output, output)
+                else:
+                    assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
 @use_temporary_directory
 def test_import_raise_error_non_persistent_buffer(tmpdir: str):
     model_dir = "amd-quark/tiny-llama-fast-tokenizer"
 
-    quant_spec = QuantizationSpec(
+    quant_spec = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorMinMaxObserver,
@@ -1394,21 +1593,84 @@ def test_import_raise_error_non_persistent_buffer(tmpdir: str):
         is_dynamic=False,
     )
 
-    quant_config = Config(global_quant_config=QuantizationConfig(weight=quant_spec))
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with torch.inference_mode():
-            quant_model = quantize_model(quant_config, model_name=model_dir, multi_gpu=False)
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=model_dir, multi_gpu=False)
 
-            export_safetensors(
-                model=quant_model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder"
-            )
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
 
-            config = AutoConfig.from_pretrained(model_dir)
-            with torch.device("meta"):
-                original_model = AutoModelForCausalLM.from_config(config)
+        config = AutoConfig.from_pretrained(model_dir)
+        with torch.device("meta"):
+            original_model = AutoModelForCausalLM.from_config(config)
 
-            with pytest.raises(Exception) as exc_info:
-                _ = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+        with pytest.raises(Exception) as exc_info:
+            _ = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
 
-            assert "on meta device while it contains non-persistent buffers is not supported" in str(exc_info.value)
+        assert "on meta device while it contains non-persistent buffers is not supported" in str(exc_info.value)
+
+
+@use_temporary_directory
+def test_checkpoint_conversion_mapping(tmpdir: str):
+    model_dir = "amd-quark/tiny-llama-fast-tokenizer"
+
+    quant_spec = QTensorConfig(
+        dtype=Dtype.int8,
+        qscheme=QSchemeType.per_tensor,
+        observer_cls=PerTensorMinMaxObserver,
+        symmetric=True,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+    )
+
+    quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
+    with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
+        quant_model = quantize_model(quant_config, model_name=model_dir, multi_gpu=False)
+
+        export_safetensors(model=quant_model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
+
+        with torch.no_grad():
+            ref_outputs = quant_model(INPUT_IDS).to_tuple()
+
+        original_weights = _load_weights_from_safetensors(tmpdir)
+        renamed_weights = {}
+        key_mapping_applied = False
+
+        for key, value in original_weights.items():
+            # rename keys: model.layers.X -> model.blocks.X
+            if "model.layers" in key:
+                new_key = key.replace("model.layers", "model.blocks")
+                renamed_weights[new_key] = value
+                key_mapping_applied = True
+            else:
+                renamed_weights[key] = value
+
+        # make sure we actually renamed some keys
+        assert key_mapping_applied, "Test setup failed: no keys were renamed"
+
+        # save the renamed weights back to safetensors
+        safetensors_path = Path(tmpdir) / "model.safetensors"
+        save_file(renamed_weights, str(safetensors_path))
+
+        config = AutoConfig.from_pretrained(model_dir)
+        original_model = AutoModelForCausalLM.from_config(config)
+        original_model = original_model.to(torch_device)
+
+        # set the checkpoint conversion mapping to reverse the renaming
+        # pattern: "model.blocks" -> "model.layers"
+        original_model._checkpoint_conversion_mapping = {
+            r"^model.blocks": "model.layers",
+        }
+
+        q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
+        q_model = q_model.eval()
+
+        with torch.no_grad():
+            outputs = q_model(INPUT_IDS).to_tuple()
+
+        for ref_output, output in zip(ref_outputs[0], outputs[0], strict=False):
+            if torch_device.type == "cpu":
+                assert torch.equal(ref_output, output)
+            else:
+                assert torch.allclose(output, ref_output, atol=1e-4)

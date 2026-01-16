@@ -9,7 +9,7 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -285,7 +285,7 @@ class MatMulNBitsQuantizer:
             self._process_subgraph(graph_stack)
             self.model.clean_initializers()
         elif self.algo_config.algorithm in ["GPTQ"]:
-            from quark.onnx.gptq.gptq import GptqProcessor
+            from quark.onnx.algorithm.gptq.gptq import GptqProcessor
 
             gptq_processor = GptqProcessor(
                 self.model_gptq,
@@ -310,7 +310,7 @@ class HQQWeightOnlyQuantizer:
         zero: torch.Tensor,
         min_max: list[int],
         axis: int = 0,
-        opt_params: dict[str, Union[float, int]] | None = None,
+        opt_params: dict[str, float | int] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         opt_params = {"lp_norm": 0.7, "beta": 1e1, "kappa": 1.01, "iters": 20} if opt_params is None else opt_params
         lp_norm, beta, kappa, iters = (
@@ -388,7 +388,6 @@ class HQQWeightOnlyQuantizer:
         min_max = [min_v, max_v]
 
         scale = (max_v / (_max - _min)).clamp(max=2e4)
-        min_max_axis = _max - _min
         zero = -_min * scale
 
         if round_zero:

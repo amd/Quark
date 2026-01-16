@@ -1,0 +1,29 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+name: onnx-utils
+channels:
+  - conda-forge
+dependencies:
+  # core
+  - cmake>=3.28
+  - ninja
+  - pre-commit
+  - python=3.12
+  # for DynamicDispatch
+  - boost
+  - gtest
+  - nanobind
+  - nlohmann_json
+  - spdlog
+  - xtensor=0.26.0
+  - xtl
+  - zlib
+  # for hybrid LLM
+  - eigen
+  # for runtime
+  - numpy<2.0
+  - pip
+  - pip:
+    - transformers
+    - sentencepiece
+    - torch

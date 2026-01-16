@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from abc import ABC, abstractmethod
@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from torch.fx import GraphModule
 
 
-class Transform(ABC):
+class Transform(ABC):  # noqa
     pass
 
 

@@ -13,19 +13,19 @@ namespace quark_onnx {
 extern float float2bfloat_cpu(const float x, std::string str = "false");
 }
 
-uint32_t __float_as_uint(float x) { return *reinterpret_cast<uint32_t *>(&x); }
+uint32_t __float_as_uint(float x) { return *reinterpret_cast<uint32_t*>(&x); }
 
-float __uint_as_float(uint32_t x) { return *reinterpret_cast<float *>(&x); }
+float __uint_as_float(uint32_t x) { return *reinterpret_cast<float*>(&x); }
 
 uint32_t GetExponentCPU(float v) {
   // Get the biased exponent.
-  uint32_t uint_v = *reinterpret_cast<uint32_t *>(&v);
+  uint32_t uint_v = *reinterpret_cast<uint32_t*>(&v);
   // Shift away mantissa bits.
   return (uint_v & 0x7f800000) >> 23;
 }
 
 // Get a unsinged value of the max biased exponent.
-uint32_t GetMaxExponentCPU(const float *input, int n) {
+uint32_t GetMaxExponentCPU(const float* input, int n) {
   uint32_t max_exp = 0;
   for (int i = 0; i < n; i++) {
     max_exp = std::max(max_exp, GetExponentCPU(input[i]));
@@ -50,7 +50,7 @@ float py3_round(float x) {
 }
 
 void BFPCPUKernel(
-  const float *input, float *output, int n, int index, int stride,
+  const float* input, float* output, int n, int index, int stride,
   int bit_width, rounding_mode_enum rounding_mode
 ) {
   uint32_t shared_exp = 0;
@@ -98,7 +98,7 @@ void BFPCPUKernel(
 }
 
 void BFPCPUKernelCompiler(
-  const float *input, float *output, int n, int index, int stride,
+  const float* input, float* output, int n, int index, int stride,
   int bit_width, rounding_mode_enum rounding_mode
 ) {
   uint32_t shared_exp = 0;
@@ -206,7 +206,7 @@ uint32_t round_bits(
 // 2. All subnormal numbers are flushed to zeros.
 // 3. When the shared exponent is 2^w - 1, all k values in a block are NaNs
 void BFPPrimeCPUKernel(
-  const float *input, float *output, const int n, const int offset,
+  const float* input, float* output, const int n, const int offset,
   const int stride, const int bit_width, const int block_size,
   const int sub_block_size, const int sub_block_shift_bits,
   const rounding_mode_enum rounding_mode
@@ -271,14 +271,14 @@ void BFPPrimeCPUKernel(
   }
 }
 
-void Float2BFloat(float *input, int n) {
+void Float2BFloat(float* input, int n) {
   for (int i = 0; i < n; i++) {
     *(input + i) = quark_onnx::float2bfloat_cpu(*(input + i), "false");
   }
 }
 
 void LaunchBFPCPUKernel(
-  const float *input, float *output, int n, int bit_width, int block_size,
+  const float* input, float* output, int n, int bit_width, int block_size,
   int rounding_mode, int use_compiler_version_cpu_kernel
 ) {
   int num_blocks = n / block_size;
@@ -298,7 +298,7 @@ void LaunchBFPCPUKernel(
 }
 
 void LaunchBFPPrimeCPUKernel(
-  const float *input, float *output, const int n, const int bit_width,
+  const float* input, float* output, const int n, const int bit_width,
   const int block_size, const int sub_block_size,
   const int sub_block_shift_bits, const int rounding_mode
 ) {

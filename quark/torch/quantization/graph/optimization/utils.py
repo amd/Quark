@@ -1,8 +1,7 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import List, Union
 
 import torch
 from torch import nn
@@ -19,7 +18,11 @@ from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import (
 from quark.torch.quantization.nn.modules.quantize_leakyrelu import QuantLeakyReLU
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.nn.modules.quantize_pool import QuantAdaptiveAvgPool2d, QuantAvgPool2d
-from quark.torch.quantization.tensor_quantize import FrozenScaledFakeQuantize, ScaledFakeQuantize
+from quark.torch.quantization.tensor_quantize import (
+    FrozenScaledFakeQuantize,
+    ScaledFakeQuantize,
+    StaticScaledFakeQuantize,
+)
 
 logger = ScreenLogger(__name__)
 
@@ -88,7 +91,7 @@ def is_quantizer(module: nn.Module) -> bool:
     return isinstance(module, (FrozenScaledFakeQuantize, ScaledFakeQuantize))
 
 
-def get_quantizer_scale_pos(quantizer: Union[ScaledFakeQuantize, FrozenScaledFakeQuantize]) -> float:
+def get_quantizer_scale_pos(quantizer: ScaledFakeQuantize | FrozenScaledFakeQuantize) -> float:
     """
     For a quantizer(ScaledFakeQuantize, FrozenScaledFakeQuantize)
     examples:
@@ -101,7 +104,7 @@ def get_quantizer_scale_pos(quantizer: Union[ScaledFakeQuantize, FrozenScaledFak
     return pos
 
 
-def get_quantizer_powof2_scale_pos(quantizer: Union[ScaledFakeQuantize, FrozenScaledFakeQuantize]) -> int:
+def get_quantizer_powof2_scale_pos(quantizer: ScaledFakeQuantize | FrozenScaledFakeQuantize) -> int:
     """
     For a quantizer(ScaledFakeQuantize, FrozenScaledFakeQuantize)
     examples:
@@ -109,6 +112,7 @@ def get_quantizer_powof2_scale_pos(quantizer: Union[ScaledFakeQuantize, FrozenSc
         scale:  0.0625 -> pos = 4   as: 1 / (2 ** 4) = 0.0625
     pos = log_2(1 / scale)
     """
+    assert isinstance(quantizer, (StaticScaledFakeQuantize, FrozenScaledFakeQuantize))
     scale = quantizer.scale.detach().clone()
     pos = get_quantizer_scale_pos(quantizer)
     if pos % 1 != 0:

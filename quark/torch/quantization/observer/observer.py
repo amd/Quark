@@ -1,13 +1,13 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections import Counter
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
@@ -16,7 +16,8 @@ from torch.ao.quantization import HistogramObserver
 import quark.torch.kernel  # noqa
 
 if TYPE_CHECKING:
-    from quark.torch.quantization.config.config import QuantizationSpec
+    from quark.torch.quantization.config.config import QTensorConfig
+from quark.shares.data_type import BaseObserverBase
 from quark.shares.utils.import_utils import is_torch_greater_or_equal_2_5
 from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_int  # type: ignore
@@ -33,8 +34,8 @@ from quark.torch.quantization.utils import (
 logger = ScreenLogger(__name__)
 
 
-class ObserverBase(ABC, nn.Module):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+class ObserverBase(BaseObserverBase, nn.Module):
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__()
         self.dtype = qspec.dtype
 
@@ -68,24 +69,29 @@ class ObserverBase(ABC, nn.Module):
             two dimensions, the _num_observed_tokens attribute will be set
             to None.
         """
+        # Some of the utilies in graph quantization may (for some reason) apply quantizers on 1D or 0D tensors,
+        # e.g. in test/test_for_torch/test_fx_quant_align_hw_pow_of_2.py::test_torch_postquant_concat_strategy.
+        if batch_tensor.ndim < 2:
+            return
+
         if not isinstance(batch_tensor, torch.Tensor):
             raise ValueError(f"Expected value to be a tensor, got {type(batch_tensor)}")
-
-        if batch_tensor.ndim != 2:
-            logger.debug(
-                "The input tensor is expected to have two dimensions "
-                "(batch_size * sequence_length, num_features). "
-                f"But the input tensor has {batch_tensor.ndim} dimensions."
-            )
-            return
 
         if self._num_observed_tokens is None:
             # initialize the count
             self._num_observed_tokens = 0
 
-        # batch_tensor (batch_size * sequence_length, num_features)
-        # observed_tokens (batch_size * sequence_length)
-        observed_tokens, _ = batch_tensor.shape
+        # For some models with MoE (e.g., Llama4), the MoE computation is performed by matrix multiplication
+        # between the input and the weights of experts. In these models, the routing mechanism selectively assigns
+        # tokens to different experts. When the input corresponding to a particular expert is all zeros, it indicates
+        # that the token was not routed to that expert, and therefore should not be counted as a valid token for that expert.
+        # The code below filters out tokens that were not assigned to the current expert by checking whether each row
+        # (corresponding to a token) contains any non-zero elements, thus accurately counting the number of tokens actually
+        # processed by this expert.
+        batch_tensor = batch_tensor.reshape(-1, batch_tensor.shape[-1])
+        row_mask = (batch_tensor != 0).any(dim=1)
+        valid_rows = torch.nonzero(row_mask, as_tuple=True)[0]
+        observed_tokens = valid_rows.numel()
         self._num_observed_tokens += observed_tokens
 
 
@@ -101,7 +107,7 @@ class PlaceholderObserver(ObserverBase):
 
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         device: torch.device | None = None,
     ) -> None:
         super().__init__(qspec, device)
@@ -130,7 +136,7 @@ class UniformScalingObserver(ObserverBase):
     max_val: torch.Tensor
 
     def __init__(
-        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec, device)
 
@@ -276,10 +282,6 @@ class UniformScalingObserver(ObserverBase):
         self.min_val = torch.tensor(float("inf"))
         self.max_val = torch.tensor(float("-inf"))
 
-    def reset_min_max_for_dynamic(self) -> None:
-        if self.is_dynamic:
-            self.reset_min_max_vals()
-
     # NOTE this class should not be instance, so we set to abs class
     @abstractmethod
     def forward(self, x: torch.Tensor) -> Any:
@@ -287,7 +289,7 @@ class UniformScalingObserver(ObserverBase):
 
 
 class PerTensorMinMaxObserver(UniformScalingObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
@@ -296,10 +298,12 @@ class PerTensorMinMaxObserver(UniformScalingObserver):
             return x_orig
 
         x = x_orig.detach()  # avoid keeping autograd tape
-        self.reset_min_max_for_dynamic()
-        min_val_cur, max_val_cur = torch.aminmax(x)
-        min_val = torch.min(min_val_cur, self.min_val)
-        max_val = torch.max(max_val_cur, self.max_val)
+        min_val, max_val = torch.aminmax(x)
+
+        if not self.is_dynamic:
+            min_val = torch.min(min_val, self.min_val)
+            max_val = torch.max(max_val, self.max_val)
+
         self.min_val.copy_(min_val)
         self.max_val.copy_(max_val)
 
@@ -309,7 +313,7 @@ class PerTensorMinMaxObserver(UniformScalingObserver):
 
 
 class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
             "Currently PerTensorPowOf2Observer only support int8, uint8 and int32 Dtype"
@@ -398,7 +402,7 @@ class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
     More ref: Quark/quark/onnx/quant_utils.py func: quantize_data
     """
 
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         self.original_tensor: torch.Tensor | None = (
             None  # not use `register_buffer`, as this function will save dict, waist disk space
@@ -461,7 +465,7 @@ class PerTensorPowOf2MinMSEObserver(PerTensorPowOf2MinMaxObserver):
 
 class PerChannelMinMaxObserver(UniformScalingObserver):
     def __init__(
-        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec, device)
 
@@ -477,10 +481,12 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
         if x_orig.numel() == 0:
             return x_orig
         x = x_orig.detach()  # avoid keeping autograd tape
-        self.reset_min_max_for_dynamic()
-        min_val = self.min_val.to(x_orig_device)
-        max_val = self.max_val.to(x_orig_device)
+
         x_dim = x.size()
+
+        if self.min_val.device != x_orig_device:
+            self.min_val = self.min_val.to(x_orig_device)
+            self.max_val = self.max_val.to(x_orig_device)
 
         new_axis_list = [i for i in range(len(x_dim))]  # noqa: C416
         if self.ch_axis is not None:
@@ -494,12 +500,14 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
         # are done in place and types need to match for comparisons
         y = y.to(self.min_val.dtype)
         y = torch.flatten(y, start_dim=1)
-        if min_val.numel() == 0 or max_val.numel() == 0:
-            min_val, max_val = torch.aminmax(y, dim=1)
-        else:
-            min_val_cur, max_val_cur = torch.aminmax(y, dim=1)
-            min_val = torch.min(min_val_cur, min_val)
-            max_val = torch.max(max_val_cur, max_val)
+
+        min_val, max_val = torch.aminmax(y, dim=1)
+
+        if not self.is_dynamic:
+            if self.min_val.numel() == min_val.numel() and self.min_val.numel() == max_val.numel():
+                min_val = torch.minimum(self.min_val, min_val)
+                max_val = torch.maximum(self.max_val, max_val)
+
         self.min_val.resize_(min_val.shape)
         self.max_val.resize_(max_val.shape)
         self.min_val.copy_(min_val)
@@ -522,7 +530,7 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
 
 
 class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
             "Currently PerChannelPowOf2MinMaxObserver only support int8, uint8 and int32 Dtype"
@@ -612,7 +620,7 @@ class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
     More ref: Quark/quark/onnx/quant_utils.py func: quantize_data
     """
 
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
         self.original_tensor: torch.Tensor | None = (
             None  # not use `register_buffer`, as this function will save dict, waist disk space
@@ -682,7 +690,7 @@ class PerChannelPowOf2MinMSEObserver(PerChannelPowOf2MinMaxObserver):
 
 class PerBlockMXObserver(ObserverBase):
     def __init__(
-        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec=qspec, device=device)
         self.qspec = qspec
@@ -773,7 +781,7 @@ class PerBlockMXObserver(ObserverBase):
 class PerBlockMXDiffsObserver(PerBlockMXObserver):
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         device: torch.device | None = None,
         eps: float = torch.finfo(torch.float32).eps,
         scope: int = 1,
@@ -836,7 +844,7 @@ class PerBlockMXDiffsObserver(PerBlockMXObserver):
 
 class PerBlockBFPObserver(ObserverBase):
     def __init__(
-        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec=qspec, device=device)
         self.qspec = qspec
@@ -892,7 +900,7 @@ class PerBlockBFPObserver(ObserverBase):
 
 class PerGroupMinMaxObserver(UniformScalingObserver):
     def __init__(
-        self, qspec: QuantizationSpec, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec, device)
 
@@ -900,6 +908,8 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
         self.ch_axis = cast(int, qspec.ch_axis)
         self.group_size = cast(int, qspec.group_size)
         self.group_count = 1  # Set default value
+
+        # NOTE: per-group static quantization is only supported for weights (that are static per definition) in QLayerConfig, hence no special handling required for static quantization here.
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
         return self._forward(x_orig)
@@ -909,11 +919,12 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
         if x_orig.numel() == 0:
             return x_orig
         x = x_orig.detach()  # avoid keeping autograd tape
-        self.reset_min_max_for_dynamic()
-        min_val = self.min_val.to(x_orig_device)
-        max_val = self.max_val.to(x_orig_device)
 
         x_dim = x.size()
+
+        if self.min_val.device != x_orig_device:
+            self.min_val = self.min_val.to(x_orig_device)
+            self.max_val = self.max_val.to(x_orig_device)
 
         # Get group_count, group_count * group_size = dim_of_axis
         x_group_channel_element_num = x_dim[self.ch_axis]
@@ -921,7 +932,7 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
             self.group_count = 1
         elif x_group_channel_element_num % self.group_size != 0:
             raise ValueError(
-                f"The number of element per dimension ch_axis={self.ch_axis} is {x_group_channel_element_num} which is not divisible by group_size={self.group_size}. The `group_size` used should be updated in the QuantizationSpec."
+                f"The number of element per dimension ch_axis={self.ch_axis} is {x_group_channel_element_num} which is not divisible by group_size={self.group_size}. The `group_size` used should be updated in the QTensorConfig."
             )
         else:
             self.group_count = x_group_channel_element_num // self.group_size
@@ -940,14 +951,8 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
         else:
             raise ValueError("group_size cannot be None")
 
-        # Need to match dtype of min/max because the updates to buffers
-        # are done in place and types need to match for comparisons
-        if min_val.numel() == 0 or max_val.numel() == 0:
-            min_val, max_val = torch.aminmax(x, dim=1)
-        else:
-            min_val_cur, max_val_cur = torch.aminmax(x, dim=1)
-            min_val = torch.min(min_val_cur, min_val)
-            max_val = torch.max(max_val_cur, max_val)
+        min_val, max_val = torch.aminmax(x, dim=1)
+
         self.min_val.resize_(min_val.shape)
         self.max_val.resize_(max_val.shape)
         self.min_val.copy_(min_val)
@@ -973,7 +978,7 @@ class PerTensorHistogramObserver(UniformScalingObserver):
     calib_bin_edges: torch.Tensor
     calib_hist: torch.Tensor
 
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec)
 
         self.register_buffer("calib_bin_edges", torch.tensor([], device=device), persistent=False)
@@ -994,7 +999,6 @@ class PerTensorHistogramObserver(UniformScalingObserver):
         self.device = x_orig.device
         x = x_orig.detach()  # avoid keeping autograd tape
         x = x.float()
-        self.reset_min_max_for_dynamic()
 
         with torch.no_grad():
             if self._skip_zeros:
@@ -1050,7 +1054,7 @@ class PerTensorHistogramObserverPro(UniformScalingObserver):
 
     def __init__(
         self,
-        qspec: QuantizationSpec,
+        qspec: QTensorConfig,
         device: torch.device | None = None,
         bins: int = 256,
         reduce_range: bool = False,
@@ -1101,7 +1105,7 @@ class PerTensorHistogramObserverPro(UniformScalingObserver):
 
 
 class PerTensorPercentileObserver(PerTensorHistogramObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
         # TODO: make the value can be set
@@ -1182,7 +1186,7 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
 
 
 class PerTensorMSEObserver(PerTensorHistogramObserver):
-    def __init__(self, qspec: QuantizationSpec, device: torch.device | None = None) -> None:
+    def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
 
     def _calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:

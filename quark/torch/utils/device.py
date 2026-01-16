@@ -1,9 +1,8 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import os
-from typing import Optional, Tuple
 
 import torch
 from torch.distributed import device_mesh
@@ -15,7 +14,6 @@ from torch.distributed._tensor import distribute_tensor, Replicate, DTensor
 
 
 def e4m3fn_to_e4m3fnuz(tensor: torch.Tensor, tensor_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    ROCM_FP8_NAN_AS_INT = -128
     scale = 2.0
 
     if tensor is not None and torch.version.hip is not None:

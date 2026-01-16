@@ -13,12 +13,12 @@
 #include "mx/cuda/mx_kernel.h"
 
 void to_mx(
-  const Ort::Value &tensor, std::string &scale_dtype,
-  std::string &element_dtype, int64_t block_size, int64_t rounding_mode,
-  Ort::Value &out
+  const Ort::Value& tensor, std::string& scale_dtype,
+  std::string& element_dtype, int64_t block_size, int64_t rounding_mode,
+  Ort::Value& out
 ) {
-  const float *input = tensor.GetTensorData<float>();
-  float *output = out.GetTensorMutableData<float>();
+  const float* input = tensor.GetTensorData<float>();
+  float* output = out.GetTensorMutableData<float>();
   size_t element_count = out.GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<int64_t> dimensions =
     tensor.GetTensorTypeAndShapeInfo().GetShape();

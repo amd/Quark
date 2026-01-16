@@ -1,11 +1,8 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Peuning API for PyTorch."""
-
-import logging
-from typing import Dict, List, Optional, Union
 
 import torch
 import torch.fx
@@ -36,26 +33,13 @@ class ModelPruner:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._is_accelerate: bool | None = None
-        self.set_logging_level()  # set log level: default info
-
-    def set_logging_level(self) -> None:
-        if self.config.log_severity_level == 0:
-            ScreenLogger.set_shared_level(logging.DEBUG)
-        elif self.config.log_severity_level == 1:
-            ScreenLogger.set_shared_level(logging.INFO)
-        elif self.config.log_severity_level == 2:
-            ScreenLogger.set_shared_level(logging.WARNING)
-        elif self.config.log_severity_level == 3:
-            ScreenLogger.set_shared_level(logging.ERROR)
-        else:
-            ScreenLogger.set_shared_level(logging.CRITICAL)
 
     def pruning_model(
         self,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         """
@@ -108,9 +92,9 @@ class ModelPruner:
     def _apply_advanced_pruning_algo(
         self,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         return apply_advanced_pruning_algo(model, self.config, self._is_accelerate, dataloader)
@@ -122,9 +106,9 @@ class ModelPruner:
         self,
         fp_model: nn.Module,
         model: nn.Module,
-        dataloader: Union[
-            DataLoader[torch.Tensor], DataLoader[list[dict[str, torch.Tensor]]], DataLoader[dict[str, torch.Tensor]]
-        ]
+        dataloader: DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
         return blockwise_tuning_algo(fp_model, model, self.config, self._is_accelerate, dataloader)

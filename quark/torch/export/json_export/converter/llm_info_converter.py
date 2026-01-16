@@ -1,9 +1,9 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 
@@ -56,7 +56,7 @@ class LLMInfoConverter:
         embed_config["weight"] = None if info.get("weight") is None else info["weight"]
         return embed_config
 
-    def _convert_layernorm_info(self, info: dict[str, Union[str, float, None]]) -> dict[str, Union[str, float, None]]:
+    def _convert_layernorm_info(self, info: dict[str, str | float | None]) -> dict[str, str | float | None]:
         layernorm_config = {}
         layernorm_config["weight"] = None if info.get("weight") is None else info["weight"]
         layernorm_config["bias"] = None if info.get("bias") is None else info["bias"]
@@ -64,7 +64,7 @@ class LLMInfoConverter:
         layernorm_config["eps"] = "" if info.get("eps") is None else info["eps"]
         return layernorm_config
 
-    def _get_quant_scale(self, info: dict[str, Union[str, int, None]]) -> str | None:
+    def _get_quant_scale(self, info: dict[str, str | int | None]) -> str | None:
         return None if info.get("scale") is None else info["scale"]
 
     def _to_quantized_weight(self, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -90,7 +90,7 @@ class LLMInfoConverter:
         else:
             raise ValueError(f"Unsupported quantization format {self.quant_type}")
 
-    def _convert_linear_info(self, info: dict[str, Any]) -> dict[str, Union[str, int, None]]:
+    def _convert_linear_info(self, info: dict[str, Any]) -> dict[str, str | int | None]:
         linear_config = {}
         linear_config["weight"] = None if info.get("weight") is None else info["weight"]
         linear_config["bias"] = None if info.get("bias") is None else info["bias"]
@@ -287,7 +287,7 @@ class LLMInfoConverter:
 
     def _build_qkv(
         self, q_info: dict[str, Any], k_info: dict[str, Any], v_info: dict[str, Any]
-    ) -> dict[str, Union[str, int, None]]:
+    ) -> dict[str, str | int | None]:
         qkv_info = {}
         qkv_info["weight"] = self._build_qkv_weight(q_info, k_info, v_info)
         qkv_info["bias"] = self._build_qkv_bias(q_info, k_info, v_info)

@@ -1,0 +1,37 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: ""
+    op_namespaces: "hybrid"
+    # set to "" or remove to use BF16 weights
+    is_bfp16: "weights"
+    npu_jit: false
+    # flag to enable logits prune
+    prune_logits: true
+    # pull embedding table to external file
+    offload_embedding: true
+    # use separate flag for pulling out qmoe weights
+    # will behave differently from regular jit
+    offload_qmoe: true
+    # delete unpacked NPU weights
+    npu_only: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+# NOTE: any new passes that you add here may need to be added to the
+# hybrid_llm.gitignore file
+passes:
+    - hybrid_llm_qmoe
+    # this must be enabled for now for renaming the op_type
+    # assumption is only NPU will run, so to avoid bloat regular
+    # weights will be stripped out
+    - hybrid_llm_add_npu_weights
+    - simplify_casts
+    # - hybrid_llm_add_cast_attributes
+    - hybrid_llm_add_empty_cast_attributes
+    - hybrid_llm_cast_logits
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_jit

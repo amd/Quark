@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -15,6 +15,9 @@ class QDQLayerNorm(QDQOperatorBase):  # type: ignore
     def quantize(self) -> None:
         node = self.node
         assert node.op_type == "LayerNormalization"
+        is_weight_per_channel, weight_axis = self.quantizer.is_tensor_per_channel(
+            node.input[1], default_axis=0 if node.op_type == "Conv" else 1
+        )
         if self.quantizer.force_quantize_no_input_check:
             # Input
             self.quantizer.quantize_activation_tensor(node.input[0])
@@ -22,7 +25,7 @@ class QDQLayerNorm(QDQOperatorBase):  # type: ignore
                 self.quantizer.quantize_activation_tensor(node.output[0])
 
             # Scale
-            if self.quantizer.is_per_channel():
+            if is_weight_per_channel:
                 self.quantizer.quantize_weight_tensor_per_channel(node.input[1], axis=0)
             else:
                 self.quantizer.quantize_weight_tensor(node.input[1])
@@ -33,7 +36,7 @@ class QDQLayerNorm(QDQOperatorBase):  # type: ignore
             # Input
             self.quantizer.quantize_activation_tensor(self.node.output[0])
             # Scale
-            if self.quantizer.is_per_channel():
+            if is_weight_per_channel:
                 self.quantizer.quantize_weight_tensor_per_channel(node.input[1], axis=0)
             else:
                 self.quantizer.quantize_weight_tensor(node.input[1])

@@ -28,7 +28,13 @@ def prepare_model(output_dir):
     quant_onnx_model_path = Path(output_dir, "simple_conv_model_quantized.onnx").as_posix()
 
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -93,7 +99,13 @@ def prepare_model_vit(output_dir):
     onnx_model_path = Path(output_dir, "vit_model.onnx").as_posix()
     onnx_quantized_model_path = Path(output_dir, "vit_quantized.onnx").as_posix()
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")

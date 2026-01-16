@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -16,31 +16,17 @@ python fix_shapes.py --input_model_path $INPUT_MODEL_PATH --output_model_path $O
 import copy
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import onnx
-import onnxruntime as ort
 from onnx import ModelProto, helper
 
-from quark.onnx.quant_utils import create_tmp_dir
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
+from quark.onnx.utils.system_utils import create_tmp_dir
 from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
-
-
-def create_infer_session_for_onnx_model(
-    model_input: Union[str, Path, ModelProto], sess_options: ort.SessionOptions | None = None
-) -> ort.InferenceSession:
-    if isinstance(model_input, onnx.ModelProto) and model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
-        temp_dir = create_tmp_dir(prefix="quark_onnx.tools.")
-        temp_path = Path(temp_dir.name).joinpath("infer_model.onnx").as_posix()
-        model_to_save = copy.deepcopy(model_input)
-        onnx.save(model_to_save, temp_path, save_as_external_data=True)
-        return ort.InferenceSession(temp_path, sess_options)
-    else:
-        model = model_input.SerializeToString() if isinstance(model_input, onnx.ModelProto) else model_input
-        return ort.InferenceSession(model, sess_options)
 
 
 def parse_input_and_output_shapes(fix_shapes: str) -> dict[str, list[int]]:
@@ -64,7 +50,7 @@ def parse_input_and_output_shapes(fix_shapes: str) -> dict[str, list[int]]:
     return shapes_dict
 
 
-def fix_input_and_output_shapes(model_input: Union[str, Path, ModelProto], fix_shapes: str) -> ModelProto:
+def fix_input_and_output_shapes(model_input: str | Path | ModelProto, fix_shapes: str) -> ModelProto:
     model = model_input if isinstance(model_input, ModelProto) else onnx.load(model_input)
     shapes_dict = parse_input_and_output_shapes(fix_shapes)
     for i in range(len(model.graph.input)):
@@ -82,7 +68,7 @@ def fix_input_and_output_shapes(model_input: Union[str, Path, ModelProto], fix_s
     return model
 
 
-def generate_random_data(model_input: Union[str, Path, ModelProto]) -> dict[str, np.ndarray[Any, Any]]:
+def generate_random_data(model_input: str | Path | ModelProto) -> dict[str, np.ndarray[Any, Any]]:
     np.random.seed(42)
     sess = create_infer_session_for_onnx_model(model_input)
     input_info = sess.get_inputs()
@@ -127,7 +113,7 @@ def generate_random_data(model_input: Union[str, Path, ModelProto]) -> dict[str,
 
 
 def infer_all_tensors_shape(
-    model_input: Union[str, Path, ModelProto], save_as_external_data: bool = False
+    model_input: str | Path | ModelProto, save_as_external_data: bool = False
 ) -> dict[str, tuple[int]]:
     model = copy.deepcopy(model_input) if isinstance(model_input, ModelProto) else onnx.load(model_input)
     output_list = []
@@ -150,7 +136,7 @@ def infer_all_tensors_shape(
 
 
 def save_all_tensors_shape(
-    model_input: Union[str, Path, ModelProto], tensor_name_shape_dict: dict[str, tuple[int]]
+    model_input: str | Path | ModelProto, tensor_name_shape_dict: dict[str, tuple[int]]
 ) -> ModelProto:
     model = model_input if isinstance(model_input, ModelProto) else onnx.load(model_input)
     for tensor_name, new_shape in tensor_name_shape_dict.items():

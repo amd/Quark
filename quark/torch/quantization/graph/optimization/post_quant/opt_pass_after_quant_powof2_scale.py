@@ -1,9 +1,9 @@
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from abc import abstractmethod
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import torch
 from torch.fx import GraphModule, Node
@@ -734,7 +734,7 @@ class AdjustShiftSwishQOPass(OptPassBase):
     def _followed_by_sigmoid(self, n: Node) -> bool:
         if len(n.users) > 2:
             return False
-        for each_user in n.users.keys():
+        for each_user in n.users:
             if is_hardsigmoid_node(each_user):
                 return True
         return False

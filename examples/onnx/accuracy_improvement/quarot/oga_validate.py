@@ -16,11 +16,10 @@ import onnxruntime_genai as oga
 import torch
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
-
-WEIGHTS_NAME = "pytorch_model.bin"
 from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
+WEIGHTS_NAME = "pytorch_model.bin"
 
 # MODEL_CLASSES = {
 #     "llama2": (LlamaConfig, LlamaForCausalLM, LlamaTokenizer),
@@ -74,7 +73,6 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
-    sampler = eval_dataloader.sampler
 
     search_options = {
         "min_length": 1,
@@ -144,9 +142,6 @@ def main():
     parser.add_argument("--do_onnx_eval", action="store_true", help="evaluate onnx model")
 
     args = parser.parse_args()
-
-    # Setup CUDA, GPU & distributed training
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
 
     # Setup logging
     logging.basicConfig(

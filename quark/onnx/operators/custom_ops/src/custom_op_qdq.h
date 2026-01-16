@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
@@ -18,20 +18,20 @@ namespace quark_onnx {
 #define USE_NATIVE_OP_CAST
 
 struct KernelCustomQuantizeLinear {
-  KernelCustomQuantizeLinear(const OrtApi &api, const OrtKernelInfo *info);
+  KernelCustomQuantizeLinear(const OrtApi& api, const OrtKernelInfo* info);
   ~KernelCustomQuantizeLinear();
 
-  void Compute(OrtKernelContext *context);
+  void Compute(OrtKernelContext* context);
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
-  OrtStatusPtr ComputeV2(OrtKernelContext *context) { return nullptr; }
+  OrtStatusPtr ComputeV2(OrtKernelContext* context) { return nullptr; }
 #endif
 
  protected:
-  void ComputeBase(OrtKernelContext *context);
+  void ComputeBase(OrtKernelContext* context);
 
  private:
-  const OrtApi &api_;
+  const OrtApi& api_;
   Ort::KernelInfo info_{nullptr};
 
   int64_t axis_ = 1;
@@ -42,20 +42,20 @@ struct KernelCustomQuantizeLinear {
 };
 
 struct KernelCustomDequantizeLinear {
-  KernelCustomDequantizeLinear(const OrtApi &api, const OrtKernelInfo *info);
+  KernelCustomDequantizeLinear(const OrtApi& api, const OrtKernelInfo* info);
   ~KernelCustomDequantizeLinear();
 
-  void Compute(OrtKernelContext *context);
+  void Compute(OrtKernelContext* context);
 #if ORT_API_VERSION >= 17
   // This is for adapting to onnxruntime_cxx_api.h in ORT 1.17.0 (and higher)
-  OrtStatusPtr ComputeV2(OrtKernelContext *context) { return nullptr; }
+  OrtStatusPtr ComputeV2(OrtKernelContext* context) { return nullptr; }
 #endif
 
  protected:
-  void ComputeBase(OrtKernelContext *context);
+  void ComputeBase(OrtKernelContext* context);
 
  private:
-  const OrtApi &api_;
+  const OrtApi& api_;
   Ort::KernelInfo info_{nullptr};
 
   int64_t axis_ = 1;

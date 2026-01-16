@@ -1,0 +1,34 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "stx_LLM_TPS_mladf_2x4x4_bfp16_gemm_flat_rms_silu_mul"
+    op_namespaces: "hybrid"
+    is_llm: true
+    lora: true
+    fuse_qk_mha: false
+    enable_model_hash: true
+    offload_embedding: true
+    is_bfp16: "flat"
+    enable_ctrl_pkt: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+    - normalize_matmulnbits
+    - hybrid_llm_embedding
+    - hybrid_llm_kv_cache_to_bf16
+    - hybrid_llm_gqa
+    - hybrid_llm_gqa_flatmha
+    - hybrid_llm_flatrmsadd
+    - hybrid_llm_to_dd
+    - simplify_casts
+    - remove_parallel_casts
+    - flatmha_external_bufs
+    - dd.llm_token_to_dd
+    - remove_obsolete_lora_inputs
+    - hybrid_llm_cast_logits
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_jit

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -8,23 +8,23 @@ import functools
 from collections import OrderedDict
 from functools import partial
 from types import MethodType
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
 from torch import dtype as DType
 from tqdm import tqdm
 
-from quark.shares.utils.log import DebugLogger, ScreenLogger, log_errors
+from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase, SequentialRealQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.cache_integration import patch_model_with_quark_cache, prepare_cache_for_export
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
 from quark.torch.quantization.nn.modules.quantize_embed import QuantEmbedding, QuantEmbeddingBag
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
 from quark.torch.utils import setattr_recursive
 
-in_place_replace_ops = DebugLogger(name="in_place_replace_ops")
 logger = ScreenLogger(__name__)
 
 LAYER_TO_QUANT_LAYER_MAP = {
@@ -36,25 +36,31 @@ LAYER_TO_QUANT_LAYER_MAP = {
 }
 
 
-def process_model_transformation(model: nn.Module, config: Config) -> nn.Module:
+def process_model_transformation(model: nn.Module, config: QConfig) -> nn.Module:
     """
     Replaces modules to be quantized by their quantized equivalent (e.g. nn.Linear by QuantLinear), based on the provided global `config`.
     """
     logger.info("In-place OPs replacement start.")
     named_modules = dict(model.named_modules(remove_duplicate=False))
-    module_configs: dict[str, QuantizationConfig] = {}
+    module_configs: dict[str, Any] = {}
 
     prepare_for_attention_quant(model, config, FakeQuantizeBase.get_fake_quantize)
     setup_config_per_layer(config, named_modules, module_configs)
     setup_kv_cache_config(config, named_modules, module_configs)
+
+    # Note: Cache setup moved to after quantization - see setup_cache_integration_post_quantization()
+
     in_place_replace_layer(model, config, named_modules, module_configs)
+
+    # Set up cache integration AFTER quantization when quantizers exist
+    _setup_cache_based_kv_quantization_post_quantization(model, config, module_configs)
 
     logger.info("In-place OPs replacement end.")
     return model
 
 
 def setup_config_per_layer(
-    config: Config, named_modules: dict[str, nn.Module], module_configs: dict[str, QuantizationConfig]
+    config: QConfig, named_modules: dict[str, nn.Module], module_configs: dict[str, Any]
 ) -> None:
     """
     Retrieves the `QuantizationConfig` used for each layer, based on the
@@ -107,9 +113,7 @@ def setup_config_per_layer(
     config.exclude = exclude_fullname
 
 
-def setup_kv_cache_config(
-    config: Config, named_modules: dict[str, nn.Module], module_configs: dict[str, QuantizationConfig]
-) -> None:
+def setup_kv_cache_config(config: QConfig, named_modules: dict[str, nn.Module], module_configs: dict[str, Any]) -> None:
     for name, module in named_modules.items():
         if type(module) in LAYER_TO_QUANT_LAYER_MAP:
             for name_pattern, kv_cache_quant_config in config.kv_cache_quant_config.items():
@@ -121,12 +125,113 @@ def setup_kv_cache_config(
                             module_configs[name].weight = None
 
 
+def _setup_cache_based_kv_quantization_post_quantization(
+    model: nn.Module, config: QConfig, module_configs: dict[str, Any]
+) -> None:
+    """
+    Setup cache-based KV quantization AFTER quantization is complete.
+
+    This function runs after in_place_replace_layer() when quantizers actually exist.
+    """
+    # Gate by feature flag: only enable post-RoPE KV cache if requested
+    if not getattr(config, "kv_cache_post_rope", False):
+        logger.debug("Post-RoPE KV cache disabled; skipping cache integration")
+        return
+
+    # Check if we have any KV cache quantization configurations
+    if not config.kv_cache_quant_config:
+        logger.debug("No KV cache quantization config found - skipping cache setup")
+        return
+
+    logger.debug(f"Found {len(config.kv_cache_quant_config)} KV cache quantization patterns")
+    for pattern, _ in config.kv_cache_quant_config.items():
+        logger.debug("- Pattern: %s", pattern)
+
+    # Check if model is a Hugging Face Transformers model with KV cache support
+    if hasattr(model, "config") and hasattr(model, "generate"):
+        logger.debug("Model supports caching - proceeding with cache integration")
+
+        # Convert kv_cache_quant_config to format expected by cache integration
+        cache_config = {}
+        for pattern, quant_config in config.kv_cache_quant_config.items():
+            if "k_proj" in pattern or "v_proj" in pattern:
+                cache_config[pattern] = {
+                    "output_quantizer_spec": quant_config.output_tensors,
+                    "quantization_config": quant_config,
+                }
+                logger.debug("Added cache config for pattern: %s", pattern)
+
+        if cache_config:
+            # Patch the model to use cache-based quantization - quantizers should exist now!
+            patch_model_with_quark_cache(model, cache_config)
+
+            cache_enabled_count = 0
+            for name, quant_config in module_configs.items():
+                if "k_proj" in name or "v_proj" in name:
+                    cache_enabled_count += 1
+
+            logger.debug(
+                "Verified %s KV projection layers have cache-based quantization enabled",
+                cache_enabled_count,
+            )
+        else:
+            logger.debug("No valid cache configurations found - skipping cache integration")
+    else:
+        logger.debug("Model does not support caching (missing 'config' or 'generate' attributes)")
+
+
+def prepare_model_for_cache_export(model: nn.Module, config: QConfig) -> bool:
+    """
+    Prepare model for export by enabling cache export mode.
+    Called before model export to safetensors.
+    """
+
+    if getattr(config, "kv_cache_post_rope", False) and config.kv_cache_quant_config:
+        cache = prepare_cache_for_export(model)
+        if cache is not None:
+            logger.info("Prepared cache for export")
+            return True
+    return False
+
+
+def export_cache_state_dict_from_model(model: nn.Module, config: QConfig) -> dict[str, torch.Tensor]:
+    """
+    Export QuarkQuantizedCache state dict for inclusion in model safetensors.
+
+    Returns:
+        State dict with cache quantization parameters
+    """
+
+    from quark.torch.quantization.cache_integration import export_cache_state_dict
+
+    if getattr(config, "kv_cache_post_rope", False) and config.kv_cache_quant_config:
+        return export_cache_state_dict(model)
+    return {}
+
+
+def import_model_with_cache_from_safetensors(
+    model: nn.Module, state_dict: dict[str, torch.Tensor], config: QConfig
+) -> None:
+    """
+    Import model with cache quantization from safetensors.
+    Called when loading a model with cache quantization.
+    """
+    from quark.torch.quantization.cache_integration import import_cache_from_state_dict
+
+    logger.debug(
+        f"Calling import_model_with_cache_from_safetensors with kv_cache_post_rope={getattr(config, 'kv_cache_post_rope', False)}, kv_cache_quant_config={bool(config.kv_cache_quant_config)}"
+    )
+
+    if getattr(config, "kv_cache_post_rope", False) and config.kv_cache_quant_config:
+        import_cache_from_state_dict(model, state_dict, config.kv_cache_quant_config)
+
+
 def prepare_for_attention_quant(
     model: nn.Module,
-    config: Config,
+    config: QConfig,
     get_quantize: Callable[
-        [Union[QuantizationSpec, list[QuantizationSpec]]],
-        Union[FakeQuantizeBase, RealQuantizerBase, SequentialQuantize, SequentialRealQuantizer],
+        [QTensorConfig | list[QTensorConfig]],
+        FakeQuantizeBase | RealQuantizerBase | SequentialQuantize | SequentialRealQuantizer,
     ],
 ) -> None:
     if config.softmax_quant_spec is not None:
@@ -146,7 +251,7 @@ def prepare_for_attention_quant(
                     original_softmax = nn.functional.softmax
 
                     def q_softmax(
-                        prob_quantizer: Union[FakeQuantizeBase, RealQuantizerBase],
+                        prob_quantizer: FakeQuantizeBase | RealQuantizerBase,
                         input: torch.Tensor,
                         dim: int | None = None,
                         _stacklevel: int = 3,
@@ -157,9 +262,7 @@ def prepare_for_attention_quant(
                             output = prob_quantizer(output)
                         return output
 
-                    def patch_softmax(
-                        module: nn.Module, prob_quantizer: Union[FakeQuantizeBase, RealQuantizerBase]
-                    ) -> None:
+                    def patch_softmax(module: nn.Module, prob_quantizer: FakeQuantizeBase | RealQuantizerBase) -> None:
                         original_forward = module.forward
 
                         @functools.wraps(original_forward)
@@ -225,13 +328,16 @@ def prepare_for_attention_quant(
 
 @log_errors
 def in_place_replace_layer(
-    model: nn.Module, config: Config, named_modules: dict[str, nn.Module], module_configs: dict[str, QuantizationConfig]
+    model: nn.Module,
+    config: QConfig,
+    named_modules: dict[str, nn.Module],
+    module_configs: dict[str, QLayerConfig],
 ) -> None:
     """
     Replaces `nn.Linear`, `nn.Conv2d`, etc. marked for quantization in `module_configs` by their quantized module equivalent.
     """
-    replace_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP.keys()}
-    module_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP.keys()}
+    replace_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP}
+    module_count = {module_class.__name__: 0 for module_class in LAYER_TO_QUANT_LAYER_MAP}
 
     for name, module in tqdm(named_modules.items()):
         module_name = module.__class__.__name__
@@ -245,8 +351,8 @@ def in_place_replace_layer(
 
                 if hasattr(quant_module_class, "from_float"):
                     quant_module = quant_module_class.from_float(module, module_configs[name])
+                    logger.debug(f"Replacing {name} of type {type(module)} to {quant_module_class}")
                     setattr_recursive(model, name, quant_module)
-                    in_place_replace_ops.debug(name)
                 else:
                     raise ValueError(f"The class {str(quant_module_class)} does not have a method `from_float`.")
         else:

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,8 +11,9 @@ import shutil
 import sys
 import tempfile
 import unittest
-from typing import Any, Optional, Union
+from typing import Any, Callable
 
+import pytest
 from packaging import version
 
 from .import_utils import is_accelerate_available, is_torch_available
@@ -21,7 +22,7 @@ if is_torch_available():  # pragma: no cover
     # Set env var CUDA_VISIBLE_DEVICES="" to force cpu-mode
     import torch
 
-    torch_device: Union[str, torch.device] | None = None
+    torch_device: str | torch.device | None = None
     if "QUARK_TEST_DEVICE" in os.environ:
         torch_device = os.environ["QUARK_TEST_DEVICE"]
 
@@ -46,18 +47,25 @@ else:  # pragma: no cover
 
 
 def require_torch_cuda(test_case: Any) -> Any:  # pragma: no cover
-    """Decorator marking a test that requires CUDA with at least two GPUs and PyTorch."""
+    """Decorator marking a test that requires CUDA and PyTorch."""
     return unittest.skipUnless(
         isinstance(torch_device, torch.device) and torch_device.type == "cuda", "test requires CUDA"
     )(test_case)
 
 
-def require_torch_multi_gpu(test_case: Any) -> Any:  # pragma: no cover
-    """Decorator marking a test that requires CUDA and PyTorch."""
-    return unittest.skipUnless(
-        isinstance(torch_device, torch.device) and torch_device.type == "cuda" and torch.cuda.device_count() >= 2,
-        "test requires CUDA multi-gpu",
-    )(test_case)
+def require_torch_multi_gpu(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator marking a test that requires CUDA with at least two GPUs and PyTorch."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            if not (torch.cuda.is_available() and torch.cuda.device_count() >= 2):
+                pytest.skip("Test requires CUDA with at least two GPUs; skipping.")
+            return fn(*args, **kwargs)
+        except ImportError:
+            pytest.skip("PyTorch not available; skipping test.")
+
+    return wrapper
 
 
 def require_torch_hip(test_case: Any) -> Any:  # pragma: no cover
@@ -75,13 +83,55 @@ def require_linux(test_case: Any) -> Any:  # pragma: no cover
     return unittest.skipUnless(platform.system() == "Linux", "test requires Linux")(test_case)
 
 
-def require_torch_higher_or_equal(min_version: str) -> Any:  # pragma: no cover
-    """Decorator marking a test that requires the package `torch` with a version higher or equal than `version`."""
+def require_torch_higher_or_equal(min_version: str) -> Callable[[Any], Any]:
+    """Decorator marking a test that requires torch >= min_version."""
+    from functools import wraps
 
-    def decorator(test_case: Any) -> Any:
-        return unittest.skipUnless(
-            version.parse(torch.__version__) >= version.parse(min_version), f"test requires torch>={min_version}"
-        )(test_case)
+    def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        @wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            torch_version = version.parse(torch.__version__.split("+")[0])
+            if torch_version < version.parse(min_version):
+                pytest.skip(f"Test requires torch >= {min_version}, current is {torch.__version__}")
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def require_torch_lower_or_equal(max_version: str) -> Callable[[Any], Any]:
+    """Decorator marking a test that requires torch <= max_version."""
+    from functools import wraps
+
+    def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        @wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            torch_version = version.parse(torch.__version__.split("+")[0])
+            if torch_version > version.parse(max_version):
+                pytest.skip(f"Test requires torch <= {max_version}, current is {torch.__version__}")
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def skip_torch_version(skip_version: str) -> Callable[[Any], Any]:
+    """Decorator marking a test that skips if the torch version is equal to the given version"""
+    from functools import wraps
+
+    def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        @wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            torch_version = version.parse(torch.__version__.split("+")[0])
+            if torch_version == version.parse(skip_version):
+                pytest.skip(
+                    f"Test skips if the torch version is equal to {skip_version}, current is {torch.__version__}"
+                )
+            return fn(*args, **kwargs)
+
+        return wrapper
 
     return decorator
 
@@ -144,7 +194,7 @@ def skip_if_amd_quark_nightly_wheel_is_installed(test_case: Any) -> Any:  # prag
 
     is_not_nightly_package = True
     try:
-        importlib.metadata.metadata("amd-quark") is not None
+        assert importlib.metadata.metadata("amd-quark") is not None
     except importlib.metadata.PackageNotFoundError:
         is_not_nightly_package = False
 
@@ -199,12 +249,18 @@ class PatchEverywhere:
                 setattr(module, self.attribute_name, self.originals[key])
 
 
-def slow(test_case):  # type: ignore[no-untyped-def]
+def slow(fn: Callable[..., Any]) -> Callable[..., Any]:
     """
     Decorator marking a test as slow.
 
-    Slow tests are skipped by default. Set the RUN_SLOW environment variable to a truthy value to run them.
-
+    Slow tests are skipped by default. Set RUN_SLOW=1 to run them.
     """
     run_slow = os.environ.get("RUN_SLOW", "0") == "1"
-    return unittest.skipUnless(run_slow, "test is slow")(test_case)
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if not run_slow:
+            pytest.skip("Skipping slow test; set RUN_SLOW=1 to enable.")
+        return fn(*args, **kwargs)
+
+    return wrapper

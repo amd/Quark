@@ -1,0 +1,36 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: "/xclbin/stx/sdxl_unet_vae_combined_new.xclbin"
+    op_namespaces: "sdxlt"
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+passes:
+    - mha_to_mha_noqdq
+    - concat_to_concat_noqdq
+    - conv_to_conv1x1_noqdq
+    - conv_to_conv3x3_noqdq
+    - nhwc_conv_to_conv
+    - nhwc_conv_to_transpose_conv
+    - gelu_to_gelu_noqdq
+    - sigmoid_to_silu_noqdq
+    - layernorm_to_layernorm_noqdq
+    - matmul_noqdq.matmul_to_matmul_transpose_noqdq
+    - matmul_noqdq.matmul_add_to_matmul_noqdq
+    - matmul_noqdq.matmul_to_matmul_noqdq
+    - add_to_elwadd_noqdq
+    - add_to_broadcastadd_noqdq
+    - mul_to_elwmul_noqdq
+    - groupnorm_to_groupnorm_noqdq
+    - resize_to_nni_noqdq
+    - nhwc_resize_to_nni_noqdq
+    - split_to_slice_noqdq
+    - gemm_block_to_gemm_noqdq
+    - gemm_to_gemm_noqdq
+    - float_to_bfp16ebs8
+    - simplify_casts
+    - remove_reshapes
+    - remove_parallel_casts

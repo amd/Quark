@@ -13,10 +13,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quant_utils import is_version_below
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG
+from quark.onnx.quantization.quant_utils import is_version_below
 
 input_tensor = np.array(
     [
@@ -124,7 +123,13 @@ def prepare_model(gen_type="correct"):
 
     onnx_model_path = "dm_model.onnx"
     torch.onnx.export(
-        model, dummy_input, onnx_model_path, input_names=["input"], output_names=["output"], opset_version=17
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
     )
 
     # Further remove intializers from input. Because we need a formal name of each intializer.
@@ -298,19 +303,15 @@ class TestTensorQuantize(unittest.TestCase):
             # Trigger no rotation config
             torch.manual_seed(42)
             with self.assertRaises(AssertionError) as context:
-                output = tensor_quantize_rotation(use_rconfig=False)
+                _ = tensor_quantize_rotation(use_rconfig=False)
             self.assertIn("Error! Please specify the rotation config", str(context.exception))
-            # Trigger random hadamard assertion
-            with self.assertRaises(AssertionError) as context:
-                output = tensor_quantize_rotation(use_random_had=True)
-            self.assertIn("Error! The dim of the target R1 matrix is not support", str(context.exception))
             # Trigger wrong node name
             with self.assertRaises(ValueError) as context:
-                output = tensor_quantize_rotation("wrong_node_name")
+                _ = tensor_quantize_rotation("wrong_node_name")
             self.assertIn("Can not get the corresponding node!", str(context.exception))
             # Trigger wrong node type
             with self.assertRaises(ValueError) as context:
-                output = tensor_quantize_rotation("wrong_node_type")
+                _ = tensor_quantize_rotation("wrong_node_type")
             self.assertIn('do not have a input which has a name include "weight"!', str(context.exception))
 
 

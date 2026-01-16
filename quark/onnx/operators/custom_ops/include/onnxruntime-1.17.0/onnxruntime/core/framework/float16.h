@@ -143,7 +143,7 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
         if constexpr (onnxruntime_float16::detail::endian::native ==
                       onnxruntime_float16::detail::endian::little) {
           std::memcpy(
-            &result, reinterpret_cast<char *>(&fl) + sizeof(uint16_t),
+            &result, reinterpret_cast<char*>(&fl) + sizeof(uint16_t),
             sizeof(uint16_t)
           );
         } else {
@@ -166,14 +166,14 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
 
   inline ORT_HOST_DEVICE float ToFloat() const noexcept {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
-    return __bfloat162float(*reinterpret_cast<const __nv_bfloat16 *>(&val));
+    return __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&val));
 #elif defined(__HIP__)
     // We should be using memcpy in order to respect the strict aliasing rule
     // but it fails in the HIP environment.
     float result = 0;
     uint32_t tmp = val;
     tmp <<= 16;
-    float *tempRes = reinterpret_cast<float *>(&tmp);
+    float* tempRes = reinterpret_cast<float*>(&tmp);
     result = *tempRes;
     return result;
 #else
@@ -183,9 +183,9 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
     }
 
     float result = 0;
-    char *const first = reinterpret_cast<char *>(&result);
+    char* const first = reinterpret_cast<char*>(&result);
     if constexpr (endian::native == endian::little) {
-      char *const second = first + sizeof(uint16_t);
+      char* const second = first + sizeof(uint16_t);
       std::memcpy(second, &val, sizeof(uint16_t));
     } else {
       std::memcpy(first, &val, sizeof(uint16_t));
@@ -230,15 +230,15 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
   ORT_HOST_DEVICE operator float() const noexcept { return ToFloat(); }
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
-  ORT_HOST_DEVICE BFloat16(const __nv_bfloat16 &value) {
-    val = *reinterpret_cast<const unsigned short *>(&value);
+  ORT_HOST_DEVICE BFloat16(const __nv_bfloat16& value) {
+    val = *reinterpret_cast<const unsigned short*>(&value);
   }
   explicit ORT_HOST_DEVICE operator __nv_bfloat16() const {
-    return *reinterpret_cast<const __nv_bfloat16 *>(&val);
+    return *reinterpret_cast<const __nv_bfloat16*>(&val);
   }
 #endif
 
-  ORT_HOST_DEVICE bool operator==(const BFloat16 &rhs) const noexcept {
+  ORT_HOST_DEVICE bool operator==(const BFloat16& rhs) const noexcept {
     if (IsNaNHostDevice() || rhs.IsNaNHostDevice()) {
       // IEEE defines that NaN is not equal to anything, including itself.
       return false;
@@ -246,11 +246,11 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
     return val == rhs.val;
   }
 
-  ORT_HOST_DEVICE bool operator!=(const BFloat16 &rhs) const noexcept {
+  ORT_HOST_DEVICE bool operator!=(const BFloat16& rhs) const noexcept {
     return !(*this == rhs);
   }
 
-  ORT_HOST_DEVICE bool operator<(const BFloat16 &rhs) const noexcept {
+  ORT_HOST_DEVICE bool operator<(const BFloat16& rhs) const noexcept {
     if (IsNaNHostDevice() || rhs.IsNaNHostDevice()) {
       // IEEE defines that NaN is unordered with respect to everything,
       // including itself.
@@ -277,7 +277,7 @@ struct BFloat16 : onnxruntime_float16::BFloat16Impl<BFloat16> {
   }
 
   ORT_HOST_DEVICE static bool AreZeroHostDevice(
-    const BFloat16Impl &lhs, const BFloat16Impl &rhs
+    const BFloat16Impl& lhs, const BFloat16Impl& rhs
   ) noexcept {
     // IEEE defines that positive and negative zero are equal, this gives us a
     // quick equality check for two values by or'ing the private bits together
@@ -309,7 +309,7 @@ inline BFloat16 operator"" _bfp16(long double v) noexcept {
 #endif
 
 inline void BFloat16ToFloat(
-  const BFloat16 *blf, float *flt, size_t size
+  const BFloat16* blf, float* flt, size_t size
 ) noexcept {
   auto src = blf;
   auto d = flt;
@@ -318,7 +318,7 @@ inline void BFloat16ToFloat(
   }
 }
 
-inline void FloatToBFloat16(const float *flt, BFloat16 *blf, size_t size) {
+inline void FloatToBFloat16(const float* flt, BFloat16* blf, size_t size) {
   auto src = flt;
   auto d = blf;
   for (; size != 0; ++src, ++d, --size) {

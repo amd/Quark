@@ -17,7 +17,7 @@ from utils import multihot_criteo
 from utils.backend_pytorch_native import get_backend
 
 from quark.torch import ModelQuantizer, save_params
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import (
     Dtype,
     QSchemeType,
@@ -194,7 +194,7 @@ def convert_int8_fx(
     model(dsx, lsi, lso)
     print("Quantizing the model using PT Quantizer")
 
-    INT8_PER_TENSER_SPEC = QuantizationSpec(
+    INT8_PER_TENSER_SPEC = QTensorConfig(
         dtype=Dtype.uint8,
         qscheme=QSchemeType.per_tensor,
         observer_cls=PerTensorHistogramObserverPro,
@@ -203,7 +203,7 @@ def convert_int8_fx(
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    INT8_PER_CHANNEL_SPEC = QuantizationSpec(
+    INT8_PER_CHANNEL_SPEC = QTensorConfig(
         dtype=Dtype.int8,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -213,9 +213,9 @@ def convert_int8_fx(
         round_method=RoundType.half_even,
         is_dynamic=False,
     )
-    quant_config = QuantizationConfig(input_tensors=INT8_PER_TENSER_SPEC, weight=INT8_PER_CHANNEL_SPEC)
+    quant_config = QLayerConfig(input_tensors=INT8_PER_TENSER_SPEC, weight=INT8_PER_CHANNEL_SPEC)
 
-    INT4_PER_TENSER_SPEC = QuantizationSpec(
+    INT4_PER_TENSER_SPEC = QTensorConfig(
         dtype=Dtype.uint4,
         qscheme=QSchemeType.per_channel,
         observer_cls=PerChannelMinMaxObserver,
@@ -226,9 +226,9 @@ def convert_int8_fx(
         is_dynamic=False,
         zero_point_type=ZeroPointType.int32,
     )
-    layer_type_quant_config = {torch.nn.modules.sparse.EmbeddingBag: QuantizationConfig(weight=INT4_PER_TENSER_SPEC)}
+    layer_type_quant_config = {torch.nn.modules.sparse.EmbeddingBag: QLayerConfig(weight=INT4_PER_TENSER_SPEC)}
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=quant_config,
         layer_type_quant_config=layer_type_quant_config,
         quant_mode=QuantizationMode.eager_mode,

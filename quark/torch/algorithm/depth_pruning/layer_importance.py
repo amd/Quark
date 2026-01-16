@@ -1,11 +1,11 @@
 #
-# Copyright(c) 2025 Advanced Micro Devices,Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -17,7 +17,7 @@ from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import move_to_device
 from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
 from quark.torch.pruning.config import LayerImportancePruneConfig
-from quark.torch.utils import setattr_recursive
+from quark.torch.utils import getattr_recursive, setattr_recursive
 
 logger = ScreenLogger(__name__)
 
@@ -199,6 +199,14 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
 
         # TODO may modify config after pruning
         self.model.config.num_hidden_layers = self.num_hidden_layers - len(self.best_del_idx)
+
+        # This is very Transformers-library specific.
+        # The cache logic expects set `layer_idx` to be at most `self.model.config.num_hidden_layers - 1`.
+        decoder_layers = getattr_recursive(self.model, self.model_decoder_layers)
+        for i in range(len(decoder_layers)):
+            for _, submodule in decoder_layers[i].named_modules():
+                if hasattr(submodule, "layer_idx"):
+                    submodule.layer_idx = i
 
         logger.info(
             f"PPL influence pruning finished, finally delete {self.best_del_idx} as has minmal PPL: {self.min_ppl}"

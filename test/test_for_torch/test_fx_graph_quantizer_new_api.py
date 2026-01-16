@@ -13,7 +13,7 @@ from torch.fx import GraphModule
 
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
 from quark.torch.quantization.graph.optimization.pre_quant.fold_bn_after_concat import fold_bn_after_concat
@@ -30,7 +30,7 @@ logger = ScreenLogger(__name__)
 
 TEST_TOPIC = "New Fx quant API\n"
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -39,13 +39,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-float_scale_quant_config = QuantizationConfig(
+float_scale_quant_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-fp_scale_quant_config = Config(global_quant_config=float_scale_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+fp_scale_quant_config = QConfig(global_quant_config=float_scale_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 def onnx_contains_op_num(model_path: str, target_op_type: str) -> int:
@@ -143,16 +143,16 @@ def test_fx_model_quantizer(tmpdir: str):
     torch.cuda.empty_cache()
     float_model = TinyShareWeightModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 112, 112).to(torch_device),)
-    out_fp32 = float_model.eval()(example_inputs[0])
+    _ = float_model.eval()(example_inputs[0])
     # ========== test using graph_model as input ===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, fp_scale_quant_config]:
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
         for model in [float_model, graph_model_2]:
             quantized_model = fx_quantizer.quantize_model(model, example_inputs, calibdata=example_inputs)  # only PTQ
-            opt_fx_graph = quantized_model.eval()(example_inputs[0])
+            _ = quantized_model.eval()(example_inputs[0])
             # as scale after DPU's adaptive pool so skip : torch.allclose(out_fp32, opt_fx_graph)
             assert fx_contain_module_num(quantized_model, QuantizedConvBatchNorm2d) == 3
             assert fx_contain_module_num(quantized_model, QuantConv2d) == 3

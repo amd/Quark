@@ -9,12 +9,11 @@
 from __future__ import annotations
 
 import functools
-import inspect
 import math
 import os
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, cast
+from typing import Any, Callable, Generator, cast
 
 import torch
 import torch.nn as nn
@@ -33,12 +32,16 @@ from quark.torch.algorithm.utils.prepare import (
     reset_model_kv_cache,
 )
 from quark.torch.algorithm.utils.utils import clear_memory, get_num_attn_heads_from_model, is_attention_module
-from quark.torch.quantization.debug import QUARK_ALGO_DEBUG
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
-from quark.torch.quantization.utils import assert_no_nan
+from quark.torch.utils import (
+    QUARK_ALGO_DEBUG,
+    LossError,
+    assert_no_nan,
+    get_op_name,
+)
 from quark.torch.utils.accelerate_helper import OffloadParameter, update_offload_parameter
-from quark.torch.utils.exceptions import LossError
-from quark.torch.utils.torch_utils import get_op_name
+
+from .utils import align_attention_mask_with_input
 
 __all__ = ["AwqProcessor"]
 logger = ScreenLogger(__name__)
@@ -184,13 +187,12 @@ class AwqProcessor(BaseAlgoProcessor):
         with torch.no_grad():
             if is_attention_module(module2inspect):
                 with self._capture_layer_output(module2inspect) as hook_outputs:
-                    _ = module(self.inps[0], **self.module_kwargs)
+                    tmp_inp = torch.cat(self.inps, dim=0)
+                    tmp_kwargs = align_attention_mask_with_input(module, self.module_kwargs, tmp_inp)
+                    _ = module(tmp_inp, **tmp_kwargs)
                 fp16_output = hook_outputs["output"]
             else:
-                forward_params = inspect.signature(module2inspect.forward).parameters
-                filtered_kwargs = {
-                    k: v for k, v in kwargs.items() if k in forward_params
-                }  # the parameters of module2inspect may or may not be the same as the decoder, so need it
+                filtered_kwargs = align_attention_mask_with_input(module2inspect, kwargs, inp)
                 fp16_output = module2inspect(inp, **filtered_kwargs)
 
             assert fp16_output is not None
@@ -290,13 +292,12 @@ class AwqProcessor(BaseAlgoProcessor):
             # W * X
             if is_attention_module(module2inspect):
                 with self._capture_layer_output(module2inspect) as hook_outputs:
-                    _ = module(self.inps[0], **self.module_kwargs)
+                    tmp_inp = torch.cat(self.inps, dim=0)
+                    tmp_kwargs = align_attention_mask_with_input(module, self.module_kwargs, tmp_inp)
+                    _ = module(tmp_inp, **tmp_kwargs)
                 int_w_output = hook_outputs["output"]
             else:
-                forward_params = inspect.signature(
-                    module2inspect.forward
-                ).parameters  # the parameters of module2inspect may or may not be the same as the decoder, so need it
-                filtered_kwargs = {k: v for k, v in kwargs.items() if k in forward_params}
+                filtered_kwargs = align_attention_mask_with_input(module2inspect, kwargs, x)
                 int_w_output = module2inspect(x, **filtered_kwargs)
 
             assert int_w_output is not None
@@ -433,9 +434,10 @@ class AwqProcessor(BaseAlgoProcessor):
 
         if "kwargs" in self.module_kwargs and self.module_kwargs["kwargs"] is None:
             self.module_kwargs.pop("kwargs")
-        self.layer_inps = self.inps[0]
-        output = layer(self.inps[0], **self.module_kwargs)
-        self.inps = [output[0]] if isinstance(output, tuple) else [output]
+        outputs = []
+        for in_data in self.inps:
+            outputs.append(layer(in_data, **self.module_kwargs))
+        self.inps = [output[0] if isinstance(output, tuple) else output for output in outputs]
 
         for h in handles:
             h.remove()

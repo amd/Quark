@@ -18,7 +18,7 @@
 #endif
 
 void MXCPUKernel(
-  const float *input, float *output, const int n, const int index,
+  const float* input, float* output, const int n, const int index,
   const int stride, const int ebits, const int mbits, const int emax,
   const float max_norm, const float min_norm,
   const rounding_mode_enum rounding_mode
@@ -99,7 +99,7 @@ void MXCPUKernel(
 }
 
 void LaunchMXCPUKernel(
-  const float *input, float *output, const int n, const int block_size,
+  const float* input, float* output, const int n, const int block_size,
   const int ebits, const int mbits, const int emax, const float max_norm,
   const float min_norm, const int rounding_mode
 ) {

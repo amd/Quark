@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Sequence
 
 import numpy as np
 import onnx
@@ -13,10 +13,11 @@ import onnxruntime
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 
-from quark.onnx.quant_utils import get_memory_usage
+from quark.onnx.utils.system_utils import Profiler, get_memory_usage
 from quark.shares.utils.log import ScreenLogger, log_errors
 
-from .calibrators import calibrate_model
+from .calib_utils import save_tensor_hist_fig
+from .calibrate import calibrate_model
 from .data_readers import CachedDataReader
 from .methods import LayerWiseMethod, PowerOfTwoMethod
 
@@ -41,19 +42,19 @@ extra_options_keys_mapping = [
 
 
 @log_errors
+@Profiler(msg=[["calibration (collect data + compute data)"]])
 def run_calibration(
-    model_input: Union[str, Path, onnx.ModelProto],
+    model_input: str | Path | onnx.ModelProto,
     data_reader: CalibrationDataReader,
     op_types_to_calibrate: Sequence[str] | None = None,
     activation_type: QuantType = QuantType.QInt8,
-    calibrate_method: Union[CalibrationMethod, LayerWiseMethod, PowerOfTwoMethod] = CalibrationMethod.MinMax,
+    calibrate_method: CalibrationMethod | LayerWiseMethod | PowerOfTwoMethod = CalibrationMethod.MinMax,
     use_external_data_format: bool = False,
-    execution_providers: Union[list[str], None] = ["CPUExecutionProvider"],
-    quantized_tensor_type: dict[Any, Any] = {},
+    execution_providers: list[str] | None = ["CPUExecutionProvider"],
     extra_options: dict[str, Any] = {},
 ) -> TensorsData:
     """
-    This is an interface function used for calibration.
+    This is an interface function used for the calibration.
 
     :param Union[str, Path, onnx.ModelProto] model_input: ONNX model to calibrate.
     :param CalibrationDataReader data_reader: Data reader for model calibration.
@@ -64,8 +65,24 @@ def run_calibration(
     :param Union[List[str], None] execution_providers: List of execution providers for ONNX Runtime.
     :param Dict[str, Any] extra_options: Extra options for quantization, which contains additional options for calibrator configuration.
 
-    :return: Data range for each quantizing tensor.
+    :return: Data range for each quantizing activation tensor.
     """
+    tensors_range: TensorsData | None = None
+
+    quantized_tensor_type: dict[str, QuantType] = {}
+    if len(extra_options.get("TensorQuantOverrides", {})):
+        for tensor_name, quant_overrides in extra_options["TensorQuantOverrides"].items():
+            if not isinstance(quant_overrides, list):
+                logger.warning(f"Invalid quant overrides {quant_overrides} for tensor {tensor_name}.")
+                continue
+
+            for override in quant_overrides:
+                if not isinstance(override, dict):
+                    logger.warning(f"The quant override {override} should be a dict.")
+                    continue
+
+                if "quant_type" in override:
+                    quantized_tensor_type[tensor_name] = override["quant_type"]
 
     # Mapping calibration extra options from the generic dict
     calib_extra_options = {
@@ -80,7 +97,6 @@ def run_calibration(
     )
     start_time = time.perf_counter()
 
-    tensors_range: TensorsData | None = None
     try:
         tensors_range = calibrate_model(
             model_input,
@@ -97,9 +113,22 @@ def run_calibration(
     except OSError as e:
         logger.error(f"Encountered an error (commonly due to insufficient disk space for the temporary directory): {e}")
 
-        if calibrate_method == PowerOfTwoMethod.MinMSE and calib_extra_options.get("optimize_mem", True):
-            logger.warning("Will automatically set the 'CalibOptimizeMem' to False and retry.")
+        if calibrate_method in [
+            PowerOfTwoMethod.MinMSE,
+            LayerWiseMethod.LayerWisePercentile,
+        ] and calib_extra_options.get("optimize_mem", True):
+            logger.warning(
+                "Will automatically set the 'CalibOptimizeMem' to False and retry. "
+                "If it still doesn't work, please provide another temporary directory "
+                "with sufficient disk space via the option 'TmpDir' and try again."
+            )
             calib_extra_options["optimize_mem"] = False
+
+            if calibrate_method == PowerOfTwoMethod.MinMSE:
+                if calib_extra_options.get("minmse_mode", "All") != "MostCommon":
+                    logger.debug("The minmse_mode parameter changed to 'MostCommon' to avoid caching data")
+                    calib_extra_options["minmse_mode"] = "MostCommon"
+
             calib_data_reader.reset_iter()
             tensors_range = calibrate_model(
                 model_input,
@@ -121,7 +150,7 @@ def run_calibration(
         logger.error(f"Encountered an error (commonly occurs when initializing an inference session): {e}")
 
         if isinstance(execution_providers, list) and "CPUExecutionProvider" not in execution_providers:
-            logger.warning("Will automatically set the executiion provider to CPU and retry.")
+            logger.warning("Will automatically set the execution provider to CPU and retry.")
             calib_data_reader.reset_iter()
             tensors_range = calibrate_model(
                 model_input,
@@ -196,12 +225,26 @@ def run_calibration(
     calib_time = end_time - start_time
     logger.info(f"The calibration has been finished. It took {calib_time:.1f}s to complete.")
 
+    if extra_options.get("SaveTensorHistFig", False):
+        calib_data_reader.reset_iter()
+        save_tensor_hist_fig(
+            model_input,
+            calib_data_reader,
+            op_types_to_calibrate,
+            activation_type,
+            calibrate_method,
+            use_external_data_format,
+            execution_providers,
+            calib_extra_options,
+        )
+
     return tensors_range
 
 
 @log_errors
-def fake_calibration(model_input: Union[str, Path, onnx.ModelProto]) -> TensorsData:
-    """A calibration function that produces fake tensor range of [0,1],
+def fake_calibration(model_input: str | Path | onnx.ModelProto) -> TensorsData:
+    """
+    A calibration function that produces fake tensor range of [0,1],
     intended for scenarios that don't need actual calibration, such as
     block FP quantization, to accelerate the entire process.
 
@@ -211,12 +254,16 @@ def fake_calibration(model_input: Union[str, Path, onnx.ModelProto]) -> TensorsD
     """
 
     def _get_fake_tensor_range(model: onnx.ModelProto) -> dict[str, tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]]:
+        initializer_names = set(init.name for init in model.graph.initializer)
+
         fake_tensor_range = {}
         for node in model.graph.node:
-            for input_ in node.input:
-                fake_tensor_range[input_] = (np.array([0.0]).astype(np.float32), np.array([1.0]).astype(np.float32))
-            for output_ in node.output:
-                fake_tensor_range[output_] = (np.array([0.0]).astype(np.float32), np.array([1.0]).astype(np.float32))
+            for inp in node.input:
+                if inp not in initializer_names and inp not in fake_tensor_range:
+                    fake_tensor_range[inp] = (np.array([0.0]).astype(np.float32), np.array([1.0]).astype(np.float32))
+            for out in node.output:
+                if out not in initializer_names and out not in fake_tensor_range:
+                    fake_tensor_range[out] = (np.array([0.0]).astype(np.float32), np.array([1.0]).astype(np.float32))
         return fake_tensor_range
 
     model = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)

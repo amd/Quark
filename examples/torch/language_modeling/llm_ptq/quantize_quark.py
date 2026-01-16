@@ -23,40 +23,55 @@ from quark.torch import (
     save_params,
 )
 from quark.torch.export.api import _move_quantizer_to_dict
-from quark.torch.utils.device import TPDeviceManager
+from quark.torch.quantization.config.config import load_quant_algo_config_from_file
+from quark.torch.utils import TPDeviceManager
 
 # TODO: Using sys.path.append is bad practice.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from llm_eval.evaluation import eval_model
-from llm_utils.data_preparation import get_calib_dataloader
-from llm_utils.model_preparation import get_model, get_model_type, get_tokenizer, prepare_for_moe_quant
+from quark.contrib.llm_eval import eval_model
+from quark.torch.utils.llm import (
+    get_calib_dataloader,
+    get_model,
+    get_tokenizer,
+    prepare_for_moe_quant,
+    revert_model_patching,
+)
 
-SUPPORTED_QUANT_SCHEMES_TO_TEMPLATE_SCHEMES: dict[str, str] = {
-    "w_int4_per_group_sym": "int4_wo",
-    "w_uint4_per_group_asym": "uint4_wo",
-    "w_int8_a_int8_per_tensor_sym": "int8",
-    "w_fp8_a_fp8": "fp8",
-    "w_mxfp4_a_mxfp4": "mxfp4",
-    "w_mxfp6_e3m2_a_mxfp6_e3m2": "mxfp6_e3m2",
-    "w_mxfp6_e2m3_a_mxfp6_e2m3": "mxfp6_e2m3",
-    "w_bfp16_a_bfp16": "bfp16",
-    "w_mx6_a_mx6": "mx6",
-}
+# The code below demonstrates how to register custom model templates and
+# quantization schemes. If you need to add support for a new model architecture
+# or define custom quantization configurations, uncomment and modify this section.
+#
+# To use:
+#   1. Uncomment the code below
+#   2. Modify the templates and/or schemes to match your model's architecture and/or quantization scheme
+#   3. Run quantize_quark.py with your custom --quant_scheme name if new quantization schemes are registered
+#
 
-SUPPORT_GROUP_SIZE = [32, 64, 128]
+# from quark.torch.quantization.config.config import (
+#     Int8PerTensorSpec,
+#     QLayerConfig,
+# )
 
+# # --- Custom Model Templates ---
+# # Define templates for model architectures not in the built-in list.
+# # Model: internlm/internlm2-chat-7b
+# internlm2_template = LLMTemplate(
+#     model_type="internlm2",
+#     kv_layers_name=["*wqkv"],
+#     q_layer_name="*wqkv",
+#     exclude_layers_name=["lm_head"],
+# )
+# LLMTemplate.register_template(internlm2_template)
+# print(f"[INFO]: Registered template '{internlm2_template.model_type}'")
 
-def map_quant_scheme_to_template_scheme(quant_scheme: str, group_size: int) -> str:
-    # Map quant_scheme to template_scheme
-    if quant_scheme not in SUPPORTED_QUANT_SCHEMES_TO_TEMPLATE_SCHEMES:
-        raise ValueError(f"Unsupported quant_scheme: {quant_scheme}")
-    if quant_scheme in ["w_int4_per_group_sym", "w_uint4_per_group_asym"]:
-        if group_size in SUPPORT_GROUP_SIZE:
-            return f"{SUPPORTED_QUANT_SCHEMES_TO_TEMPLATE_SCHEMES[quant_scheme]}_{group_size}"
-        else:
-            raise ValueError(f"Unsupported group_size: {group_size} for quant_scheme: {quant_scheme}")
-    return SUPPORTED_QUANT_SCHEMES_TO_TEMPLATE_SCHEMES[quant_scheme]
+# # --- Custom Quantization Schemes ---
+# # Define custom quantization schemes using Quark's public QuantizationSpec classes.
+# # These schemes can then be used via --quant_scheme <scheme_name>.
+# # INT8 weight-only quantization
+# int8_wo_scheme = QLayerConfig(weight=Int8PerTensorSpec().to_quantization_spec())
+# LLMTemplate.register_scheme("int8_wo", config=int8_wo_scheme)
+# print(f"[INFO]: Registered quantization scheme 'int8_wo'")
 
 
 def main(args: argparse.Namespace) -> None:
@@ -82,14 +97,14 @@ def main(args: argparse.Namespace) -> None:
         args.model_attn_implementation,
         trust_remote_code=args.trust_remote_code,
     )
-    prepare_for_moe_quant(model, args.quant_algo)
+    prepare_for_moe_quant(model)
 
-    model_type = get_model_type(model)
+    model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
     tokenizer = get_tokenizer(
         args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
     )
 
-    multimodal = True if model_type in ["mllama", "llama4", "gemma3_mllm"] else False
+    multimodal = True if model_type in ["mllama", "llama4", "gemma3", "qwen3_vl_moe"] else False
     if multimodal:
         processor = AutoProcessor.from_pretrained(args.model_dir)
         if args.model_export is not None:
@@ -106,12 +121,12 @@ def main(args: argparse.Namespace) -> None:
         model = load_params(model, json_path=args.json_path, safetensors_path=args.safetensors_path)
         args.skip_quantization = True
     elif args.model_reload:
-        if args.import_file_format == "quark_format":
-            raise ValueError(
-                "Importing from `quark_format` will be deprecated in next release. Please use `hf_format` instead."
-            )
-
         print("\nRestore quantized model from hf_format safetensors file ...")
+
+        # TODO: This should be moved to quark namespace.
+        # Revert model transformations that were useful only for quantization (Transformers-specific).
+        revert_model_patching(model)
+
         model = import_model_from_safetensors(model, model_dir=args.import_model_dir, multi_device=args.multi_device)
         args.skip_quantization = True
 
@@ -146,49 +161,69 @@ def main(args: argparse.Namespace) -> None:
 
     # 4. Quantization
     if not args.skip_quantization:
-        # 4-1. Set quantization configuration using LLMTemplate
-
-        # For backward compatibility, we need to map the quant_scheme to the template_scheme
-        template_scheme = map_quant_scheme_to_template_scheme(args.quant_scheme, args.group_size)
-
         model_config_type = (
             model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
         )
+
+        # Check if model type is supported
+        if model_config_type not in LLMTemplate.list_available():
+            error_msg = (
+                f"\n[ERROR]: Model type '{model_config_type}' is not supported.\n\n"
+                f"Available templates: {LLMTemplate.list_available()}\n\n"
+                f"To add support for this model, uncomment and modify the 'Custom Model Templates'\n"
+                f"section at the top of this file to register a template for '{model_config_type}'.\n"
+            )
+            raise ValueError(error_msg)
         template = LLMTemplate.get(model_config_type)
-        # add layer_quant_config
+
+        # Load algorithm configs from files if provided
+        algo_configs = {}
+        if args.quant_algo_config_file is not None:
+            for algo_name, algo_config_file in args.quant_algo_config_file:
+                algo_configs[algo_name] = load_quant_algo_config_from_file(algo_config_file)
+                print(f"[INFO]: Loaded algorithm configuration for {algo_name} from {algo_config_file}.")
+
+        # Build layer_config if --layer_quant_scheme is provided
         layer_config = {}
-        if args.group_size_per_layer is not None:
-            for layer_info in args.group_size_per_layer:
-                try:
-                    layer_name = layer_info[0]
-                    layer_group_size = int(layer_info[1])
-                except ValueError:
-                    raise ValueError(
-                        f"Invalid group size '{layer_group_size}' for layer '{layer_name}'. Group size must be an integer."
-                    )
-                layer_quant_scheme = map_quant_scheme_to_template_scheme(args.quant_scheme, layer_group_size)
-                layer_config[layer_name] = layer_quant_scheme
+        if args.layer_quant_scheme is not None:
+            for layer_info in args.layer_quant_scheme:
+                layer_name = layer_info[0]
+                layer_scheme = layer_info[1]
+                layer_config[layer_name] = layer_scheme
+
         quant_config = template.get_config(
-            scheme=template_scheme,
+            scheme=args.quant_scheme,
             algorithm=args.quant_algo,
             kv_cache_scheme=args.kv_cache_dtype,
             min_kv_scale=args.min_kv_scale,
             layer_config=layer_config,
             attention_scheme=args.attention_dtype,
             exclude_layers=args.exclude_layers,
+            algo_configs=algo_configs if algo_configs else None,
         )
 
-        # 4-2. In-place replacement of model modules with quantized versions.
+        if getattr(args, "kv_cache_post_rope", False):
+            if hasattr(quant_config, "kv_cache_post_rope"):
+                quant_config.kv_cache_post_rope = True
+            else:
+                warnings.warn(
+                    "--kv_cache_post_rope specified but quant_config has no 'kv_cache_post_rope' field; flag ignored.",
+                    RuntimeWarning,
+                )
+
+        # In-place replacement of model modules with quantized versions
         quantizer = ModelQuantizer(quant_config, args.multi_device)
         model = quantizer.quantize_model(model, calib_dataloader)
         args.exclude_layers = quantizer.config.exclude
 
-    # 5. (Optional) Model freeze
-    if not args.skip_quantization and (args.model_export is not None or args.params_save or args.torch_compile):
-        # If user want to export the quantized model, please freeze the quantized model first
+        # After quantization, freeze models - moving from soft weights that are quantized on the fly
+        # to e.g. `QuantLinear.weight` actually holding the fake quantized weights.
         model = quantizer.freeze(model)
 
-    # 6. (Optional) Model exporting
+        # TODO: This should be moved to quark namespace.
+        # Optionally, revert model transformations that were useful only for quantization (Transformers-specific).
+        revert_model_patching(model)
+
     if args.model_export is not None:
         if args.custom_mode != "quark" and args.export_weight_format == "fake_quantized":
             raise ValueError("Exporting with 'fake_quantized' only supports custom_mode=quark")
@@ -212,12 +247,7 @@ def main(args: argparse.Namespace) -> None:
             with torch.inference_mode():
                 batch_iter = iter(calib_dataloader)
                 input_args = next(batch_iter)
-                if args.quant_scheme in [
-                    "w_int4_per_channel_sym",
-                    "w_uint4_per_group_asym",
-                    "w_int4_per_group_sym",
-                    "w_uint4_a_bfloat16_per_group_asym",
-                ]:
+                if "uint4" in args.quant_scheme or "int4" in args.quant_scheme:
                     uint4_int4_flag = True
                 else:
                     uint4_int4_flag = False
@@ -231,22 +261,14 @@ def main(args: argparse.Namespace) -> None:
             with torch.inference_mode():
                 export_gguf(model, output_dir=args.output_dir, model_type=model_type, tokenizer_path=args.model_dir)
 
-        if "quark_format" in args.model_export:
-            raise ValueError(
-                "Exporting to `quark_format` will be deprecated in next release. Please use `hf_format` instead."
-            )
-
-    # 7. (Optional) Torch compile
     if args.torch_compile:
         print("\n[INFO]: Calling PyTorch 2 torch.compile...")
         # Note: The model after torch.compile may not be able to export to other format
         model = torch.compile(model)
 
-    # 8. (Optional) Model Parameters Save
     if args.params_save:
         save_params(model, model_type=model_type, export_dir=args.save_dir)
 
-    # 9. (Optional) Model Evaluation
     if not args.skip_evaluation:
         print("\n[INFO]: Evaluating ...")
         args.use_ppl_eval_model = True
@@ -310,25 +332,39 @@ if __name__ == "__main__":
 
     # Argument for quantization
     parser.add_argument("--skip_quantization", action="store_true")
-    parser.add_argument("--group_size", help="Group size for per_group quantization.", type=int, default=128)
-    parser.add_argument(
-        "--group_size_per_layer",
-        action="append",
-        nargs=2,
-        metavar=("PATTERN", "GROUP_SIZE"),
-        help="Set a specific group size for layers matching the given pattern. This argument can be repeated for multiple patterns. "
-        "Usage: `--group_size_per_layer lm_head 32`.",
-    )
+
     parser.add_argument(
         "--quant_scheme",
-        help="Supported quant_scheme in the script. If there is no suitable quantization strategy among the options, users can customize the quantization configuration according to their own needs.",
+        help="Quantization scheme to use. Supported schemes: all built-in schemes and custom schemes registered."
+        "For the built-in schemes and their detailed configuration, see https://quark.docs.amd.com/latest/pytorch/user_guide_config_for_llm.html. "
+        "To register custom schemes, please uncomment and modify the 'Custom Quantization Schemes' section at the top of this file.",
+        choices=LLMTemplate.get_supported_schemes(),
         default=None,
-        choices=SUPPORTED_QUANT_SCHEMES_TO_TEMPLATE_SCHEMES.keys(),
+        type=str,
     )
+
+    parser.add_argument(
+        "--layer_quant_scheme",
+        action="append",
+        nargs=2,
+        metavar=("PATTERN", "QUANT_SCHEME"),
+        help="Directly specify a quantization scheme for layers matching the given pattern. "
+        "Can be repeated for multiple patterns. "
+        "Example: --quant_scheme int4_wo_128 --layer_quant_scheme lm_head int8 "
+        "(results in lm_head using int8 while other layers use int4_wo_128). "
+        "Supports wildcards: --layer_quant_scheme '*down_proj' fp8",
+    )
+
     parser.add_argument(
         "--kv_cache_dtype", "--kv_cache_quant_scheme", help="KV Cache dtype.", default=None, choices=["fp8", None]
     )
+
     parser.add_argument("--min_kv_scale", help="Minimum value of KV Cache scale.", type=float, default=0.0)
+    parser.add_argument(
+        "--kv_cache_post_rope",
+        action="store_true",
+        help="If set, quantize KV cache after RoPE (inside cache) instead of at k_proj/v_proj outputs.",
+    )
     parser.add_argument(
         "--attention_dtype", help="The dtype of attention quantization.", type=str, default=None, choices=["fp8"]
     )
@@ -339,6 +375,17 @@ if __name__ == "__main__":
         metavar="alg1,alg2",
         help="Comma-separated list of algorithms. Options include awq, gptq, smoothquant, rotation.",
     )
+    parser.add_argument(
+        "--quant_algo_config_file",
+        action="append",
+        nargs=2,
+        metavar=("ALGO_NAME", "CONFIG_FILE"),
+        help="Specify a configuration file for a specific quantization algorithm. "
+        "Can be repeated for multiple algorithms. "
+        "Example: --quant_algo_config_file awq ./awq_config.json --quant_algo_config_file gptq ./gptq_config.json "
+        "(provides custom config files for AWQ and GPTQ algorithms).",
+    )
+
     parser.add_argument(
         "--exclude_layers",
         type=str,
@@ -353,13 +400,6 @@ if __name__ == "__main__":
     parser.add_argument("--params_load", help="Model parameters load", action="store_true")
     parser.add_argument("--json_path", help="Specify the path of saved json file")
     parser.add_argument("--safetensors_path", help="Specify the path of saved safetensors file")
-    parser.add_argument(
-        "--import_file_format",
-        type=str,
-        help="file_format for importing. If you export hf_format, you should use 'hf_format' for reloading.",
-        default="quark_format",
-        choices=["quark_format", "hf_format"],
-    )
 
     # Argument for export
     parser.add_argument(
@@ -367,7 +407,7 @@ if __name__ == "__main__":
         help="Model export format",
         default=None,
         action="append",
-        choices=[None, "onnx", "quark_format", "hf_format", "gguf"],
+        choices=[None, "onnx", "hf_format", "gguf"],
     )
     parser.add_argument(
         "--custom_mode",
@@ -431,16 +471,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval_batch_size",
         type=str,
-        default=8,
+        default=1,
         metavar="auto|auto:N|N",
-        help="Batch size for evaluation. Acceptable values are 'auto', 'auto:N' or N, where N is an integer. Default 1.",
+        help="Batch size used for evaluation. Acceptable values are 'auto', 'auto:N' or N, where N is a positive integer. Default is `1`.",
     )
     parser.add_argument(
         "--max_eval_batch_size",
         type=int,
-        default=None,
-        metavar="N",
-        help="Maximal batch size to try with --batch_size auto.",
+        default=64,
+        metavar="P",
+        help="Maximal batch size to try with `--batch_size auto`.",
     )
     parser.add_argument(
         "--num_eval_data",
@@ -477,8 +517,26 @@ if __name__ == "__main__":
     parser.set_defaults(trust_remote_code=True)
     args = parser.parse_args()
 
-    if args.group_size_per_layer is not None:
-        for layer_info in args.group_size_per_layer:
-            assert len(layer_info) == 2, "args.group_size_per_layer is not pair"
-            assert int(layer_info[1]) in SUPPORT_GROUP_SIZE, f"only support group_size {SUPPORT_GROUP_SIZE}"
+    if args.layer_quant_scheme is not None:
+        for layer_info in args.layer_quant_scheme:
+            if len(layer_info) != 2:
+                raise ValueError(
+                    f"Invalid --layer_quant_scheme argument: {layer_info}. "
+                    f"Expected exactly 2 values (PATTERN, QUANT_SCHEME), but got {len(layer_info)}."
+                )
+
+    if args.quant_algo_config_file is not None:
+        for algo_config in args.quant_algo_config_file:
+            if len(algo_config) != 2:
+                raise ValueError(
+                    f"Invalid --quant_algo_config_file argument: {algo_config}. "
+                    f"Expected exactly 2 values (ALGO_NAME, CONFIG_FILE), but got {len(algo_config)}."
+                )
+            algo_name, config_file = algo_config
+            if not os.path.isfile(config_file):
+                raise ValueError(
+                    f"Configuration file '{config_file}' for algorithm '{algo_name}' does not exist. "
+                    f"Please provide a valid config file path."
+                )
+
     main(args)

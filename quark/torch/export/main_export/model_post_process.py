@@ -1,9 +1,8 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -252,6 +251,7 @@ class ModelPostProcessor:
             .max(dim=0)
             .values
         )
+
         parent_module_name = ".".join(module_names[0].split(".")[:-1])
         # The custom_mode used along kv_cache_group must be "quark" or "fp8".
         if self.custom_mode == "fp8":

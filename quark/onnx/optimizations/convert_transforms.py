@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Graph transforms for the conversion of onnx models."""
@@ -9,20 +9,18 @@ from typing import Any
 import numpy as np
 from onnx import helper
 
-from quark.onnx.graph_transformations import transforms
 from quark.onnx.utils import model_utils
 from quark.shares.utils.log import ScreenLogger
 
-Transform = transforms.Transform
-OpTypePattern = transforms.OpTypePattern
-NodeTree = transforms.NodeTree
+from .transforms import NodeTree, OpTypePattern, Transform
+
 onnx_domain = "ai.onnx"
 ms_domain = "com.microsoft"
 
 logger = ScreenLogger(__name__)
 
 
-class ConvQDQToQOPTransform(transforms.Transform):
+class ConvQDQToQOPTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
@@ -76,7 +74,6 @@ class ConvQDQToQOPTransform(transforms.Transform):
 
         b_node = match_node.input_nodes[0].input_nodes[2].input_nodes[0]
         b_scale_node = match_node.input_nodes[0].input_nodes[2].input_nodes[1]
-        b_zero_point_node = match_node.input_nodes[0].input_nodes[2].input_nodes[2]
         conv_node = match_node.input_nodes[0]
         logger.info("Convert conv: ", conv_node.node.name)
         y_scale_node = match_node.input_nodes[1]
@@ -130,7 +127,7 @@ class ConvQDQToQOPTransform(transforms.Transform):
         return qlinear_conv_node
 
 
-class MatMulQDQToQOPTransform(transforms.Transform):
+class MatMulQDQToQOPTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
@@ -223,7 +220,7 @@ class MatMulQDQToQOPTransform(transforms.Transform):
         return qlinear_matmul_node
 
 
-class AddQDQToQOPTransform(transforms.Transform):
+class AddQDQToQOPTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
@@ -317,7 +314,7 @@ class AddQDQToQOPTransform(transforms.Transform):
         return qlinear_add_node
 
 
-class MulQDQToQOPTransform(transforms.Transform):
+class MulQDQToQOPTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = True
@@ -411,7 +408,7 @@ class MulQDQToQOPTransform(transforms.Transform):
         return qlinear_mul_node
 
 
-class SigmoidQDQToQOPTransform(transforms.Transform):
+class SigmoidQDQToQOPTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = False
@@ -483,7 +480,7 @@ class SigmoidQDQToQOPTransform(transforms.Transform):
         return qlinear_sigmoid_node
 
 
-class RemoveQDQTransform(transforms.Transform):
+class RemoveQDQTransform(Transform):
     def __init__(self) -> None:
         super().__init__()
         self.allow_multi_consumers = False

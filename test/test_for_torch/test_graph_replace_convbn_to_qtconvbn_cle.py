@@ -15,7 +15,7 @@ from torch.fx import GraphModule
 import quark.torch.kernel  # noqa
 from quark.shares.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer, export_onnx
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.optimization.model_optimization import fx_model_cross_layer_equalization
 from quark.torch.quantization.graph.optimization.pre_quant.cross_layer_equaliztion import get_cle_pattern_pair
@@ -42,7 +42,7 @@ def fx_contain_module_num(model: GraphModule, target_module: torch.nn.Module) ->
 
 
 # init config
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -51,13 +51,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-gb_quant_config = QuantizationConfig(
+gb_quant_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=gb_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=gb_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
@@ -470,8 +470,8 @@ def test_transposebn_2_quantConvTransposeBatchNorm2d_strategy(tmpdir: str):
     assert torch.allclose(out1, out2, atol=1e-4)
 
     # ========small network quantization no quant config=====
-    gb_empt_quant_config = QuantizationConfig()
-    empt_quant_config = Config(global_quant_config=gb_empt_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+    gb_empt_quant_config = QLayerConfig()
+    empt_quant_config = QConfig(global_quant_config=gb_empt_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(empt_quant_config)
     graph_model = torch.export.export_for_training(float_model.eval(), example_inputs).module()
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
@@ -488,7 +488,7 @@ def test_transposebn_2_quantConvTransposeBatchNorm2d_strategy(tmpdir: str):
 
     opt_graph_module = quantizer.freeze(quantized_model.eval())
     opt_graph_module(*example_inputs)
-    torch.onnx.export(opt_graph_module, example_inputs[0], tmpdir + "/transposebn.onnx")
+    torch.onnx.export(opt_graph_module, example_inputs[0], tmpdir + "/transposebn.onnx", dynamo=False)
     torch.cuda.empty_cache()
 
 

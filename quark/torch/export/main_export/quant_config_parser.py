@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, cast
 
 import torch.nn as nn
 
 from quark.torch.export.config.config import JsonExporterConfig
 from quark.torch.export.constants import AWQ_QUANT_DTYPES
 from quark.torch.quantization.config.config import AWQConfig as TrueAWQConfig
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import PerGroupMinMaxObserver, PerTensorMinMaxObserver
 from quark.torch.quantization.utils import deep_compare
@@ -58,13 +58,11 @@ class AwqConfig:
         }
 
 
-def get_layer_quant_config(
-    quant_config: Config, layer_type: type[nn.Module], layer_name: str
-) -> QuantizationConfig | None:
+def get_layer_quant_config(quant_config: QConfig, layer_type: type[nn.Module], layer_name: str) -> QLayerConfig | None:
     if layer_type not in [nn.Linear, nn.Conv2d]:
         return None
 
-    for name_pattern in quant_config.layer_quant_config.keys():
+    for name_pattern in quant_config.layer_quant_config:
         if fnmatch.fnmatch(layer_name, name_pattern):
             layer_quantization_config = quant_config.layer_quant_config[name_pattern]
             break
@@ -72,12 +70,12 @@ def get_layer_quant_config(
         if layer_type in quant_config.layer_type_quant_config:  # pragma: no cover
             layer_quantization_config = quant_config.layer_type_quant_config[layer_type]
         else:
-            layer_quantization_config = quant_config.global_quant_config
+            layer_quantization_config = cast(QLayerConfig, quant_config.global_quant_config)
 
     # check if the layer is in the kv_cache_quant_config
     kv_cache_quant_or_not = False
     kv_cache_quant_config = None
-    for name_pattern in quant_config.kv_cache_quant_config.keys():
+    for name_pattern in quant_config.kv_cache_quant_config:
         if fnmatch.fnmatch(layer_name, name_pattern):
             kv_cache_quant_or_not = True
             kv_cache_quant_config = quant_config.kv_cache_quant_config[name_pattern]
@@ -91,7 +89,7 @@ def get_layer_quant_config(
             # In this case, we need to set the output_tensors of this layer to kv cache quant config
             if kv_cache_quant_or_not and kv_cache_quant_config is not None:
                 output_tensors = kv_cache_quant_config.output_tensors
-                layer_quantization_config = QuantizationConfig(
+                layer_quantization_config = QLayerConfig(
                     weight=None, bias=None, input_tensors=None, output_tensors=output_tensors
                 )
             else:
@@ -101,7 +99,7 @@ def get_layer_quant_config(
 
 
 class QuantConfigParser:
-    def __init__(self, quant_config: Config, json_config: JsonExporterConfig) -> None:
+    def __init__(self, quant_config: QConfig, json_config: JsonExporterConfig) -> None:
         self._pack_method = json_config.pack_method
         self._config = quant_config
         self._kv_cache_group = json_config.kv_cache_group
@@ -182,10 +180,10 @@ class QuantConfigParser:
         if any(isinstance(qspec, list) for qspec in [weight_config, bias_config, input_config, output_config]):
             return {}, custom_mode
 
-        weight_config = weight_config if isinstance(weight_config, QuantizationSpec) else None
-        bias_config = bias_config if isinstance(bias_config, QuantizationSpec) else None
-        input_config = input_config if isinstance(input_config, QuantizationSpec) else None
-        output_config = output_config if isinstance(output_config, QuantizationSpec) else None
+        weight_config = weight_config if isinstance(weight_config, QTensorConfig) else None
+        bias_config = bias_config if isinstance(bias_config, QTensorConfig) else None
+        input_config = input_config if isinstance(input_config, QTensorConfig) else None
+        output_config = output_config if isinstance(output_config, QTensorConfig) else None
 
         if self._config.layer_type_quant_config is not None and len(self._config.layer_type_quant_config) > 0:
             return {}, custom_mode  # pragma: no cover
@@ -250,9 +248,9 @@ class QuantConfigParser:
     @staticmethod
     def from_custom_config(
         custom_config_dict: dict[str, Any], is_bias_quantized: bool, is_kv_cache: bool, kv_layers_name: list[str] | None
-    ) -> Config:
+    ) -> QConfig:
         """
-        Maps the custom quantization config Fp8Config and AwqConfig back to Quark's Config. Some important keys
+        Maps the custom quantization config Fp8Config and AwqConfig back to Quark's QConfig. Some important keys
         can not be inferred from this custom config, namely whether the outputs of quantized ops are quantized, and whether the bias are quantized.
         By default, we assume the outputs of quantized ops are not quantized.
         We require the user to provide the argument `is_bias_quantized` to determine whether the bias is quantized.
@@ -263,7 +261,7 @@ class QuantConfigParser:
             else:
                 is_dynamic = custom_config_dict["activation_scheme"] == "dynamic"
 
-            q_spec = QuantizationSpec(
+            q_spec = QTensorConfig(
                 dtype=Dtype.fp8_e4m3,
                 observer_cls=PerTensorMinMaxObserver,
                 is_dynamic=False,
@@ -274,32 +272,32 @@ class QuantConfigParser:
             if custom_config_dict["activation_scheme"] is None:
                 input_tensors = None  # pragma: no cover
             else:
-                input_tensors = QuantizationSpec(
+                input_tensors = QTensorConfig(
                     dtype=Dtype.fp8_e4m3,
                     observer_cls=PerTensorMinMaxObserver,
                     is_dynamic=is_dynamic,
                     qscheme=QSchemeType.per_tensor,
                 )
 
-            global_quant_config = QuantizationConfig(
+            global_quant_config = QLayerConfig(
                 input_tensors=input_tensors,
                 output_tensors=output_tensors,
                 weight=q_spec,
                 bias=q_spec if is_bias_quantized else None,
             )
 
-            KV_CACHE_CFG: dict[str, QuantizationConfig] = {}
+            KV_CACHE_CFG: dict[str, QLayerConfig] = {}
             if is_kv_cache:
                 if kv_layers_name is not None:
                     # We can check the pth or safetensor files to determine if kv_cache is being used
-                    FP8_PER_TENSOR_SPEC = QuantizationSpec(
+                    FP8_PER_TENSOR_SPEC = QTensorConfig(
                         dtype=Dtype.fp8_e4m3,
                         observer_cls=PerTensorMinMaxObserver,
                         is_dynamic=is_dynamic,
                         qscheme=QSchemeType.per_tensor,
                     )
                     for layer_name in kv_layers_name:
-                        KV_CACHE_CFG[layer_name] = QuantizationConfig(
+                        KV_CACHE_CFG[layer_name] = QLayerConfig(
                             input_tensors=input_tensors,
                             output_tensors=FP8_PER_TENSOR_SPEC,
                             weight=q_spec,
@@ -310,7 +308,7 @@ class QuantConfigParser:
                         "Initializing import_config requires kv_cache_layers_info but kv_layers_name is empty"
                     )
 
-            config = Config(
+            config = QConfig(
                 global_quant_config=global_quant_config,
                 layer_quant_config=KV_CACHE_CFG,
                 kv_cache_quant_config=KV_CACHE_CFG,
@@ -338,7 +336,7 @@ class QuantConfigParser:
                     f"AWQ in Quark is supported only for 4-bits and 8-bits quantization, but a configuration with {custom_config_dict['bits']} bits was passed."
                 )
 
-            q_spec = QuantizationSpec(
+            q_spec = QTensorConfig(
                 dtype=dtype,
                 observer_cls=PerGroupMinMaxObserver,
                 is_dynamic=False,
@@ -350,15 +348,15 @@ class QuantConfigParser:
                 scale_type=ScaleType.float,
             )
 
-            global_quant_config = QuantizationConfig(weight=q_spec)
+            global_quant_config = QLayerConfig(weight=q_spec)
 
-            config = Config(
+            config = QConfig(
                 global_quant_config=global_quant_config,
                 exclude=custom_config_dict["modules_to_not_convert"],
                 quant_mode=QuantizationMode.eager_mode,
                 algo_config=[TrueAWQConfig()],
             )
         else:
-            config = Config.from_dict(custom_config_dict)
+            config = QConfig.from_dict(custom_config_dict)
 
         return config

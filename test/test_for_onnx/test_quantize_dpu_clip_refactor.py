@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import Int8Spec, Int16Spec, QLayerConfig, XInt8Spec
+from quark.onnx import Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
@@ -110,6 +108,7 @@ def prepare_model(output_dir):
         keep_initializers_as_inputs=False,
         do_constant_folding=False,
         opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -153,7 +152,7 @@ def tensor_quantize(config, output_dir):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_xint8_config(self, tmpdir: str):
-        with self.assertLogs("quark.onnx.simulate_dpu_screen", level="INFO") as cm:
+        with self.assertLogs("quark.onnx.postprocess.simulation.simulate_dpu_screen", level="INFO") as cm:
             config = QConfig(
                 QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
                 SimplifyModel=False,
@@ -168,7 +167,7 @@ class TestTensorQuantize(unittest.TestCase):
 
     @use_temporary_directory
     def test_quantize_a16w8_config(self, tmpdir: str):
-        with self.assertLogs("quark.onnx.simulate_dpu_screen", level="INFO") as cm:
+        with self.assertLogs("quark.onnx.postprocess.simulation.simulate_dpu_screen", level="INFO") as cm:
             config = QConfig(
                 QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
                 SimplifyModel=False,

@@ -5,12 +5,11 @@
 
 import argparse
 import copy
-from typing import Dict, List
 
 import onnx
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config import Config, get_default_config
+from quark.onnx import Config, ModelQuantizer
+from quark.onnx.quantization.config import get_default_config
 
 
 def get_kv_cache_input_name(input_model_path: str) -> list[str]:
@@ -36,9 +35,9 @@ def llama2_random_data_reader_input_data_range(input_model_path: str) -> dict[st
 
 def llama2_random_data_reader_input_shape(input_model_path: str) -> dict[str, list]:
     random_data_reader_input_shape = {}
-    random_data_reader_input_shape["input_ids"] = [1, 768]
-    random_data_reader_input_shape["position_ids"] = [1, 768]
-    random_data_reader_input_shape["attention_mask"] = [1, 768]
+    random_data_reader_input_shape["input_ids"] = [1, 1]
+    random_data_reader_input_shape["position_ids"] = [1, 1]
+    random_data_reader_input_shape["attention_mask"] = [1, 769]
     kv_cache_input_name_list = get_kv_cache_input_name(input_model_path)
     for name in kv_cache_input_name_list:
         random_data_reader_input_shape[name] = [1, 32, 768, 128]

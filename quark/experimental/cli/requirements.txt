@@ -1,7 +1,7 @@
 accelerate
 argparse
 evaluate
-gguf
+gguf==0.6.0
 git+https://github.com/felipemaiapolo/tinyBenchmarks
 immutabledict
 langdetect
@@ -10,15 +10,16 @@ nltk>= 3.9.1
 numpy==1.26.4
 onnx>=1.16.0
 onnx_ir
-onnxruntime>=1.20.1,<=1.22.1
+onnxruntime>=1.20.1,<=1.22.2
 onnxruntime_extensions
 onnxruntime_genai
 opencv-python
-optimum
+optimum[onnxruntime]
 Pillow
 protobuf
 psutil
 py7zr
+pydantic
 rich
 rouge_score
 timm

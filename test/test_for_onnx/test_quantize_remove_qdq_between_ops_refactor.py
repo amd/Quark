@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
-from quark.onnx import ModelQuantizer
-from quark.onnx.quantization.config.config import QConfig
-from quark.onnx.quantization.config.spec import QLayerConfig, XInt8Spec
+from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
 from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
@@ -123,6 +121,7 @@ def prepare_model(output_dir):
         keep_initializers_as_inputs=False,
         do_constant_folding=False,
         opset_version=17,
+        dynamo=False,
     )
 
     print(f"Model has been saved to {onnx_model_path}")
@@ -194,13 +193,10 @@ class TestTensorQuantize(unittest.TestCase):
 
     @use_temporary_directory
     def test_quantize_MultiMulAddModel_raise_config(self, tmpdir: str):
-        with self.assertLogs("quark.onnx.quantize_screen", level="WARNING") as cm:
+        with self.assertLogs("quark.onnx.postprocess.postproc_screen", level="WARNING") as cm:
             output, quantized_model_path = tensor_quantize(input_data, ("Conv", "Relu"), tmpdir)
         self.assertTrue(
-            any(
-                "'RemoveQDQBetweenOps' should be a list of (str, str) tuples. Actual: " in message
-                for message in cm.output
-            )
+            any("'RemoveQDQBetweenOps' should be a list of (str, str) tuples" in message for message in cm.output)
         )
         comp_equal = np.allclose(output, golden_output, atol=1e-1)
         self.assertEqual(comp_equal, True)

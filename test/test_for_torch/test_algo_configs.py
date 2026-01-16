@@ -30,7 +30,7 @@ def test_awq_map_basic():
     assert "opt" in AWQ_MAP
 
     # Test configurations are AWQConfig instances
-    for model_type, config in list(AWQ_MAP.items())[:3]:  # Test first 3 models
+    for _, config in list(AWQ_MAP.items())[:3]:  # Test first 3 models
         assert isinstance(config, AWQConfig)
         assert config.name == "awq"
         assert hasattr(config, "scaling_layers")
@@ -45,7 +45,7 @@ def test_gptq_map_basic():
     assert "opt" in GPTQ_MAP
 
     # Test configurations are GPTQConfig instances
-    for model_type, config in list(GPTQ_MAP.items())[:3]:  # Test first 3 models
+    for _, config in list(GPTQ_MAP.items())[:3]:  # Test first 3 models
         assert isinstance(config, GPTQConfig)
         assert config.name == "gptq"
         assert hasattr(config, "block_size")
@@ -60,7 +60,7 @@ def test_sq_map_basic():
     assert "opt" in SQ_MAP
 
     # Test configurations are SmoothQuantConfig instances
-    for model_type, config in list(SQ_MAP.items())[:3]:  # Test first 3 models
+    for _, config in list(SQ_MAP.items())[:3]:  # Test first 3 models
         assert isinstance(config, SmoothQuantConfig)
         assert config.name == "smooth"
         assert hasattr(config, "alpha")
@@ -75,7 +75,7 @@ def test_autosmoothquant_map_basic():
     assert "deepseek_v2" in AUTOSMOOTHQUANT_MAP
 
     # Test configurations are AutoSmoothQuantConfig instances
-    for model_type, config in list(AUTOSMOOTHQUANT_MAP.items())[:3]:  # Test first 3 models
+    for _, config in list(AUTOSMOOTHQUANT_MAP.items())[:3]:  # Test first 3 models
         assert isinstance(config, AutoSmoothQuantConfig)
         assert config.name == "autosmoothquant"
         assert hasattr(config, "scaling_layers")
@@ -89,11 +89,18 @@ def test_rotation_map_basic():
     assert "llama" in ROTATION_MAP
 
     # Test configurations are RotationConfig instances
-    for model_type, config in ROTATION_MAP.items():
+    for _, config in ROTATION_MAP.items():
         assert isinstance(config, RotationConfig)
         assert config.name == "rotation"
         assert hasattr(config, "model_decoder_layers")
-        assert hasattr(config, "scaling_layers")
+        assert hasattr(config, "v_proj")
+        assert hasattr(config, "o_proj")
+        assert hasattr(config, "self_attn")
+        assert hasattr(config, "mlp")
+        assert hasattr(config, "r1")
+        assert hasattr(config, "r2")
+        assert hasattr(config, "r3")
+        assert hasattr(config, "r4")
 
 
 def test_get_algo_config_existing():
@@ -192,6 +199,15 @@ def test_config_structure_validation():
     # Test Rotation config structure
     rotation_config = ROTATION_MAP["llama"]
     assert isinstance(rotation_config.model_decoder_layers, str)
+    assert isinstance(rotation_config.v_proj, str)
+    assert isinstance(rotation_config.o_proj, str)
+    assert isinstance(rotation_config.self_attn, str)
+    assert isinstance(rotation_config.mlp, str)
+    assert isinstance(rotation_config.r1, bool)
+    assert isinstance(rotation_config.r2, bool)
+    assert isinstance(rotation_config.r3, bool)
+    assert isinstance(rotation_config.r4, bool)
+    assert hasattr(rotation_config, "scaling_layers")
     assert isinstance(rotation_config.scaling_layers, dict)
 
 
@@ -237,6 +253,22 @@ def test_config_consistency_across_maps():
     # Test that all Rotation configs have required properties
     for model_type, config in ROTATION_MAP.items():
         assert hasattr(config, "model_decoder_layers"), f"Rotation {model_type} missing model_decoder_layers"
+        assert hasattr(config, "v_proj"), f"Rotation {model_type} missing v_proj"
+        assert hasattr(config, "o_proj"), f"Rotation {model_type} missing o_proj"
+        assert hasattr(config, "self_attn"), f"Rotation {model_type} missing self_attn"
+        assert hasattr(config, "mlp"), f"Rotation {model_type} missing mlp"
+        assert hasattr(config, "r1"), f"Rotation {model_type} missing r1"
+        assert hasattr(config, "r2"), f"Rotation {model_type} missing r2"
+        assert hasattr(config, "r3"), f"Rotation {model_type} missing r3"
+        assert hasattr(config, "r4"), f"Rotation {model_type} missing r4"
         assert hasattr(config, "scaling_layers"), f"Rotation {model_type} missing scaling_layers"
         assert isinstance(config.model_decoder_layers, str), f"Rotation {model_type} model_decoder_layers not str"
+        assert isinstance(config.v_proj, str), f"Rotation {model_type} v_proj not str"
+        assert isinstance(config.o_proj, str), f"Rotation {model_type} o_proj not str"
+        assert isinstance(config.self_attn, str), f"Rotation {model_type} self_attn not str"
+        assert isinstance(config.mlp, str), f"Rotation {model_type} mlp not str"
+        assert isinstance(config.r1, bool), f"Rotation {model_type} r1 not bool"
+        assert isinstance(config.r2, bool), f"Rotation {model_type} r2 not bool"
+        assert isinstance(config.r3, bool), f"Rotation {model_type} r3 not bool"
+        assert isinstance(config.r4, bool), f"Rotation {model_type} r4 not bool"
         assert isinstance(config.scaling_layers, dict), f"Rotation {model_type} scaling_layers not dict"

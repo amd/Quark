@@ -14,11 +14,11 @@ from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
 
 from quark.onnx.operators.custom_ops import _COP_DEQUANT_OP_NAME, _COP_DOMAIN, _COP_QUANT_OP_NAME, get_library_path
-from quark.onnx.quant_utils import register_custom_ops_library
+from quark.onnx.utils.model_utils import register_custom_ops_library
 
 try:
     register_custom_ops_library(onnxruntime.SessionOptions(), "ROCM")
-except Exception as e:
+except Exception:
     print("Did not compile custom operations library on ROCm")
 
 

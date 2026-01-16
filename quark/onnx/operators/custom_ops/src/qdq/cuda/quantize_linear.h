@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
@@ -16,8 +16,8 @@ namespace quark_onnx {
   struct QuantizeLinearApply {                                               \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const InT *scale, OutT *output,  \
-      const OutT *zero_point                                                 \
+      int64_t block_size, const InT* input, const InT* scale, OutT* output,  \
+      const OutT* zero_point                                                 \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -43,8 +43,8 @@ namespace quark_onnx {
   struct QuantizeLinearApplyFp16 {                                           \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const InT *scale, OutT *output,  \
-      const OutT *zero_point                                                 \
+      int64_t block_size, const InT* input, const InT* scale, OutT* output,  \
+      const OutT* zero_point                                                 \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -70,8 +70,8 @@ namespace quark_onnx {
   struct QuantizeLinearApplyBf16 {                                           \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const InT *scale, OutT *output,  \
-      const OutT *zero_point                                                 \
+      int64_t block_size, const InT* input, const InT* scale, OutT* output,  \
+      const OutT* zero_point                                                 \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -97,8 +97,8 @@ namespace quark_onnx {
   struct DequantizeLinearApply {                                             \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const OutT *scale, OutT *output, \
-      const InT *zero_point                                                  \
+      int64_t block_size, const InT* input, const OutT* scale, OutT* output, \
+      const InT* zero_point                                                  \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -124,8 +124,8 @@ namespace quark_onnx {
   struct DequantizeLinearApplyFp16 {                                         \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const OutT *scale, OutT *output, \
-      const InT *zero_point                                                  \
+      int64_t block_size, const InT* input, const OutT* scale, OutT* output, \
+      const InT* zero_point                                                  \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \
@@ -151,8 +151,8 @@ namespace quark_onnx {
   struct DequantizeLinearApplyBf16 {                                         \
     void op(                                                                 \
       cudaStream_t stream, int64_t N, int64_t broadcast_dim,                 \
-      int64_t block_size, const InT *input, const OutT *scale, OutT *output, \
-      const InT *zero_point                                                  \
+      int64_t block_size, const InT* input, const OutT* scale, OutT* output, \
+      const InT* zero_point                                                  \
     ) {                                                                      \
       for (size_t n = 0; n < static_cast<size_t>(N); n++) {                  \
         for (size_t bd = 0; bd < static_cast<size_t>(broadcast_dim); bd++) { \

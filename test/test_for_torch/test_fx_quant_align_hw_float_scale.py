@@ -17,7 +17,7 @@ import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_qua
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import Config, QuantizationConfig, QuantizationSpec
+from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
 from quark.torch.quantization.graph.optimization.model_optimization import _apply_post_hw_fs_constrain_passes
@@ -28,7 +28,7 @@ logger = ScreenLogger(__name__)
 
 TEST_TOPIC = "torch FX graph mode quantization, align with hw deploy need\n"
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorPowOf2MinMaxObserver,
@@ -37,13 +37,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_tensor_config = QuantizationConfig(
+quant_tensor_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=quant_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=quant_tensor_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 def fx_contain_module_num(model: GraphModule, target_module: torch.nn.Module) -> int:
@@ -84,8 +84,8 @@ def test_torch_align_concat_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignConcatQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -149,8 +149,8 @@ def test_torch_align_pool_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignPoolQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -217,8 +217,8 @@ def test_torch_align_pad_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignPadQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -276,8 +276,8 @@ def test_torch_align_slice_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignSliceQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -345,8 +345,8 @@ def test_torch_align_transpose_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignTransposeQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -408,8 +408,8 @@ def test_torch_align_reshape_strategy(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     opt_module = opt_after_qt_fs.AlignReshapeQOPass()
     for each_quant_config in [quant_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
@@ -443,7 +443,7 @@ def test_torch_align_reshape_strategy(tmpdir: str):
     torch.cuda.empty_cache()
 
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -453,7 +453,7 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     is_dynamic=False,
 )
 
-INT16_PER_TENSOR_SPEC = QuantizationSpec(
+INT16_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int16,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -463,7 +463,7 @@ INT16_PER_TENSOR_SPEC = QuantizationSpec(
     is_dynamic=False,
 )
 
-INT32_PER_TENSOR_SPEC = QuantizationSpec(
+INT32_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int32,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -473,24 +473,24 @@ INT32_PER_TENSOR_SPEC = QuantizationSpec(
     is_dynamic=False,
 )
 
-quant_tensor_A8W8B32_config = QuantizationConfig(
+quant_tensor_A8W8B32_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT32_PER_TENSOR_SPEC,
 )
-quant_A8W8B32_config = Config(
+quant_A8W8B32_config = QConfig(
     global_quant_config=quant_tensor_A8W8B32_config, quant_mode=QuantizationMode.fx_graph_mode
 )
 
 
-quant_tensor_A16W8B32_config = QuantizationConfig(
+quant_tensor_A16W8B32_config = QLayerConfig(
     input_tensors=INT16_PER_TENSOR_SPEC,
     output_tensors=INT16_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT32_PER_TENSOR_SPEC,
 )
-quant_A16W8B32_config = Config(
+quant_A16W8B32_config = QConfig(
     global_quant_config=quant_tensor_A16W8B32_config, quant_mode=QuantizationMode.fx_graph_mode
 )
 
@@ -515,8 +515,8 @@ def test_torch_a8w8_a16w8(tmpdir: str):
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_A8W8B32_config, quant_A16W8B32_config, emp_quant_config]:
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
@@ -549,7 +549,12 @@ def test_torch_a8w8_a16w8(tmpdir: str):
                     assert conv_b_quantizer.dtype == Dtype.int32
                     _apply_post_hw_fs_constrain_passes(quantized_model)
                     onnx_dir = tmpdir + "/a8w8_a16w16.onnx"
-                    torch.onnx.export(copyed_quantized_model.eval(), example_inputs, onnx_dir)
+                    torch.onnx.export(
+                        copyed_quantized_model.eval(),
+                        example_inputs,
+                        onnx_dir,
+                        dynamo=False,
+                    )
 
     torch.cuda.empty_cache()
 

@@ -1,14 +1,19 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+import base64
+import glob
+import hashlib
 import logging
 import os
 import platform
+import site
 import time
+import traceback
 from pathlib import Path
-from typing import Any, List, Union
+from typing import Any
 
 import torch
 from torch.utils.cpp_extension import load
@@ -25,7 +30,7 @@ library_name = "custom_ops"
 
 @log_errors
 def compile_custom_op_cpu(
-    name: str, build_directory: Union[str, None], extra_cuda_cflags: list[str], extra_cflags: list[str]
+    name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
 ) -> None:
     """Compile CPU version custom ops library using torch's cpp_extension.
     :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
@@ -69,7 +74,7 @@ def compile_custom_op_cpu(
 
 
 def compile_custom_op_gpu(
-    name: str, build_directory: Union[str, None], extra_cuda_cflags: list[str], extra_cflags: list[str]
+    name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
 ) -> None:
     """Compile GPU version custom ops library using torch's cpp_extension.
     :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
@@ -183,6 +188,53 @@ def handle_generated_files(build_dir: str, abs_lib_path: str, file_name: str, ex
                 logger.warning(f"Handling file error: {e}")
 
 
+def get_file_size_and_sha256(file_path: str) -> tuple[str, int]:
+    """
+    Compute the SHA256 hash and file size for a specified file.
+
+    :param file_path: The path to the file.
+    :return: A tuple containing the base64-url-safe-encoded SHA256 hash and
+        the file size in bytes.
+    """
+    size = os.path.getsize(file_path)
+    digest = hashlib.sha256(open(file_path, "rb").read()).digest()
+    sha256_b64url = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("utf-8")
+    return sha256_b64url, size
+
+
+def modify_record() -> None:
+    """
+    Add library files to the RECORD file if they are not already present.
+
+    This ensures that all relevant library files are properly tracked.
+    """
+
+    try:
+        dist_info_dir = glob.glob(os.path.join(site.getsitepackages()[0], "amd_quark*.dist-info"))[0]
+    except IndexError:
+        if len(site.getsitepackages()) > 1:
+            logger.warning(
+                f"No dist-info directory found for amd_quark*.dist-info in {site.getsitepackages()[0]}. Trying {site.getsitepackages()[1]}."
+            )
+            dist_info_dir = glob.glob(os.path.join(site.getsitepackages()[1], "amd_quark*.dist-info"))[0]
+        else:
+            raise
+
+    record_path = os.path.join(dist_info_dir, "RECORD")
+
+    with open(record_path, "r+") as record_file:
+        record_content = record_file.read()
+        library_dir = "quark/onnx/operators/custom_ops/lib"
+        library_files = ["libcustom_ops.so", "libcustom_ops_gpu.so", "custom_ops.dll", "custom_ops_gpu.dll"]
+
+        for library_file in library_files:
+            library_path = os.path.join(library_dir, library_file)
+            abs_library_path = os.path.join(site.getsitepackages()[0], library_path)
+            if os.path.exists(abs_library_path) and library_path not in record_content:
+                file_sha256, file_size = get_file_size_and_sha256(abs_library_path)
+                record_file.write(f"{library_path},sha256={file_sha256},{file_size}\n")
+
+
 def compile_library_core(device: str, extra_cuda_cflags: list[str], extra_cflags: list[str]) -> None:
     """Core function for compiling custom ops library. Do nothing except printing a message if it exists.
     :param device: Target device, "CPU" or "GPU"
@@ -207,6 +259,8 @@ def compile_library_core(device: str, extra_cuda_cflags: list[str], extra_cflags
         compile_custom_op_gpu(file_name, build_directory, extra_cuda_cflags, extra_cflags)
 
     handle_generated_files(build_directory, abs_lib_path, file_name, ext_name)
+
+    modify_record()
 
 
 def compile_library() -> None:
@@ -245,6 +299,7 @@ def compile_library() -> None:
 
     except Exception as e:
         logger.warning(f"Custom ops library compilation failed: {e}.")
+        traceback.print_exc()
 
     logger.info("Checked custom ops library.")
 

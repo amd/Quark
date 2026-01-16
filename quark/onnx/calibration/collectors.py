@@ -10,146 +10,21 @@
 # --------------------------------------------------------------------------
 
 import multiprocessing
-from multiprocessing.managers import DictProxy
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from joblib import Parallel, delayed  # type: ignore
+from numpy.typing import NDArray
 from onnxruntime.quantization.calibrate import CalibrationDataCollector, HistogramCollector
 from onnxruntime.quantization.quant_utils import QuantType
 from tqdm import tqdm
 
-from quark.onnx.quant_utils import ExtendedQuantType, get_tensor_type_from_qType, quantize_data
+from quark.onnx.quantization.quant_utils import ExtendedQuantType, get_tensor_type_from_qType, quantize_data
 from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .methods import PowerOfTwoMethod
 
 logger = ScreenLogger(__name__)
-
-
-def merge_histogram(
-    old_histogram: tuple[NDArray[Any], NDArray[Any], Any, Any, Any],
-    data_arr: NDArray[Any],
-    new_min: ArrayLike,
-    new_max: ArrayLike,
-    new_threshold: ArrayLike,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """This is a modified version of the member function of HistoramCollector."""
-    (old_hist, old_hist_edges, old_min, old_max, old_threshold) = old_histogram
-
-    if new_threshold <= old_threshold:
-        new_hist, _ = np.histogram(data_arr, len(old_hist), range=(-old_threshold, old_threshold))
-        return (
-            new_hist + old_hist,
-            old_hist_edges,
-            min(old_min, new_min),
-            max(old_max, new_max),
-            old_threshold,
-        )
-    else:
-        if old_threshold == 0:
-            hist, hist_edges = np.histogram(data_arr, len(old_hist), range=(-new_threshold, new_threshold))  # type: ignore
-            hist += old_hist
-        else:
-            old_num_bins = len(old_hist)
-            old_stride = 2 * old_threshold / old_num_bins
-            half_increased_bins = int((new_threshold - old_threshold) // old_stride + 1)
-            new_num_bins = old_num_bins + 2 * half_increased_bins
-            new_threshold = half_increased_bins * old_stride + old_threshold
-            hist, hist_edges = np.histogram(data_arr, new_num_bins, range=(-new_threshold, new_threshold))  # type: ignore
-            hist[half_increased_bins : new_num_bins - half_increased_bins] += old_hist
-        return (
-            hist,
-            hist_edges,
-            min(old_min, new_min),
-            max(old_max, new_max),
-            new_threshold,
-        )
-
-
-def collect_value_worker(
-    tensor: str, data_arr: list[NDArray[Any]], num_bins: int, histogram_dict: dict[str, Any]
-) -> None:
-    """
-    A worker to collect histogram on real value for a single tensor
-    """
-    data_arr = np.asarray(data_arr)
-    data_arr = data_arr.flatten()
-
-    if data_arr.size > 0:
-        min_value = np.min(data_arr)
-        max_value = np.max(data_arr)
-    else:
-        min_value = np.array(0, dtype=data_arr.dtype)
-        max_value = np.array(0, dtype=data_arr.dtype)
-
-    threshold = np.array(max(abs(min_value), abs(max_value)), dtype=data_arr.dtype)
-
-    if tensor in histogram_dict:
-        old_histogram = histogram_dict[tensor]
-        histogram_dict[tensor] = merge_histogram(old_histogram, data_arr, min_value, max_value, threshold)
-    else:
-        hist, hist_edges = np.histogram(data_arr, num_bins, range=(-threshold, threshold))  # type: ignore
-        histogram_dict[tensor] = (hist, hist_edges, min_value, max_value, threshold)
-
-
-def collect_absolute_value_worker(
-    tensor: str, data_arr: list[NDArray[Any]], num_bins: int, histogram_dict: dict[str, Any]
-) -> None:
-    """
-    A worker to collect histogram on absolute value for a single tensor
-    """
-    if isinstance(data_arr, list):
-        for arr in data_arr:
-            assert isinstance(arr, np.ndarray), f"Unexpected type {type(arr)} for tensor={tensor!r}"
-        dtypes = set(a.dtype for a in data_arr)
-        assert len(dtypes) == 1, f"The calibration expects only one element type but got {dtypes} for tensor={tensor!r}"
-        data_arr_np = np.asarray(data_arr)
-    elif not isinstance(data_arr, np.ndarray):
-        raise ValueError(f"Unexpected type {type(data_arr)} for tensor={tensor!r}")
-    else:
-        data_arr_np = data_arr
-
-    data_arr_np = data_arr_np.flatten()
-    if data_arr_np.size > 0:
-        min_value = np.min(data_arr_np)
-        max_value = np.max(data_arr_np)
-    else:
-        min_value = np.array(0, dtype=data_arr_np.dtype)
-        max_value = np.array(0, dtype=data_arr_np.dtype)
-
-    data_arr_np = np.absolute(data_arr_np)  # only consider absolute value
-
-    if tensor not in histogram_dict:
-        # first time it uses num_bins to compute histogram.
-        hist, hist_edges = np.histogram(data_arr_np, bins=num_bins)
-        hist_edges = hist_edges.astype(data_arr_np.dtype)
-        assert data_arr_np.dtype != np.float64, (
-            "only float32 or float16 is supported, every constant must be explicitly typed"
-        )
-        histogram_dict[tensor] = (hist, hist_edges, min_value, max_value)
-    else:
-        old_histogram = histogram_dict[tensor]
-        old_min = old_histogram[2]
-        old_max = old_histogram[3]
-        assert hasattr(old_min, "dtype"), f"old_min should be a numpy array but is {type(old_min)}"
-        assert hasattr(old_max, "dtype"), f"old_min should be a numpy array but is {type(old_max)}"
-        old_hist = old_histogram[0]
-        old_hist_edges = old_histogram[1]
-        temp_amax = np.max(data_arr_np)
-        if temp_amax > old_hist_edges[-1]:
-            # increase the number of bins
-            width = old_hist_edges[1] - old_hist_edges[0]
-            # NOTE: np.arange may create an extra bin after the one containing temp_amax
-            new_bin_edges = np.arange(old_hist_edges[-1] + width, temp_amax + width, width)
-            old_hist_edges = np.hstack((old_hist_edges, new_bin_edges))
-        hist, hist_edges = np.histogram(data_arr_np, bins=old_hist_edges)
-        hist_edges = hist_edges.astype(data_arr_np.dtype)
-        hist[: len(old_hist)] += old_hist
-        assert data_arr_np.dtype != np.float64, (
-            "only float32 or float16 is supported, every constant must be explicitly typed"
-        )
-        histogram_dict[tensor] = (hist, hist_edges, min(old_min, min_value), max(old_max, max_value))
 
 
 class OverridedHistogramCollector(HistogramCollector):  # type: ignore
@@ -185,64 +60,171 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
         else:
             self.worker_num = max(worker_num, 1)
 
-        self.manager = None
-        self.pool = None
+    def compute_percentile(self) -> dict[str, tuple[NDArray[Any], NDArray[Any]]]:
+        """
+        Compute percentile-based thresholds for each tensor in the histogram.
+
+        :return: Dictionary mapping tensor names to threshold tuples.
+        :rtype: dict[str, tuple[NDArray]]
+        """
+        if self.percentile < 0 or self.percentile > 100:
+            raise ValueError("Invalid percentile. Must be in range 0 <= percentile <= 100.")
+
+        histogram_dict = self.histogram_dict
+        percentile = self.percentile
+
+        thresholds_dict = {}  # per tensor thresholds
+
+        logger.info(f"Number of tensors : {len(histogram_dict)}")
+        logger.info(f"Number of histogram bins : {self.num_bins}")
+        logger.info(f"Percentile : ({100.0 - percentile},{percentile})")
+
+        def compute_layer_wise_percentile(tensor: str, histogram: tuple[Any]) -> None:
+            hist = histogram[0]
+            hist_edges = histogram[1]
+            total = hist.sum()
+            cdf = np.cumsum(hist / total)
+            if self.symmetric:
+                idx_right = np.searchsorted(cdf, percentile / 100.0)
+
+                thresholds_dict[tensor] = (
+                    -np.array(hist_edges[idx_right], dtype=hist_edges.dtype),
+                    np.array(hist_edges[idx_right], dtype=hist_edges.dtype),
+                )
+            else:
+                percent_to_cut_one_side = (100.0 - percentile) / 200.0
+                idx_right = np.searchsorted(cdf, 1.0 - percent_to_cut_one_side)
+                idx_left = np.searchsorted(cdf, percent_to_cut_one_side)
+                thresholds_dict[tensor] = (
+                    np.array(hist_edges[idx_left], dtype=hist_edges.dtype),
+                    np.array(hist_edges[idx_right], dtype=hist_edges.dtype),
+                )
+            min_value = histogram[2]
+            max_value = histogram[3]
+            if thresholds_dict[tensor][0] < min_value:
+                thresholds_dict[tensor] = (min_value, thresholds_dict[tensor][1])
+            if thresholds_dict[tensor][1] > max_value:
+                thresholds_dict[tensor] = (thresholds_dict[tensor][0], max_value)
+            thresholds_dict[tensor] = (*thresholds_dict[tensor], *hist[:2])
 
         if self.worker_num > 1:
-            try:
-                # Note that this will raise an error if the path of temp directory is too long
-                self.manager = multiprocessing.Manager()
-                # Initialize a pool for multiple processes
-                self.pool = multiprocessing.Pool(processes=self.worker_num)
-                # Change the histogram dict to a multi-process safe dict
-                self.histogram_dict = self.manager.dict()
-            except Exception as e:
-                logger.error("Likely the path for temporary directory is too long, please try another path")
+            Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(compute_layer_wise_percentile)(tensor, histogram)
+                for tensor, histogram in histogram_dict.items()
+            )
+        else:
+            for tensor, histogram in histogram_dict.items():
+                compute_layer_wise_percentile(tensor, histogram)
 
-            if self.pool is None:
-                logger.warning("Initializing multiple processes failed, a single worker will be used to collect data")
+        return thresholds_dict
 
-    def collect(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> Any:
+    def collect_absolute_value(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> None:
         """
-        Collecting tensor data and making histogram
+        Collect histogram on absolute value
         """
-        # TODO: Currently we have different collect() for entropy and percentile method respectively.
-        #       Need unified collect in the future.
-        if self.method in {"distribution", "entropy"}:
-            return self.collect_value_api(name_to_arr)
-        elif self.method == "percentile":
-            if self.symmetric:
-                return self.collect_absolute_value_api(name_to_arr)
+
+        def collect_layer_wise_absolute_value(tensor: str, data_arr: list[NDArray[Any]]) -> None:
+            if isinstance(data_arr, list):
+                for arr in data_arr:
+                    assert isinstance(arr, np.ndarray), f"Unexpected type {type(arr)} for tensor={tensor!r}"
+                dtypes = {a.dtype for a in data_arr}
+                assert len(dtypes) == 1, (
+                    f"The calibration expects only one element type but got {dtypes} for tensor={tensor!r}"
+                )
+                data_arr_np = np.asarray(data_arr)
+            elif not isinstance(data_arr, np.ndarray):
+                raise ValueError(f"Unexpected type {type(data_arr)} for tensor={tensor!r}")
             else:
-                return self.collect_value_api(name_to_arr)
-        else:
-            raise ValueError("Only 'entropy', 'percentile' or 'distribution' methods are supported")
+                data_arr_np = data_arr
+            data_arr_np = data_arr_np.flatten()
+            if data_arr_np.size > 0:
+                min_value = np.nanmin(data_arr_np)
+                max_value = np.nanmax(data_arr_np)
+            else:
+                min_value = np.array(0, dtype=data_arr_np.dtype)
+                max_value = np.array(0, dtype=data_arr_np.dtype)
 
-    def collect_absolute_value_api(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> Any:
-        """
-        Collect histogram on absolute value using multiple processes
-        """
-        if self.pool is None:
-            return self.collect_absolute_value(name_to_arr)
-        else:
-            assert isinstance(self.histogram_dict, DictProxy)
-            args_list = [
-                (tensor, data_arr, self.num_bins, self.histogram_dict) for tensor, data_arr in name_to_arr.items()
-            ]
-            self.pool.starmap(collect_absolute_value_worker, args_list)
+            data_arr_np = np.absolute(data_arr_np)  # only consider absolute value
 
-    def collect_value_api(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> Any:
-        """
-        Collect histogram on real value using multiple processes
-        """
-        if self.pool is None:
-            return self.collect_value(name_to_arr)
+            if tensor not in self.histogram_dict:
+                # first time it uses num_bins to compute histogram.
+                hist, hist_edges = np.histogram(data_arr_np, bins=self.num_bins)
+                hist_edges = hist_edges.astype(data_arr_np.dtype)
+                assert data_arr_np.dtype != np.float64, (
+                    "only float32 or float16 is supported, every constant must be explicitly typed"
+                )
+                self.histogram_dict[tensor] = (hist, hist_edges, min_value, max_value)
+            else:
+                old_histogram = self.histogram_dict[tensor]
+                old_min = old_histogram[2]
+                old_max = old_histogram[3]
+                assert hasattr(old_min, "dtype"), f"old_min should be a numpy array but is {type(old_min)}"
+                assert hasattr(old_max, "dtype"), f"old_min should be a numpy array but is {type(old_max)}"
+                old_hist = old_histogram[0]
+                old_hist_edges = old_histogram[1]
+                temp_amax = np.nanmax(data_arr_np)
+                if temp_amax > old_hist_edges[-1]:
+                    # increase the number of bins
+                    width = old_hist_edges[1] - old_hist_edges[0]
+                    # NOTE: np.arange may create an extra bin after the one containing temp_amax
+                    new_bin_edges = np.arange(old_hist_edges[-1] + width, temp_amax + width, width)
+                    old_hist_edges = np.hstack((old_hist_edges, new_bin_edges))
+                hist, hist_edges = np.histogram(data_arr_np, bins=old_hist_edges)
+                hist_edges = hist_edges.astype(data_arr_np.dtype)
+                hist[: len(old_hist)] += old_hist
+                assert data_arr_np.dtype != np.float64, (
+                    "only float32 or float16 is supported, every constant must be explicitly typed"
+                )
+                self.histogram_dict[tensor] = (hist, hist_edges, min(old_min, min_value), max(old_max, max_value))
+
+        if self.worker_num > 1:
+            Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(collect_layer_wise_absolute_value)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
+            )
         else:
-            assert isinstance(self.histogram_dict, DictProxy)
-            args_list = [
-                (tensor, data_arr, self.num_bins, self.histogram_dict) for tensor, data_arr in name_to_arr.items()
-            ]
-            self.pool.starmap(collect_value_worker, args_list)
+            for tensor, data_arr in name_to_arr.items():
+                collect_layer_wise_absolute_value(tensor, data_arr)
+
+    def collect_value(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> None:
+        """
+        Collect histogram on real value
+        """
+
+        def collect_layer_wise_value(tensor: str, data_arr: list[NDArray[Any]]) -> None:
+            data_arr = np.asarray(data_arr)  # noqa: PLW2901
+            data_arr = data_arr.flatten()  # noqa: PLW2901
+
+            if data_arr.size > 0:
+                min_value = np.nanmin(data_arr)
+                max_value = np.nanmax(data_arr)
+            else:
+                min_value = np.array(0, dtype=data_arr.dtype)
+                max_value = np.array(0, dtype=data_arr.dtype)
+
+            threshold = np.array(max(abs(min_value), abs(max_value)), dtype=data_arr.dtype)
+
+            if tensor in self.histogram_dict:
+                old_histogram = self.histogram_dict[tensor]
+                self.histogram_dict[tensor] = self.merge_histogram(
+                    old_histogram, data_arr, min_value, max_value, threshold
+                )
+            else:
+                hist, hist_edges = np.histogram(data_arr, self.num_bins, range=(-threshold, threshold))
+                self.histogram_dict[tensor] = (
+                    hist,
+                    hist_edges,
+                    min_value,
+                    max_value,
+                    threshold,
+                )
+
+        if self.worker_num > 1:
+            Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(collect_layer_wise_value)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
+            )
+        else:
+            for tensor, data_arr in name_to_arr.items():
+                collect_layer_wise_value(tensor, data_arr)
 
 
 calib_quant_types = [
@@ -271,7 +253,7 @@ def compute_minmse_worker(
     percentile: Any,
 ) -> tuple[str, tuple[Any, Any]]:
     """This is the worker function for collecting MinMSE data.
-    In order to enable multiple processing, we seperate the
+    In order to enable multiple processing, we separate the
     code from the collector.
     """
 
@@ -296,9 +278,14 @@ def compute_minmse_worker(
 
         scale_list = []
         for d in data_arr:
-            rmin_mse, rmax_mse, zp_mse, scale_mse, _ = quantize_data(
-                data=d, qType=act_type, symmetric=symmetric, method=method
-            )
+            if isinstance(d, list):
+                # We have calculated the quantization parameters already in collecting data process
+                rmin_mse, rmax_mse, scale_mse = d[0], d[1], d[2]
+            else:
+                # This needs caching data in memory, abandoned
+                rmin_mse, rmax_mse, _, scale_mse, _ = quantize_data(
+                    data=d.astype(np.float32, copy=False), qType=act_type, symmetric=symmetric, method=method
+                )
             scale2threshold[float(scale_mse)] = (rmin_mse, rmax_mse)
             scale_list.append(scale_mse)
         u, indices = np.unique(scale_list, return_inverse=True)
@@ -326,7 +313,9 @@ def compute_minmse_worker(
             upper_limit = np.percentile(d, 100 - (100 - percentile) / 2)
         d = d[(d >= lower_limit) & (d <= upper_limit)]
 
-        rmin_mse, rmax_mse, _, _, _ = quantize_data(data=d, qType=act_type, symmetric=symmetric, method=method)
+        rmin_mse, rmax_mse, *_ = quantize_data(
+            data=d.astype(np.float32, copy=False), qType=act_type, symmetric=symmetric, method=method
+        )
         return (rmin_mse, rmax_mse)
 
     def _all_arrays_mode(data_arr: list[Any], act_type: Any, symmetric: Any, method: Any) -> tuple[Any, Any]:
@@ -339,7 +328,9 @@ def compute_minmse_worker(
         else:
             raise ValueError("The dims of samples do not match exactly!")
 
-        rmin_mse, rmax_mse, _, _, _ = quantize_data(data=d, qType=act_type, symmetric=symmetric, method=method)
+        rmin_mse, rmax_mse, *_ = quantize_data(
+            data=d.astype(np.float32, copy=False), qType=act_type, symmetric=symmetric, method=method
+        )
         return (rmin_mse, rmax_mse)
 
     if not optimize_mem:
@@ -393,7 +384,7 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
 
     def __init__(
         self,
-        activation_type: Union[QuantType, ExtendedQuantType] = QuantType.QInt8,
+        activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
         method: PowerOfTwoMethod = PowerOfTwoMethod.MinMSE,
         symmetric: bool = True,
         minmse_mode: str = "All",
@@ -402,8 +393,6 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
         worker_num: int = 1,
         quantized_tensor_type: dict[Any, Any] = {},
     ):
-        self.name_to_arr: dict[Any, Any] = {}
-
         if activation_type not in calib_quant_types:
             logger.warning(f"Unsupported activation type {activation_type} for MinMSE, applying Int8 instead.")
             self.activation_qType = get_tensor_type_from_qType(QuantType.QInt8)
@@ -417,7 +406,40 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
         self.worker_num = worker_num
         self.quantized_tensor_type = quantized_tensor_type
 
+        self.is_mostcommon = True if self.minmse_mode == "MostCommon" and self.symmetric else False
+        self.name_to_arr: dict[Any, Any] = {}  # For MostCommon, the value is a 2D list storing the quant params
+
     def collect(self, name_to_arr: dict[Any, Any]) -> None:
+        if self.is_mostcommon:
+            return self.collect_mostcommon_value(name_to_arr)
+        else:
+            return self.collect_value(name_to_arr)
+
+    def collect_mostcommon_value(self, name_to_arr: dict[Any, Any]) -> None:
+        """Collect data for the most common mode"""
+        for tensor_name, data_arr in name_to_arr.items():
+            act_type = self.activation_qType
+            if (
+                tensor_name in self.quantized_tensor_type
+                and self.quantized_tensor_type[tensor_name] in calib_quant_types
+            ):
+                act_type = get_tensor_type_from_qType(self.quantized_tensor_type[tensor_name])
+
+            assert len(data_arr) == 1, "Each time it only supports collect a sample"
+            rmin_mse, rmax_mse, _, scale_mse, _ = quantize_data(
+                data=data_arr[0].astype(np.float32, copy=False),
+                qType=act_type,
+                symmetric=self.symmetric,
+                method=self.method,
+            )
+
+            if tensor_name not in self.name_to_arr:
+                self.name_to_arr[tensor_name] = [[rmin_mse, rmax_mse, scale_mse]]
+            else:
+                self.name_to_arr[tensor_name].append([rmin_mse, rmax_mse, scale_mse])
+
+    def collect_value(self, name_to_arr: dict[Any, Any]) -> None:
+        """Collect data for the percentile and all mode"""
         self.name_to_arr = name_to_arr
 
     def compute_collection_result(self) -> Any:
@@ -439,7 +461,6 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
         'Percentile': Calculate only a portion of representative data
         'All': Calculate all data, this is the default mode
         """
-
         if self.minmse_mode == "MostCommon" and not self.symmetric:
             logger.warning(
                 f"The {self.minmse_mode} mode does not support asymmetric activations, will use the default mode instead."
@@ -471,8 +492,8 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
                 )
                 thresholds_dict[name] = threshold  # The name is the tensor
         else:
-            args_list = [
-                (
+            results = Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(compute_minmse_worker)(
                     tensor,
                     data_arr,
                     self.quantized_tensor_type,
@@ -483,16 +504,10 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
                     self.method,
                     self.percentile,
                 )
-                for tensor, data_arr in self.name_to_arr.items()
-            ]
+                for tensor, data_arr in tqdm(self.name_to_arr.items())
+            )
 
-            with multiprocessing.Pool(processes=self.worker_num) as pool:
-                results: list[Any] = []
-                for result in tqdm(
-                    pool.imap_unordered(compute_minmse_worker_unpack, args_list), total=len(self.name_to_arr)
-                ):
-                    results.append(result)
-
-            thresholds_dict = dict(results)
+            for name, threshold in results:
+                thresholds_dict[name] = threshold  # The name is the tensor
 
         return thresholds_dict

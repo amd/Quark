@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 # Wrapper for the "onnx-validate" subcommand.
 import argparse
 import time
-from typing import Any, List
+from typing import Any
 
 import numpy as np
 import onnxruntime

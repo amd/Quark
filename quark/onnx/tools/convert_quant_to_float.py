@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -8,7 +8,7 @@ Convert quantized model to FP32 model.
 
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -86,9 +86,7 @@ def remove_quantize_dequantize_nodes(model: ModelProto) -> tuple[ModelProto, dic
     return model, initializers_to_convert
 
 
-def convert_quant_to_float(
-    quant_model: Union[str, Path, ModelProto], float_model: Union[str, Path] | None = None
-) -> Any:
+def convert_quant_to_float(quant_model: str | Path | ModelProto, float_model: str | Path | None = None) -> Any:
     # Load the ONNX model
     model = quant_model if isinstance(quant_model, ModelProto) else onnx.load(quant_model)
 

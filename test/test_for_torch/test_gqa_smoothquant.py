@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from quark.shares.utils.log import ScreenLogger
 from quark.shares.utils.testing_utils import torch_device
@@ -16,8 +16,8 @@ from quark.torch.algorithm.utils.utils import is_attention_module
 from quark.torch.quantization.config.config import (
     AWQConfig,
     Config,
-    QuantizationConfig,
-    QuantizationSpec,
+    QLayerConfig,
+    QTensorConfig,
     SmoothQuantConfig,
 )
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
@@ -25,7 +25,7 @@ from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, 
 
 logger = ScreenLogger(__name__)
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -35,16 +35,16 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     is_dynamic=False,
 )
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
 )
 
-FLOAT16_SPEC = QuantizationSpec(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
+FLOAT16_SPEC = QTensorConfig(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
 
-FLOAT16_CONFIG = QuantizationConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
+FLOAT16_CONFIG = QLayerConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
 
 hidden_size = 32
 num_attention_heads = 16
@@ -96,8 +96,6 @@ def test_gqa_smoothquant():
     torch.cuda.empty_cache()
     # dataset
     input_tensor = torch.randn(1, 4, hidden_size, device=torch_device)
-    dataset = MyDataset()
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
     # model
     model = SimpleLMAttention().to(torch_device)
@@ -136,8 +134,6 @@ def test_gqa_awq():
     torch.cuda.empty_cache()
     # dataset
     input_tensor = torch.randn(1, 4, hidden_size, device=torch_device)
-    dataset = MyDataset()
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
     # model
     model = SimpleLMAttention().to(torch_device)

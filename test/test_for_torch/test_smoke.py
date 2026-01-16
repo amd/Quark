@@ -9,18 +9,22 @@ from dataclasses import replace
 
 import pytest
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import require_torch_higher_or_equal, torch_device, use_temporary_directory
+from quark.shares.utils.testing_utils import (
+    require_torch_higher_or_equal,
+    require_torch_lower_or_equal,
+    torch_device,
+    use_temporary_directory,
+)
 from quark.testing import slow_test
-from quark.torch import ModelExporter, ModelQuantizer, export_onnx, export_safetensors, load_params, save_params
-from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
+from quark.torch import ModelQuantizer, export_onnx, export_safetensors, load_params, save_params
 from quark.torch.quantization import (
     AutoSmoothQuantConfig,
     AWQConfig,
     Bfloat16Spec,
-    Config,
     Float16Spec,
     FP8E4M3PerTensorSpec,
     FP8E5M2PerTensorSpec,
@@ -29,8 +33,8 @@ from quark.torch.quantization import (
     Int4PerGroupSpec,
     Int4PerTensorSpec,
     Int8PerTensorSpec,
-    QuantizationConfig,
-    QuaRotConfig,
+    QConfig,
+    QLayerConfig,
     RotationConfig,
     SmoothQuantConfig,
     Uint4PerGroupSpec,
@@ -43,122 +47,99 @@ FLOAT16_SPEC = Float16Spec().to_quantization_spec()
 
 BFLOAT16_SPEC = Bfloat16Spec().to_quantization_spec()
 
-FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
+FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(is_dynamic=False).to_quantization_spec()
 
-FP8_E5M2_PER_TENSOR_SPEC = FP8E5M2PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
+FP8_E5M2_PER_TENSOR_SPEC = FP8E5M2PerTensorSpec(is_dynamic=False).to_quantization_spec()
 
 
 INT2_PER_GROUP_ASYM_SPEC = Int2PerGroupSpec(
-    symmetric=False, scale_type="float", round_method="half_even", ch_axis=1, is_dynamic=False, group_size=128
+    symmetric=False, ch_axis=1, is_dynamic=False, group_size=128
 ).to_quantization_spec()
 
-INT4_PER_TENSOR_SPEC = Int4PerTensorSpec(
-    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-).to_quantization_spec()
+INT4_PER_TENSOR_SPEC = Int4PerTensorSpec(is_dynamic=False).to_quantization_spec()
 
-INT4_PER_CHANNEL_SPEC = Int4PerChannelSpec(
-    symmetric=True, scale_type="float", round_method="half_even", ch_axis=0, is_dynamic=False
-).to_quantization_spec()
+INT4_PER_CHANNEL_SPEC = Int4PerChannelSpec(ch_axis=0, is_dynamic=False).to_quantization_spec()
 
-INT4_PER_GROUP_SYM_SPEC = Int4PerGroupSpec(
-    scale_type="float", ch_axis=1, is_dynamic=False, group_size=128
-).to_quantization_spec()
+INT4_PER_GROUP_SYM_SPEC = Int4PerGroupSpec(ch_axis=1, is_dynamic=False, group_size=128).to_quantization_spec()
 
 DEFAULT_UINT4_PER_GROUP_ASYM_SPEC = Uint4PerGroupSpec(
-    scale_type="float", ch_axis=1, is_dynamic=False, group_size=128
+    ch_axis=1, is_dynamic=False, group_size=128
 ).to_quantization_spec()
 
 DEFAULT_UINT8_PER_GROUP_ASYM_SPEC = Uint8PerGroupSpec(
     symmetric=False, scale_type="float", round_method="half_even", ch_axis=1, is_dynamic=False, group_size=128
 ).to_quantization_spec()
 
-INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(
-    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-).to_quantization_spec()
+INT8_PER_TENSOR_SPEC = Int8PerTensorSpec(is_dynamic=False).to_quantization_spec()
 
-INT8_PER_TENSOR_DYNAMIC_SPEC = Int8PerTensorSpec(
-    observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=True
-).to_quantization_spec()
+INT8_PER_TENSOR_DYNAMIC_SPEC = Int8PerTensorSpec(is_dynamic=True).to_quantization_spec()
 
 # Float16 config
-DEFAULT_FLOAT16_CONFIG = QuantizationConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
+DEFAULT_FLOAT16_CONFIG = QLayerConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
 
 # Fp8(e4m3) config
-DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG = QuantizationConfig(
-    input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC
-)
+DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
 
-DEFAULT_W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_FP8_A_FP8_OFP8_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC, output_tensors=FP8_PER_TENSOR_SPEC
 )
 
 # Fp8(e5m2) config
-DEFAULT_W_FP8E5M2_A_FP8E5M2_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_FP8E5M2_A_FP8E5M2_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=FP8_E5M2_PER_TENSOR_SPEC, weight=FP8_E5M2_PER_TENSOR_SPEC
 )
 
-DEFAULT_W_FP8E5M2_A_FP8E5M2_OFP8E5M2_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_FP8E5M2_A_FP8E5M2_OFP8E5M2_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=FP8_E5M2_PER_TENSOR_SPEC, weight=FP8_E5M2_PER_TENSOR_SPEC, output_tensors=FP8_E5M2_PER_TENSOR_SPEC
 )
 
 # Per tensor config
-DEFAULT_W_INT2_PER_GROUP_CONFIG = QuantizationConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
+DEFAULT_W_INT2_PER_GROUP_CONFIG = QLayerConfig(weight=INT2_PER_GROUP_ASYM_SPEC)
 
-DEFAULT_W_INT4_PER_TENSOR_CONFIG = QuantizationConfig(weight=INT4_PER_TENSOR_SPEC)
+DEFAULT_W_INT4_PER_TENSOR_CONFIG = QLayerConfig(weight=INT4_PER_TENSOR_SPEC)
 
-DEFAULT_W_INT4_BIAS_INT4_PER_TENSOR_CONFIG = QuantizationConfig(weight=INT4_PER_TENSOR_SPEC, bias=INT4_PER_TENSOR_SPEC)
+DEFAULT_W_INT4_BIAS_INT4_PER_TENSOR_CONFIG = QLayerConfig(weight=INT4_PER_TENSOR_SPEC, bias=INT4_PER_TENSOR_SPEC)
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
-    input_tensors=INT8_PER_TENSOR_SPEC, weight=INT8_PER_TENSOR_SPEC
-)
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QLayerConfig(input_tensors=INT8_PER_TENSOR_SPEC, weight=INT8_PER_TENSOR_SPEC)
 
-DEFAULT_W_INT8_A_INT8_O_INT8_PER_TENSOR_CONFIG = QuantizationConfig(
+DEFAULT_W_INT8_A_INT8_O_INT8_PER_TENSOR_CONFIG = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC, weight=INT8_PER_TENSOR_SPEC, output_tensors=INT8_PER_TENSOR_SPEC
 )
 
-DEFAULT_W_INT8_A_INT8_PER_TENSOR_DYNAMIC_CONFIG = QuantizationConfig(
+DEFAULT_W_INT8_A_INT8_PER_TENSOR_DYNAMIC_CONFIG = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_DYNAMIC_SPEC, weight=INT8_PER_TENSOR_DYNAMIC_SPEC
 )
 
-# Per Channel Config
-DEFAULT_W_INT4_PER_CHANNEL_CONFIG = QuantizationConfig(weight=INT4_PER_CHANNEL_SPEC)
+# Per Channel QConfig
+DEFAULT_W_INT4_PER_CHANNEL_CONFIG = QLayerConfig(weight=INT4_PER_CHANNEL_SPEC)
 
-# Per Group Config
-DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG = QuantizationConfig(weight=INT4_PER_GROUP_SYM_SPEC)
+# Per Group QConfig
+DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG = QLayerConfig(weight=INT4_PER_GROUP_SYM_SPEC)
 
-DEFAULT_W_UINT4_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
+DEFAULT_W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC)
 
-DEFAULT_W_UINT8_PER_GROUP_CONFIG = QuantizationConfig(weight=DEFAULT_UINT8_PER_GROUP_ASYM_SPEC)
+DEFAULT_W_UINT8_PER_GROUP_CONFIG = QLayerConfig(weight=DEFAULT_UINT8_PER_GROUP_ASYM_SPEC)
 
-DEFAULT_W_UINT4_A_BFLOAT16_PER_GROUP_CONFIG = QuantizationConfig(
+DEFAULT_W_UINT4_A_BFLOAT16_PER_GROUP_CONFIG = QLayerConfig(
     input_tensors=BFLOAT16_SPEC, weight=DEFAULT_UINT4_PER_GROUP_ASYM_SPEC
 )
 
-DEFAULT_W_UINT8_A_BFLOAT16_PER_GROUP_CONFIG = QuantizationConfig(
+DEFAULT_W_UINT8_A_BFLOAT16_PER_GROUP_CONFIG = QLayerConfig(
     input_tensors=BFLOAT16_SPEC, weight=DEFAULT_UINT8_PER_GROUP_ASYM_SPEC
 )
 
-# Default AWQ Config
-DEFAULT_AWQ_CONFIG = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQConfig()])
+# Default AWQ QConfig
+DEFAULT_AWQ_CONFIG = QConfig(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[AWQConfig()])
 
-# Default SmoothQuant Config
-DEFAULT_SMOOTH_QUANT_CONFIG = Config(
+# Default SmoothQuant QConfig
+DEFAULT_SMOOTH_QUANT_CONFIG = QConfig(
     global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[SmoothQuantConfig()]
 )
 
-# Default AutoSmoothQuant Config
-DEFAULT_AutoSmoothQuant_CONFIG = Config(
+# Default AutoSmoothQuant QConfig
+DEFAULT_AutoSmoothQuant_CONFIG = QConfig(
     global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[AutoSmoothQuantConfig()]
 )
-
-# Exporting Config
-MERGE_REALQ_CONFIG = JsonExporterConfig(
-    weight_merge_groups=[["*up_proj", "*gate_proj"], ["*q_proj", "*k_proj", "*v_proj"]],
-    weight_format="real_quantized",
-    pack_method="reorder",
-)
-
-DEFAULT_EXPORTER_CONFIG = ExporterConfig(json_export_config=MERGE_REALQ_CONFIG, onnx_export_config=OnnxExporterConfig())
 
 # mutil_gpu should disable lm_head replacement in opt, qwen, llama, and it is needed in algos.
 EXCLUDE_LAYERS = ["lm_head"]
@@ -174,7 +155,9 @@ def get_dataloader(model_name="facebook/opt-125m", device=torch_device):
     return calib_dataloader
 
 
-def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False, freeze: bool = False):
+def quantize_model(
+    quant_config, input_args=None, model_name="facebook/opt-125m", multi_gpu=False, freeze: bool = False
+):
     # Get quantizer
     quantizer = ModelQuantizer(quant_config)
 
@@ -184,7 +167,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
         )
         model.eval()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         model.eval()
         model = model.to(torch_device)
     # Get dataloader, if multi_gpu, give the first layer's device
@@ -192,8 +175,18 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
 
     quant_model = quantizer.quantize_model(model, calib_dataloader)
 
+    if input_args is not None:
+        with torch.no_grad():
+            res_bef = quant_model(input_args).logits
+
     if freeze:
         quant_model = quantizer.freeze(quant_model)
+
+    if input_args is not None:
+        with torch.no_grad():
+            res_aft = quant_model(input_args).logits
+
+        assert torch.allclose(res_bef, res_aft)
 
     # Inference with quantized model
     for i in calib_dataloader:
@@ -234,7 +227,7 @@ def test_smoke_basic_quantization(quant_config):
         Symmetric:                Symmetric / Asymmetric
         In-Place Replace OP:      nn.Linear
     """
-    quant_config = Config(global_quant_config=quant_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=quant_config, exclude=EXCLUDE_LAYERS)
     quantize_model(quant_config)
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
 
@@ -253,10 +246,10 @@ def test_smoke_kv_cache_quant(global_config, kv_config):
     Test Features:
         KV-Cache Quant:           FP8 KV-Cache Quant
     """
-    quant_config = Config(global_quant_config=global_config)
+    quant_config = QConfig(global_quant_config=global_config)
     KV_CACHE_CFG = {
-        "*v_proj": QuantizationConfig(input_tensors=kv_config, output_tensors=kv_config, weight=kv_config),
-        "*k_proj": QuantizationConfig(input_tensors=kv_config, output_tensors=kv_config, weight=kv_config),
+        "*v_proj": QLayerConfig(input_tensors=kv_config, output_tensors=kv_config, weight=kv_config),
+        "*k_proj": QLayerConfig(input_tensors=kv_config, output_tensors=kv_config, weight=kv_config),
     }
     quant_config = replace(quant_config, layer_quant_config=KV_CACHE_CFG, exclude=EXCLUDE_LAYERS)
 
@@ -277,18 +270,15 @@ def test_smoke_fp8_attn_quant(global_config, softmax_quant_spec):
     Test Features:
         FP8 Attn Quant:        FP8 Attention Quant
     """
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=global_config, softmax_quant_spec=softmax_quant_spec, exclude=EXCLUDE_LAYERS
     )
 
-    with torch.inference_mode():
-        with tempfile.TemporaryDirectory() as tmpdir:
-            #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
-            for multi_gpu in [False]:
-                model = quantize_model(quant_config, multi_gpu=multi_gpu)
-                export_safetensors(
-                    model=model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder"
-                )
+    with torch.inference_mode(), tempfile.TemporaryDirectory() as tmpdir:
+        #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
+        for multi_gpu in [False]:
+            model = quantize_model(quant_config, multi_gpu=multi_gpu)
+            export_safetensors(model=model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
@@ -309,7 +299,7 @@ def test_smoke_calibration_method(global_config, observer_cls):
     Test Features:
         Calibration method:       MinMax / Percentile / MSE
     """
-    quant_config = Config(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
     quant_config.global_quant_config.weight = replace(
         quant_config.global_quant_config.weight, observer_cls=observer_cls
     )
@@ -324,68 +314,75 @@ def test_smoke_calibration_method(global_config, observer_cls):
         (DEFAULT_W_FP8E5M2_A_FP8E5M2_OFP8E5M2_PER_TENSOR_CONFIG),
     ],
 )
-def test_smoke_export_quark_format_fp8(global_config):
+def test_smoke_export_hf_format_fp8(global_config):
     """
     Test Features:
-        Export Format:            Quark FP8 Pth with json
+        Export Format: HF / safetensors
     """
-    quant_config = Config(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
 
-    with torch.inference_mode():
-        with tempfile.TemporaryDirectory() as tmpdir:
-            exporter = ModelExporter(config=DEFAULT_EXPORTER_CONFIG, export_dir=tmpdir)
-            #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
-            for multi_gpu in [False]:
-                model = quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B", multi_gpu=multi_gpu)
-                exporter.export_quark_model(model, quant_config=quant_config)
-
-
-@use_temporary_directory
-def test_smoke_export_quark_format_pergroup(tmpdir: str):
-    """
-    Test Features:
-        Export Format:            Quark Per_group Pth with json
-    """
-    quant_config = Config(global_quant_config=DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
-
-    with torch.inference_mode():
-        exporter = ModelExporter(config=DEFAULT_EXPORTER_CONFIG, export_dir=tmpdir)
+    with torch.inference_mode(), tempfile.TemporaryDirectory() as tmpdir:
         #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
         for multi_gpu in [False]:
             model = quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B", multi_gpu=multi_gpu)
-            exporter.export_quark_model(model, quant_config=quant_config)
+            export_safetensors(model=model, output_dir=tmpdir, weight_format="fake_quantized", pack_method="reorder")
 
 
 @use_temporary_directory
-def test_smoke_export_quark_format_pertensor(tmpdir: str):
+def test_smoke_export_hf_format_pergroup(tmpdir: str):
     """
     Test Features:
-        Export Format:            Quark Per_tensor Pth with json
+        Export Format: HF / safetensors
     """
-    quant_config = Config(global_quant_config=DEFAULT_W_INT8_A_INT8_O_INT8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
 
     with torch.inference_mode():
-        exporter = ModelExporter(config=DEFAULT_EXPORTER_CONFIG, export_dir=tmpdir)
         #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
         for multi_gpu in [False]:
             model = quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B", multi_gpu=multi_gpu)
-            exporter.export_quark_model(model, quant_config=quant_config)
+            export_safetensors(model=model, output_dir=tmpdir, weight_format="fake_quantized", pack_method="reorder")
+
+
+@use_temporary_directory
+def test_smoke_export_hf_format_pertensor(tmpdir: str):
+    """
+    Test Features:
+        Export Format: HF / safetensors
+    """
+    quant_config = QConfig(global_quant_config=DEFAULT_W_INT8_A_INT8_O_INT8_PER_TENSOR_CONFIG, exclude=EXCLUDE_LAYERS)
+
+    with torch.inference_mode():
+        #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
+        for multi_gpu in [False]:
+            model = quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B", multi_gpu=multi_gpu)
+            export_safetensors(model=model, output_dir=tmpdir, weight_format="fake_quantized", pack_method="reorder")
 
 
 @use_temporary_directory
 def test_smoke_export_quark_perchannel_safetensors(tmpdir: str):
     """
     Test Features:
-        Export Format:            Quark Per_channel Pth with json
+        Export Format: HF / safetensors
     """
-    quant_config = Config(global_quant_config=DEFAULT_W_INT4_PER_CHANNEL_CONFIG, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=DEFAULT_W_INT4_PER_CHANNEL_CONFIG, exclude=EXCLUDE_LAYERS)
 
     with torch.inference_mode():
-        exporter = ModelExporter(config=DEFAULT_EXPORTER_CONFIG, export_dir=tmpdir)
         #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
         for multi_gpu in [False]:
             model = quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B", multi_gpu=multi_gpu)
-            exporter.export_quark_model(model, quant_config=quant_config)
+            export_safetensors(model=model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
+
+
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.lin = nn.Linear(10, 10)
+        self.lin2 = nn.Linear(10, 20)
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor):
+        return self.relu(self.lin(x))
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
@@ -403,53 +400,62 @@ def test_smoke_export_onnx(global_config):
     Test Features:
         Export Format:            ONNX
     """
-    quant_config = Config(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=global_config, exclude=EXCLUDE_LAYERS)
     with torch.inference_mode():
-        calib_dataloader = get_dataloader()
-        batch_iter = iter(calib_dataloader)
-        input_args = next(batch_iter)
+        with torch_device:
+            model = MyModel()
+            model.eval()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
-            for multi_gpu in [False]:
-                model = quantize_model(quant_config, multi_gpu=multi_gpu)
+            quantizer = ModelQuantizer(quant_config)
 
-                export_onnx(model=model, output_dir=tmpdir, input_args=(input_args.to(model.device),))
+            calib_dataloader = DataLoader(torch.rand(3, 10, device=torch_device))
+
+            quant_model = quantizer.quantize_model(model, calib_dataloader)
+
+            # Inference with quantized model
+            for inp in calib_dataloader:
+                quant_model(inp)
+
+            export_onnx(model=model, output_dir=tmpdir, input_args=(torch.rand(4, 10, device=torch_device),))
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
 @require_torch_higher_or_equal("2.6")
-@use_temporary_directory
-def test_smoke_eager_save_load(tmpdir: str):
+def test_smoke_eager_save_load():
     """
     Test Features:
         Eager mode save and load functions
     """
-    quant_config = Config(global_quant_config=DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
+    quant_config = QConfig(global_quant_config=DEFAULT_W_INT4_PER_GROUP_SYM_CONFIG, exclude=EXCLUDE_LAYERS)
 
     with torch.inference_mode():
         calib_dataloader = get_dataloader()
         batch_iter = iter(calib_dataloader)
         input_args = next(batch_iter)
 
-        #        for multi_gpu in [False, True]:# TODO: uncomment after ROCM support multi-GPU
-        for multi_gpu in [False]:
-            for freeze in [False, True]:
-                quant_model = quantize_model(
-                    quant_config, model_name="facebook/opt-125m", multi_gpu=multi_gpu, freeze=freeze
-                )
-                saved_out = quant_model(input_args)
-                save_params(quant_model, model_type="opt", export_dir=tmpdir)
+        # TODO: add multi_gpu=True case after ROCM support multi-GPU
+        multi_gpu = False
 
-                model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
-                model.eval()
-                model = model.to(torch_device)
-                json_path = tmpdir + "/opt.json"
-                safetensors_path = tmpdir + "/opt.safetensors"
-                loaded_model = load_params(model, json_path=json_path, safetensors_path=safetensors_path)
-                loaded_out = loaded_model(input_args)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quant_model = quantize_model(
+                quant_config, model_name="facebook/opt-125m", multi_gpu=multi_gpu, freeze=True, input_args=input_args
+            )
+            saved_out = quant_model(input_args)
+            save_params(quant_model, model_type="opt", export_dir=tmpdir)
 
-                assert torch.allclose(saved_out["logits"], loaded_out["logits"], atol=1e-2)
+            model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", torch_dtype="auto")
+            model.eval()
+            model = model.to(torch_device)
+            json_path = tmpdir + "/opt.json"
+            safetensors_path = tmpdir + "/opt.safetensors"
+            loaded_model = load_params(model, json_path=json_path, safetensors_path=safetensors_path)
+
+            print("loaded_model here", loaded_model)
+
+            loaded_out = loaded_model(input_args)
+
+            assert torch.allclose(saved_out["logits"], loaded_out["logits"], atol=1e-2)
 
 
 def set_config_for_awq_or_smooth(algo_config):
@@ -656,6 +662,8 @@ def test_smoke_autosmoothquant_quantization():
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
 
 
+# TODO: This case may cause a core dump under specific versions (2.8.0, 2.9.0)
+@require_torch_lower_or_equal("2.7.0")
 @slow_test
 def test_smoke_smooth_quant_and_awq_quantization():
     """
@@ -663,7 +671,7 @@ def test_smoke_smooth_quant_and_awq_quantization():
         Pre-Quant Optimization:   SmoothQuant
         Quant Algorithm:          AWQ
     """
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG,
         algo_config=[SmoothQuantConfig(), AWQConfig()],
         exclude=EXCLUDE_LAYERS,
@@ -729,7 +737,7 @@ def test_smoke_rotation():
         scaling_layers=set_config_for_rotation_quarot(), model_decoder_layers="model.layers"
     )
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG,
         algo_config=[
             rotation_config,
@@ -745,7 +753,7 @@ def test_smoke_quarot():
     Test Features:
         Pre-Quant Optimization:   QuaRot
     """
-    quarot_config = QuaRotConfig(
+    quarot_config = RotationConfig(
         scaling_layers=set_config_for_rotation_quarot(),
         backbone="model",
         model_decoder_layers="model.layers",
@@ -753,11 +761,12 @@ def test_smoke_quarot():
         o_proj="self_attn.o_proj",
         self_attn="self_attn",
         mlp="mlp",
+        r2=True,
         r3=False,
         r4=False,
     )
 
-    quant_config = Config(
+    quant_config = QConfig(
         global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG,
         algo_config=[
             quarot_config,

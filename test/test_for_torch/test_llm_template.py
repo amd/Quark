@@ -14,11 +14,12 @@ from quark.torch.quantization.config.config import (
     GPTQConfig,
     Int4PerGroupSpec,
     Int8PerTensorSpec,
-    QuantizationConfig,
+    QLayerConfig,
+    QronosConfig,
     RotationConfig,
     SmoothQuantConfig,
 )
-from quark.torch.quantization.config.type import Dtype
+from quark.torch.quantization.config.type import Dtype, QSchemeType
 
 
 def test_llm_template_basic_initialization():
@@ -34,10 +35,12 @@ def test_llm_template_basic_initialization():
     assert template.kv_layers_name == ["*k_proj", "*v_proj"]
     assert template.q_layer_name == "*q_proj"
     assert template.exclude_layers_name == ["lm_head"]
-    assert template.awq_config is None
-    assert template.gptq_config is None
-    assert template.smoothquant_config is None
-    assert template.rotation_config is None
+    # Check algo_config dictionary structure
+    assert isinstance(template.algo_config, dict)
+    assert template.algo_config["awq"] is None
+    assert template.algo_config["gptq"] is None
+    assert template.algo_config["smoothquant"] is None
+    assert template.algo_config["rotation"] is None
 
 
 def test_register_template_method():
@@ -103,13 +106,18 @@ def test_supported_schemes():
     template = LLMTemplate.get("llama")
     expected_schemes = [
         "fp8",
+        "ptpc_fp8",
         "int4_wo_32",
         "int4_wo_64",
         "int4_wo_128",
+        "int4_wo_per_channel",
         "uint4_wo_32",
         "uint4_wo_64",
         "uint4_wo_128",
+        "uint4_wo_per_channel",
         "mxfp4",
+        "mxfp4_mxfp6_e2m3",
+        "mxfp4_fp8",
         "mxfp6_e3m2",
         "mxfp6_e2m3",
         "mx6",
@@ -123,10 +131,13 @@ def test_supported_schemes():
         "int4_wo_32",
         "int4_wo_64",
         "int4_wo_128",
+        "int4_wo_per_channel",
         "uint4_wo_32",
         "uint4_wo_64",
         "uint4_wo_128",
+        "uint4_wo_per_channel",
         "fp8",
+        "ptpc_fp8",
         "mxfp4",
         "mxfp6_e3m2",
         "mxfp6_e2m3",
@@ -173,6 +184,19 @@ def test_int4_wo_128_scheme():
     assert config.global_quant_config.input_tensors is None
 
 
+def test_int4_wo_per_channel_scheme():
+    """Test INT4 weight-only per-channel quantization scheme"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("int4_wo_per_channel")
+    assert isinstance(config, Config)
+    assert config.global_quant_config.weight is not None
+    assert config.global_quant_config.weight.dtype == Dtype.int4
+    assert config.global_quant_config.weight.group_size is None
+    assert config.global_quant_config.input_tensors is None
+    assert config.global_quant_config.weight.symmetric
+    assert config.global_quant_config.weight.qscheme.value == "per_channel"
+
+
 def test_uint4_wo_32_scheme():
     """Test UINT4 weight-only quantization scheme with group size 32"""
     template = LLMTemplate.get("llama")
@@ -206,6 +230,19 @@ def test_uint4_wo_128_scheme():
     assert config.global_quant_config.input_tensors is None
 
 
+def test_uint4_wo_per_channel_scheme():
+    """Test UINT4 weight-only per-channel quantization scheme"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("uint4_wo_per_channel")
+    assert isinstance(config, Config)
+    assert config.global_quant_config.weight is not None
+    assert config.global_quant_config.weight.dtype == Dtype.uint4
+    assert config.global_quant_config.weight.group_size is None
+    assert config.global_quant_config.input_tensors is None
+    assert not config.global_quant_config.weight.symmetric
+    assert config.global_quant_config.weight.qscheme.value == "per_channel"
+
+
 def test_fp8_scheme():
     """Test FP8 quantization scheme"""
     template = LLMTemplate.get("llama")
@@ -215,6 +252,25 @@ def test_fp8_scheme():
     assert config.global_quant_config.input_tensors is not None
     assert config.global_quant_config.weight.dtype == Dtype.fp8_e4m3
     assert config.global_quant_config.input_tensors.dtype == Dtype.fp8_e4m3
+
+
+def test_ptpc_fp8_scheme():
+    """Test PTPC FP8 quantization scheme (Per-Token Per-Channel)"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("ptpc_fp8")
+    assert isinstance(config, Config)
+    assert config.global_quant_config.weight is not None
+    assert config.global_quant_config.input_tensors is not None
+    # Weight: FP8 Per-Channel Static
+    assert config.global_quant_config.weight.qscheme == QSchemeType.per_channel
+    assert config.global_quant_config.weight.dtype == Dtype.fp8_e4m3
+    assert config.global_quant_config.weight.is_dynamic is False
+    assert config.global_quant_config.weight.ch_axis == 0
+    # Activation: FP8 Per-Token Dynamic
+    assert config.global_quant_config.input_tensors.qscheme == QSchemeType.per_channel
+    assert config.global_quant_config.input_tensors.dtype == Dtype.fp8_e4m3
+    assert config.global_quant_config.input_tensors.is_dynamic is True
+    assert config.global_quant_config.input_tensors.ch_axis == 1
 
 
 def test_mxfp4_scheme():
@@ -311,6 +367,20 @@ def test_gptq_algorithm():
     assert config.algo_config[0].name == "gptq"
 
 
+def test_qronos_algorithm():
+    """Test Qronos algorithm with custom configs"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("int4_wo_128", algorithm="qronos")
+    assert isinstance(config, Config)
+    assert len(config.algo_config) > 0
+    assert isinstance(config.algo_config[0], QronosConfig)
+
+    qronos_config = config.algo_config[0]
+    assert qronos_config.name == "qronos"
+    assert hasattr(qronos_config, "inside_layer_modules")
+    assert hasattr(qronos_config, "model_decoder_layers")
+
+
 def test_smoothquant_algorithm():
     """Test SmoothQuant algorithm with custom configs"""
     template = LLMTemplate.get("llama")
@@ -338,6 +408,22 @@ def test_rotation_algorithm():
     assert len(config.algo_config) > 0
     assert isinstance(config.algo_config[0], RotationConfig)
     assert config.algo_config[0].name == "rotation"
+
+
+def test_algorithm_config_missing_raises_error():
+    """Test that missing algorithm configs raise appropriate errors"""
+    # Create a template without any algorithm configs
+    template = LLMTemplate(
+        model_type="test_missing_configs",
+        kv_layers_name=["*k_proj", "*v_proj"],
+        q_layer_name="*q_proj",
+        exclude_layers_name=["lm_head"],
+        # No algorithm configs provided
+    )
+
+    # Test that missing Qronos config raises error
+    with pytest.raises(ValueError, match="No Qronos config provided for test_missing_configs"):
+        template.get_config("int4_wo_128", algorithm="qronos")
 
 
 def test_autosmoothquant_algorithm_fallback():
@@ -426,7 +512,7 @@ def test_unsupported_attention_scheme():
 
 
 def test_layer_config_with_quantization_config():
-    """Test per-layer config with QuantizationConfig objects"""
+    """Test per-layer config with QLayerConfig objects"""
     template = LLMTemplate.get("llama")
 
     per_layer_config = {"layer1": "int4_wo_64", "layer2": "int4_wo_128"}
@@ -527,31 +613,35 @@ def test_with_llm_template_all_params():
 def test_builtin_templates_exist():
     """Test that all expected built-in templates exist"""
     expected_models = [
-        "llama",
-        "mllama",
-        "llama4",
-        "opt",
-        "qwen2_moe",
-        "qwen2",
-        "qwen",
         "chatglm",
-        "phi3",
-        "phi",
-        "mistral",
-        "mixtral",
-        "gptj",
-        "grok-1",
         "cohere",
         "dbrx",
+        "deepseek",
         "deepseek_v2",
         "deepseek_v3",
-        "deepseek",
-        "olmo",
         "gemma2",
-        "gemma3_text",
         "gemma3",
-        "instella",
+        "gemma3_text",
+        "gptj",
         "gpt_oss",
+        "granitemoehybrid",
+        "grok-1",
+        "instella",
+        "llama",
+        "llama4",
+        "mistral",
+        "mixtral",
+        "mllama",
+        "olmo",
+        "opt",
+        "phi",
+        "phi3",
+        "qwen",
+        "qwen2",
+        "qwen2_moe",
+        "qwen3",
+        "qwen3_moe",
+        "qwen3_vl_moe",
     ]
 
     available_models = LLMTemplate.list_available()
@@ -580,7 +670,14 @@ def test_template_with_algorithm_configs():
     custom_autosmoothquant = AutoSmoothQuantConfig(name="autosmoothquant", scaling_layers=[], compute_scale_loss="MSE")
     custom_rotation = RotationConfig(
         name="rotation",
+        backbone="model",
         model_decoder_layers="test.layers",
+        v_proj="self_attn.v_proj",
+        o_proj="self_attn.o_proj",
+        self_attn="self_attn",
+        mlp="mlp",
+        r1=True,
+        r2=False,
         scaling_layers={
             "first_layer": [
                 {
@@ -626,6 +723,14 @@ def test_template_with_algorithm_configs():
         rotation_config=custom_rotation,
     )
 
+    # Verify algo_config dictionary structure
+    assert isinstance(template.algo_config, dict)
+    assert template.algo_config["awq"] is custom_awq
+    assert template.algo_config["gptq"] is custom_gptq
+    assert template.algo_config["smoothquant"] is custom_smoothquant
+    assert template.algo_config["autosmoothquant"] is custom_autosmoothquant
+    assert template.algo_config["rotation"] is custom_rotation
+
     # Test AWQ custom config
     config = template.get_config("int4_wo_128", algorithm="awq")
     assert config.algo_config[0] is custom_awq
@@ -657,12 +762,12 @@ def test_multiple_layers_kv_cache():
     )
 
     config = Config(
-        global_quant_config=QuantizationConfig(
+        global_quant_config=QLayerConfig(
             weight=Int4PerGroupSpec(
                 ch_axis=-1, group_size=32, is_dynamic=False, scale_type="float"
             ).to_quantization_spec(),
             input_tensors=Int4PerGroupSpec(
-                ch_axis=-1, group_size=32, is_dynamic=False, scale_type="float"
+                ch_axis=-1, group_size=32, is_dynamic=True, scale_type="float"
             ).to_quantization_spec(),
         )
     )
@@ -677,10 +782,8 @@ def test_multiple_layers_kv_cache():
 def test_register_scheme():
     """Test register scheme"""
     template = LLMTemplate.get("llama")
-    quant_spec = Int8PerTensorSpec(
-        observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
-    ).to_quantization_spec()
-    template.register_scheme("int8_wo", QuantizationConfig(weight=quant_spec))
+    quant_spec = Int8PerTensorSpec(is_dynamic=False).to_quantization_spec()
+    template.register_scheme("int8_wo", QLayerConfig(weight=quant_spec))
     assert "int8_wo" in template._SUPPORTED_SCHEMES
     assert template.get_config("int8_wo") is not None
     # Clean up
@@ -690,5 +793,25 @@ def test_register_scheme():
         template.get_config("int8_wo")
 
 
-if __name__ == "__main__":
-    test_multiple_layers_kv_cache()
+def test_get_config_with_algo_configs():
+    """Test get_config with algo_configs parameter"""
+    template = LLMTemplate.get("llama")
+
+    custom_awq_config = AWQConfig(
+        name="awq",
+        scaling_layers=[],
+        model_decoder_layers="custom.layers",
+    )
+
+    # Get config with custom algo_configs
+    config = template.get_config("int4_wo_128", algorithm="awq", algo_configs={"awq": custom_awq_config})
+
+    # Verify the custom config is used
+    assert config.algo_config is not None
+    assert len(config.algo_config) == 1
+    assert config.algo_config[0] is custom_awq_config
+    assert config.algo_config[0].model_decoder_layers == "custom.layers"
+
+    # Verify that the template's original config is not modified
+    default_config = template.get_config("int4_wo_128", algorithm="awq")
+    assert default_config.algo_config[0] is not custom_awq_config

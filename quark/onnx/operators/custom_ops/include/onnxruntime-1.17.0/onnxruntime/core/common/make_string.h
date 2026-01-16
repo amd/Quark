@@ -29,16 +29,16 @@ namespace onnxruntime {
 
 namespace detail {
 
-inline void MakeStringImpl(std::ostringstream & /*ss*/) noexcept {}
+inline void MakeStringImpl(std::ostringstream& /*ss*/) noexcept {}
 
 template <typename T>
-inline void MakeStringImpl(std::ostringstream &ss, const T &t) noexcept {
+inline void MakeStringImpl(std::ostringstream& ss, const T& t) noexcept {
   ss << t;
 }
 
 template <typename T, typename... Args>
 inline void MakeStringImpl(
-  std::ostringstream &ss, const T &t, const Args &...args
+  std::ostringstream& ss, const T& t, const Args&... args
 ) noexcept {
   MakeStringImpl(ss, t);
   MakeStringImpl(ss, args...);
@@ -46,7 +46,7 @@ inline void MakeStringImpl(
 
 // see MakeString comments for explanation of why this is necessary
 template <typename... Args>
-inline std::string MakeStringImpl(const Args &...args) noexcept {
+inline std::string MakeStringImpl(const Args&... args) noexcept {
   std::ostringstream ss;
   MakeStringImpl(ss, args...);
   return ss.str();
@@ -73,7 +73,7 @@ struct if_char_array_make_ptr<T (&)[N]> {
   using element_type =
     typename std::remove_const<typename std::remove_extent<T>::type>::type;
   using type = typename std::conditional<
-    std::is_same<char, element_type>::value, T *, T (&)[N]>::type;
+    std::is_same<char, element_type>::value, T*, T (&)[N]>::type;
 };
 
 // helper to make usage simpler in MakeString
@@ -86,7 +86,7 @@ using if_char_array_make_ptr_t = typename if_char_array_make_ptr<T>::type;
  * This version uses the current locale.
  */
 template <typename... Args>
-std::string MakeString(const Args &...args) {
+std::string MakeString(const Args&... args) {
   // We need to update the types from the MakeString template instantiation to
   // decay any char[n] to char*.
   //   e.g. MakeString("in", "out") goes from MakeString<char[2], char[3]> to
@@ -104,7 +104,7 @@ std::string MakeString(const Args &...args) {
   // a separate step.
 
   return detail::MakeStringImpl(
-    detail::if_char_array_make_ptr_t<Args const &>(args)...
+    detail::if_char_array_make_ptr_t<Args const&>(args)...
   );
 }
 
@@ -113,7 +113,7 @@ std::string MakeString(const Args &...args) {
  * This version uses std::locale::classic().
  */
 template <typename... Args>
-std::string MakeStringWithClassicLocale(const Args &...args) {
+std::string MakeStringWithClassicLocale(const Args&... args) {
   std::ostringstream ss;
   ss.imbue(std::locale::classic());
   detail::MakeStringImpl(ss, args...);
@@ -122,15 +122,15 @@ std::string MakeStringWithClassicLocale(const Args &...args) {
 
 // MakeString versions for already-a-string types.
 
-inline std::string MakeString(const std::string &str) { return str; }
+inline std::string MakeString(const std::string& str) { return str; }
 
-inline std::string MakeString(const char *cstr) { return cstr; }
+inline std::string MakeString(const char* cstr) { return cstr; }
 
-inline std::string MakeStringWithClassicLocale(const std::string &str) {
+inline std::string MakeStringWithClassicLocale(const std::string& str) {
   return str;
 }
 
-inline std::string MakeStringWithClassicLocale(const char *cstr) {
+inline std::string MakeStringWithClassicLocale(const char* cstr) {
   return cstr;
 }
 

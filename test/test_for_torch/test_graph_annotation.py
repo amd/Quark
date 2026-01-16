@@ -29,12 +29,12 @@ from quark.torch.quantization.nn.modules.quantize_pool import QuantAdaptiveAvgPo
 from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d
-from quark.torch.quantization.config.config import QuantizationSpec, QuantizationConfig, Config
+from quark.torch.quantization.config.config import QTensorConfig, QLayerConfig, QConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
 
-INT8_PER_TENSOR_SPEC = QuantizationSpec(
+INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
     qscheme=QSchemeType.per_tensor,
     observer_cls=PerTensorMinMaxObserver,
@@ -43,13 +43,13 @@ INT8_PER_TENSOR_SPEC = QuantizationSpec(
     round_method=RoundType.half_even,
     is_dynamic=False,
 )
-quant_config = QuantizationConfig(
+quant_config = QLayerConfig(
     input_tensors=INT8_PER_TENSOR_SPEC,
     output_tensors=INT8_PER_TENSOR_SPEC,
     weight=INT8_PER_TENSOR_SPEC,
     bias=INT8_PER_TENSOR_SPEC,
 )
-quant_config = Config(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
+quant_config = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
 
 
 def onnx_contains_op_num(model_path: str, target_op_type: str) -> int:
@@ -268,8 +268,8 @@ def test_annotation_element_arithmetic(tmpdir: str):
     fp_out = float_model(example_inputs[0])
     graph_model = torch.export.export_for_training(float_model, example_inputs).module()
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -281,7 +281,7 @@ def test_annotation_element_arithmetic(tmpdir: str):
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [32, 0]
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         out_onnx_path = tmpdir + "/max_pool_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
     torch.cuda.empty_cache()
 
 
@@ -401,13 +401,15 @@ def test_avg_pooling_annotation(tmpdir: str):
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [quant_inputs])
-        out_2 = quantized_model.eval()(*example_inputs)
+
+        _ = quantized_model.eval()(*example_inputs)
+
         # if each_quant_config == emp_quant_config:
         #     assert [torch.allclose(x[0], x[1]) for x in zip(fp_out, out_2)]
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [15, 0]
@@ -417,7 +419,7 @@ def test_avg_pooling_annotation(tmpdir: str):
         assert fx_contains_op_num(opt_graph_module, is_adaptive_avg_pool2d_node) == 2
         assert fx_contain_module_num(opt_graph_module, QuantAdaptiveAvgPool2d) == 2
         out_onnx_path = tmpdir + "/avg_pool_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "GlobalAveragePool") == 2
         assert onnx_contains_op_num(out_onnx_path, "Mul") == 4
         assert onnx_contains_op_num(out_onnx_path, "AveragePool") == 4
@@ -458,8 +460,8 @@ def test_max_pooling_annotation(tmpdir: str):
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -472,7 +474,7 @@ def test_max_pooling_annotation(tmpdir: str):
         opt_graph_module(*example_inputs)
         assert fx_contains_op_num(opt_graph_module, is_max_pool2d_node) == 2
         out_onnx_path = tmpdir + "/max_pool_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "MaxPool") == 2
     torch.cuda.empty_cache()
 
@@ -507,8 +509,8 @@ def test_sum_annotation(tmpdir: str):
     assert torch.allclose(fp_out, out1)
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -521,7 +523,7 @@ def test_sum_annotation(tmpdir: str):
         opt_graph_module(*example_inputs)
         assert fx_contains_op_num(opt_graph_module, is_sum_node) == 1
         out_onnx_path = tmpdir + "/max_pool_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
     torch.cuda.empty_cache()
 
 
@@ -578,8 +580,8 @@ def test_hardtanh_annotation(tmpdir: str):
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -593,7 +595,7 @@ def test_hardtanh_annotation(tmpdir: str):
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(*example_inputs)
         out_onnx_path = tmpdir + "/hardtanh_relu_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "Clip") == 5
         assert onnx_contains_op_num(out_onnx_path, "HardSigmoid") == 2
         assert onnx_contains_op_num(out_onnx_path, "Relu") == 4
@@ -630,8 +632,8 @@ def test_pixel_shuffle_annotation(tmpdir: str):
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
 
     # ========== test quant pipeline===============
-    emp_config = QuantizationConfig()
-    emp_quant_config = Config(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
+    emp_config = QLayerConfig()
+    emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
         graph_model = torch.export.export_for_training(float_model, example_inputs).module()
@@ -640,12 +642,19 @@ def test_pixel_shuffle_annotation(tmpdir: str):
         if each_quant_config == emp_quant_config:
             torch.allclose(out1, out_2)
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [5, 0]
+
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         opt_graph_module(*example_inputs)
+
         out_onnx_path = tmpdir + "/pixel_shuffle_annotate.onnx"
-        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path)
+        torch.onnx.export(opt_graph_module, example_inputs, out_onnx_path, dynamo=False)
         assert onnx_contains_op_num(out_onnx_path, "DepthToSpace") == 1
-        assert onnx_contains_op_num(out_onnx_path, "QuantizeLinear") in [5, 0]
+
+        if each_quant_config == emp_quant_config:
+            assert onnx_contains_op_num(out_onnx_path, "QuantizeLinear") == 0
+        else:
+            assert onnx_contains_op_num(out_onnx_path, "QuantizeLinear") == 5
+
     torch.cuda.empty_cache()
 
 

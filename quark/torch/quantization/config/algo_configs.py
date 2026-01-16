@@ -1,13 +1,14 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Union
 
 from quark.torch.quantization.config.config import (
     AutoSmoothQuantConfig,
     AWQConfig,
+    GPTAQConfig,
     GPTQConfig,
+    QronosConfig,
     RotationConfig,
     SmoothQuantConfig,
 )
@@ -117,6 +118,7 @@ AWQ_MAP = {
         ],
         model_decoder_layers="model.layers",
     ),
+    # TODO qwen3_moe: AWQConfig
     "qwen2": AWQConfig(
         scaling_layers=[
             {
@@ -334,12 +336,18 @@ AWQ_MAP = {
                 "module2inspect": "self_attn",
             },
             {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "granitemoehybrid": AWQConfig(
+        scaling_layers=[
             {
-                "prev_op": "post_attention_layernorm",
-                "layers": ["mlp.gate_proj", "mlp.up_proj"],
-                "inp": "mlp.gate_proj",
-                "module2inspect": "mlp",
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
             },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
         ],
         model_decoder_layers="model.layers",
     ),
@@ -494,6 +502,228 @@ GPTQ_MAP = {
         ],
         model_decoder_layers="model.layers",
         desc_act=True,
+    ),
+    "grok-1": GPTQConfig(
+        inside_layer_modules=[
+            "attn.k_proj",
+            "attn.v_proj",
+            "attn.q_proj",
+            "attn.o_proj",
+            "*.linear",
+            "*.linear_1",
+            "*.linear_v",
+        ],
+        model_decoder_layers="model.layers",
+        block_size=128,
+        damp_percent=0.01,
+    ),
+    "gemma2": GPTQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "granitemoehybrid": GPTQConfig(
+        inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.o_proj"],
+        model_decoder_layers="model.layers",
+    ),
+    "gemma3_text": GPTQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "gemma3": GPTQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+        ],
+        model_decoder_layers="model.language_model.layers",
+    ),
+    "gpt_oss": GPTQConfig(
+        inside_layer_modules=[
+            "self_attn.q_proj",
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.o_proj",
+            "gate_up_proj",
+            "down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "olmo": GPTQConfig(
+        inside_layer_modules=["self_attn.v_proj", "self_attn.o_proj", "mlp.up_proj", "mlp.down_proj"],
+        model_decoder_layers="model.layers",
+    ),
+}
+
+GPTAQ_MAP = {
+    "llama": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        block_size=128,
+    ),
+    "qwen": GPTAQConfig(
+        inside_layer_modules=["attn.c_attn", "mlp.w2", "mlp.w1", "mlp.c_proj"], model_decoder_layers="transformer.h"
+    ),
+    "opt": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.out_proj",
+            "fc1",
+            "fc2",
+        ],
+        model_decoder_layers="model.decoder.layers",
+    ),
+    "phi": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.dense",
+            "mlp.fc1",
+            "mlp.fc2",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "mistral": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "deepseek": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.q_a_proj",
+            "self_attn.q_b_proj",
+            "self_attn.kv_a_proj_with_mqa",
+            "self_attn.kv_b_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "qwen2": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "phi3": GPTAQConfig(
+        inside_layer_modules=["self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj"],
+        model_decoder_layers="model.layers",
+    ),
+    "mixtral": GPTAQConfig(
+        inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.o_proj"],
+        model_decoder_layers="model.layers",
+    ),
+    "gptj": GPTAQConfig(
+        inside_layer_modules=["attn.q_proj", "attn.k_proj", "attn.v_proj", "mlp.fc_in", "attn.out_proj", "mlp.fc_out"],
+        model_decoder_layers="transformer.h",
+    ),
+    "chatglm": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attention.query_key_value",
+            "self_attention.dense",
+            "mlp.dense_h_to_4h",
+            "mlp.dense_4h_to_h",
+        ],
+        model_decoder_layers="transformer.encoder.layers",
+    ),
+    "llama4": GPTAQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+        ],
+        model_decoder_layers="language_model.model.layers",
+    ),
+    "deepseek_v2": GPTAQConfig(
+        inside_layer_modules=[
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "deepseek_v3": GPTAQConfig(
+        inside_layer_modules=[
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "granitemoehybrid": GPTAQConfig(
+        inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.o_proj"],
+        model_decoder_layers="model.layers",
     ),
 }
 
@@ -711,6 +941,280 @@ SQ_MAP = {
         ],
         model_decoder_layers="model.layers",
     ),
+    "granitemoehybrid": SmoothQuantConfig(
+        alpha=0.8,
+        scale_clamp_min=1e-3,
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "gpt_oss": SmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "gemma2": SmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+            {
+                "prev_op": "pre_feedforward_layernorm",
+                "layers": ["mlp.gate_proj", "mlp.up_proj"],
+                "inp": "mlp.gate_proj",
+                "module2inspect": "mlp",
+            },
+            {"prev_op": "mlp.up_proj", "layers": ["mlp.down_proj"], "inp": "mlp.down_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "gemma3": SmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+            {
+                "prev_op": "pre_feedforward_layernorm",
+                "layers": ["mlp.gate_proj", "mlp.up_proj"],
+                "inp": "mlp.gate_proj",
+                "module2inspect": "mlp",
+            },
+            {"prev_op": "mlp.up_proj", "layers": ["mlp.down_proj"], "inp": "mlp.down_proj"},
+        ],
+        model_decoder_layers="model.language_model.layers",
+    ),
+    "gemma3_text": SmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+            {
+                "prev_op": "pre_feedforward_layernorm",
+                "layers": ["mlp.gate_proj", "mlp.up_proj"],
+                "inp": "mlp.gate_proj",
+                "module2inspect": "mlp",
+            },
+            {"prev_op": "mlp.up_proj", "layers": ["mlp.down_proj"], "inp": "mlp.down_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "olmo": SmoothQuantConfig(
+        scaling_layers=[
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+            {"prev_op": "mlp.up_proj", "layers": ["mlp.down_proj"], "inp": "mlp.down_proj"},
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "grok-1": SmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "pre_attn_norm",
+                "layers": ["attn.q_proj", "attn.k_proj", "attn.v_proj"],
+                "inp": "attn.q_proj",
+                "module2inspect": "attn",
+                "has_kwargs": True,
+            },
+            {"prev_op": "attn.v_proj", "layers": ["attn.o_proj"], "inp": "attn.o_proj", "has_kwargs": False},
+            {
+                "prev_op": "pre_moe_norm",
+                "layers": ["moe_block.experts.0.linear_v", "moe_block.experts.0.linear"],
+                "inp": "moe_block",
+                "module2inspect": "moe_block",
+                "has_kwargs": False,
+            },
+        ]
+        + [
+            {
+                "prev_op": f"moe_block.experts.{i}.linear",
+                "layers": [f"moe_block.experts.{i}.linear_1"],
+                "inp": f"moe_block.experts.{i}.linear_1",
+                "has_kwargs": False,
+            }
+            for i in range(8)
+        ],
+        model_decoder_layers="model.layers",
+    ),
+}
+
+
+# Qronos configs, these are the default configs for each model, can be updated by user
+QRONOS_MAP = {
+    "llama": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        block_size=128,
+    ),
+    "qwen": QronosConfig(
+        inside_layer_modules=["attn.c_attn", "mlp.w2", "mlp.w1", "mlp.c_proj"], model_decoder_layers="transformer.h"
+    ),
+    "opt": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.out_proj",
+            "fc1",
+            "fc2",
+        ],
+        model_decoder_layers="model.decoder.layers",
+    ),
+    "phi": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.dense",
+            "mlp.fc1",
+            "mlp.fc2",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "mistral": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "deepseek": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.q_a_proj",
+            "self_attn.q_b_proj",
+            "self_attn.kv_a_proj_with_mqa",
+            "self_attn.kv_b_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "qwen2": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+    ),
+    "phi3": QronosConfig(
+        inside_layer_modules=["self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj"],
+        model_decoder_layers="model.layers",
+    ),
+    "mixtral": QronosConfig(
+        inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.o_proj"],
+        model_decoder_layers="model.layers",
+    ),
+    "gptj": QronosConfig(
+        inside_layer_modules=["attn.q_proj", "attn.k_proj", "attn.v_proj", "mlp.fc_in", "attn.out_proj", "mlp.fc_out"],
+        model_decoder_layers="transformer.h",
+    ),
+    "chatglm": QronosConfig(
+        inside_layer_modules=[
+            "self_attention.query_key_value",
+            "self_attention.dense",
+            "mlp.dense_h_to_4h",
+            "mlp.dense_4h_to_h",
+        ],
+        model_decoder_layers="transformer.encoder.layers",
+    ),
+    "llama4": QronosConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+        ],
+        model_decoder_layers="language_model.model.layers",
+        block_size=128,
+    ),
+    "deepseek_v2": QronosConfig(
+        inside_layer_modules=[
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "deepseek_v3": QronosConfig(
+        inside_layer_modules=[
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "mlp.experts.*.up_proj",
+            "mlp.experts.*.gate_proj",
+            "mlp.experts.*.down_proj",
+            "mlp.shared_experts.gate_proj",
+            "mlp.shared_experts.up_proj",
+            "mlp.shared_experts.down_proj",
+        ],
+        model_decoder_layers="model.layers",
+        desc_act=True,
+    ),
+    "granitemoehybrid": QronosConfig(
+        inside_layer_modules=["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj", "self_attn.o_proj"],
+        model_decoder_layers="model.layers",
+    ),
 }
 
 # AutoSmoothQuant configs, these are the default configs for each model
@@ -748,6 +1252,26 @@ AUTOSMOOTHQUANT_MAP = {
         ],
         model_decoder_layers="language_model.model.layers",
         compute_scale_loss="MAE",
+    ),
+    "qwen3_moe": AutoSmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+        ]
+        + [
+            {
+                "prev_op": f"mlp.experts.{i}.up_proj",
+                "layers": [f"mlp.experts.{i}.down_proj"],
+                "inp": f"mlp.experts.{i}.down_proj",
+            }
+            for i in range(128)
+        ],
+        model_decoder_layers="model.layers",
     ),
     "mixtral": AutoSmoothQuantConfig(
         scaling_layers=[
@@ -790,12 +1314,34 @@ AUTOSMOOTHQUANT_MAP = {
         model_decoder_layers="model.layers",
         compute_scale_loss="MAE",
     ),
+    "granitemoehybrid": AutoSmoothQuantConfig(
+        scaling_layers=[
+            {
+                "prev_op": "input_layernorm",
+                "layers": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
+                "inp": "self_attn.q_proj",
+                "module2inspect": "self_attn",
+            },
+            {"prev_op": "self_attn.v_proj", "layers": ["self_attn.o_proj"], "inp": "self_attn.o_proj"},
+        ],
+        model_decoder_layers="model.layers",
+        compute_scale_loss="MAE",
+    ),
 }
 
 # Rotation configs, these are the default configs for each model
 ROTATION_MAP = {
     "llama": RotationConfig(
+        backbone="model",
         model_decoder_layers="model.layers",
+        v_proj="self_attn.v_proj",
+        o_proj="self_attn.o_proj",
+        self_attn="self_attn",
+        mlp="mlp",
+        r1=True,
+        r2=False,
+        r3=False,
+        r4=False,
         scaling_layers={
             "first_layer": [
                 {
@@ -843,7 +1389,16 @@ ROTATION_MAP = {
 
 def get_algo_config(
     algo_type: str, model_type: str
-) -> Union[AWQConfig, GPTQConfig, SmoothQuantConfig, AutoSmoothQuantConfig, RotationConfig, None]:
+) -> (
+    AWQConfig
+    | GPTQConfig
+    | GPTAQConfig
+    | SmoothQuantConfig
+    | AutoSmoothQuantConfig
+    | QronosConfig
+    | RotationConfig
+    | None
+):
     algo_type = algo_type.lower()
 
     if algo_type == "awq":
@@ -855,6 +1410,16 @@ def get_algo_config(
         if model_type not in GPTQ_MAP:
             return None
         return GPTQ_MAP[model_type]
+
+    elif algo_type == "gptaq":
+        if model_type not in GPTAQ_MAP:
+            return None
+        return GPTAQ_MAP[model_type]
+
+    elif algo_type == "qronos":
+        if model_type not in QRONOS_MAP:
+            return None
+        return QRONOS_MAP[model_type]
 
     elif algo_type == "smoothquant":
         if model_type not in SQ_MAP:

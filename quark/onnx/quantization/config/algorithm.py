@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Algorithm Config API for ONNX"""
 
 from abc import ABC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from quark.shares.utils.log import ScreenLogger
 
@@ -18,7 +18,9 @@ class AlgoConfig(ABC):
 
 
 class SmoothQuantConfig(AlgoConfig):
-    """Configuration for Smooth Quant algorithm.
+    """Configuration for the Smooth Quant algorithm, which is originally proposed in the following paper:
+    "Guangxuan Xiao et al., SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models,
+    arXiv:2211.10438, 2022."
 
     SmoothQuant is a PTQ algorithm designed to reduce the accuracy drop when quantizing
     large language models (LLMs), especially for transformer architectures. It tackles
@@ -33,11 +35,8 @@ class SmoothQuantConfig(AlgoConfig):
     attention or MLP, leading to much better accuracy retention. It has proven particularly
     effective for large models such as OPT, BLOOM, and GPT-like architectures under INT8 quantization.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "smooth_quant".
-        alpha (float):  is a parameter in SmoothQuant that controls the trade-off between
-            shifting activation range into weights and preserving the original distribution,
-            enabling optimal balancing for quantization accuracy. Defaults to 0.5.
+    :param float alpha: A parameter in SmoothQuant that controls the trade-off between shifting activation range into weights and preserving the original distribution,
+                        enabling optimal balancing for quantization accuracy. Defaults to 0.5.
     """
 
     def __init__(self, alpha: float = 0.5):
@@ -52,7 +51,9 @@ class SmoothQuantConfig(AlgoConfig):
 
 
 class CLEConfig(AlgoConfig):
-    """Configuration for CLE algorithm.
+    """Configuration for the CLE algorithm, which is originally proposed in the following paper:
+    "Markus Nagel et al., Data-Free Quantization Through Weight Equalization and Bias Correction,
+    arXiv:1906.04721, 2019."
 
     CLE (Cross-Layer Equalization) is a pre-processing technique used in PTQ that improves
     the quantization robustness of deep neural networks by reducing the range imbalance across layers.
@@ -64,28 +65,20 @@ class CLEConfig(AlgoConfig):
     the final output. CLE leverages this property to propagate scale adjustments across consecutive layers,
     typically convolutional or linear layers followed by batch norm or ReLU.
 
-    CLE does not require retraining, and it's particularly effective when applied to networks that have large
+    CLE does not require retraining, and it’s particularly effective when applied to networks that have large
     layer-wise scale imbalances. By smoothing out these differences before quantization, CLE helps
     preserve accuracy and stabilizes quantized inference in a lightweight, calibration-only pipeline.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "cle".
-        cle_balance_method (str): The balance method of CLE. Defaults to "max".
-        cle_steps (int): The steps for CrossLayerEqualization execution. When set to -1, an adaptive
-            CrossLayerEqualization will be conducted. Defaults to 1.
-        cle_weight_threshold (float): The threshold of the scale of the weights when calculating them.
-            Defulats to 0.5.
-        cle_scale_append_bias (bool): Whether the bias be included when calculating the scale of the weights,
-            Defaults to True.
-        cle_scale_use_threshold (bool): Whether use the threshold when calculating the sclae of the wegiths.
-            Defaults to True.
-        cle_total_layer_diff_threshold (float): The threshold represents the sum of mean transformations
-            of CrossLayerEqualization transformations across all layers when utilizing CrossLayerEqualization.
+    :param str cle_balance_method: The balance method of CLE. Defaults to "max".
+    :param int cle_steps: The steps for CrossLayerEqualization execution. When set to -1, an adaptive CrossLayerEqualization will be conducted. Defaults to 1.
+    :param float cle_weight_threshold: The threshold of the scale of the weights when calculating them. Defulats to 0.5.
+    :param bool cle_scale_append_bias: Whether the bias be included when calculating the scale of the weights. Defaults to True.
+    :param bool cle_scale_use_threshold: Whether use the threshold when calculating the scale of the wegiths. Defaults to True.
+    :param float cle_total_layer_diff_threshold: The threshold represents the sum of mean transformations of CrossLayerEqualization transformations across all layers. Defaults to 1.9e-7.
     """
 
     def __init__(
         self,
-        name: str = "cle",
         cle_balance_method: str = "max",
         cle_steps: int = 1,
         cle_weight_threshold: float = 0.5,
@@ -93,7 +86,7 @@ class CLEConfig(AlgoConfig):
         cle_scale_use_threshold: bool = True,
         cle_total_layer_diff_threshold: float = 1.9e-7,
     ) -> None:
-        self.name = name
+        self.name: str = "cle"
         self.cle_balance_method = cle_balance_method
         self.cle_steps = cle_steps
         self.cle_weight_threshold = cle_weight_threshold
@@ -119,13 +112,15 @@ class CLEConfig(AlgoConfig):
 
 
 class BiasCorrectionConfig(AlgoConfig):
-    """Configuration for Bias Correction algorithm.
+    """Configuration for the Bias Correction algorithm, which is originally proposed in the following paper:
+    "Markus Nagel et al., Data-Free Quantization Through Weight Equalization and Bias Correction,
+    arXiv:1906.04721, 2019."
 
     Bias Correction is a PTQ technique designed to reduce the quantization-induced shift in
     a neural network's output by adjusting the bias terms in layers like convolution or linear.
     It computes the difference (bias error) between the original float model and the quantized model outputs
     using a small calibration dataset. It then adjusts the biases of the affected layers so that
-    the quantized model better matches the float model's behavior, particularly at the layer output level.
+    the quantized model better matches the float model’s behavior, particularly at the layer output level.
 
     This method is simple, data-efficient (requiring no retraining), and effective at improving
     accuracy—especially for models that are sensitive to quantization noise, such as those with
@@ -143,7 +138,9 @@ class BiasCorrectionConfig(AlgoConfig):
 
 
 class GPTQConfig(AlgoConfig):
-    """Configuration for GPTQ algorithm.
+    """Configuration for the GPTQ algorithm, which is originally proposed in the following paper:
+    "Elias Frantar et al., GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers,
+    arXiv:2210.17323, 2022."
 
     GPTQ is an efficient PTQ algorithm for compressing LLMs. It quantizes weights layer-by-layer and
     column-by-column within each layer. Crucially, when quantizing one column, it calculates the error and
@@ -153,18 +150,14 @@ class GPTQConfig(AlgoConfig):
     The result is near-original model accuracy at ultra-low precision (e.g., 4-bit) with fast,
     single-GPU quantization. This makes GPTQ a key technique for efficient LLM deployment.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "gptq".
-        bits (int): The quantization bits used in GPTQ. Defaults to 8.
-        block_size (int): The block size in GPTQ determines how many columns of weights will be quantized
-            for one update. Defaults to 128.
-        group_size (int): The group size in GPTQ determines how many columns of weights share one set of
-            scale and zero-point. Defaults is -1.
-        perc_damp (float): Percent of the average Hessian diagonal to use for dampening. Defaults to 0.01.
-        act_order (bool): Whether to re-order Hessian matrix according the values of diag. Defulats to False.
-        per_channel (bool): Whether to perform per-channel quantization in GPTQ. Defaults to False.
-        mse (bool): Whether to use MSE method to do data calibration in GPTQ. Defaults to False.
-        weight_symmetric (bool): Whether to only quantize weights of the model. Defaults to False.
+    :param int bits: The quantization bits used in GPTQ. Defaults to 8.
+    :param int block_size: The block size in GPTQ determines how many columns of weights will be quantized for one update. Defaults to 128.
+    :param int group_size: The group size in GPTQ determines how many columns of weights share one set of scale and zero-point. Defaults is -1.
+    :param float perc_damp: Percent of the average Hessian diagonal to use for dampening. Defaults to 0.01.
+    :param bool act_order: Whether to re-order Hessian matrix according the values of diag. Defulats to False.
+    :param bool per_channel: Whether to perform per-channel quantization in GPTQ. Defaults to False.
+    :param bool mse: Whether to use MSE method to do data calibration in GPTQ. Defaults to False.
+    :param bool weight_symmetric: Whether to only quantize weights of the model. Defaults to True.
     """
 
     def __init__(
@@ -214,7 +207,7 @@ class GPTQConfig(AlgoConfig):
 
 
 class AutoMixprecisionConfig(AlgoConfig):
-    """Configuration for GPTQ algorithm.
+    """Configuration for the automatic mixed precision.
 
     Mixed precision is a highly effective technique in the field of quantization. When low-bit quantization
     leads to poor accuracy, quantizing part of the tensors or layers with higher bit-width can often
@@ -224,41 +217,33 @@ class AutoMixprecisionConfig(AlgoConfig):
     low-bit quantization errors and replace them with higher-bit quantization, thereby enhancing the
     final model performance.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "auto_mixprecision".
-        data_size (int): The size of the data used for mix-precision. Defaults to 10000000.
-        target_op_type (Tuple[str, ...]): The user defined op type set for mix-precision. Defaults to (‘Conv', ‘ConvTranspose', ‘Gemm', ‘MatMul').
-        target_quant_type (QuantType): Activation data type to be mixed in the model if 'act_target_quant_type'
-            is not given. Error will be raised if 'target_quant_type', 'act_target_quant_type' and 'weight_target_quant_type' are not given.
-        act_target_quant_type (QuantType): Activation data type to be mixed in the model. If both 'act_target_quant_type'
-            and 'weight_target_quant_type' are not specified, the 'act_target_quant_type' will be same as 'target_quant_type'.
-            If only 'act_target_quant_type' is not specified, it will be the original activation_type.
-        weight_target_quant_type (QuantType): Weight data type to be mixed in the model. If both 'act_target_quant_type'
-            and 'weight_target_quant_type' are not specified, the 'weight_target_quant_type' will be same as 'target_quant_type'.
-            If only 'weight_target_quant_type' is not specified, it will be the original weight_type.
-        bias_target_quant_type (QuantType): Bias data type to be mixed in the model. If 'bias_target_quant_type'
-            is not specified and Int32Bias is True, the 'bias_target_quant_type' will be int32. If 'bias_target_quant_type'
-            is not specified and Int32Bias is False, the 'bias_target_quant_type' will be same as 'weight_target_quant_type'.
-        dual_quant_nodes (bool): Some backend compilers require that two types of quantization nodes exist
-            simultaneously on the tensors which connect two different precision nodes, for example,
-            they require the tensor that connects BFP16 Conv and BF16 Reshape has a BFP node and a QDQ pair both.
-            Defaults to False.
-        output_index (int): The index of model output to be calculated for loss. Defaults to 0.
-        l2_target (float): The L2 loss will be no larger than the 'l2_target'. Defaults to 0.5.
-        top1_acc_target (Optional[float]): he Top1 accuracy loss will be no larger than the 'top1_acc_target'.
-        evaluate_function (fUNCTION):  The function to measure top1 accuracy loss. Input of the function is
-            model output(numpy tensor), output of the function is top1 accuracy(between 0~1).
-            If 'evaluate_function' is not specified while 'top1_acc_target' is given, error will be raised.
-        num_target (int): The number of nodes for mix-precision to minimize the loss. Defaults to 0.
-        target_tensors (List[str]): The names of nodes to mix into the target quant type. Defaults to [].
-        target_indices (List[str]): The indices (based on sensitivity analysis results) of the nodes to
-            mix into the target quant type. Defaults to [].
-        exclude_indices (List[str]): The indices (based on sensitivity analysis results) of the nodes not
-            to mix into the target quant type. Defaults to [].
-        no_input_qdq_shared (bool): Whether to skip the nodes who shared the input Q/DQ pair with other nodes.
-            Defaults to True.
-        auto_mix_use_fast_ft (bool): Whether to perform fast finetune to improve accuracy after mixed a layer.
-            Defaults to False.
+    :param int data_size: The size of the data used for mix-precision. Defaults to 10000000.
+    :param Tuple[str, ...] target_op_type: The user defined op type set for mix-precision. Defaults to (‘Conv’, ‘ConvTranspose’, ‘Gemm’, ‘MatMul’).
+    :param QuantType target_quant_type: Activation data type to be mixed in the model if 'act_target_quant_type' is not given.
+                                        Error will be raised if 'target_quant_type', 'act_target_quant_type' and 'weight_target_quant_type' are not given.
+    :param QuantType act_target_quant_type: Activation data type to be mixed in the model. If both 'act_target_quant_type' and 'weight_target_quant_type' are not specified,
+                                            the 'act_target_quant_type' will be same as 'target_quant_type'.
+                                            If only 'act_target_quant_type' is not specified, it will be the original activation_type.
+    :param QuantType weight_target_quant_type: Weight data type to be mixed in the model. If both 'act_target_quant_type' and 'weight_target_quant_type' are not specified,
+                                               the 'weight_target_quant_type' will be same as 'target_quant_type'.
+                                               If only 'weight_target_quant_type' is not specified, it will be the original weight_type.
+    :param QuantType bias_target_quant_type: Bias data type to be mixed in the model. If 'bias_target_quant_type' is not specified and Int32Bias is True,
+                                             the 'bias_target_quant_type' will be int32. If 'bias_target_quant_type' is not specified and Int32Bias is False,
+                                             the 'bias_target_quant_type' will be same as 'weight_target_quant_type'.
+    :param bool dual_quant_nodes: Some backend compilers require that two types of quantization nodes exist simultaneously on the tensors which connect two different precision nodes,
+                                  for example, they require the tensor that connects BFP16 Conv and BF16 Reshape has a BFP node and a QDQ pair both. Defaults to False.
+    :param int output_index: The index of model output to be calculated for loss. Defaults to 0.
+    :param float l2_target: The L2 metric as a target. Defaults to 0.5.
+    :param Optional[float] top1_acc_target: The Top1 accuracy as a target. Defaults to None.
+    :param Any evaluate_function: The function to measure top1 accuracy loss. Input of the function is model output(numpy tensor),
+                                  output of the function is top1 accuracy(between 0~1).
+                                  If 'evaluate_function' is not specified while 'top1_acc_target' is given, error will be raised.
+    :param int num_target: The number of nodes for mix-precision to minimize the loss. Defaults to 0.
+    :param List[str] target_tensors: The names of nodes to mix into the target quant type. Defaults to [].
+    :param List[str] target_indices: The indices (based on sensitivity analysis results) of the nodes to mix into the target quant type. Defaults to [].
+    :param List[str] exclude_indices: The indices (based on sensitivity analysis results) of the nodes not to mix into the target quant type. Defaults to [].
+    :param bool no_input_qdq_shared: Whether to skip the nodes who shared the input Q/DQ pair with other nodes. Defaults to True.
+    :param bool auto_mix_use_fast_ft: Whether to perform fast finetune to improve accuracy after mixed a layer. Defaults to False.
     """
 
     def __init__(
@@ -361,7 +346,9 @@ class AutoMixprecisionConfig(AlgoConfig):
 
 
 class AdaRoundConfig(AlgoConfig):
-    """Configuration for AdaRound algorithm.
+    """Configuration for the AdaRound algorithm, which is originally proposed in the following paper:
+    "Markus Nagel et al., Up or Down? Adaptive Rounding for Post-Training Quantization,
+    arXiv:2004.10568, 2020."
 
     AdaRound (Adaptive Rounding) is a post-training quantization method that
     aims to mitigate the accuracy degradation caused by rounding during quantization.
@@ -384,45 +371,45 @@ class AdaRoundConfig(AlgoConfig):
     The key idea behind AdaRound is to find the optimal rounding decisions for each
     weight, such that the overall model's performance is preserved after quantization.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "adaround".
-        optim_device (str): The device for optimization. Defaults to "cpu".
-        infer_device (str): The device for inference. Defaults to "cpu".
-        fixed_seed (int): A fixed seed for reproducibility. Defaults to 1705472343.
-        data_size (int): The total size of the dataset. Defaults to 1000000000.
-        batch_size (int): The batch size for optimization. Defaults to 1.
-        num_batches (int): The number of batches for optimization. Defaults to 1.
-        num_iterations (int): The number of optimization iterations. Defaults to 1000.
-        learning_rate (float): The learning rate for optimization. Defaults to 1e-1.
-        early_stop (bool): Whether to use early stopping. Defaults to False.
-        output_index (int): The index of the model's output to use for loss calculation. Defaults to 0.
-        lr_adjust (Optional[Tuple[float, float]]): Learning rate adjustment parameters. Defaults to None.
-        target_op_type (List[str]): List of operator types to be quantized.
-            Defaults to ["Conv", "ConvTranspose", "Gemm", "MatMul", "InstanceNormalization", "LayerNormalization"].
-        selective_update (bool): Whether to selectively update weights. Defaults to False.
-        update_bias (bool): Whether to update the bias terms. Defaults to False.
-        output_qdq (bool): Whether to output QDQ format. Defaults to False.
-        drop_ratio (float): The ratio of weights to drop. Defaults to 1.0.
-        mem_opt_level (int): Memory optimization level. Defaults to 1.
-        cache_dir (Optional[str]): Directory for caching. Defaults to None.
-        log_period (int): Logging period. Defaults to 100.
-        ref_model_path (Optional[str]): Path to the reference model. Defaults to None.
-        dynamic_batch (bool): Whether to use dynamic batching. Defaults to False.
-        parallel (bool): Whether to use parallel processing. Defaults to False.
-        reg_param (float): The regularization parameter for the rounding loss.
-            This controls the trade-off between minimizing the reconstruction
-            error and forcing the rounding parameters to be binary. Defaults to 0.01.
-        beta_range (Tuple[float, float]): The range of the temperature parameter 'beta'.
-            'beta' controls the sharpness of the soft rounding function. It is
-            annealed from the first value to the second value over the course of
-            optimization. A high 'beta' at the beginning allows for more exploration,
-            while a low 'beta' at the end encourages convergence to a binary solution.
-            Defaults to (20, 2).
-        warm_start (float): The fraction of total iterations for the "warm start" phase.
-            During this phase, only the reconstruction loss is used, and the
-            regularization term is gradually introduced. This helps to find a
-            good initial state before forcing the rounding decisions to be binary.
-            Defaults to 0.2.
+    :param str optim_device: The device for optimization. Defaults to "cpu".
+    :param str infer_device: The device for inference. Defaults to "cpu".
+    :param int fixed_seed: A fixed seed for reproducibility. Defaults to 1705472343.
+    :param int data_size: The total size of the dataset. Defaults to 1000000000.
+    :param int batch_size: The batch size for optimization. Defaults to 1.
+    :param int num_batches: The number of batches for optimization. Defaults to 1.
+    :param int num_iterations: The number of optimization iterations. Defaults to 1000.
+    :param float learning_rate: The learning rate for optimization. Defaults to 1e-1.
+    :param bool early_stop: Whether to use early stopping. Defaults to False.
+    :param int output_index: The index of the model's output to use for loss calculation. Defaults to 0.
+    :param Optional[Tuple[float, float]] lr_adjust: Learning rate adjustment parameters. Defaults to None.
+    :param List[str] target_op_type: List of operator types to be quantized. Defaults to ["Conv", "ConvTranspose", "Gemm", "MatMul", "InstanceNormalization", "LayerNormalization"].
+    :param bool selective_update: Whether to selectively update weights. Defaults to False.
+    :param bool update_bias: Whether to update the bias terms. Defaults to False.
+    :param bool output_qdq: Whether to output QDQ format. Defaults to False.
+    :param float drop_ratio: The ratio of weights to drop. Defaults to 1.0.
+    :param int mem_opt_level: Memory optimization level. Defaults to 1.
+    :param Optional[str] cache_dir: Directory for caching. Defaults to None.
+    :param int log_period: Logging period. Defaults to 100.
+    :param Optional[str] ref_model_path: Path to the reference model. Defaults to None.
+    :param bool dynamic_batch: Whether to use dynamic batching. Defaults to False.
+    :param bool parallel: Whether to use parallel processing. Defaults to False.
+    :param float reg_param: The regularization parameter for the rounding loss.
+                            This controls the trade-off between minimizing the reconstruction error and forcing the rounding parameters to be binary.
+                            Defaults to 0.01.
+    :param Tuple[float, float] beta_range: The range of the temperature parameter 'beta'.
+                                           the 'beta' controls the sharpness of the soft rounding function.
+                                           It is annealed from the first value to the second value over the course of optimization.
+                                           A high 'beta' at the beginning allows for more exploration,
+                                           while a low 'beta' at the end encourages convergence to a binary solution. Defaults to (20, 2).
+    :param float warm_start: The fraction of total iterations for the "warm start" phase.
+                             During this phase, only the reconstruction loss is used, and the regularization term is gradually introduced.
+                             This helps to find a good initial state before forcing the rounding decisions to be binary. Defaults to 0.2.
+    :param bool select_max_mem_layer: Whether to select the layer with largest estimated memory usage to run.
+    :param int num_workers: Number of subprocesses used for data loading.
+                            - 0 means the data will be loaded in the main process.
+                            - >0 enables multi-process data loading, which can significantly speed up data pipeline when dataset and transforms are heavy.
+                            Note: Using multiple workers increases CPU usage and may require careful handling of worker-safe code.
+    :param bool pin_memory: If True, the DataLoader will copy tensors into CUDA pinned memory before returning them.
     """
 
     def __init__(
@@ -459,6 +446,9 @@ class AdaRoundConfig(AlgoConfig):
         reg_param: float = 0.01,
         beta_range: tuple[float, float] = (20, 2),
         warm_start: float = 0.2,
+        select_max_mem_layer: bool = False,
+        num_workers: int = 1,
+        pin_memory: bool = False,
     ) -> None:
         self.name: str = "adaround"
         self.optim_device = optim_device
@@ -486,6 +476,9 @@ class AdaRoundConfig(AlgoConfig):
         self.reg_param = reg_param
         self.beta_range = beta_range
         self.warm_start = warm_start
+        self.select_max_mem_layer = select_max_mem_layer
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
 
     def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
         adaround_config: dict[str, Any] = dict()
@@ -530,11 +523,19 @@ class AdaRoundConfig(AlgoConfig):
             adaround_config["FastFinetune"]["CacheDir"] = self.cache_dir
         if "LogPeriod" not in extra_options["FastFinetune"]:
             adaround_config["FastFinetune"]["LogPeriod"] = self.log_period
+        if "SelectMaxMemLayer" not in extra_options["FastFinetune"]:
+            adaround_config["FastFinetune"]["SelectMaxMemLayer"] = self.select_max_mem_layer
+        if "NumWorkers" not in extra_options["FastFinetune"]:
+            adaround_config["FastFinetune"]["NumWorkers"] = self.num_workers
+        if "PinMemory" not in extra_options["FastFinetune"]:
+            adaround_config["FastFinetune"]["PinMemory"] = self.pin_memory
         return adaround_config
 
 
 class AdaQuantConfig(AlgoConfig):
-    """Configuration for AdaQuant algorithm.
+    """Configuration for the AdaQuant algorithm, which is originally proposed in the following paper:
+    "Itay Hubara et al., Improving Post Training Neural Quantization: Layer-wise Calibration and Integer Programming,
+    arXiv:2006.10518, 2020."
 
     AdaQuant (Adaptive Quantization) is a PTQ algorithm that adaptively adjusts
     quantization parameters based on calibration data. Rather than relying on
@@ -548,45 +549,45 @@ class AdaQuantConfig(AlgoConfig):
     deployment-time optimization. Its adaptive nature makes it more robust than
     static quantization, especially when quantizing large or sensitive models.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "adaquant".
-        optim_device (str): The device for optimization. Defaults to "cpu".
-        infer_device (str): The device for inference. Defaults to "cpu".
-        fixed_seed (int): A fixed seed for reproducibility. Defaults to 1705472343.
-        data_size (int): The total size of the dataset. Defaults to 1000000000.
-        batch_size (int): The batch size for optimization. Defaults to 1.
-        num_batches (int): The number of batches for optimization. Defaults to 1.
-        num_iterations (int): The number of optimization iterations. Defaults to 3000.
-        learning_rate (float): The learning rate for optimization. Defaults to 1e-5.
-        early_stop (bool): Whether to use early stopping. Defaults to False.
-        output_index (int): The index of the model's output to use for loss calculation. Defaults to 0.
-        lr_adjust (Optional[Tuple[float, float]]): Learning rate adjustment parameters. Defaults to None.
-        target_op_type (List[str]): List of operator types to be quantized.
-            Defaults to ["Conv", "ConvTranspose", "Gemm", "MatMul", "InstanceNormalization", "LayerNormalization"].
-        selective_update (bool): Whether to selectively update weights. Defaults to False.
-        update_bias (bool): Whether to update the bias terms. Defaults to False.
-        output_qdq (bool): Whether to output QDQ format. Defaults to False.
-        drop_ratio (float): The ratio of weights to drop. Defaults to 1.0.
-        mem_opt_level (int): Memory optimization level. Defaults to 1.
-        cache_dir (Optional[str]): Directory for caching. Defaults to None.
-        log_period (int): Logging period. Defaults to 100.
-        ref_model_path (Optional[str]): Path to the reference model. Defaults to None.
-        dynamic_batch (bool): Whether to use dynamic batching. Defaults to False.
-        parallel (bool): Whether to use parallel processing. Defaults to False.
-        reg_param (float): The regularization parameter for the rounding loss.
-            This controls the trade-off between minimizing the reconstruction
-            error and forcing the rounding parameters to be binary. Defaults to 0.01.
-        beta_range (Tuple[float, float]): The range of the temperature parameter 'beta'.
-            'beta' controls the sharpness of the soft rounding function. It is
-            annealed from the first value to the second value over the course of
-            optimization. A high 'beta' at the beginning allows for more exploration,
-            while a low 'beta' at the end encourages convergence to a binary solution.
-            Defaults to (20, 2).
-        warm_start (float): The fraction of total iterations for the "warm start" phase.
-            During this phase, only the reconstruction loss is used, and the
-            regularization term is gradually introduced. This helps to find a
-            good initial state before forcing the rounding decisions to be binary.
-            Defaults to 0.2.
+    :param str optim_device: The device for optimization. Defaults to "cpu".
+    :param str infer_device: The device for inference. Defaults to "cpu".
+    :param int fixed_seed: A fixed seed for reproducibility. Defaults to 1705472343.
+    :param int data_size: The total size of the dataset. Defaults to 1000000000.
+    :param int batch_size: The batch size for optimization. Defaults to 1.
+    :param int num_batches: The number of batches for optimization. Defaults to 1.
+    :param int num_iterations: The number of optimization iterations. Defaults to 3000.
+    :param float learning_rate: The learning rate for optimization. Defaults to 1e-5.
+    :param bool early_stop: Whether to use early stopping. Defaults to False.
+    :param int output_index: The index of the model's output to use for loss calculation. Defaults to 0.
+    :param Optional[Tuple[float, float]] lr_adjust: Learning rate adjustment parameters. Defaults to None.
+    :param List[str] target_op_type: List of operator types to be quantized. Defaults to ["Conv", "ConvTranspose", "Gemm", "MatMul", "InstanceNormalization", "LayerNormalization"].
+    :param bool selective_update: Whether to selectively update weights. Defaults to False.
+    :param bool update_bias: Whether to update the bias terms. Defaults to False.
+    :param bool output_qdq: Whether to output QDQ format. Defaults to False.
+    :param float drop_ratio: The ratio of weights to drop. Defaults to 1.0.
+    :param int mem_opt_level: Memory optimization level. Defaults to 1.
+    :param Optional[str] cache_dir: Directory for caching. Defaults to None.
+    :param int log_period: Logging period. Defaults to 100.
+    :param Optional[str] ref_model_path: Path to the reference model. Defaults to None.
+    :param bool dynamic_batch: Whether to use dynamic batching. Defaults to False.
+    :param bool parallel: Whether to use parallel processing. Defaults to False.
+    :param float reg_param: The regularization parameter for the rounding loss.
+                            This controls the trade-off between minimizing the reconstruction error and forcing the rounding parameters to be binary.
+                            Defaults to 0.01.
+    :param Tuple[float, float] beta_range: The range of the temperature parameter 'beta'.
+                                           the 'beta' controls the sharpness of the soft rounding function.
+                                           It is annealed from the first value to the second value over the course of optimization.
+                                           A high 'beta' at the beginning allows for more exploration,
+                                           while a low 'beta' at the end encourages convergence to a binary solution. Defaults to (20, 2).
+    :param float warm_start: The fraction of total iterations for the "warm start" phase.
+                             During this phase, only the reconstruction loss is used, and the regularization term is gradually introduced.
+                             This helps to find a good initial state before forcing the rounding decisions to be binary. Defaults to 0.2.
+    :param bool select_max_mem_layer: Whether to select the layer with largest estimated memory usage to run.
+    :param int num_workers: Number of subprocesses used for data loading.
+                            - 0 means the data will be loaded in the main process.
+                            - >0 enables multi-process data loading, which can significantly speed up data pipeline when dataset and transforms are heavy.
+                            Note: Using multiple workers increases CPU usage and may require careful handling of worker-safe code.
+    :param bool pin_memory: If True, the DataLoader will copy tensors into CUDA pinned memory before returning them.
     """
 
     def __init__(
@@ -623,6 +624,9 @@ class AdaQuantConfig(AlgoConfig):
         reg_param: float = 0.01,
         beta_range: tuple[float, float] = (20, 2),
         warm_start: float = 0.2,
+        select_max_mem_layer: bool = False,
+        num_workers: int = 1,
+        pin_memory: bool = False,
     ) -> None:
         self.name: str = "adaquant"
         self.optim_device = optim_device
@@ -650,6 +654,9 @@ class AdaQuantConfig(AlgoConfig):
         self.reg_param = reg_param
         self.beta_range = beta_range
         self.warm_start = warm_start
+        self.select_max_mem_layer = select_max_mem_layer
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
 
     def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
         adaquant_config: dict[str, Any] = dict()
@@ -694,11 +701,19 @@ class AdaQuantConfig(AlgoConfig):
             adaquant_config["FastFinetune"]["CacheDir"] = self.cache_dir
         if "LogPeriod" not in extra_options["FastFinetune"]:
             adaquant_config["FastFinetune"]["LogPeriod"] = self.log_period
+        if "SelectMaxMemLayer" not in extra_options["FastFinetune"]:
+            adaquant_config["FastFinetune"]["SelectMaxMemLayer"] = self.select_max_mem_layer
+        if "NumWorkers" not in extra_options["FastFinetune"]:
+            adaquant_config["FastFinetune"]["NumWorkers"] = self.num_workers
+        if "PinMemory" not in extra_options["FastFinetune"]:
+            adaquant_config["FastFinetune"]["PinMemory"] = self.pin_memory
         return adaquant_config
 
 
 class QuarotConfig(AlgoConfig):
-    """Configuration for Quarot algorithm.
+    """Configuration for the Quarot algorithm, which is originally proposed in the following paper:
+    "Saleh Ashkboos et al., QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs,
+    arXiv:2404.00456, 2024."
 
     Quarot is a PTQ algorithm that enhances model robustness and accuracy by applying
     a rotation to the weight matrices before quantization. Instead of quantizing
@@ -713,15 +728,13 @@ class QuarotConfig(AlgoConfig):
 
     By leveraging the structure of the weight distribution and introducing minimal
     additional overhead, Quarot significantly improves quantization performance—especially
-    in low-bit regimes such as INT4. It's particularly effective for transformer-based
+    in low-bit regimes such as INT4. It’s particularly effective for transformer-based
     models or MLPs, where preserving fine-grained relationships between weights is
     crucial for maintaining performance.
 
-    Attributes:
-        name (str): The name of the algorithm. Defaults to "quarot".
-        r_matrix_dim (int): The dimension of constructing rotation matrix. Defaults to 4096.
-        use_random_had (bool): If True, the rotation matrix will be generated by the random Hadamard scheme. Defaults to False.
-        r_config_path (Optional[str]): The path of rotation config file. This is necessary when using QuaRot. Defaults to None.
+    :param int r_matrix_dim: The dimension of constructing rotation matrix. Defaults to 4096.
+    :param bool use_random_had: If True, the rotation matrix will be generated by the random Hadamard scheme. Defaults to False.
+    :param Optional[str] r_config_path: The path of rotation config file. This is necessary when using QuaRot. Defaults to None.
     """
 
     def __init__(

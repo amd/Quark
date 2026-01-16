@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -16,11 +16,8 @@ python randome_quantize.py --input_model_path $FLOAT_MODEL_PATH --output_model_p
 import copy
 import re
 from argparse import ArgumentParser, Namespace
-from typing import List, Tuple
 
-from quark.onnx.calibration import PowerOfTwoMethod
-from quark.onnx.quantization.api import ModelQuantizer
-from quark.onnx.quantization.config.config import Config
+from quark.onnx import Config, ModelQuantizer, PowerOfTwoMethod
 from quark.onnx.quantization.config.custom_config import get_default_config
 
 
