@@ -102,7 +102,7 @@ Import the necessary packages
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer
     
-    from quark.torch.pruning.config import LayerImportancePruneConfig, PConfig
+    from quark.torch.pruning.config import LayerImportancePruneConfig, Config
 
 Init the LLM model and dataset for evaluation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -220,7 +220,7 @@ Init the prune config
     # pruning_algo_config = LayerImportanceConfig.from_dict(algo_config_info)
     
     # Method 2: manually set the config
-    pruning_config = PConfig()
+    pruning_config = Config()
     pruning_config.algo_config = LayerImportancePruneConfig()
     pruning_config.algo_config.delete_layer_num = 2
     pruning_config.algo_config.model_decoder_layers = "model.decoder.layers"
