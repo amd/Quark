@@ -352,6 +352,7 @@ Previous Versions of AMD Quark
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
+-  `quark_0.11.1.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.1.zip>`__
 -  `quark_0.11.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.zip>`__
 -  `quark_0.10.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.10.zip>`__
 -  `quark_0.9.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.9.zip>`__

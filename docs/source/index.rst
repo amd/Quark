@@ -99,6 +99,7 @@ Key Features
    Exporting Quantized Models <pytorch/export/quark_export>
    Best Practices for Post-Training Quantization (PTQ) <pytorch/quark_torch_best_practices>
    Debugging quantization Degradation <pytorch/debug>
+   File-to-File LLM Quantization <pytorch/file2file_quantization>
    Language Model Optimization <pytorch/llm_quark>
    Activation/Weight Smoothing (SmoothQuant) <pytorch/smoothquant>
    Auto SmoothQuant <tutorials/torch/auto_smoothquant_document_and_example>
@@ -115,27 +116,29 @@ Key Features
    :maxdepth: 1
 
 
-   Configuring ONNX Quantization <onnx/user_guide_config_description.rst>
-   Data and OP Types <onnx/user_guide_supported_optype_datatype.rst>
-   Accelerate with GPUs <onnx/gpu_usage_guide.rst>
-   Mixed Precision <onnx/tutorial_mix_precision.rst>
-   Block Floating Point 16 (BFP16) <onnx/tutorial_bfp16_quantization.rst>
-   BF16 Quantization <onnx/tutorial_bf16_quantization.rst>
-   Microscaling (MX) <onnx/tutorial_microscaling_quantization.rst>
-   Microexponents (MX) <onnx/tutorial_microexponents_quantization.rst>
-   Accuracy Improvement Algorithms <onnx/accuracy_improvement_algorithms.rst>
-   Automatic Search for Model Quantization <onnx/user_guide_auto_search.rst>
-   Automatic Search Pro for Model Quantization <onnx/user_guide_auto_search_pro.rst>
-   Latency and Memory profiling <onnx/tutorial_profiling.rst>
+   Configuring ONNX Quantization <onnx/user_guide_config_description>
+   Data and OP Types <onnx/user_guide_supported_optype_datatype>
+   Accelerate with GPUs <onnx/gpu_usage_guide>
+   Mixed Precision <onnx/tutorial_mix_precision>
+   Block Floating Point 16 (BFP16) <onnx/tutorial_bfp16_quantization>
+   BF16 Quantization <onnx/tutorial_bf16_quantization>
+   Microscaling (MX) <onnx/tutorial_microscaling_quantization>
+   Microexponents (MX) <onnx/tutorial_microexponents_quantization>
+   Accuracy Improvement Algorithms <onnx/accuracy_improvement_algorithms>
+   Automatic Search for Model Quantization <onnx/user_guide_auto_search>
+   Automatic Search Pro for Model Quantization <onnx/user_guide_auto_search_pro>
+   Latency and Memory profiling <onnx/tutorial_profiling>
    Using ONNX Model Inference and Saving Input Data in NPY Format <onnx/config/user_guide_onnx_model_inference_save_input_npy>
    Optional Utilities <onnx/optional_utilities>
    Tools <onnx/tools>
 
-.. WARNING: The Jupyter Notebooks `.. toctree::` entry is defined at docs/source/jupyter_notebook_index
-..          and post-processed by a Sphinx extension at `docs/source/_ext/quark_jupyter_notebook_build.py`
-..          to either 1) execute the jupyter notebooks and add the both jupyter notebooks and their outputs to the documentation when QUARK_SPHINX_BUILD_SKIP_TUTORIALS is not set
-..          or 2) convert the jupyter notebooks into rst and only add the notebook code as part of the documentation otherwise (fast build)
-@quark_jupyter_notebook_toc_placeholder@
+.. toctree::
+   :hidden:
+   :caption: Tutorials
+   :maxdepth: 1
+
+   Quark for PyTorch <tutorials_pytorch>
+   Quark for ONNX <tutorials_onnx>
 
 .. toctree::
    :hidden:
@@ -169,6 +172,7 @@ Key Features
 
 .. toctree::
    :hidden:
+   :maxdepth: 1
 
    versions
    license

@@ -100,8 +100,8 @@ Comprehensive documentation is vital for the usability and maintainability of yo
             :caption: Contributions
             :maxdepth: 1
 
-            Quark ``contrib``s <intro_contrib.rst>
-            Your component name <contrib_your_component_name.rst>
+            Quark ``contrib``s <intro_contrib_without_dot_rst>
+            Your component name <contrib_your_component_name>
 
 * Write and test rendering of the documentation as per the general ``CONTRIBUTING.md`` guidelines.
 

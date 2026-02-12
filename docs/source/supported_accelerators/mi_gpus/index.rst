@@ -19,9 +19,8 @@ On all GPUs supported by PyTorch, quantized models can be evaluated using fake q
 
 Below are some references on how you can leverage Quark to seamlessly run accelerated quantized models on AMD Instinct GPUs:
 
-.. toctree::
-   :caption: Resources
-   :maxdepth: 1
+Resources
+---------
 
-   Language Model Post Training Quantization (PTQ) Using Quark <../../pytorch/example_quark_torch_llm_ptq>
-   Evaluation of Quantized Models <../../pytorch/example_quark_torch_llm_eval_perplexity>
+* :doc:`Language Model Post Training Quantization (PTQ) Using Quark <../../pytorch/example_quark_torch_llm_ptq>`
+* :doc:`Evaluation of Quantized Models <../../pytorch/example_quark_torch_llm_eval_perplexity>`

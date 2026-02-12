@@ -115,3 +115,7 @@ And use the following command line.
 .. code-block:: bash
 
    quark-cli onnx-adapter demo.yaml
+
+.. note::
+
+    You mus set **SkipPreprocess** as True if ONNX Adapter is used before quantization. For more details about this parameter, please refer to :doc:`Full List of Quantization Config Features <onnx/appendix_full_quant_config_features>`

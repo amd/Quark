@@ -24,6 +24,7 @@ The example folder is in amd_quark.zip.
             + ...
 
 .. toctree::
+   :hidden:
    :caption: PyTorch Examples in Quark for This Release
    :maxdepth: 1
 

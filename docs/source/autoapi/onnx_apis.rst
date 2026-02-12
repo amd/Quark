@@ -6,6 +6,8 @@ AMD Quark APIs for ONNX
 **User facing APIs:**
 
 .. toctree::
+   :hidden:
+   :caption: ONNX APIs
    :maxdepth: 1
 
    Quantization <../autoapi/quark/onnx/quantization/api/index>

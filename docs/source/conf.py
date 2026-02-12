@@ -66,7 +66,6 @@ extensions = [
     'myst_nb',
     'notfound.extension',
     'quark_version_substitution',
-    'quark_jupyter_notebook_build',
     'sphinx.ext.autodoc',
     'sphinx.ext.coverage',
     'sphinx.ext.doctest',

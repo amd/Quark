@@ -5,6 +5,8 @@ Extensions for PyTorch
 ======================
 
 .. toctree::
+   :hidden:
+   :caption: Extensions
    :maxdepth: 1
 
    example_quark_torch_pytorch_light

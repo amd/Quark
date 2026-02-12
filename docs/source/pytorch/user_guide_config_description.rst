@@ -15,13 +15,14 @@ Configuration of quantization in ``AMD Quark for PyTorch`` is set using Python `
 
 .. toctree::
   :hidden:
+  :caption: Calibration Methods
   :maxdepth: 1
 
-  Calibration Methods <calibration_methods.rst>
-  Calibration Datasets <calibration_datasets.rst>
-  Quantization Strategies <quantization_strategies.rst>
-  Quantization Schemes <quantization_schemes.rst>
-  Quantization Symmetry <quantization_symmetry.rst>
+  Calibration Methods <calibration_methods>
+  Calibration Datasets <calibration_datasets>
+  Quantization Strategies <quantization_strategies>
+  Quantization Schemes <quantization_schemes>
+  Quantization Symmetry <quantization_symmetry>
 
 Step 1: Configuring ``QTensorConfig`` for torch.Tensors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -64,7 +64,7 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
 
 .. toctree::
    :hidden:
-   :caption: Advanced AMD Quark Features for PyTorch
+   :caption: Customized Configurations
    :maxdepth: 1
 
    Full List of Quantization Config Features <appendix_full_quant_config_features>
@@ -96,9 +96,10 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
 
 .. toctree::
    :hidden:
+   :caption: Customized Configurations
    :maxdepth: 1
 
-   Calibration datasets <config/calibration_datasets.rst>
-   Quantization Strategies <config/quantization_strategies.rst>
-   Quantization Schemes <config/quantization_schemes.rst>
-   Quantization Configuration <config/quantization_configuration.rst>
+   Calibration datasets <config/calibration_datasets>
+   Quantization Strategies <config/quantization_strategies>
+   Quantization Schemes <config/quantization_schemes>
+   Quantization Configuration <config/quantization_configuration>

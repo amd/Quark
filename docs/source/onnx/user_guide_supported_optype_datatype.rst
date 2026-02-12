@@ -307,11 +307,12 @@ Table: List of Quark ONNX Supported Quantized Ops
 
 .. toctree::
    :hidden:
+   :caption: Custom Operators
    :maxdepth: 1
 
-   ExtendedQuantizeLinear <custom_operators/ExtendedQuantizeLinear.rst>
-   ExtendedDequantizeLinear <custom_operators/ExtendedDequantizeLinear.rst>
-   ExtendedInstanceNormalization <custom_operators/ExtendedInstanceNormalization.rst>
-   ExtendedLSTM <custom_operators/ExtendedLSTM.rst>
-   BFPQuantizeDequantize <custom_operators/BFPQuantizeDequantize.rst>
-   MXQuantizeDequantize <custom_operators/MXQuantizeDequantize.rst>
+   ExtendedQuantizeLinear <custom_operators/ExtendedQuantizeLinear>
+   ExtendedDequantizeLinear <custom_operators/ExtendedDequantizeLinear>
+   ExtendedInstanceNormalization <custom_operators/ExtendedInstanceNormalization>
+   ExtendedLSTM <custom_operators/ExtendedLSTM>
+   BFPQuantizeDequantize <custom_operators/BFPQuantizeDequantize>
+   MXQuantizeDequantize <custom_operators/MXQuantizeDequantize>

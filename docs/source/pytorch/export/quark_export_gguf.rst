@@ -22,6 +22,7 @@ file under output_dir, ``./output_dir/llama.gguf`` for example.
 
 .. toctree::
    :hidden:
+   :caption: GGUF Exporting
    :maxdepth: 1
 
-   gguf_llamacpp.rst
+   gguf_llamacpp

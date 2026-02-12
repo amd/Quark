@@ -8,6 +8,8 @@ Quantization configuration
    :member-order: bysource
 
 .. toctree::
+   :hidden:
+   :caption: Quantization Configuration
    :maxdepth: 1
 
    Quantization Strategies <../spec/index>

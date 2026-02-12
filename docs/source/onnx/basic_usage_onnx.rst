@@ -19,6 +19,10 @@ Download the ONNX float model from the `onnx/models <https://github.com/onnx/mod
 
     wget -P models https://github.com/onnx/models/raw/new-models/vision/classification/resnet/model/resnet50-v1-12.onnx
 
+.. note::
+
+    Please refer to :doc:`ONNX Adapter <../quark_cli_onnx_adapter>` if you want to apply custom preprocessing to the float model, such as converting NCHW to NHWC or upgrading the opset version. And set **SkipPreprocess** as True if ONNX Adapter is used before quantization. For more details about this parameter, please refer to :doc:`Full List of Quantization Config Features <appendix_full_quant_config_features>`
+
 2. Prepare calibration data
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

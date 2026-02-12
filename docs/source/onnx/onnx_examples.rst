@@ -27,6 +27,7 @@ ONNX Examples in AMD Quark for This Release
 -------------------------------------------
 
 .. toctree::
+   :hidden:
    :caption: Improving Model Accuracy
    :maxdepth: 1
 
@@ -45,6 +46,7 @@ ONNX Examples in AMD Quark for This Release
    Auto-Search for Ryzen AI Resnet50 ONNX Model Quantization <../tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_resnet50/onnx_ryzen_ai_auto_search_resnet50_tutorial>
 
 .. toctree::
+   :hidden:
    :caption: Dynamic Quantization
    :maxdepth: 1
 
@@ -52,19 +54,14 @@ ONNX Examples in AMD Quark for This Release
    Quantizing an OPT-125M Model <example_quark_onnx_dynamic_quantization_opt>
 
 .. toctree::
-   :caption: Image Classification
-   :maxdepth: 1
-
-   Quantizing a ResNet50-v1-12 Model <../tutorials/onnx/image_classification/onnx_image_classification_tutorial>
-   Quantizing a Huggingface TIMM Model <../tutorials/onnx/huggingface_timm/onnx_huggingface_timm_tutorial>
-
-.. toctree::
+   :hidden:
    :caption: Language Models
    :maxdepth: 1
 
    Quantizing an OPT-125M Model <example_quark_onnx_language_models>
 
 .. toctree::
+   :hidden:
    :caption: Weights-Only Quantization
    :maxdepth: 1
 

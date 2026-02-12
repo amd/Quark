@@ -4,6 +4,8 @@ Language Model Optimization
 ============================
 
 .. toctree::
+   :hidden:
+   :caption: Language Model Optimization
    :maxdepth: 1
 
    feature_pruning_overall

@@ -3,6 +3,64 @@
 Release Notes
 =============
 
+Release 0.11.1
+--------------
+
+AMD Quark for PyTorch
+^^^^^^^^^^^^^^^^^^^^^
+
+Model Support
+"""""""""""""
+
+Supported out-of-box model architectures:
+
+-  Kimi-K2-Thinking, Kimi-K2-Instruct, Kimi-K2.5
+-  Qwen3 MoE, Qwen3 Coder, Qwen3 Coder-Next
+-  DeepSeek-V3.2, DeepSeek-OCR
+-  GLM-4.7
+-  Minimax-M2.1
+
+New Features
+""""""""""""
+
+-  Added File-to-File quantization for ultra-large models. This mode supports **weight-only quantization** and **dynamic activation quantization + weight quantization**, exports **hf_format** only, and can also accept pre-quantized inputs (deepseek-style FP8, compressed-tensors) and re-quantize them to a different format.
+
+   For example, the command below runs file-to-file quantization to MXFP4:
+
+   .. code-block:: bash
+
+      python3 quantize_quark.py --model_dir [model checkpoint folder] \
+                                --output_dir [output folder] \
+                                --quant_scheme mxfp4 \
+                                --file2file_quantization \
+                                --skip_evaluation
+
+-  Added a pre-quantization compatibility check for ``transformers`` in LLM PTQ workflows, and enabled dry-run compatibility checking by default with clearer error messages when model loading fails.
+
+Bug fixes and minor improvements
+""""""""""""""""""""""""""""""""
+
+-  Fixed weight calibration coverage to ensure complete calibration even for weights outside the forward path, and added token distribution coverage warnings during calibration.
+
+AMD Quark for ONNX
+^^^^^^^^^^^^^^^^^^
+
+New Features
+""""""""""""
+
+-  Support using a YAML file as input to perform custom preprocessing for float models before quantization.
+
+Enhancements
+""""""""""""
+
+-  Memory optimization has been extended to all calibration methods, particularly further reducing memory usage during activation data collection.
+
+Bug fixes and minor improvements
+""""""""""""""""""""""""""""""""
+
+-  Infer kernel size from weights if the attribute `kernel_shape` of Conv nodes are not presented explicitly during fast finetuning.
+
+
 Release 0.11
 ------------
 

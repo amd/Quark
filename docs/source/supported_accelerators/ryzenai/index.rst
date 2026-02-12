@@ -32,8 +32,9 @@ Ryzen AI leverages ONNX models to represent models and execute them through ONNX
 To help you get started, we also have examples at the :ref:`ONNX Examples <ryzenai_onnx_examples>` page!
 
 .. toctree::
+   :hidden:
    :caption: Resources
-   :maxdepth: 1
+   :maxdepth: 0
 
    Quick Start for Ryzen AI <tutorial_quick_start_for_ryzenai.rst>
    Best Practice for Ryzen AI in AMD Quark ONNX <ryzen_ai_best_practice.rst>

@@ -185,9 +185,11 @@ We also provide a complete end-to-end demo: `AWQ Demo <../tutorials/torch/exampl
 5. Next Steps
 -------------
 
+You can still learn more about AWQ from the following resources:
+
 .. toctree::
    :hidden:
    :caption: Next Steps
-   :maxdepth: 1
+   :maxdepth: 0
 
    AWQ end-to-end demo <../tutorials/torch/example_awq>

@@ -7,8 +7,10 @@ Quark torch not only supports our own torch export format `Quark format` (Json-P
 but also support exporting in popular formats requested by downstream tools, including `ONNX`, `format for Hugging Face & vLLM (HF format)`, and `GGUF`.
 
 .. toctree::
+   :hidden:
+   :caption: Exporting Quantized Models
    :maxdepth: 1
 
-   ONNX format <quark_export_onnx.rst>
-   Hugging Face format (safetensors) <quark_export_hf.rst>
-   GGUF format <quark_export_gguf.rst>
+   ONNX format <quark_export_onnx>
+   Hugging Face format (safetensors) <quark_export_hf>
+   GGUF format <quark_export_gguf>
