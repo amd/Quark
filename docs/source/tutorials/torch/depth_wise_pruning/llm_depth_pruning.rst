@@ -102,7 +102,7 @@ Import the necessary packages
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer
     
-    from quark.torch.pruning.config import LayerImportancePruneConfig, Config
+    from quark.torch.pruning.config import Config, LayerImportancePruneConfig
 
 Init the LLM model and dataset for evaluation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
