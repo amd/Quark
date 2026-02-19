@@ -99,7 +99,7 @@ And *vae_decoder*:
     onnx_utils partition "/path/to/sd1.5/vae_decoder/optimized.onnx" "/path/to/sd1.5/vae_decoder" "sd15_vae_decoder.yaml" -v --force
 
 
-These steps will generate a ``replaced.onnx`` models in the respective directories and a ``.cache`` directory containing DD metadata files.
+These steps will generate a ``replaced.onnx`` models in the respective directories and a ``cache`` directory containing DD metadata files.
 SD1.5 is offloaded to the NPU using kernels from Tianping's team and others.
 
 Run
@@ -115,21 +115,21 @@ For SD1.5, you need to use the following ORT session configurations:
 
     decoder_session_options = ort.SessionOptions()
     decoder_session_options.add_session_config_entry("model_name", "SD15_DECODER")
-    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/vae_decoder/.cache")
+    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/vae_decoder/cache")
     decoder_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     # this should be the last step
     decoder_session_options.register_custom_ops_library("/path/to/shared/library")
 
     unet_session_options = ort.SessionOptions()
     unet_session_options.add_session_config_entry("model_name", "SD15_UNET")
-    unet_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/unet/.cache")
+    unet_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/unet/cache")
     unet_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     # this should be the last step
     unet_session_options.register_custom_ops_library("/path/to/shared/library")
 
     controlnet_session_options = ort.SessionOptions()
     controlnet_session_options.add_session_config_entry("model_name", "SD15_UNET")
-    controlnet_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/controlnet/.cache")
+    controlnet_session_options.add_session_config_entry("dd_cache", "/path/to/sd1.5/controlnet/cache")
     controlnet_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     # this should be the last step
     controlnet_session_options.register_custom_ops_library("/path/to/shared/library")

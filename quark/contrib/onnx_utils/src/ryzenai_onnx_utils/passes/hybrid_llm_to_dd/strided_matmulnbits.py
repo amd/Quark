@@ -31,6 +31,7 @@ def replacement(
 
     lora = params.get_bool_attr("lora", False)
     lora_addition = int(lora)
+    is_ttft = params.get_bool_attr("is_ttft", False)
 
     assert len(matmul.input) == 6
 
@@ -52,18 +53,17 @@ def replacement(
     block_size = onnx.helper.get_node_attr_value(matmul, "block_size")
     bias_offset = 4
     # this is needed for mladf version determination during weight preprocessing
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(matmul, "is_bfp16", params.attributes["is_bfp16"])
+    op_version = params.attributes["mladf_version"]
+    ryzenai_onnx_utils.matcher.add_attribute(matmul, "mladf_version", op_version)
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         add_attribute(matmul, "enable_ctrl_pkt", enable_ctrl_pkt)
-    op_version = "v2" if "is_bfp16" in params.attributes and params.attributes["is_bfp16"] == "weights" else "flat"
     # lora uses flat op version
     add_attribute(matmul, "op_version", op_version)
     try:
         new_weights, new_bias, new_scales, new_zeros = (
             ryzenai_onnx_utils.transform.hybrid_llm.preprocess_matmulnbits_weights(
-                matmul, 1, extractor, k, n, block_size, bias_offset, lora
+                matmul, 1, extractor, k, n, block_size, bias_offset, lora, enable_ctrl_pkt
             )
         )
     except RuntimeError:
@@ -73,7 +73,7 @@ def replacement(
         new_zeros = ryzenai_onnx_utils.matcher.get_initializer(matmul.input[3], extractor)
         new_bias = ryzenai_onnx_utils.matcher.get_initializer(matmul.input[5], extractor)
     # this is not used for in fusion nodes
-    ryzenai_onnx_utils.matcher.delete_attribute(matmul, "is_bfp16")
+    ryzenai_onnx_utils.matcher.delete_attribute(matmul, "mladf_version")
     new_initializers = [new_weights, new_bias, new_scales, new_zeros]
     new_inputs.extend((new_weights.name, new_bias.name, new_scales.name, new_zeros.name))
 
@@ -115,14 +115,13 @@ def replacement(
     external_buffers = []
     if lora:
         # first buffer is for sincos cache, then this buffer
-        buf_idx = 1 + match_index
+        base_buf_idx = 0 if is_ttft else 1
+        buf_idx = base_buf_idx + match_index
         external_buffers.extend([lora_input_index, 1, buf_idx, buf_idx])
     # present v
     present_v_index = 5 + lora_addition
     external_buffers.extend([present_v_index, 0, buffer_offset + (buffer_factor - 1), alias_offset + 1])
     ryzenai_onnx_utils.matcher.add_attribute(matmul_node, "external_buffers", external_buffers)
-
-    is_ttft = params.get_bool_attr("is_ttft", False)
 
     if not is_ttft:
         present_v_shape = ryzenai_onnx_utils.matcher.get_shape(matmul_node.output[0], extractor)
@@ -132,7 +131,9 @@ def replacement(
             "update_tensor_offsets",
             [5 + lora_addition, 0, mul_func, present_v_shape[-1] * 2],
         )
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(matmul_node, "pdi_id", int(pdi_id))
     new_nodes.append(matmul_node)
 
     return new_nodes, new_initializers, tvis

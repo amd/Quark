@@ -25,6 +25,7 @@ if is_torch_available():
 if is_transformers_available():
     from transformers import (
         AutoConfig,
+        AutoModel,
         AutoModelForCausalLM,
         AutoTokenizer,
         Llama4ForCausalLM,
@@ -45,6 +46,8 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("4.57
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextExperts
 
 
+from quark.shares.utils.log import ScreenLogger
+
 from ..torch_utils import setattr_recursive
 from .module_replacement.dbrx_expert import DbrxExperts_
 from .module_replacement.replacement_utils import (
@@ -54,6 +57,8 @@ from .module_replacement.replacement_utils import (
     replace_llama4_experts_with_sequential,
     replace_qwen3vlmoe_experts_with_linear,
 )
+
+logger = ScreenLogger(__name__)
 
 
 def get_tokenizer(
@@ -156,54 +161,9 @@ def get_model(
         max_memory = get_device_max_memory()
     if multi_gpu:
         device = "auto"
-    if config.model_type == "mllama":
-        model = MllamaForConditionalGeneration.from_pretrained(
-            ckpt_path,
-            device_map=device,
-            torch_dtype=model_dtype,
-            max_memory=max_memory,
-            trust_remote_code=trust_remote_code,
-            attn_implementation=attn_implementation,
-        )  # type: ignore[no-untyped-call]
-    elif config.model_type == "llama4":
-        model = Llama4ForConditionalGeneration.from_pretrained(
-            ckpt_path,
-            device_map=device,
-            torch_dtype=model_dtype,
-            max_memory=max_memory,
-            trust_remote_code=trust_remote_code,
-            attn_implementation=attn_implementation,
-        )  # type: ignore[no-untyped-call]
-    elif config.model_type == "gpt_oss":
-        quantization_config = Mxfp4Config(dequantize=True)  # type: ignore[misc]
-        model = AutoModelForCausalLM.from_pretrained(
-            ckpt_path,
-            device_map=device,
-            torch_dtype=model_dtype,
-            max_memory=max_memory,
-            trust_remote_code=trust_remote_code,
-            attn_implementation=attn_implementation,
-            quantization_config=quantization_config,
-        )  # type: ignore[no-untyped-call]
-        if (
-            trust_remote_code
-            and hasattr(model, "register_for_auto_class")
-            and hasattr(config, "auto_map")
-            and "AutoModelForCausalLM" in config.auto_map
-        ):
-            model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
-    elif config.model_type == "qwen3_vl_moe":
-        model = Qwen3VLMoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
-            ckpt_path,
-            device_map=device,
-            torch_dtype=model_dtype,
-            max_memory=max_memory,
-            trust_remote_code=trust_remote_code,
-            attn_implementation=attn_implementation,
-        )  # type: ignore[no-untyped-call]
-    else:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
+    try:
+        if config.model_type == "mllama":
+            model = MllamaForConditionalGeneration.from_pretrained(
                 ckpt_path,
                 device_map=device,
                 torch_dtype=model_dtype,
@@ -211,21 +171,99 @@ def get_model(
                 trust_remote_code=trust_remote_code,
                 attn_implementation=attn_implementation,
             )  # type: ignore[no-untyped-call]
-        except Exception:
+        elif config.model_type == "llama4":
+            model = Llama4ForConditionalGeneration.from_pretrained(
+                ckpt_path,
+                device_map=device,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "gpt_oss":
+            quantization_config = Mxfp4Config(dequantize=True)  # type: ignore[misc]
             model = AutoModelForCausalLM.from_pretrained(
                 ckpt_path,
                 device_map=device,
                 torch_dtype=model_dtype,
                 max_memory=max_memory,
                 trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+                quantization_config=quantization_config,
             )  # type: ignore[no-untyped-call]
-        if (
-            trust_remote_code
-            and hasattr(model, "register_for_auto_class")
-            and hasattr(config, "auto_map")
-            and "AutoModelForCausalLM" in config.auto_map
-        ):
-            model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
+            if (
+                trust_remote_code
+                and hasattr(model, "register_for_auto_class")
+                and hasattr(config, "auto_map")
+                and "AutoModelForCausalLM" in config.auto_map
+            ):
+                model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
+        elif config.model_type == "qwen3_vl_moe":
+            model = Qwen3VLMoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
+                ckpt_path,
+                device_map=device,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "deepseek_vl_v2":
+            model = AutoModel.from_pretrained(
+                ckpt_path,
+                device_map=device,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+                use_safetensors=True,
+            )  # type: ignore[no-untyped-call]
+        else:
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    ckpt_path,
+                    device_map=device,
+                    torch_dtype=model_dtype,
+                    max_memory=max_memory,
+                    trust_remote_code=trust_remote_code,
+                    attn_implementation=attn_implementation,
+                )  # type: ignore[no-untyped-call]
+            except Exception:
+                # Some models / transformers versions do not accept attn_implementation.
+                logger.exception(
+                    "AutoModelForCausalLM.from_pretrained failed with attn_implementation=%s, retrying without it.",
+                    attn_implementation,
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    ckpt_path,
+                    device_map=device,
+                    torch_dtype=model_dtype,
+                    max_memory=max_memory,
+                    trust_remote_code=trust_remote_code,
+                )  # type: ignore[no-untyped-call]
+            if (
+                trust_remote_code
+                and hasattr(model, "register_for_auto_class")
+                and hasattr(config, "auto_map")
+                and "AutoModelForCausalLM" in config.auto_map
+            ):
+                model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
+    except Exception:
+        # Provide actionable guidance for model loading failures
+        version_hint = getattr(config, "transformers_version", None)
+        error_msg = "Failed to load model. Suggested resolutions:\n"
+        if version_hint:
+            error_msg += (
+                f"  1. Install a compatible Transformers version: "
+                f"pip install transformers=={version_hint} (as specified in model's config.json)\n"
+            )
+        else:
+            error_msg += "  1. Install a Transformers version compatible with this model\n"
+        error_msg += (
+            "  2. Implement custom model loading instead of using `get_model()`. "
+            "Refer to Transformers documentation for model-specific loading procedures."
+        )
+        logger.exception(error_msg)
+        raise
     if multi_device and hasattr(model, "hf_device_map"):
         print("device_map:", model.hf_device_map)
     # For certain models, the attribute model.config._name_or_path is an empty string; enforce the setting here.

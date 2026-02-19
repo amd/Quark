@@ -1,0 +1,11 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup:
+    - phi3_5.conv_to_nhwc_conv
+    - gather_transposes
+    - simplify_transposes
+passes:
+    - hybrid_llm_conv
+    - hybrid_llm_conv_split_mul
+cleanup: []

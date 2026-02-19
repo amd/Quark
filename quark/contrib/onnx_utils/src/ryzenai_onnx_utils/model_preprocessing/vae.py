@@ -19,6 +19,7 @@ def pre_optimize_passes() -> list[str]:
 
 def finalize() -> list[str]:
     return [
+        "normalize_binary_ops",
         "phi3_5.conv_to_nhwc_conv",
         "sd3.merge_sqrt_div_sqrt",
         "sd15.unet_preprocessing.gemm_to_matmul",

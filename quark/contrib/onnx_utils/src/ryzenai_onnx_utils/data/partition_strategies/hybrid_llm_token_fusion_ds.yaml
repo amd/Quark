@@ -6,7 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: "stx_LLM_TPS_10bo_mladf_2x4x4_bfp16_gemm_mlp_flat_rms"
     op_namespaces: "hybrid"
-    is_bfp16: "flat"
+    mladf_version: "flat"
     is_llm: true
     fuse_qk_mha: false
     enable_ctrl_pkt: true
@@ -21,6 +21,7 @@ attributes:
 passes:
     - fastgelu_to_gelu
     - normalize_matmulnbits
+    - normalize_rotaryembedding
     - hybrid_llm_kv_cache_to_bf16
     - hybrid_llm_pad_attention_mask
     - hybrid_llm_gqa

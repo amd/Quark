@@ -19,7 +19,7 @@ attrs==25.4.0
     #   jsonschema
     #   jupyter-cache
     #   referencing
-babel==2.18.0
+babel==2.17.0
     # via
     #   pydata-sphinx-theme
     #   sphinx
@@ -45,9 +45,9 @@ click==8.3.1
     #   sphinx-external-toc
 comm==0.2.3
     # via ipykernel
-cryptography==46.0.5
+cryptography==46.0.3
     # via pyjwt
-debugpy==1.8.20
+debugpy==1.8.19
     # via ipykernel
 decorator==5.2.1
     # via ipython
@@ -68,7 +68,7 @@ gitdb==4.0.12
     # via gitpython
 gitpython==3.1.46
     # via rocm-docs-core
-greenlet==3.3.1
+greenlet==3.3.0
     # via sqlalchemy
 idna==3.11
     # via requests
@@ -78,9 +78,9 @@ importlib-metadata==8.7.1
     # via
     #   jupyter-cache
     #   myst-nb
-ipykernel==7.2.0
+ipykernel==7.1.0
     # via myst-nb
-ipython==9.10.0
+ipython==9.9.0
     # via
     #   ipykernel
     #   myst-nb
@@ -142,7 +142,7 @@ nbclient==0.10.4
     #   jupyter-cache
     #   myst-nb
     #   nbconvert
-nbconvert==7.17.0
+nbconvert==7.16.6
     # via -r source/sphinx/requirements.in
 nbformat==5.10.4
     # via
@@ -159,15 +159,15 @@ packaging==26.0
     #   sphinx
 pandocfilters==1.5.1
     # via nbconvert
-parso==0.8.6
+parso==0.8.5
     # via jedi
 pexpect==4.9.0
     # via ipython
-platformdirs==4.9.2
+platformdirs==4.5.1
     # via jupyter-core
 prompt-toolkit==3.0.52
     # via ipython
-psutil==7.2.2
+psutil==7.2.1
     # via ipykernel
 ptyprocess==0.7.0
     # via pexpect
@@ -189,7 +189,7 @@ pygments==2.19.2
     #   nbconvert
     #   pydata-sphinx-theme
     #   sphinx
-pyjwt[crypto]==2.11.0
+pyjwt[crypto]==2.10.1
     # via pygithub
 pynacl==1.6.2
     # via pygithub
@@ -308,7 +308,7 @@ urllib3==2.6.3
     # via
     #   pygithub
     #   requests
-wcwidth==0.6.0
+wcwidth==0.3.0
     # via prompt-toolkit
 webencodings==0.5.1
     # via

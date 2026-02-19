@@ -83,7 +83,7 @@ class ONNXOptimizeWithORTPass(ONNXAdapterPass):
         Returns:
             The optimized model, or the original model if optimization is disabled.
         """
-        if "optimize_with_ort" in config and config["optimize_with_ort"] is not None:
+        if "optimize_with_ort" in config and config["optimize_with_ort"]:
             model = self._onnx_optimize_with_ort(model)
         else:
             logger.warning(

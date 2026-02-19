@@ -16,6 +16,7 @@
 #include "custom_ops.hpp"
 #include "execution_provider.hpp"
 #include "lora.hpp"
+#include "mladf_version.hpp"
 #include "shared_buffer.hpp"
 #include "shared_weights.hpp"
 
@@ -145,7 +146,7 @@ class NpuOp : public ExecutionProviderExtensions {
   //            i.e. there wont be an operator that will always
   //            allocate same size across any of the buckets
   //            this helps to simplify re-binding xrt::bo logic
-  static size_t getNPUKernelGranularity(
+  size_t getNPUKernelGranularity(
     std::int64_t prompt_size,
     const std::vector<size_t>& granularity_options = {1024, 2048, 3072, 4096}
   ) {
@@ -154,12 +155,22 @@ class NpuOp : public ExecutionProviderExtensions {
       "granularity_options should be sorted"
     );
 
+    if (prompt_size > maxSeqLength()) {
+      throw std::invalid_argument(
+        "Prompt size " + std::to_string(prompt_size) +
+        " exceeds max sequence length " + std::to_string(maxSeqLength()) +
+        ". Set a higher value with the hybrid_opt_max_seq_length option in the "
+        "session options"
+      );
+    }
+
     for (size_t option : granularity_options) {
       if (prompt_size <= option) {
         return option;
       }
     }
-    return static_cast<size_t>(prompt_size);
+
+    return maxSeqLength();
   }
 
   bool static getPrefillBufferRelease(size_t npu_kernel_size) {
@@ -181,7 +192,7 @@ class NpuOp : public ExecutionProviderExtensions {
   void resetDpmToDefault();
 
   void setMladfVersion(const Ort::ConstKernelInfo& info);
-  const std::string& mladfVersion() const;
+  const MladfVersion& mladfVersion() const;
 
   bool hybrid_opt_enable_dynamic_dpm_ = false;
   Ort::Logger logger_{nullptr};
@@ -219,10 +230,10 @@ class NpuOp : public ExecutionProviderExtensions {
   std::string global_last_node_name_ = "";
   std::filesystem::path external_data_;
   bool continue_on_exception_ = false;
-  size_t max_seq_length_ = 3072;
+  size_t max_seq_length_ = 4096;
   float dynamic_jit_ = 1.0;
   bool already_init_dynamic_dpm_ = false;
-  std::string mladf_version_;
+  MladfVersion mladf_version_;
 
   struct State {
     bool performance_mode_set = false;

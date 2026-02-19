@@ -16,7 +16,7 @@ from typing import Any, Callable
 import pytest
 from packaging import version
 
-from .import_utils import is_accelerate_available, is_torch_available
+from .import_utils import is_accelerate_available, is_torch_available, is_vllm_available
 
 if is_torch_available():  # pragma: no cover
     # Set env var CUDA_VISIBLE_DEVICES="" to force cpu-mode
@@ -115,6 +115,11 @@ def require_torch_lower_or_equal(max_version: str) -> Callable[[Any], Any]:
         return wrapper
 
     return decorator
+
+
+def require_vllm(test_case: Any) -> Any:  # pragma: no cover
+    """Decorator marking a test that requires vllm."""
+    return unittest.skipUnless(is_vllm_available(), "test requires vllm")(test_case)
 
 
 def skip_torch_version(skip_version: str) -> Callable[[Any], Any]:

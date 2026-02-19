@@ -18,6 +18,7 @@ struct SkipSimplifiedLayerNormParams {
   int32 outputCount = 2;          // Number of output tensors.
   hstring dataType = L"Float";    // Which TensorProto DataType to use for our
                                   // tensors (e.g.,// Float).
+  bool isWtsFp32 = false;         // if weights are in fp32
 };
 
 // =====================================================================================================================

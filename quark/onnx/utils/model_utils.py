@@ -747,3 +747,35 @@ def register_custom_ops_library(session_options: onnxruntime.SessionOptions, dev
             f"Failed to register custom op library {get_library_path(device)} to ORT with {e},"
             "please check if the library has been compiled successfully."
         )
+
+
+def sanitize_model_outputs(outputs: list[np.ndarray[Any, Any]]) -> None:
+    """
+    Sanitize model outputs by replacing non-finite values (NaN / Inf).
+
+    For each output tensor:
+    - If all values are non-finite (NaN or Inf), all elements are replaced with 0.0.
+    - If the tensor contains both finite and non-finite values:
+        - NaN values are replaced with 0.0
+        - +Inf values are replaced with the maximum finite value in the tensor
+        - -Inf values are replaced with the minimum finite value in the tensor
+
+    The replacement is done in-place. A warning is logged if any non-finite
+    values are detected and replaced.
+
+    :param outputs: List of numpy arrays to be sanitized
+    """
+    has_nan_or_inf = False
+    for i, output in enumerate(outputs):
+        if not np.isfinite(output).all():
+            if np.isfinite(output).any():
+                outputs[i] = np.nan_to_num(output, nan=0.0, posinf=np.nanmax(output), neginf=np.nanmin(output))
+            else:
+                outputs[i] = np.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+            has_nan_or_inf = True
+    if has_nan_or_inf:
+        logger.warning(
+            "Non-finite values (NaN or Inf) were detected and replaced in model outputs. "
+            "NaN values are replaced with 0.0, +Inf with the maximum finite value, and -Inf with the minimum finite value. "
+            "This may affect quantization accuracy. Please verify the input model and the 'calibration_data_reader'."
+        )

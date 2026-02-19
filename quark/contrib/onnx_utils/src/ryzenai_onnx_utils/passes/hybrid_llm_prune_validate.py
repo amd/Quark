@@ -26,10 +26,10 @@ def validate_prune_attributes(
     # assuming any nodes that were pruned have the same domain as matmulnbits
     domain = params.get_domain("MatMulNBits")
     for node in extractor.graph.node:
-        if ryzenai_onnx_utils.matcher.has_attribute(node, "prune_enable") and node.domain != domain:
-            _logger.error(
-                f"prune_enable set on non-custom op {node.name}. You must offload this op or disable pruning."
-            )
+        if ryzenai_onnx_utils.matcher.has_attribute(node, "prune_enable"):
+            if node.domain != domain:
+                _logger.debug(f"prune_enable set on non-custom op {node.name}. Removing the attribute")
+            ryzenai_onnx_utils.matcher.delete_attribute(node, "prune_enable")
 
 
 REPLACEMENT = validate_prune_attributes

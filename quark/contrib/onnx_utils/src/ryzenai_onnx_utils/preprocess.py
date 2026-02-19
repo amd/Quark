@@ -349,6 +349,9 @@ def check_dynamic_inputs(
                         values = input_map[elem]
                     elif elem in fixed_shapes:
                         values = parse_user_val_int_or_list(fixed_shapes[elem])
+                    elif fixed_shapes:
+                        # if any fixed shapes are provided, assume any not provided are dynamic
+                        values = [""]
                     else:
                         values = prompt_for_dim(elem, parse_user_val_int_or_list)
                     if len(values) == num_graphs:
@@ -372,6 +375,21 @@ def check_dynamic_inputs(
     return graphs, has_dynamic_inputs, input_map, multiple_shapes
 
 
+def get_opsets(model: onnx.ModelProto) -> list[onnx.OperatorSetIdProto]:
+    if not model.opset_import:
+        opsets = [
+            onnx.OperatorSetIdProto(domain="ai.onnx", version=14),
+            onnx.OperatorSetIdProto(domain="com.microsoft", version=1),
+        ]
+    else:
+        opsets = []
+        for opset in model.opset_import:
+            # Convert empty domain to 'ai.onnx' to avoid ONNX auto-conversion issues
+            domain = opset.domain if opset.domain else "ai.onnx"
+            opsets.append(onnx.OperatorSetIdProto(domain=domain, version=opset.version))
+    return opsets
+
+
 def fix_input_output_shapes(
     extractor: onnx.utils.Extractor,
     output_path: Path,
@@ -384,10 +402,7 @@ def fix_input_output_shapes(
     for index, graph in enumerate(graphs):
         local_output_path = output_path.parent / (stem + f"_{index}.onnx")
         location = f"{stem}_{index}.{external_data_extension}"
-        opsets = [
-            onnx.OperatorSetIdProto(domain="ai.onnx", version=14),
-            onnx.OperatorSetIdProto(domain="com.microsoft", version=1),
-        ]
+        opsets = get_opsets(extractor.model)
         model = onnx.helper.make_model(graph, opset_imports=opsets, ir_version=extractor.model.ir_version)
         (Path(local_output_path).parent / location).unlink(True)
         onnx.save_model(
@@ -517,7 +532,7 @@ def do_infer_shapes(extractor: onnx.utils.Extractor, inputs: list[str] | None = 
     original_inputs = [i.name for i in graph.input] if graph.input else inputs
 
     input_map = ryzenai_onnx_utils.matcher.build_input_map(extractor)
-    has_nested_if = False
+
     for node in graph.node:
         if node.op_type == "If":
             then_branch = onnx.helper.get_node_attr_value(node, "then_branch")
@@ -528,19 +543,14 @@ def do_infer_shapes(extractor: onnx.utils.Extractor, inputs: list[str] | None = 
             graph_1 = do_infer_shapes(extractor_1, original_inputs)
             ryzenai_onnx_utils.matcher.set_attribute(node, "then_branch", graph_0)
             ryzenai_onnx_utils.matcher.set_attribute(node, "else_branch", graph_1)
-            has_nested_if = True
 
-    if graph.input and has_nested_if:
-        # top-level graph with an if. Don't infer shapes here
-        return graph
+    assert original_inputs is not None
+    if all(x in input_map for x in original_inputs):
+        # leaf of the if-then tree with the real graph
+        wavefront = list(original_inputs)
     else:
-        assert original_inputs is not None
-        if all(x in input_map for x in original_inputs):
-            # leaf of the if-then tree with the real graph
-            wavefront = list(original_inputs)
-        else:
-            # intermediate if-then without the real graph
-            return graph
+        # intermediate if-then without the real graph
+        return graph
 
     for tvi in graph.input:
         extractor.vimap[tvi.name] = tvi
@@ -550,6 +560,12 @@ def do_infer_shapes(extractor: onnx.utils.Extractor, inputs: list[str] | None = 
         output_set.add(tvi.name)
 
     _infer_shapes(wavefront, extractor, output_set, input_map)
+
+    # some models still have uninferred outputs for some reason like Phi-4-MM-vision
+    # double check and infer any missing outputs before continuing
+    for node in graph.node:
+        if not all_outputs_inferred(node, extractor, False):
+            infer_outputs(node, extractor)
 
     # remove inputs from internal values
     for tvi in graph.input:
@@ -664,7 +680,7 @@ def infer_shapes(
     old_external_location: str,
     external_data_extension: str,
 ) -> None:
-    extractor = ryzenai_onnx_utils.matcher.load_extractor(input_path, False)
+    extractor = ryzenai_onnx_utils.matcher.load_extractor(input_path, True)
 
     # the location is only used if save_as_external is True
     stem = output_path.stem
@@ -687,10 +703,7 @@ def infer_shapes(
     except ValueError:
         _logger.warning("shape infer infinite loop, continue.")
         graph = extractor.graph
-    opsets = [
-        onnx.OperatorSetIdProto(domain="ai.onnx", version=14),
-        onnx.OperatorSetIdProto(domain="com.microsoft", version=1),
-    ]
+    opsets = get_opsets(extractor.model)
     model = onnx.helper.make_model(graph, opset_imports=opsets, ir_version=extractor.model.ir_version)
     with contextlib.chdir(output_path.parent):
         onnx.save_model(
@@ -699,16 +712,14 @@ def infer_shapes(
             save_as_external_data=save_as_external,
             location=location,
         )
-    # for some reason, the step above doesn't save a new external file so
-    # rename the old one to the new name
-    if save_as_external and not output_external_data.exists():
-        for path in [
-            input_path.parent / old_external_location,
-            input_path.parent / f"temp_external.{external_data_extension}",
-        ]:
-            if path.exists():
-                os.rename(path, output_path.parent / location)
-                break
+
+    if save_as_external:
+        temp_path = output_path.parent / f"temp_external.{external_data_extension}"
+        if temp_path.exists():
+            if not output_external_data.exists():
+                temp_path.rename(output_path.parent / location)
+            else:
+                temp_path.unlink(True)
 
 
 def complete_node_names(input_path: Path, output_path: Path) -> None:
@@ -794,7 +805,11 @@ def can_expr_be_resolved(expr: str, symbol_table: set[str]) -> bool:
 def infer_symbolic_shapes(model: onnx.ModelProto) -> onnx.ModelProto:
     # huisu: SymbolicShapeInference has bugs with nhwcconv with fixed shapes
     # cannot replace the existing shape inference with SymbolicShapeInference
-    inferred_model: onnx.ModelProto | None = SymbolicShapeInference.infer_shapes(model, auto_merge=True, verbose=1)
+    try:
+        inferred_model: onnx.ModelProto | None = SymbolicShapeInference.infer_shapes(model, auto_merge=True, verbose=1)
+    except Exception as e:
+        _logger.warning(f"Symbolic shape inference failed with error: {e}. Proceeding with original model.")
+        inferred_model = model
     assert inferred_model is not None
     return inferred_model
 
@@ -932,6 +947,7 @@ def main(args: argparse.Namespace) -> None:
             save_as_external_data=save_as_external,
             location=location,
         )
+
     _logger.info("Inferring shapes...")
     if args.optimize is None:
         tmp_model_1 = tmp_model_0
@@ -965,6 +981,13 @@ def main(args: argparse.Namespace) -> None:
                 f"{args.output_path.stem}.{args.external_data_extension}",
                 optimizer.finalize(),
                 args.size_threshold,
+            )
+            infer_shapes(
+                args.output_path,
+                args.output_path,
+                save_as_external,
+                f"{args.output_path.stem}.{args.external_data_extension}",
+                args.external_data_extension,
             )
     dynamic_shape_infer(
         args.output_path,

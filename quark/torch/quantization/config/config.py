@@ -2272,12 +2272,12 @@ class RotationConfig(AlgoConfig):
             raise NotImplementedError("trainable=True along `r3=True` is not implemented.")
 
         if self.online_config is not None:
-            if not self.online_r1_rotation or not self.r1 or not self.trainable:
+            if (not self.online_r1_rotation and not self.r1) and not self.r4:
                 raise ValueError(
-                    f"Got online_config={self.online_config}, r1={self.r1}, trainable={self.trainable}, for which online_config={self.online_config} has no effect."
+                    f"Got online_r1_rotation={self.online_r1_rotation}, r1={self.r1}, r4={self.r4}, for which the provided online_config has no effect: {self.online_config}."
                 )
         else:
-            if self.trainable and self.r1 and self.online_r1_rotation:
+            if self.r1 and self.online_r1_rotation:
                 self.online_config = OnlineRotationConfig(shared_parallel=False)
 
         if self.trainable and self.train_smooth is None:
@@ -2302,8 +2302,9 @@ class RotationConfig(AlgoConfig):
 
 
 @dataclass
-class OnlineRotationConfig:
+class OnlineRotationConfig(BaseConfigImpl):
     shared_parallel: bool
+    online_rotation_layers: list[str] | None = None
 
 
 @dataclass

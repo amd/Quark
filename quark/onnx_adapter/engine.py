@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import Any
 
 import onnx
+from onnx import ModelProto
 
 from .onnx_adapter_pass import ONNXAdapterPass
 from .passes import (
@@ -82,12 +83,18 @@ class Engine:
         """Register a pass configuration so that it could be instantiated and executed later."""
         self._passes_registry[name] = pass_obj
 
-    def run(self) -> None:
+    def run(self, float_model: ModelProto | None = None) -> ModelProto | None:
         """Run all the registered passes on the input model and produce one or more (intermediate) output models."""
-        model = onnx.load(self._config["input_model_path"])
+        if float_model is None:
+            model = onnx.load(self._config["input_model_path"])
+        else:
+            model = float_model
         for pass_ in self._config["passes"]:
             pass_class = self._passes_registry[pass_]
             pass_instance = pass_class(self._config["passes"][pass_])
             # TODO: Add code that if `Engine.save_intermediate_models is True`, save the model after each pass for debugging purposes
             model = pass_instance._run_for_config(model, self._config["passes"][pass_])
+        if float_model is not None:
+            return model
         onnx.save(model, self._config["output_model_path"])
+        return None

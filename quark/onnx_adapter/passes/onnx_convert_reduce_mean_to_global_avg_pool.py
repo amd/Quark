@@ -115,10 +115,7 @@ class ONNXConvertReduceMeanToGlobalAvgPoolPass(ONNXAdapterPass):
         Returns:
             ModelProto: The processed ONNX model with conversion applied if enabled.
         """
-        if (
-            "convert_reduce_mean_to_global_avg_pool" in config
-            and config["convert_reduce_mean_to_global_avg_pool"] is not None
-        ):
+        if "convert_reduce_mean_to_global_avg_pool" in config and config["convert_reduce_mean_to_global_avg_pool"]:
             model = self._onnx_convert_reduce_mean_to_global_avg_pool(model)
         else:
             logger.warning(

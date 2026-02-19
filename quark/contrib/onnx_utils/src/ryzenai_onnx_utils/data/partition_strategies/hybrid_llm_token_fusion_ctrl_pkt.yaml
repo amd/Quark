@@ -7,7 +7,7 @@ attributes:
     xclbins: "stx_LLM_TPS_10bo_mladf_2x4x4_bfp16_gemm_mlp_flat_rms"
     op_namespaces: "hybrid"
     # set to "" or remove to use BF16 weights
-    # is_bfp16: "weights"
+    mladf_version: "flat"
     is_llm: true
     enable_ctrl_pkt: true
 # define the passes to run. These passes are defined in passes/ and are executed

@@ -27,6 +27,23 @@ LutKernel::LutKernel(
   : HybridKernel(ort_api, info, session_configs) {
   // printLog("Constructing LutKernel custom op...");
 
+  Ort::ConstKernelInfo const_info{info};
+
+  int is_lut_const = 0;
+  auto lut_tensor = const_info.GetTensorConstantInput(kLUTIdx, &is_lut_const);
+
+  // get input data size
+  const auto dtype = lut_tensor.GetTensorTypeAndShapeInfo().GetElementType();
+
+  if (dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+    datum_size_ = 4;
+  } else if ((dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) ||
+             (dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16)) {
+    datum_size_ = 2;
+  } else {
+    throw std::runtime_error("unsupported dtype in LUT");
+  }
+
   // setup op attributes
   vocab_size_ = getAttribute<int64_t>("vocab_size");
   embedding_dim_ = getAttribute<int64_t>("embedding_dim");
@@ -46,8 +63,8 @@ LutKernel::LutKernel(
 #ifdef _WIN32
     hFile_ = CreateFile(
       external_data_path_.c_str(),  // File name
-      GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr
+      GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, nullptr
     );
 
     const auto& hybrid_opt_embedding_mmap_str =
@@ -138,9 +155,10 @@ LutKernel::~LutKernel() {
 
 struct embedding_payload {
   const std::int64_t* indices_data_ptr;
-  const std::uint16_t* lut_data_ptr;
-  std::uint16_t* out_data_ptr;
+  const std::uint8_t* lut_data_ptr;
+  std::uint8_t* out_data_ptr;
   int64_t embedding_dim;
+  size_t datum_size;
 };
 
 static void embedding_lut(void* data, size_t index) {
@@ -150,15 +168,16 @@ static void embedding_lut(void* data, size_t index) {
   const auto& lut_data_ptr = payload->lut_data_ptr;
   const auto& base_out_data_ptr = payload->out_data_ptr;
   const auto& embedding_dim = payload->embedding_dim;
+  const auto& datum_size = payload->datum_size;
 
   auto lut_index = indices_data_ptr[index];
-  auto out_data_ptr = &base_out_data_ptr[index * embedding_dim];
+  std::uint8_t* out_data_ptr =
+    &base_out_data_ptr[index * embedding_dim * datum_size];
+  const std::uint8_t* src_data_ptr =
+    &lut_data_ptr[lut_index * embedding_dim * datum_size];
   // index can technically be in range [-vocab_size, vocab_size - 1]
   // lut_index = (lut_index + indices_dims.at(1)) % indices_dims.at(1);
-  memcpy(
-    out_data_ptr, &lut_data_ptr[lut_index * embedding_dim],
-    embedding_dim * sizeof(std::uint16_t)
-  );
+  memcpy(out_data_ptr, src_data_ptr, embedding_dim * datum_size);
 }
 
 void LutKernel::Compute(OrtKernelContext* context) {
@@ -180,13 +199,13 @@ void LutKernel::Compute(OrtKernelContext* context) {
     );
   }
 
-  const std::uint16_t* lut_data_ptr = nullptr;
+  const std::uint8_t* lut_data_ptr = nullptr;
 
   if (use_external_lut) {
-    lut_data_ptr = (const std::uint16_t*)external_lut_ptr_;
+    lut_data_ptr = (const std::uint8_t*)external_lut_ptr_;
   } else {
-    auto lut_data = lut.GetTensorData<std::uint16_t>();
-    lut_data_ptr = static_cast<const std::uint16_t*>(lut_data);
+    auto lut_data = lut.GetTensorData<std::uint8_t>();
+    lut_data_ptr = static_cast<const std::uint8_t*>(lut_data);
   }
 
   // typically 1D vector of [int64]
@@ -204,9 +223,8 @@ void LutKernel::Compute(OrtKernelContext* context) {
 
   auto output = ctx.GetOutput(0, out_dims);  // Output
 
-  // NOTE: expecting embedding to be float16 or bfloat16
-  auto out_data = output.GetTensorMutableData<uint16_t>();
-  std::uint16_t* out_data_ptr = static_cast<std::uint16_t*>(out_data);
+  auto out_data = output.GetTensorMutableData<uint8_t>();
+  std::uint8_t* out_data_ptr = static_cast<std::uint8_t*>(out_data);
 
   // serial implementation
   /*
@@ -222,7 +240,7 @@ void LutKernel::Compute(OrtKernelContext* context) {
   */
 
   embedding_payload payload = {
-    indices_data_ptr, lut_data_ptr, out_data_ptr, embedding_dim_
+    indices_data_ptr, lut_data_ptr, out_data_ptr, embedding_dim_, datum_size_
   };
 
   ctx.ParallelFor(

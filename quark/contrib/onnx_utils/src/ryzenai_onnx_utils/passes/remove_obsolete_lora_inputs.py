@@ -7,6 +7,8 @@ import ryzenai_onnx_utils.matcher
 from ryzenai_onnx_utils.passes import global_pass
 from ryzenai_onnx_utils.typing import PatternType
 
+from .model_type import ModelType
+
 
 def _get_graph(extractor: onnx.utils.Extractor) -> onnx.GraphProto:
     """Helper to retrieve the graph proto from an extractor.
@@ -71,10 +73,15 @@ def _remove_from_dynamic_dispatch(graph: onnx.GraphProto, removed_inputs: set[st
             new_idx += 1
 
         # Update the 'input_num' attribute to reflect the new input count
+        model_type = ModelType.LLM_TOKEN
         for attr in node.attribute:
+            if attr.name == "model_type":
+                model_type = attr.i
+        for attr in node.attribute:  # -1 for eliminating the extra added input "sequence_length" in prefill
             if attr.name == "input_num":
-                attr.i = len(kept_inputs)
-                break
+                attr.i = (len(kept_inputs) - 1) if (model_type == ModelType.LLM_PREFILL) else len(kept_inputs)
+            if attr.name == "seq_len":
+                attr.i = (len(kept_inputs) - 1) if (model_type == ModelType.LLM_PREFILL) else len(kept_inputs)
 
         # Process all 'input_shape_i' attributes
         # We'll collect attributes to delete and rename the rest

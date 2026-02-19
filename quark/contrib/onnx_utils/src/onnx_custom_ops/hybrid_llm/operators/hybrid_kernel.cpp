@@ -135,7 +135,9 @@ void HybridKernel::createGpu(
         } else {
           tensorInfo.shape = shape.empty() ? std::vector<int64_t>{1} : shape;
           if (tensorInfo.shape[0] == 0) continue;
-          if (with_custom_allocator_) {
+          if (RyzenMM::IsKnown(
+                RyzenMM::UnmanagedBufferPtr(val.GetTensorRawData())
+              )) {
             tensorInfo.UseRMMAllocatedMemory(val.GetTensorRawData());
           } else {
             // Set the D3D resource and CPU mapped memory for the constant

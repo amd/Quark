@@ -19,8 +19,8 @@ void OrtMatMul::construct(const Ort::ConstKernelInfo& info) {
 }
 
 void OrtMatMul::execute(
-  OrtKernelContext* context, float* activation_ptr,
-  std::vector<int64_t> act_dim, float* weights_ptr,
+  OrtKernelContext* context, const float* activation_ptr,
+  std::vector<int64_t> act_dim, const float* weights_ptr,
   std::vector<int64_t> wts_dim, float* output_ptr, std::vector<int64_t> out_dim
 ) {
   if (!isInitialized()) {
@@ -41,11 +41,13 @@ void OrtMatMul::execute(
     Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
   Ort::Value activation = Ort::Value::CreateTensor<float>(
-    info, activation_ptr, act_size, act_dim.data(), act_dim.size()
+    info, const_cast<float*>(activation_ptr), act_size, act_dim.data(),
+    act_dim.size()
   );
 
   Ort::Value weights = Ort::Value::CreateTensor<float>(
-    info, weights_ptr, wts_size, wts_dim.data(), wts_dim.size()
+    info, const_cast<float*>(weights_ptr), wts_size, wts_dim.data(),
+    wts_dim.size()
   );
 
   Ort::Value out = Ort::Value::CreateTensor<float>(

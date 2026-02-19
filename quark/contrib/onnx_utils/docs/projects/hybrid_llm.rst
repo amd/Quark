@@ -146,7 +146,7 @@ Then, using the fixed shape model, partition it for NPU token fusion:
 
     onnx_utils partition /path/to/fixed.onnx /path/to/output/dir hybrid_llm_fusion.yaml -v --save-as-external --model-name token
 
-This step will produce the DD cache directory in ``/path/to/output/dir/.cache``.
+This step will produce the DD cache directory in ``/path/to/output/dir/cache``.
 Save the contents of this directory as it will be needed at runtime.
 
 Post-processing is required to combine the prefill and token phase models into one.
@@ -172,7 +172,7 @@ A minimal example of the genai_config.json session options for this is shown bel
         "external_data_file": "prefill.pb.bin",
         "custom_allocator": "ryzen_mm",
         "amd_options": {
-            "dd_cache": "/path/to/.cache",
+            "dd_cache": "/path/to/cache",
             "model_name": "hybrid",
             "dd_root": "/path/to/dd",
             "compile_fusion_rt": "1",
@@ -278,7 +278,7 @@ The model files you need to run are:
 * ``fusion.onnx.data``
 * ``token_fusion.pb.bin`` (if token phase is eager)
 * ``token_fusion.bin`` (if token phase is eager and NPU JIT was enabled)
-* ``.cache`` directory
+* ``cache`` directory
 
 A minimal example of the genai_config.json session options for this is shown below:
 
@@ -290,7 +290,7 @@ A minimal example of the genai_config.json session options for this is shown bel
         "external_data_file": "prefill.pb.bin", // not needed for full fusion
         "custom_allocator": "ryzen_mm",
         "amd_options": {
-            "dd_cache": "/path/to/.cache",
+            "dd_cache": "/path/to/cache",
             "model_name": "hybrid",
             "dd_root": "/path/to/dd",
             "compile_fusion_rt": "1",
@@ -320,7 +320,7 @@ For any optional arguments, the default values are shown.
         "amd_options": {
             # required for fusion - set the path to where the DD files required
             # for fusion are located
-            "dd_cache": "/path/to/DD_cache/.cache",
+            "dd_cache": "/path/to/DD_cache/cache",
             # required for fusion - set the name of the model type for fusion.
             # For newer prefill and token fusion LLM models, it's not needed
             "model_name": "hybrid",
@@ -391,7 +391,7 @@ For any optional arguments, the default values are shown.
             "hybrid_opt_token_backend" = "gpu",
             # optional - controls the NPU max seq len which is used to size things
             # like MAX_M for the NPU
-            "hybrid_opt_max_seq_length" = "3072",
+            "hybrid_opt_max_seq_length" = "4096",
             # optional - if the embedding Gather has been replaced by a custom
             # op, then this option will enable using a mmap for it to save
             # memory for some performance penalty

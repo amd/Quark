@@ -14,6 +14,11 @@ def remove_unused_io(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> None:
+    nested_graph = params.attributes.get("_nested_graph", False)
+    if nested_graph:
+        # for nested graphs, we cannot easily remove unused IO because it needs
+        # changes to the parent graph as well
+        return
     inputs_to_remove = []
     for index, input_tvi in enumerate(extractor.model.graph.input):
         if not ryzenai_onnx_utils.matcher.is_used_input(input_tvi.name, extractor.model.graph):

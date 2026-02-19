@@ -6,8 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: "stx_llama2_mladf_2x4x4_v2_gemmbfp16_silu_mul_mha_rms_rope_unified"
     op_namespaces: "hybrid"
-    # set to "" or remove to use BF16 weights
-    is_bfp16: "weights"
+    mladf_version: "v2"
     buffer_factor: 2
     is_ttft: true
     total_seq_len: 4096
@@ -36,7 +35,7 @@ passes:
     - simplify_casts
     - dd.llama_3_0
     - dd.llama_3_1
-    - hybrid_llm_swap_cast_slice
+    - promote_slices
     - hybrid_llm_cast_logits
 inherit_passes_after: !include [cleanup.yaml]
 postprocess:

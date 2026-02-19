@@ -20,6 +20,7 @@ struct NormParams {
   hstring dataType = L"Float";  // Which TensorProto DataType to use for our
   std::vector<int32> shapeIn;
   std::vector<int32> shapeOut;
+  bool isWtsFp32 = false;  // whether scale and bias are in fp32
   // tensors (e.g.,// Float).
 };
 

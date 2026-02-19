@@ -4,6 +4,7 @@
 #
 
 from pathlib import Path
+from typing import Any
 
 import onnx
 from onnxruntime import GraphOptimizationLevel, SessionOptions
@@ -151,12 +152,17 @@ def optimize_model_using_onnxrt(inp_model: Path | onnx.ModelProto, opt_model_pat
 
 
 @log_errors
-def optimize_model_using_onnxslim(inp_model: onnx.ModelProto) -> onnx.ModelProto:
+def optimize_model_using_onnxslim(inp_model: onnx.ModelProto, config: dict[str, Any] = {}) -> onnx.ModelProto:
     """
     Simplify the model using the third-party library ``onnxslim``.
 
     :param onnx.ModelProto inp_model: the original onnx model to optimize.
-
+    :param dict[str, Any] config: Optional configuration dictionary for onnxslim optimization.
+                                  All parameters are passed directly to ``onnxslim.slim()`` as keyword arguments.
+                                  Example configurations (e.g., {'skip_fusion_patterns': ['EliminationSlice']} to skip
+                                  slice fusion patterns, or {'verbose': True, 'model_check': True} for debugging).
+                                  For a complete list of supported parameters, refer to the `onnxslim source code
+                                  <https://github.com/inisis/OnnxSlim>`_ or the ``onnxslim.slim()`` function signature.
     :return: The optimized ONNX model.
     """
 
@@ -166,7 +172,7 @@ def optimize_model_using_onnxslim(inp_model: onnx.ModelProto) -> onnx.ModelProto
     from onnxslim import slim
 
     try:
-        opt_model = slim(inp_model)
+        opt_model = slim(inp_model, **config)
     except Exception as e:
         logger.warning(f"Fail to Simplify ONNX model because of {e}.")
         opt_model = inp_model

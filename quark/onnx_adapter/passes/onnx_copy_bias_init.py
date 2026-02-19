@@ -51,7 +51,7 @@ class ONNXCopyBiasInitPass(ONNXCopySharedInitPass):
         Returns:
             ModelProto: The modified ONNX model after applying the pass.
         """
-        if "shared_bias_op_types" in config and config["shared_bias_op_types"] is not None:
+        if "shared_bias_op_types" in config and config["shared_bias_op_types"]:
             model = self._onnx_copy_shared_init(model, config["shared_bias_op_types"], "duplicated", True)
         else:
             logger.warning(

@@ -6,7 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: "stx_LLM_TPS_7bo_mladf_2x4x4_bfp16_gemm_mlp_flat_rms"
     op_namespaces: "hybrid"
-    is_bfp16: "flat"
+    mladf_version: "flat"
     is_llm: true
     enable_ctrl_pkt: false
 

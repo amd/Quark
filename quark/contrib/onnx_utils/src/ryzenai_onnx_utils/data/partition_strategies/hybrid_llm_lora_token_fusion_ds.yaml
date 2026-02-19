@@ -11,7 +11,7 @@ attributes:
     fuse_qk_mha: false
     enable_model_hash: true
     offload_embedding: true
-    is_bfp16: "flat"
+    mladf_version: "flat"
     enable_ctrl_pkt: true
     dynamic_shape_list:
         - attention_mask_padded: 256

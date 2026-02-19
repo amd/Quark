@@ -45,7 +45,7 @@ struct QmoeBase : public HybridOperator<QmoeKernel, kName> {
     return {"hybrid_opt_qmoe_bind_all"};
   }
 
-  size_t GetInputTypeCount() const noexcept override { return 13; }
+  size_t GetInputTypeCount() const noexcept override { return 16; }
 
   size_t GetOutputTypeCount() const noexcept override { return 1; }
 
@@ -61,12 +61,15 @@ struct QmoeBase : public HybridOperator<QmoeKernel, kName> {
       case 5:   // fc2 experts weights
       case 6:   // fc2 experts scales
       case 7:   // fc2 experts bias
-      case 11:  // packed fc1 expert
-      case 12:  // packed fc2 expert
+      case 14:  // packed fc1 expert
+      case 15:  // packed fc2 expert
         return OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_REQUIRED;
       case 8:   // fc3 expert weights
       case 9:   // fc3 expert scales
       case 10:  // fc3 expert bias
+      case 11:  // fc1 zero point
+      case 12:  // fc2 zero point
+      case 13:  // fc3 zero point
         return OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_OPTIONAL;
       default:
         return OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_OPTIONAL;

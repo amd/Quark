@@ -139,7 +139,7 @@ class ONNXFuseL2NormPass(ONNXAdapterPass):
         Returns:
             ModelProto: Updated ONNX model after applying L2Norm fusion.
         """
-        if "fuse_l2_norm" in config and config["fuse_l2_norm"] is not None:
+        if "fuse_l2_norm" in config and config["fuse_l2_norm"]:
             model = self._onnx_fuse_l2_norm(model)
         else:
             logger.warning(

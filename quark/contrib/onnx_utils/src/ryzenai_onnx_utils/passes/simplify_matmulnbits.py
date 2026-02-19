@@ -27,9 +27,17 @@ def replacement(
     input_num = len(matmul.input)
     assert input_num <= 6, f"MatMulNBits {matmul.name} has more than 6 inputs"
 
+    new_initializers = []
+    scales_shape = ryzenai_onnx_utils.matcher.get_shape(matmul.input[2], extractor)
+    if len(scales_shape) == 1:
+        # convert back to 2D scales if needed
+        k_blocks = ryzenai_onnx_utils.matcher.get_shape(matmul.input[1], extractor)[1]
+        scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(matmul.input[2], extractor)
+        new_initializers.append(onnx.numpy_helper.from_array(scales.reshape(-1, k_blocks), matmul.input[2]))
+
     # this is already the simplest MatMulNBits
     if input_num == 3:
-        return subgraph, [], None
+        return subgraph, new_initializers, None
 
     new_inputs = matmul.input[:3]
     bias_name = ""
@@ -61,7 +69,7 @@ def replacement(
     )
     ryzenai_onnx_utils.matcher.copy_attributes(matmul, new_node)
 
-    return [new_node], [], None
+    return [new_node], new_initializers, None
 
 
 PATTERN = ["MatMulNBits([?,?,?,?,?,?], ?)"]

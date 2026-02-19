@@ -148,6 +148,6 @@ class PatternPass(ONNXAdapterPass):
 
             matcher.replace(extractor, self._run_for_pattern, pass_id, config, max_to_replace)
 
-        ryzenai_onnx_utils.matcher.save_external_data_with_extractor(extractor.model, extractor, "", "", False)
+        ryzenai_onnx_utils.matcher.save_initializers_with_extractor(extractor, "", "")
 
         return extractor.model

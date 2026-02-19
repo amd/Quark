@@ -121,6 +121,8 @@ struct AMDMatMulNBitsKernel : public JitNode<AMDMatMulNBitsKernel>,
 
   LoraBuffer lora_buffers_;
 
+  bool has_scratch_buffer_{false};
+
   int cnt;
   int64_t m_N, m_K, m_bits, m_block_size, m_acc_level, npu_k, npu_n;
   bool m_asymmetric, m_biased;

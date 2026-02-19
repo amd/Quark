@@ -47,6 +47,11 @@ NormOperator::NormOperator(const Context& pContext, const NormParams& params)
     batchSize, sequenceLength * seqLenAfterReshape, params.scaleShape
   };
 
+  auto dataType = m_dataType;
+  if (m_norm.isWtsFp32) {
+    dataType = DML_TENSOR_DATA_TYPE_FLOAT32;
+  }
+
   m_inputTensorDescVec.emplace_back(
     CreateTensorDesc(L"X", L"DHW", m_dataType, reshapeTensor, strides)
   );
@@ -57,13 +62,13 @@ NormOperator::NormOperator(const Context& pContext, const NormParams& params)
 
   if (m_norm.hasScale) {
     m_inputTensorDescVec.emplace_back(
-      CreateTensorDesc(L"scale", L"DHW", m_dataType, vectorShape, strides)
+      CreateTensorDesc(L"scale", L"DHW", dataType, vectorShape, strides)
     );
   }
 
   if (m_norm.hasBias) {
     m_inputTensorDescVec.emplace_back(
-      CreateTensorDesc(L"bias", L"DHW", m_dataType, vectorShape, strides)
+      CreateTensorDesc(L"bias", L"DHW", dataType, vectorShape, strides)
     );
   }
 
@@ -91,12 +96,49 @@ NormOperator::NormOperator(const Context& pContext, const NormParams& params)
 
   std::array<uint32_t, 1> axes = {3};
 
+  // CAST INPUT TO FP32 IF NEEDED
+  DmlTensorDesc normInputDmlTensorDesc = dmlTensorX;
+  DML_CAST_OPERATOR_DESC normInputCastDmlDesc{};
+  DML_OPERATOR_DESC normInputCastOpDesc{};
+
+  DmlTensorDesc normOutputDmlTensorDesc = dmlTensorY;
+  DML_CAST_OPERATOR_DESC normOutputCastDmlDesc{};
+  DML_OPERATOR_DESC normOutputCastOpDesc{};
+
+  uint32_t nodeIndex = 0;
+  uint32_t inputCastNodeIndex = 0;
+  uint32_t outputCastNodeIndex = 0;
+  if (m_norm.isWtsFp32) {
+    // create a new fp32 tensor desc for casted input
+    auto inputTensorDesc =
+      CreateTensorDesc(L"CastInput", L"DHW", dataType, reshapeTensor, strides);
+    ConvertTensorDesc(*inputTensorDesc, &normInputDmlTensorDesc);
+    normInputCastDmlDesc.InputTensor = &dmlTensorX.desc;
+    normInputCastDmlDesc.OutputTensor = &normInputDmlTensorDesc.desc;
+    normInputCastOpDesc.Type = DML_OPERATOR_CAST;
+    normInputCastOpDesc.Desc = &normInputCastDmlDesc;
+
+    opDescs.push_back(&normInputCastOpDesc);
+    inputCastNodeIndex = nodeIndex++;
+
+    auto outputTensorDesc =
+      CreateTensorDesc(L"CastOut", L"DHW", dataType, reshapeTensor, strides);
+    ConvertTensorDesc(*outputTensorDesc, &normOutputDmlTensorDesc);
+    normOutputCastDmlDesc.InputTensor = &normOutputDmlTensorDesc.desc;
+    normOutputCastDmlDesc.OutputTensor = &dmlTensorY.desc;
+    normOutputCastOpDesc.Type = DML_OPERATOR_CAST;
+    normOutputCastOpDesc.Desc = &normOutputCastDmlDesc;
+
+    opDescs.push_back(&normOutputCastOpDesc);
+    outputCastNodeIndex = nodeIndex++;
+  }
+
   // Build the main DirectML operator descriptor.
   DML_MEAN_VARIANCE_NORMALIZATION2_OPERATOR_DESC dmlDesc = {};
-  dmlDesc.InputTensor = &dmlTensorX.desc;
+  dmlDesc.InputTensor = &normInputDmlTensorDesc.desc;
   dmlDesc.ScaleTensor = m_norm.hasScale ? &dmlTensorS.desc : nullptr;
   dmlDesc.BiasTensor = nullptr;
-  dmlDesc.OutputTensor = &dmlTensorY.desc;
+  dmlDesc.OutputTensor = &normOutputDmlTensorDesc.desc;
   dmlDesc.UseMean = m_norm.UseMean;  // false for simplified Layer Norm
   dmlDesc.UseVariance = m_norm.UseVariance;
   dmlDesc.Axes = axes.data();
@@ -109,6 +151,7 @@ NormOperator::NormOperator(const Context& pContext, const NormParams& params)
   slrnDesc.Desc = &dmlDesc;
 
   opDescs.push_back(&slrnDesc);
+  uint32_t slrnNodeIndex = nodeIndex++;
 
   // Construct the graph
   std::vector<DML_INPUT_GRAPH_EDGE_DESC> inputEdges;
@@ -119,23 +162,56 @@ NormOperator::NormOperator(const Context& pContext, const NormParams& params)
     static_cast<uint32_t>(opDescs.size())
   );
 
-  DML_INPUT_GRAPH_EDGE_DESC inputGraphEdge = {};
-  inputGraphEdge.GraphInputIndex = 0;
-  inputGraphEdge.ToNodeIndex = 0;
-  inputGraphEdge.ToNodeInputIndex = 0;
-  inputEdges.push_back(inputGraphEdge);
+  if (m_norm.isWtsFp32) {
+    // Input cast node is first
+    DML_INPUT_GRAPH_EDGE_DESC inputCastEdge = {};
+    inputCastEdge.GraphInputIndex = 0;
+    inputCastEdge.ToNodeIndex = inputCastNodeIndex;
+    inputCastEdge.ToNodeInputIndex = 0;
+    inputEdges.push_back(inputCastEdge);
+
+    // Norm node input from cast node output
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC castToNormInputEdge = {};
+    castToNormInputEdge.FromNodeIndex = inputCastNodeIndex;
+    castToNormInputEdge.FromNodeOutputIndex = 0;
+    castToNormInputEdge.ToNodeIndex = slrnNodeIndex;
+    castToNormInputEdge.ToNodeInputIndex = 0;
+    intermediateEdges.push_back(castToNormInputEdge);
+
+    // Norm node output to cast node input
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC normOutputToCastEdge = {};
+    normOutputToCastEdge.FromNodeIndex = slrnNodeIndex;
+    normOutputToCastEdge.FromNodeOutputIndex = 0;
+    normOutputToCastEdge.ToNodeIndex = outputCastNodeIndex;
+    normOutputToCastEdge.ToNodeInputIndex = 0;
+    intermediateEdges.push_back(normOutputToCastEdge);
+
+    // Output cast node to graph output
+    DML_OUTPUT_GRAPH_EDGE_DESC outputCastEdge = {};
+    outputCastEdge.FromNodeIndex = outputCastNodeIndex;
+    outputCastEdge.FromNodeOutputIndex = 0;
+    outputCastEdge.GraphOutputIndex = 0;
+    outputEdges.push_back(outputCastEdge);
+  } else {
+    // Directly connect inputs and outputs
+    DML_INPUT_GRAPH_EDGE_DESC inputGraphEdge = {};
+    inputGraphEdge.GraphInputIndex = 0;
+    inputGraphEdge.ToNodeIndex = slrnNodeIndex;
+    inputGraphEdge.ToNodeInputIndex = 0;
+    inputEdges.push_back(inputGraphEdge);
+
+    DML_OUTPUT_GRAPH_EDGE_DESC outputGraphEdge = {};
+    outputGraphEdge.FromNodeIndex = slrnNodeIndex;
+    outputGraphEdge.FromNodeOutputIndex = 0;
+    outputGraphEdge.GraphOutputIndex = 0;
+    outputEdges.push_back(outputGraphEdge);
+  }
 
   DML_INPUT_GRAPH_EDGE_DESC inputScaleEdge = {};
-  inputGraphEdge.GraphInputIndex = 1;
-  inputGraphEdge.ToNodeIndex = 0;
-  inputGraphEdge.ToNodeInputIndex = 1;
-  inputEdges.push_back(inputGraphEdge);
-
-  DML_OUTPUT_GRAPH_EDGE_DESC outputGraphEdge = {};
-  outputGraphEdge.FromNodeIndex = 0;
-  outputGraphEdge.FromNodeOutputIndex = 0;
-  outputGraphEdge.GraphOutputIndex = 0;
-  outputEdges.push_back(outputGraphEdge);
+  inputScaleEdge.GraphInputIndex = 1;
+  inputScaleEdge.ToNodeIndex = slrnNodeIndex;
+  inputScaleEdge.ToNodeInputIndex = 1;
+  inputEdges.push_back(inputScaleEdge);
 
   HRESULT status = S_OK;
   for (size_t i = 0; i < opDescs.size(); ++i) {

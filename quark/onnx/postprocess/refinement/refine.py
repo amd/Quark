@@ -8,6 +8,7 @@ import numpy as np
 import onnx
 import onnx.numpy_helper
 from onnx import ModelProto, NodeProto, TensorProto, helper
+from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 
 from quark.onnx.quantization.quant_utils import (
     DEQUANT_OP_TYPES,
@@ -43,6 +44,10 @@ class QuantPosManager:
                     return i.float_data[0]
                 elif i.raw_data:
                     return np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0]
+                else:
+                    # Handle float16 scale
+                    val = tensor_proto_to_array(i).tolist()
+                    return val[0] if isinstance(val, list) else val
         raise ValueError("DequantizeLinear and QuantizeLinear do not have scale.")
 
     def set_scale(self, node: NodeProto, new_scale: float) -> None:
@@ -54,6 +59,12 @@ class QuantPosManager:
                 elif i.raw_data:
                     if np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0] != new_scale:
                         np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0] = new_scale
+                else:
+                    # Handle float16 scale
+                    ort_val = tensor_proto_to_array(i).dtype
+                    new_val = np.array(new_scale).astype(ort_val.dtype)
+                    new_init = onnx.numpy_helper.from_array(new_val, name=i.name)
+                    i.CopyFrom(new_init)
 
     def get_pos(self, node: NodeProto) -> Any:
         if node.op_type in REFINE_OP_TYPES:

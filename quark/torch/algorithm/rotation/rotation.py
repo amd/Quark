@@ -27,6 +27,7 @@ from quark.torch.algorithm.rotation.rotation_utils import (
 )
 from quark.torch.algorithm.utils.prepare import get_model_layers
 from quark.torch.algorithm.utils.utils import clear_memory
+from quark.torch.quantization.config.config import OnlineRotationConfig
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 from quark.torch.utils import getattr_recursive, resolve_star, setattr_recursive
@@ -324,6 +325,14 @@ class RotationProcessor(BaseAlgoProcessor):
             self.smooth_first = self.online_r1_rotation  # type: ignore[assignment]
 
         logger.debug(f"Using smooth_first={self.smooth_first}")
+
+        online_rotation_layers = self.get_online_rotation_layers(rotation_config, model)
+        if rotation_config.online_config is None:
+            rotation_config.online_config = OnlineRotationConfig(
+                shared_parallel=None, online_rotation_layers=online_rotation_layers
+            )
+        else:
+            rotation_config.online_config.online_rotation_layers = online_rotation_layers
 
     def apply(self) -> None:
         # R1 needs to be applied on embed_tokens as:
@@ -670,6 +679,9 @@ class RotationProcessor(BaseAlgoProcessor):
                 getattr_recursive(self.model, layer_name) for layer_name in layers_pattern["target_modules"]
             ]
 
+            if self.online_r1_rotation and len(target_modules) == 0:
+                continue
+
             prev_modules = [getattr_recursive(self.model, layer_name) for layer_name in layers_pattern["prev_modules"]]
 
             if not self.trainable:
@@ -750,6 +762,8 @@ class RotationProcessor(BaseAlgoProcessor):
             if not self.shared_parallel:
                 r1_rotation = get_rotation_matrix(rotation_size, random=self.random_r1, device=layer.weight.device)
                 r1_rotation = nn.Parameter(r1_rotation)
+            else:
+                assert r1_rotation is not None
 
             assert not isinstance(layer, RotationLinear)
             rotation_linear = RotationLinear(layer, rotation_in=r1_rotation, hint_in="r1", rotate_activation=True)
@@ -898,6 +912,15 @@ class RotationProcessor(BaseAlgoProcessor):
                 # `inverse=True` is not required here as nn.Linear already transpose the weight.
                 layer.weight.data = matmul_hadU(layer.weight.data, hadamard_K=hadamard_K, K=K).to(dtype)
             else:
+                if hadamard_K.shape[0] != rotation_size:
+                    hadamard_1, _ = _get_hadamard_K(rotation_size // K)
+
+                    hadamard_1 = hadamard_1.to(layer.weight.device)
+                    hadamard_K = hadamard_K.to(layer.weight.device)
+
+                    hadamard_K = torch.kron(hadamard_K, hadamard_1)
+                    K = rotation_size
+
                 assert hadamard_K.shape[0] == rotation_size
                 rotate_in_channels_(layer, rotation=hadamard_K.to(torch.float64) / math.sqrt(rotation_size))
 
@@ -908,12 +931,9 @@ class RotationProcessor(BaseAlgoProcessor):
             setattr(next_module_parent, relative_layer_name, layer_with_input_rotation)
 
     def r2(self) -> None:
-        if self.rotation_size is not None:
-            r2_rotation_size = self.rotation_size
-        else:
-            r2_rotation_size = getattr(
-                self.model.config, "head_dim", self.model.config.hidden_size // self.model.config.num_attention_heads
-            )
+        r2_rotation_size = getattr(
+            self.model.config, "head_dim", self.model.config.hidden_size // self.model.config.num_attention_heads
+        )
 
         if not self.trainable:
             device = next(self.model.parameters()).device
@@ -981,7 +1001,7 @@ class RotationProcessor(BaseAlgoProcessor):
             r4_rotation_size = self.rotation_size
         else:
             custom_rotation_size = False
-            r4_rotation_size = self.model.config.intermediate_size
+            r4_rotation_size = getattr(self.model.config, "moe_intermediate_size", self.model.config.intermediate_size)
 
         for layer in tqdm(self.layers, desc="R4 Rotation"):
             # We allow `rotation_config.mlp="mlp.experts.*"` in the case of MOE models.
@@ -1012,7 +1032,7 @@ class RotationProcessor(BaseAlgoProcessor):
                         # `inverse=True` is not required here as nn.Linear already transpose the weight.
                         mlp.down_proj.weight.data = matmul_hadU(mlp.down_proj.weight.data).to(dtype)
 
-                    mlp.down_proj = InputRotationWrapperHadamard(mlp.down_proj, self.rotation_size)
+                    mlp.down_proj = InputRotationWrapperHadamard(mlp.down_proj, r4_rotation_size)
                 else:
                     if not self.shared_parallel:
                         rotation4 = get_rotation_matrix(r4_rotation_size, random=False, device=device)
@@ -1035,17 +1055,20 @@ class RotationProcessor(BaseAlgoProcessor):
             clear_memory()
 
     @staticmethod
-    def get_online_rotation_layers(rotation_config: RotationConfig, model: nn.Module) -> set[str]:
+    def get_online_rotation_layers(rotation_config: RotationConfig, model: nn.Module) -> list[str]:
         """
         Get the submodule names that are using online rotations.
         """
-        layers_online_rotation = set()  # type: ignore
+        layers_online_rotation = []  # type: ignore
 
         online_r1_rotation = rotation_config.online_r1_rotation
 
         scaling_layers = rotation_config.scaling_layers
 
         if rotation_config.r1 and online_r1_rotation:
+            if scaling_layers is None:
+                raise ValueError("Expected `scaling_layers` to be not None with r1=True, online_r1_rotation=True.")
+
             scaling_layers = RotationProcessor.get_scaling_layers(
                 model,
                 scaling_layers,
@@ -1056,13 +1079,13 @@ class RotationProcessor(BaseAlgoProcessor):
             )  # type: ignore
 
             for scaling_dict in scaling_layers:
-                layers_online_rotation = layers_online_rotation.union(set(scaling_dict["target_modules"]))
+                layers_online_rotation = layers_online_rotation + list(scaling_dict["target_modules"])
 
         # R4 is always online.
         if rotation_config.r4:
             for name, _ in model.named_modules():
-                if "down_proj" in name:
-                    layers_online_rotation.add(name)
+                if name.endswith("down_proj"):
+                    layers_online_rotation.append(name)
 
         return layers_online_rotation
 
@@ -1092,24 +1115,32 @@ class RotationProcessor(BaseAlgoProcessor):
 
                 # Handle weight transformations on the input dimension.
                 if submodule.smooth_values_in is not None and submodule.smooth_first:
+                    logger.debug("    Fusing smooth_values_in with smooth_first=True")
                     weight = submodule.apply_in_normalization_weight(original_linear.weight.data)
                     original_linear.weight.data = weight
 
                 if submodule.rotation_in is not None:
+                    logger.debug("    Fusing rotation_in")
                     rotate_in_channels_(original_linear, submodule.rotation_in)
 
                 if submodule.smooth_values_in is not None and not submodule.smooth_first:
+                    logger.debug("    Fusing smooth_values_in with smooth_first=False")
                     weight = submodule.apply_in_normalization_weight(original_linear.weight.data)
                     original_linear.weight.data = weight
 
                 # Handle weight transformations on the output dimension.
                 if submodule.smooth_values_out is not None and submodule.smooth_first:
+                    logger.debug("    Fusing smooth_values_out with smooth_first=True")
                     original_linear.weight.data = original_linear.weight.data * submodule.smooth_values_out[:, None]
 
                 if submodule.rotation_out is not None:
+                    logger.debug("    Fusing rotation_out")
                     rotate_out_channels_(original_linear, submodule.rotation_out)
 
+                    assert original_linear.bias is None
+
                 if submodule.smooth_values_out is not None and not submodule.smooth_first:
+                    logger.debug("    Fusing smooth_values_out with smooth_first=False")
                     original_linear.weight.data = original_linear.weight.data * submodule.smooth_values_out[:, None]
 
                 # TODO: Support layer_quant_config here.
@@ -1121,6 +1152,7 @@ class RotationProcessor(BaseAlgoProcessor):
                 if isinstance(original_linear, QuantLinear):
                     trained_weight_spec = original_linear._weight_qspec
 
+                    logger.debug(f"    Re-initializing quantizers for {name}")
                     original_linear.init_quantizer(
                         quantization_config.global_quant_config, device=original_linear.device
                     )
@@ -1135,11 +1167,13 @@ class RotationProcessor(BaseAlgoProcessor):
 
                 if not submodule.rotate_activation:
                     # Offline activation rotation.
+                    logger.debug("    Setting offline rotation")
                     setattr_recursive(model, name, original_linear)
                 else:
                     # Online activation rotation.
                     assert submodule.rotation_in is not None
 
+                    logger.debug("    Setting online rotation with InputRotationWrapperOrthogonal")
                     layer_with_input_rotation = InputRotationWrapperOrthogonal(
                         original_linear,
                         rotation_matrix=submodule.rotation_in.data,
@@ -1154,10 +1188,12 @@ class RotationProcessor(BaseAlgoProcessor):
 
                 # See the comment above.
                 if trained_weight_spec is None and isinstance(submodule._weight_quantizer, FakeQuantizeBase):
+                    logger.debug("    Call submodule._weight_quantizer.disable_fake_quant")
                     submodule._weight_quantizer.disable_fake_quant()
 
         for name, submodule in model.named_modules():
             if isinstance(submodule, OutputRotationWrapper):
+                logger.debug(f"Removing OutputRotationWrapper used for {name}")
                 original_module = submodule.original_module
 
                 original_module.weight.data = rotate_with_size(
@@ -1251,7 +1287,7 @@ class RotationProcessor(BaseAlgoProcessor):
                 if trainable:
                     rotation_dtype = torch.float64
                 else:
-                    rotation_dtype = torch.bool
+                    rotation_dtype = torch.int8
 
                 input_rotation = torch.zeros(
                     (rotation_size, rotation_size), device=module.weight.device, dtype=rotation_dtype

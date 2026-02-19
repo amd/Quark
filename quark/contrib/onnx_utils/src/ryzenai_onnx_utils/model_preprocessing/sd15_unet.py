@@ -1,11 +1,16 @@
 # Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+import os
 from pathlib import Path
 
 import onnx
 import onnxruntime as rt
 from onnxruntime.transformers import optimizer
 from onnxruntime.transformers.fusion_options import FusionOptions
+
+import ryzenai_onnx_utils
+import ryzenai_onnx_utils.preprocess
+from ryzenai_onnx_utils.preprocess import has_dynamic_inputs
 
 
 def pre_optimize_passes() -> list[str]:
@@ -16,6 +21,7 @@ def pre_optimize_passes() -> list[str]:
 
 def finalize() -> list[str]:
     return [
+        "normalize_binary_ops",
         "sd15.attn_to_gemm_mha",
         "sd3.replace_mha",
         "fastgelu_to_gelu",
@@ -28,6 +34,7 @@ def finalize() -> list[str]:
         "sd15.unet_preprocessing.transpose_mul_to_mul_transpose",
         "sd15.unet_preprocessing.detach_mha_attn_bias",
         "sd15.unet_preprocessing.gemm_to_matmul",
+        "sd15.unet_preprocessing.shape_gather_add_div_mul_to_init",
         "sd15.unet_preprocessing.matmul_add_slice_to_matmul",
         "sd15.unet_preprocessing.groupnorm_to_groupnorm_silu",
         "sd15.unet_preprocessing.remove_expand",
@@ -38,6 +45,8 @@ def finalize() -> list[str]:
         "sd15.unet_preprocessing.trans_nchw_concat_to_nhwc_concat",
         "sd15.vae_decoder_preprocessing.merge_reshapes",
         "sd15.vae_decoder_preprocessing.remove_transposes",
+        "remove_dangling_nodes",
+        "remove_unused_io",
     ]
 
 
@@ -122,8 +131,20 @@ def optimize(
     #     )
 
     stem = output_model_path.stem
+    model = onnx.load_model(output_model_path)
+    if has_dynamic_inputs(model.graph):
+        symbolic_model = ryzenai_onnx_utils.preprocess.infer_symbolic_shapes(model)
+    else:
+        symbolic_model = model
+
+    if save_as_external:
+        location_path = output_model_path.parent / f"{stem}.{external_data_extension}"
+        if os.path.exists(location_path):
+            Path(location_path).unlink(True)
+
+    stem = output_model_path.stem
     onnx.save_model(
-        onnx.load_model(output_model_path),
+        symbolic_model,
         output_model_path,
         save_as_external_data=save_as_external,
         location=f"{stem}.{external_data_extension}",

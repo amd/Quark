@@ -7,7 +7,7 @@ import ryzenai_onnx_utils
 from ryzenai_onnx_utils.transform import build_dd_node
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
-from . import ModelType
+from ..model_type import ModelType
 
 
 def replacement(

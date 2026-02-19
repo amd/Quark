@@ -52,6 +52,21 @@ void SSMLPGeluOperator::DequantizeBForMatmul(
 }
 
 // =====================================================================================================================
+void SSMLPGeluOperator::CreateDmlCastTensorDesc(
+  DML_TENSOR_DATA_TYPE dataType, const DmlTensorDesc& dmlTensorDesc,
+  DmlTensorDesc* castDmlTensorDesc
+) {
+  std::vector<int64> strides{-1, -1, -1};  // -1
+  std::vector<int64> shape{
+    dmlTensorDesc.sizes[1], dmlTensorDesc.sizes[2], dmlTensorDesc.sizes[3]
+  };
+  std::shared_ptr<TensorDesc> tensorDesc =
+    CreateTensorDesc(L"CastTensorVec", L"DHW", dataType, shape, strides);
+
+  ConvertTensorDesc(*tensorDesc, castDmlTensorDesc);
+}
+
+// =====================================================================================================================
 // Constructs an DirectML-based SSMLPGeluOperator which evaluates a Gemm
 // operation with the given parameters.
 SSMLPGeluOperator::SSMLPGeluOperator(
@@ -59,7 +74,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   const SSMLPGeluParams& params
 )  // Parameters for the SSMLP operator.
   : m_ssMlp(params),
-    m_dataType(StringToDataType(params.sslrnTop.dataType)),
+    m_dataType(DML_TENSOR_DATA_TYPE_FLOAT16),
     m_quantDataType(StringToDataType(params.matMulNBitsGate.quantizedB)) {
   SharedInit();
 
@@ -72,7 +87,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   DmlTensorDesc normTop_dmlTensorY = {};
 
   ConvertTensorDesc(*m_inputTensorDescVec[sg_xInputIndex], &normTop_dmlTensorX);
-  ConvertTensorDesc(*m_inputTensorDescVec[sg_xInputIndex], &normTop_dmlTensorY);
+  ConvertTensorDesc(*m_layerNormIOTensorDesc, &normTop_dmlTensorY);
 
   ConvertTensorDesc(
     *m_inputTensorDescVec[sg_topScaleIndex], &normTop_dmlTensorS
@@ -102,7 +117,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   DmlTensorDesc sslrnTop_outputDesc = {};
 
   // main input to ssmlp goes to sslrntop
-  ConvertTensorDesc(*m_inputTensorDescVec[sg_xInputIndex], &sslrnTop_inputDesc);
+  ConvertTensorDesc(*m_layerNormIOTensorDesc, &sslrnTop_inputDesc);
   // skip input to sslrntop
   ConvertTensorDesc(*m_inputTensorDescVec[sg_skipIndex], &sslrnTop_skipDesc);
 
@@ -116,9 +131,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
     assert("m_ssMlp.sslrnTop.hasNonMVNBias = true");
 
   // output
-  ConvertTensorDesc(
-    *m_inputTensorDescVec[sg_xInputIndex], &sslrnTop_outputDesc
-  );
+  ConvertTensorDesc(*m_layerNormIOTensorDesc, &sslrnTop_outputDesc);
 
   // MatMulNBits Gate
   // ----------------------------------------------------------------------------------
@@ -239,9 +252,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   DmlTensorDesc normBottom_dmlTensorS = {};
   DmlTensorDesc normBottom_dmlTensorY = {};
 
-  ConvertTensorDesc(
-    *m_inputTensorDescVec[sg_xInputIndex], &normBottom_dmlTensorY
-  );
+  ConvertTensorDesc(*m_layerNormIOTensorDesc, &normBottom_dmlTensorY);
   ConvertTensorDesc(
     *m_inputTensorDescVec[sg_bottomScaleIndex], &normBottom_dmlTensorS
   );
@@ -270,8 +281,25 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // ===================================================================================================
 
   // NORM
+
+  // CAST INPUT TO FP32 IF NEEDED
+  DmlTensorDesc slrnTopCastInputDmlTensorDesc = normTop_dmlTensorX;
+  DML_CAST_OPERATOR_DESC slrnTopCastDmlDesc{};
+  DML_OPERATOR_DESC slrnTopCastOpDesc{};
+  if (m_ssMlp.normTop.isWtsFp32) {
+    CreateDmlCastTensorDesc(
+      DML_TENSOR_DATA_TYPE_FLOAT32, normTop_dmlTensorX,
+      &slrnTopCastInputDmlTensorDesc
+    );
+
+    slrnTopCastDmlDesc.InputTensor = &normTop_dmlTensorX.desc;
+    slrnTopCastDmlDesc.OutputTensor = &slrnTopCastInputDmlTensorDesc.desc;
+    slrnTopCastOpDesc.Type = DML_OPERATOR_CAST;
+    slrnTopCastOpDesc.Desc = &slrnTopCastDmlDesc;
+  }
+
   DML_MEAN_VARIANCE_NORMALIZATION2_OPERATOR_DESC normTop_dmlDesc;
-  normTop_dmlDesc.InputTensor = &normTop_dmlTensorX.desc;
+  normTop_dmlDesc.InputTensor = &slrnTopCastInputDmlTensorDesc.desc;
   normTop_dmlDesc.ScaleTensor = &normTop_dmlTensorS.desc;
   normTop_dmlDesc.BiasTensor = nullptr;
   normTop_dmlDesc.OutputTensor = &normTop_dmlTensorY.desc;  /// CHECK
@@ -312,6 +340,23 @@ SSMLPGeluOperator::SSMLPGeluOperator(
     DML_OPERATOR_MEAN_VARIANCE_NORMALIZATION2, &paMvnDesc
   };
 
+  // CAST OUTPUT BACK TO FP16 IF NEEDED
+  DmlTensorDesc sslrnTopCastOutputDmlTensorDesc = sslrnTop_outputDesc;
+  DML_CAST_OPERATOR_DESC sslrnTopOutputCastDmlDesc{};
+  DML_OPERATOR_DESC sslrnTopOutputCastOpDesc{};
+  if (m_ssMlp.normTop.isWtsFp32) {
+    CreateDmlCastTensorDesc(
+      DML_TENSOR_DATA_TYPE_FLOAT16, sslrnTop_outputDesc,
+      &sslrnTopCastOutputDmlTensorDesc
+    );
+    sslrnTopOutputCastDmlDesc.InputTensor = &sslrnTop_outputDesc.desc;
+    sslrnTopOutputCastDmlDesc.OutputTensor =
+      &sslrnTopCastOutputDmlTensorDesc.desc;
+
+    sslrnTopOutputCastOpDesc.Type = DML_OPERATOR_CAST;
+    sslrnTopOutputCastOpDesc.Desc = &sslrnTopOutputCastDmlDesc;
+  }
+
   // GATE MATMULNBITS
   // ----------------------------------------------------------------------------------
   DmlTensorDesc dmlTensorQBDequant = {};
@@ -342,7 +387,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   };
 
   DML_GEMM_OPERATOR_DESC gateGemmDesc = {};
-  gateGemmDesc.ATensor = &sslrnTop_outputDesc.desc;
+  gateGemmDesc.ATensor = &sslrnTopCastOutputDmlTensorDesc.desc;
   gateGemmDesc.BTensor = &dmlTensorQBDequant.desc;
   gateGemmDesc.CTensor = nullptr;
   gateGemmDesc.OutputTensor = &mmGate_outputDesc.desc;
@@ -389,7 +434,7 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   };
 
   DML_GEMM_OPERATOR_DESC upGemmDesc = {};
-  upGemmDesc.ATensor = &sslrnTop_outputDesc.desc;
+  upGemmDesc.ATensor = &sslrnTopCastOutputDmlTensorDesc.desc;
   upGemmDesc.BTensor = &dmlTensorQBDequantUp.desc;
   upGemmDesc.CTensor = nullptr;
   upGemmDesc.OutputTensor = &mmUp_outputDesc.desc;
@@ -451,9 +496,28 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // NORM
   //  ---------------------------------------------------------------------------------------------
+
+  // CAST INPUT TO FP32 IF NEEDED
+  DmlTensorDesc slrnBottomCastInputDmlTensorDesc = mmDown_outputDesc;
+  DML_CAST_OPERATOR_DESC sslrnBottomInputCastDmlDesc{};
+  DML_OPERATOR_DESC sslrnBottomInputCastOpDesc{};
+  if (m_ssMlp.normTop.isWtsFp32) {
+    CreateDmlCastTensorDesc(
+      DML_TENSOR_DATA_TYPE_FLOAT32, mmDown_outputDesc,
+      &slrnBottomCastInputDmlTensorDesc
+    );
+
+    sslrnBottomInputCastDmlDesc.InputTensor = &mmDown_outputDesc.desc;
+    sslrnBottomInputCastDmlDesc.OutputTensor =
+      &slrnBottomCastInputDmlTensorDesc.desc;
+
+    sslrnBottomInputCastOpDesc.Type = DML_OPERATOR_CAST;
+    sslrnBottomInputCastOpDesc.Desc = &sslrnBottomInputCastDmlDesc;
+  }
+
   DML_MEAN_VARIANCE_NORMALIZATION2_OPERATOR_DESC normBottom_dmlDesc = {};
 
-  normBottom_dmlDesc.InputTensor = &mmDown_outputDesc.desc;
+  normBottom_dmlDesc.InputTensor = &slrnBottomCastInputDmlTensorDesc.desc;
   normBottom_dmlDesc.ScaleTensor = &normBottom_dmlTensorS.desc;
   normBottom_dmlDesc.BiasTensor = nullptr;
   normBottom_dmlDesc.OutputTensor = &normBottom_dmlTensorY.desc;
@@ -477,12 +541,20 @@ SSMLPGeluOperator::SSMLPGeluOperator(
     DML_OPERATOR_ELEMENT_WISE_ADD, &skipBiasAddDesc
   };
 
+  DmlTensorDesc sslrnBottomCastOutputDmlTensorDesc = outputDesc;
+  if (m_ssMlp.normTop.isWtsFp32) {
+    CreateDmlCastTensorDesc(
+      DML_TENSOR_DATA_TYPE_FLOAT32, outputDesc,
+      &sslrnBottomCastOutputDmlTensorDesc
+    );
+  }
+
   DML_MEAN_VARIANCE_NORMALIZATION2_OPERATOR_DESC mvnDesc = {};
   mvnDesc.InputTensor = &inputSkipBiasSum.desc;
   mvnDesc.ScaleTensor =
     m_ssMlp.sslrnTop.hasScale ? &sslrnTop_mvnScaleDesc.desc : nullptr;
   mvnDesc.BiasTensor = nullptr;
-  mvnDesc.OutputTensor = &outputDesc.desc;
+  mvnDesc.OutputTensor = &sslrnBottomCastOutputDmlTensorDesc.desc;
   mvnDesc.Axes = axes.data();
   mvnDesc.AxisCount = axes.size();
   mvnDesc.UseMean = false;
@@ -493,20 +565,64 @@ SSMLPGeluOperator::SSMLPGeluOperator(
     DML_OPERATOR_MEAN_VARIANCE_NORMALIZATION2, &mvnDesc
   };
 
+  // CAST OUTPUT BACK TO FP16 IF NEEDED
+
+  DML_CAST_OPERATOR_DESC sslrnBottomOutputCastDmlDesc{};
+  DML_OPERATOR_DESC sslrnBottomOutputCastOpDesc{};
+  if (m_ssMlp.normTop.isWtsFp32) {
+    sslrnBottomOutputCastDmlDesc.InputTensor =
+      &sslrnBottomCastOutputDmlTensorDesc.desc;
+    sslrnBottomOutputCastDmlDesc.OutputTensor = &outputDesc.desc;
+
+    sslrnBottomOutputCastOpDesc.Type = DML_OPERATOR_CAST;
+    sslrnBottomOutputCastOpDesc.Desc = &sslrnBottomOutputCastDmlDesc;
+  }
+
   // Construct the graph
-  std::vector<const DML_OPERATOR_DESC*> opDescs;
+  std::vector<const DML_OPERATOR_DESC*> opDescs = {
+    &normTopOpDesc,        &paSkipAddOpDesc, &paMvnOpDesc,
+    &gateDequantizeOpDesc, &gateGemmOpDesc,  &geluOpDesc,
+    &upDequantizeOpDesc,   &upGemmOpDesc,    &mulOpDesc,
+    &downDequantizeOpDesc, &downGemmOpDesc,  &normBottomOpDesc,
+    &skipBiasAddOpDesc,    &mvnOpDesc
+  };
+
+  if (m_ssMlp.normTop.isWtsFp32) {
+    opDescs.push_back(&slrnTopCastOpDesc);
+    opDescs.push_back(&sslrnTopOutputCastOpDesc);
+    opDescs.push_back(&sslrnBottomInputCastOpDesc);
+    opDescs.push_back(&sslrnBottomOutputCastOpDesc);
+  }
   std::vector<DML_INPUT_GRAPH_EDGE_DESC> inputEdges;
   std::vector<DML_INTERMEDIATE_GRAPH_EDGE_DESC> intermediateEdges;
   std::vector<DML_OUTPUT_GRAPH_EDGE_DESC> outputEdges;
 
   // TOP NORM
   // ------------------------------------------------------------------------
-  opDescs.push_back(&normTopOpDesc);
-  DML_INPUT_GRAPH_EDGE_DESC dataInputEdge = CreateInputEdge(
-    SSMLPGeluInputIndex::sg_xInputIndex, SSMLPGeluNodeIndex::sg_paNormTopIndex,
-    0
-  );
-  inputEdges.push_back(dataInputEdge);
+
+  uint32_t slrnTopCastNodeIndex = sg_NodeCount;
+  uint32_t sslrnTopOutputCastNodeIndex = sg_NodeCount + 1;
+  uint32_t slrnBottomCastNodeIndex = sg_NodeCount + 2;
+  uint32_t sslrnBottomOutputCastNodeIndex = sg_NodeCount + 3;
+
+  if (m_ssMlp.normTop.isWtsFp32) {
+    DML_INPUT_GRAPH_EDGE_DESC castInputEdge = CreateInputEdge(
+      SSMLPGeluInputIndex::sg_xInputIndex, slrnTopCastNodeIndex, 0
+    );
+    inputEdges.push_back(castInputEdge);
+
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC castToNormEdge = CreateIntermediateEdge(
+      slrnTopCastNodeIndex, 0, SSMLPGeluNodeIndex::sg_paNormTopIndex, 0
+    );
+    intermediateEdges.push_back(castToNormEdge);
+  } else {
+    DML_INPUT_GRAPH_EDGE_DESC dataInputEdge = CreateInputEdge(
+      SSMLPGeluInputIndex::sg_xInputIndex,
+      SSMLPGeluNodeIndex::sg_paNormTopIndex, 0
+    );
+    inputEdges.push_back(dataInputEdge);
+  }
+
   DML_INPUT_GRAPH_EDGE_DESC scaleInputEdge = CreateInputEdge(
     SSMLPGeluInputIndex::sg_topScaleIndex,
     SSMLPGeluNodeIndex::sg_paNormTopIndex, 1
@@ -515,7 +631,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // TOP SSLRN
   // ------------------------------------------------------------------------
-  opDescs.push_back(&paSkipAddOpDesc);
   DML_INPUT_GRAPH_EDGE_DESC skipInputEdge = CreateInputEdge(
     SSMLPGeluInputIndex::sg_skipIndex, SSMLPGeluNodeIndex::sg_paSkipAddOpIndex,
     0
@@ -531,7 +646,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // Check for SKIP BIAS
 
   // MVN
-  opDescs.push_back(&paMvnOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC paSkipAddToMvnEdge = CreateIntermediateEdge(
     SSMLPGeluNodeIndex::sg_paSkipAddOpIndex, 0,
     SSMLPGeluNodeIndex::sg_paMvnOpIndex, 0
@@ -546,13 +660,26 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // GATE MATMULNBITS
   // ------------------------------------------------------------------------
   // input to gemm
-  opDescs.push_back(&gateDequantizeOpDesc);
-  DML_INTERMEDIATE_GRAPH_EDGE_DESC mvnToGateDequantizeEdge =
+
+  // From sg_paMvnOpIndex to sslrnTopcast to gateGemm if fp32 weights
+  uint32_t gateGemm_fromNodeIndex = SSMLPGeluNodeIndex::sg_paMvnOpIndex;
+  uint32_t upGemm_fromNodeIndex = SSMLPGeluNodeIndex::sg_paMvnOpIndex;
+  if (m_ssMlp.normTop.isWtsFp32) {
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC mvnToSsrlnTopOutputCastEdge =
+      CreateIntermediateEdge(
+        SSMLPGeluNodeIndex::sg_paMvnOpIndex, 0, sslrnTopOutputCastNodeIndex, 0
+      );
+    intermediateEdges.push_back(mvnToSsrlnTopOutputCastEdge);
+
+    gateGemm_fromNodeIndex = sslrnTopOutputCastNodeIndex;
+    upGemm_fromNodeIndex = sslrnTopOutputCastNodeIndex;
+  }
+
+  DML_INTERMEDIATE_GRAPH_EDGE_DESC prevOpToGateGemmEdge =
     CreateIntermediateEdge(
-      SSMLPGeluNodeIndex::sg_paMvnOpIndex, 0,
-      SSMLPGeluNodeIndex::sg_gateGemmOpIndex, 0
+      gateGemm_fromNodeIndex, 0, SSMLPGeluNodeIndex::sg_gateGemmOpIndex, 0
     );
-  intermediateEdges.push_back(mvnToGateDequantizeEdge);
+  intermediateEdges.push_back(prevOpToGateGemmEdge);
 
   // input Weights to Dequantize
   DML_INPUT_GRAPH_EDGE_DESC gateDequantizeInputEdge = CreateInputEdge(
@@ -581,7 +708,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // Check for C
 
   // input to gemm from dequantize
-  opDescs.push_back(&gateGemmOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC dequantizeToGemmEdge =
     CreateIntermediateEdge(
       SSMLPGeluNodeIndex::sg_gateDequantizeOpIndex, 0,
@@ -591,37 +717,19 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // GELU
   // ------------------------------------------------------------------------
-  opDescs.push_back(&geluOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC gateGemmToGeluEdge = CreateIntermediateEdge(
     SSMLPGeluNodeIndex::sg_gateGemmOpIndex, 0,
     SSMLPGeluNodeIndex::sg_geluOpIndex, 0
   );
   intermediateEdges.push_back(gateGemmToGeluEdge);
 
-  //// MUL
-  //// ------------------------------------------------------------------------
-  // opDescs.push_back(&actMulOpDesc);
-  // DML_INTERMEDIATE_GRAPH_EDGE_DESC sigmoidToMulEdge = CreateIntermediateEdge(
-  //   SSMLPGeluNodeIndex::sigmoidOpIndex, 0, SSMLPGeluNodeIndex::actMulOpIndex,
-  //   0);
-  // intermediateEdges.push_back(sigmoidToMulEdge);
-
-  // DML_INTERMEDIATE_GRAPH_EDGE_DESC gateGemmToMulEdge =
-  // CreateIntermediateEdge(
-  //   SSMLPGeluNodeIndex::gateGemmOpIndex, 0,
-  //   SSMLPGeluNodeIndex::actMulOpIndex, 1);
-  // intermediateEdges.push_back(gateGemmToMulEdge);
-
   // UP MATMULNBITS
   // ------------------------------------------------------------------------
   // input to gemm
-  opDescs.push_back(&upDequantizeOpDesc);
-  DML_INTERMEDIATE_GRAPH_EDGE_DESC mvnToUpDequantizeEdge =
-    CreateIntermediateEdge(
-      SSMLPGeluNodeIndex::sg_paMvnOpIndex, 0,
-      SSMLPGeluNodeIndex::sg_upGemmOpIndex, 0
-    );
-  intermediateEdges.push_back(mvnToUpDequantizeEdge);
+  DML_INTERMEDIATE_GRAPH_EDGE_DESC mvnToUpGemmEdge = CreateIntermediateEdge(
+    upGemm_fromNodeIndex, 0, SSMLPGeluNodeIndex::sg_upGemmOpIndex, 0
+  );
+  intermediateEdges.push_back(mvnToUpGemmEdge);
 
   // input Weights to Dequantize
   DML_INPUT_GRAPH_EDGE_DESC upDequantizeInputEdge = CreateInputEdge(
@@ -650,7 +758,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // Check for C
 
   // input to gemm from dequantize
-  opDescs.push_back(&upGemmOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC upDequantizeToGemmEdge =
     CreateIntermediateEdge(
       SSMLPGeluNodeIndex::sg_upDequantizeOpIndex, 0,
@@ -660,7 +767,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // MUL
   // ------------------------------------------------------------------------
-  opDescs.push_back(&mulOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC actMulToMulEdge = CreateIntermediateEdge(
     SSMLPGeluNodeIndex::sg_geluOpIndex, 0, SSMLPGeluNodeIndex::sg_mulOpIndex, 0
   );
@@ -675,13 +781,11 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // DOWN MATMULNBITS
   // ------------------------------------------------------------------------
   // input to gemm
-  opDescs.push_back(&downDequantizeOpDesc);
-  DML_INTERMEDIATE_GRAPH_EDGE_DESC mulToDownDequantizeEdge =
-    CreateIntermediateEdge(
-      SSMLPGeluNodeIndex::sg_mulOpIndex, 0,
-      SSMLPGeluNodeIndex::sg_downGemmOpIndex, 0
-    );
-  intermediateEdges.push_back(mulToDownDequantizeEdge);
+  DML_INTERMEDIATE_GRAPH_EDGE_DESC mulToDownGemmEdge = CreateIntermediateEdge(
+    SSMLPGeluNodeIndex::sg_mulOpIndex, 0,
+    SSMLPGeluNodeIndex::sg_downGemmOpIndex, 0
+  );
+  intermediateEdges.push_back(mulToDownGemmEdge);
 
   // input Weights to Dequantize
   DML_INPUT_GRAPH_EDGE_DESC downDequantizeInputEdge = CreateInputEdge(
@@ -710,7 +814,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   // Check for C
 
   // input to gemm from dequantize
-  opDescs.push_back(&downGemmOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC downDequantizeToGemmEdge =
     CreateIntermediateEdge(
       SSMLPGeluNodeIndex::sg_downDequantizeOpIndex, 0,
@@ -720,13 +823,29 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // BOTTOM NORM
   // ------------------------------------------------------------------------
-  opDescs.push_back(&normBottomOpDesc);
-  DML_INTERMEDIATE_GRAPH_EDGE_DESC downGemmToNormBottomEdge =
-    CreateIntermediateEdge(
-      SSMLPGeluNodeIndex::sg_downGemmOpIndex, 0,
-      SSMLPGeluNodeIndex::sg_normBottomIndex, 0
-    );
-  intermediateEdges.push_back(downGemmToNormBottomEdge);
+
+  // input from downGemm to cast to Norm if fp32 weights
+  if (m_ssMlp.sslrnBottom.isWtsFp32) {
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC downGemmToSsrlnBottomCastEdge =
+      CreateIntermediateEdge(
+        SSMLPGeluNodeIndex::sg_downGemmOpIndex, 0, slrnBottomCastNodeIndex, 0
+      );
+    intermediateEdges.push_back(downGemmToSsrlnBottomCastEdge);
+
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC castToNormBottomEdge =
+      CreateIntermediateEdge(
+        slrnBottomCastNodeIndex, 0, SSMLPGeluNodeIndex::sg_normBottomIndex, 0
+      );
+    intermediateEdges.push_back(castToNormBottomEdge);
+  } else {
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC downGemmToNormBottomEdge =
+      CreateIntermediateEdge(
+        SSMLPGeluNodeIndex::sg_downGemmOpIndex, 0,
+        SSMLPGeluNodeIndex::sg_normBottomIndex, 0
+      );
+    intermediateEdges.push_back(downGemmToNormBottomEdge);
+  }
+
   DML_INPUT_GRAPH_EDGE_DESC normBottomScaleInputEdge = CreateInputEdge(
     SSMLPGeluInputIndex::sg_bottomScaleIndex,
     SSMLPGeluNodeIndex::sg_normBottomIndex, 1
@@ -735,7 +854,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
 
   // BOTTOM SSLRN
   // ------------------------------------------------------------------------
-  opDescs.push_back(&skipBiasAddOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC normBottomToSkipAddEdge =
     CreateIntermediateEdge(
       SSMLPGeluNodeIndex::sg_normBottomIndex, 0,
@@ -749,7 +867,6 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   );
   intermediateEdges.push_back(mvnToSkipAddEdge);
 
-  opDescs.push_back(&mvnOpDesc);
   DML_INTERMEDIATE_GRAPH_EDGE_DESC skipAddToMvnEdge = CreateIntermediateEdge(
     SSMLPGeluNodeIndex::sg_skipAddOpIndex, 0, SSMLPGeluNodeIndex::sg_mvnOpIndex,
     0
@@ -763,11 +880,27 @@ SSMLPGeluOperator::SSMLPGeluOperator(
   inputEdges.push_back(skipAddInputEdge);
 
   // OUTPUT
-  DML_OUTPUT_GRAPH_EDGE_DESC sslrnToOutputEdge = {};
-  sslrnToOutputEdge.FromNodeIndex = SSMLPGeluNodeIndex::sg_mvnOpIndex;
-  sslrnToOutputEdge.FromNodeOutputIndex = 0;
-  sslrnToOutputEdge.GraphOutputIndex = 0;
-  outputEdges.push_back(sslrnToOutputEdge);
+
+  // if fp32 weights, from mvn to cast to output
+  if (m_ssMlp.sslrnBottom.isWtsFp32) {
+    DML_INTERMEDIATE_GRAPH_EDGE_DESC mvnToSsrlnBottomOutputCastEdge =
+      CreateIntermediateEdge(
+        SSMLPGeluNodeIndex::sg_mvnOpIndex, 0, sslrnBottomOutputCastNodeIndex, 0
+      );
+    intermediateEdges.push_back(mvnToSsrlnBottomOutputCastEdge);
+
+    DML_OUTPUT_GRAPH_EDGE_DESC castToOutputEdge = {};
+    castToOutputEdge.FromNodeIndex = sslrnBottomOutputCastNodeIndex;
+    castToOutputEdge.FromNodeOutputIndex = 0;
+    castToOutputEdge.GraphOutputIndex = 0;
+    outputEdges.push_back(castToOutputEdge);
+  } else {
+    DML_OUTPUT_GRAPH_EDGE_DESC sslrnToOutputEdge = {};
+    sslrnToOutputEdge.FromNodeIndex = SSMLPGeluNodeIndex::sg_mvnOpIndex;
+    sslrnToOutputEdge.FromNodeOutputIndex = 0;
+    sslrnToOutputEdge.GraphOutputIndex = 0;
+    outputEdges.push_back(sslrnToOutputEdge);
+  }
 
   if (m_ssMlp.sslrnBottom.outputCount > 1) {
     DML_OUTPUT_GRAPH_EDGE_DESC inputSkipBiasSumEdge = {};
@@ -897,6 +1030,11 @@ void SSMLPGeluOperator::SharedInit() {
   }
 #endif
 
+  m_internalDataType = m_dataType;
+  if (m_ssMlp.normTop.isWtsFp32) {
+    m_internalDataType = DML_TENSOR_DATA_TYPE_FLOAT32;
+  }
+
   m_inputTensorDescVec.resize(4);
   CreateTensorDescNorm(m_ssMlp.normTop, true);
   CreateTensorDescSSLRN(
@@ -942,15 +1080,15 @@ void SSMLPGeluOperator::CreateTensorDescSSLRN(
 
   if (skipInput) {
     m_inputTensorDescVec[sg_skipIndex] = CreateTensorDesc(
-      L"SSLRNTopSkip", L"DHW", m_dataType, inputTensorShape, strides
+      L"SSLRNTopSkip", L"DHW", m_internalDataType, inputTensorShape, strides
     );
 
     m_inputTensorDescVec[sg_topGammaIndex] = CreateTensorDesc(
-      L"SSLRNTopMvnScale", L"DHW", m_dataType, vectorShape, strides
+      L"SSLRNTopMvnScale", L"DHW", m_internalDataType, vectorShape, strides
     );
   } else {
     m_inputTensorDescVec.emplace_back(CreateTensorDesc(
-      L"SSLRNBottomMvnScale", L"DHW", m_dataType, vectorShape, strides
+      L"SSLRNBottomMvnScale", L"DHW", m_internalDataType, vectorShape, strides
     ));
   }
 
@@ -972,8 +1110,8 @@ void SSMLPGeluOperator::CreateTensorDescSSLRN(
     ));
 
     m_tmpTensorDescSkipAdd = CreateTensorDesc(
-      L"SSLRNBottomSkipBiasSumOutput", L"DHW", m_dataType, inputTensorShape,
-      strides
+      L"SSLRNBottomSkipBiasSumOutput", L"DHW", m_internalDataType,
+      inputTensorShape, strides
     );
     if (sslrnParam.outputCount > 1) {
       m_outputTensorDescVec.emplace_back(m_tmpTensorDescSkipAdd);
@@ -1002,19 +1140,25 @@ void SSMLPGeluOperator::CreateTensorDescNorm(
   const std::vector<int64> strides{-1, -1, -1};
   const std::vector<int64> biasStrides = {0, 0, 1};
 
+  m_layerNormIOTensorDesc = CreateTensorDesc(
+    L"slrnIO", L"DHW", m_internalDataType, inputTensorShape, strides
+  );
+
   if (xInput) {
     m_inputTensorDescVec[sg_xInputIndex] =
       CreateTensorDesc(L"X", L"DHW", m_dataType, inputTensorShape, strides);
 
-    m_inputTensorDescVec[sg_topScaleIndex] =
-      CreateTensorDesc(L"scale", L"DHW", m_dataType, vectorShape, strides);
-  } else {
-    m_inputTensorDescVec.emplace_back(
-      CreateTensorDesc(L"scale", L"DHW", m_dataType, vectorShape, strides)
+    m_inputTensorDescVec[sg_topScaleIndex] = CreateTensorDesc(
+      L"scale", L"DHW", m_internalDataType, vectorShape, strides
     );
+  } else {
+    m_inputTensorDescVec.emplace_back(CreateTensorDesc(
+      L"scale", L"DHW", m_internalDataType, vectorShape, strides
+    ));
   }
 }
 
+// =====================================================================================================================
 void SSMLPGeluOperator::CreateTensorDescMatMul(
   const MatMulNBitsParams& matParam
 ) {

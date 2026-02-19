@@ -146,7 +146,7 @@ class ONNXSplitLargeKernelPoolPass(ONNXAdapterPass):
             ModelProto: The processed model with large kernel pooling operations split
             when the corresponding configuration flag is enabled.
         """
-        if "split_large_kernel_pool" in config and config["split_large_kernel_pool"] is not None:
+        if "split_large_kernel_pool" in config and config["split_large_kernel_pool"]:
             model = self._onnx_split_large_kernel_pool(model)
         else:
             logger.warning(

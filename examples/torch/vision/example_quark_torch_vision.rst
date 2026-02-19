@@ -228,7 +228,9 @@ Detailed Experiments script
 Below we share a list of recipes that about the vision task.
 
 .. toctree::
-   :maxdepth: 1
+   :hidden:
+   :caption: Detailed Experiments script
+   :maxdepth: 0
 
    example_quark_fx_image_classification
    sample_yolo_nas_quant

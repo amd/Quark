@@ -34,10 +34,11 @@ def prune_config(node: onnx.NodeProto, new_node: onnx.NodeProto, params: ryzenai
         return
     padded_dimensions = []
     for val in params.attributes["dynamic_shape_list"]:
-        padded_dimensions.append(val["sequence_length_padded"])
-    ryzenai_onnx_utils.matcher.add_attribute(new_node, "dynamic_count", len(padded_dimensions))
-    # for index, val in enumerate(padded_dimensions):
-    ryzenai_onnx_utils.matcher.add_attribute(new_node, "dynamic_shapes", padded_dimensions)
+        if "sequence_length_padded" in val:
+            padded_dimensions.append(val["sequence_length_padded"])
+    if padded_dimensions:
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "dynamic_count", len(padded_dimensions))
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "dynamic_shapes", padded_dimensions)
 
 
 def replacement(
@@ -46,20 +47,19 @@ def replacement(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> PassOutputArgs:
-    # for the last layer, the sslrn has one output
-    # the index of the sslrn depends on whether the graph is SSMLP or SSGMLP
-    last_sslrn_index = 8 if len(subgraph) == 10 else 9
-    last_sslrn = len(subgraph[last_sslrn_index].output) == 1
     prune_last_layer = params.get_bool_attr("prune_logits", False)
     prune_lm_head = "prune_logits" in params.attributes and params.attributes["prune_logits"] == "lmhead"
     prune_logits = prune_last_layer or prune_lm_head
-    if not prune_logits or not last_sslrn:
+    if not prune_logits:
         return subgraph, [], None
 
+    if ryzenai_onnx_utils.matcher.has_attribute(subgraph[-1], "prune_enable"):
+        return subgraph, [], None
     # make sure lm_head is the last node
     if not is_logits_node(subgraph[-1].output[0]):
         return subgraph, [], None
     # we're assuming that none of these nodes will remain in their original domain
+    # this gets validated in hybrid_llm_prune_validate.py later
     subgraph_to_prune = subgraph if prune_last_layer else [subgraph[-1]]
 
     for node in subgraph_to_prune:
@@ -129,5 +129,8 @@ PATTERN = [
             "MatMulNBits([a24,?,?,?],?)",
         ],
     ),
+    SubPass("MatMulNBits", ["MatMulNBits(?, ?)"]),
+    SubPass("MatMulNBitsBf", ["MatMulNBitsBf(?, ?)"]),
+    SubPass("MatMul", ["MatMul(?, ?)"]),
 ]
 REPLACEMENT = replacement

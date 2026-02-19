@@ -126,6 +126,9 @@ class SSMLPBase : public NpuOp, public JitNode<T>, public LoraOpInterface {
   size_t buffer_size_ = 0;
   bool is_ssgmlp_;
 
+  bool has_scratch_buffer_dp_{false};
+  bool has_scratch_buffer_gp_{false};
+  bool has_scratch_buffer_up_{false};
   ExternalTensorInfo jit_tensor_gate_;
   ExternalTensorInfo jit_tensor_up_;
   ExternalTensorInfo jit_tensor_down_;

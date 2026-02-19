@@ -2,6 +2,8 @@
 
 import contextlib
 import logging.config
+import os
+import sys
 
 if not any(key.startswith("quark") for key in logging.root.manager.loggerDict):
     import colorlog
@@ -17,9 +19,31 @@ with contextlib.suppress(ImportError):
     from . import builder
 
 
+class RelativePathFilter(logging.Filter):
+    """
+    Filter to modify log records to include the relative path instead of the
+    absolute path.
+    """
+
+    def filter(self, record):
+        pathname = record.pathname
+        record.relativepath = None
+        abs_sys_paths_map = map(os.path.abspath, sys.path)
+        # longer paths first
+        abs_sys_paths = sorted(abs_sys_paths_map, key=len, reverse=True)
+        for path in abs_sys_paths:
+            if not path.endswith(os.sep):
+                path += os.sep
+            if pathname.startswith(path):
+                record.relativepath = os.path.relpath(pathname, path)
+                break
+        return True
+
+
 def configure_logging() -> None:
     config = {
         "version": 1,
+        "filters": {"relative_path": {"()": RelativePathFilter}},
         "disable_existing_loggers": False,
         "formatters": {
             "simple": {
@@ -52,6 +76,7 @@ def configure_logging() -> None:
                 "maxBytes": 1048576,  # 1 MB
                 "backupCount": 5,
                 "delay": True,
+                "filters": ["relative_path"],
             },
         },
         "loggers": {

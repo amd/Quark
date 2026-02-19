@@ -177,7 +177,7 @@ class ONNXConvertBNToConvPass(ONNXAdapterPass):
         Returns:
             ModelProto: The processed model after applying the pass.
         """
-        if "convert_bn_to_conv" in config and config["convert_bn_to_conv"] is not None:
+        if "convert_bn_to_conv" in config and config["convert_bn_to_conv"]:
             model = self._onnx_convert_bn_to_conv(model)
         else:
             logger.warning(

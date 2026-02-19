@@ -21,7 +21,7 @@ target_include_directories(
 target_link_libraries(
   ${target}
   PUBLIC DynamicDispatch::dyn_dispatch_core onnxruntime::onnxruntime
-  PRIVATE ryzen_mm::ryzen_mm XRT::xrt_coreutil
+  PRIVATE ryzen_mm::ryzen_mm XRT::xrt_coreutil external_data
 )
 target_compile_options(
   ${target}

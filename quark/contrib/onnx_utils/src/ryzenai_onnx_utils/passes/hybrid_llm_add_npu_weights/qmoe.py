@@ -1,10 +1,14 @@
 # Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+import logging
+
 import onnx
 
 import ryzenai_onnx_utils.matcher
 import ryzenai_onnx_utils.transform.hybrid_llm
 from ryzenai_onnx_utils.typing import PassOutputArgs
+
+_logger = logging.getLogger(__name__)
 
 
 def replacement(
@@ -19,7 +23,8 @@ def replacement(
     if node.domain != domain:
         return subgraph, [], None
 
-    assert len(node.input) == 11, f"QMoE {node.name} has {len(node.input)} inputs, expected 11"
+    NUM_INPUTS = 14
+    assert len(node.input) == NUM_INPUTS, f"QMoE {node.name} has {len(node.input)} inputs, expected {NUM_INPUTS}"
     assert len(node.output) == 1, f"QMoE {node.name} has {len(node.output)} outputs, expected 1"
 
     # num_experts = onnx.helper.get_node_attr_value(node, "k")
@@ -31,11 +36,7 @@ def replacement(
         block_size = onnx.helper.get_node_attr_value(node, "block_size")
     except ValueError:
         block_size = 0
-
-    allow_unsupported = params.get_bool_attr("allow_unsupported", False)
-
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(node, "is_bfp16", params.attributes["is_bfp16"])
+    ryzenai_onnx_utils.matcher.add_attribute(node, "mladf_version", params.attributes["mladf_version"])
 
     new_initializers: list[onnx.TensorProto] = []
     packed_weight_tensors: list[onnx.TensorProto] = []
@@ -46,9 +47,7 @@ def replacement(
             ryzenai_onnx_utils.transform.hybrid_llm.preprocess_qmoe_packed_weights(node, extractor, bits, block_size)
         )
     except RuntimeError:
-        if not allow_unsupported:
-            raise
-        print(f"Skip packing weights for QMoE {node.name}")
+        _logger.error(f"Skipping packing weights for QMoE {node.name}, the model will be invalid")
 
         qmoe_node = onnx.helper.make_node(
             "QMoE",
@@ -76,12 +75,17 @@ def replacement(
     # 8 - optional FC3 weight
     # 9 - optional FC3 scale
     # 10 - optional FC3 bias
+    # 11 - optional FC1 zp
+    # 12 - optional FC2 zp
+    # 13 - optional FC3 zp
 
     # make weights/scale/zp/bias empty to avoid 2 sets
     new_inputs = [node.input[0], node.input[1]]
     new_initializers = []
 
-    for i in range(2, 11):
+    CONST_START_INDEX = 2
+
+    for i in range(CONST_START_INDEX, NUM_INPUTS):
         curr_input_name = node.input[i]
 
         if curr_input_name == "":

@@ -48,7 +48,12 @@ def replacement(
 ) -> PassOutputArgs:
     domain = params.get_domain("MladfMatMul")
     (matmul,) = subgraph
+
+    if "lm_head" in matmul.name and params.get_bool_attr("skip_lm_head", False):
+        return subgraph, [], None
+
     lora = params.get_bool_attr("lora", False)
+    is_ttft = params.get_bool_attr("is_ttft", False)
     match_index = int(pass_id.split("_")[-1])
 
     assert len(matmul.input) == 6
@@ -74,18 +79,17 @@ def replacement(
     n = onnx.helper.get_node_attr_value(matmul, "N")
     bias_offset = 4
     block_size = onnx.helper.get_node_attr_value(matmul, "block_size")
-    if "is_bfp16" in params.attributes:
-        # this is needed for mladf version determination during weight preprocessing
-        ryzenai_onnx_utils.matcher.add_attribute(matmul, "is_bfp16", params.attributes["is_bfp16"])
+    # this is needed for mladf version determination during weight preprocessing
+    op_version = params.attributes["mladf_version"]
+    ryzenai_onnx_utils.matcher.add_attribute(matmul, "mladf_version", op_version)
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         add_attribute(matmul, "enable_ctrl_pkt", enable_ctrl_pkt)
-    op_version = "v2" if "is_bfp16" in params.attributes and params.attributes["is_bfp16"] == "weights" else "flat"
     add_attribute(matmul, "op_version", op_version)
     try:
         new_weights, new_bias, new_scales, new_zeros = (
             ryzenai_onnx_utils.transform.hybrid_llm.preprocess_matmulnbits_weights(
-                matmul, 1, extractor, k, n, block_size, bias_offset, lora
+                matmul, 1, extractor, k, n, block_size, bias_offset, lora, enable_ctrl_pkt
             )
         )
     except RuntimeError:
@@ -110,7 +114,7 @@ def replacement(
         return [matmul_node], [], None
     finally:
         # this is not used for in fusion nodes or on CPU nodes
-        ryzenai_onnx_utils.matcher.delete_attribute(matmul, "is_bfp16")
+        ryzenai_onnx_utils.matcher.delete_attribute(matmul, "mladf_version")
     new_initializers = [new_weights, new_bias, new_scales, new_zeros]
     new_inputs.extend((new_weights.name, new_bias.name, new_scales.name, new_zeros.name))
 
@@ -137,7 +141,9 @@ def replacement(
     ryzenai_onnx_utils.matcher.copy_attributes(matmul, matmul_node)
     add_attribute(matmul_node, "default_shape", 1)
     add_attribute(matmul_node, "group_size", onnx.helper.get_node_attr_value(matmul, "block_size"))
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(matmul_node, "pdi_id", int(pdi_id))
     if lora:
         add_attribute(matmul_node, "lora", lora)
         external_buffers = []
@@ -147,7 +153,8 @@ def replacement(
         layer_num = len([i for i in extractor.graph.output if "present" in i.name and "key" in i.name])
         # first buffer is for sincos cache,
         # then v_matmul lora buffers (number equal to layer num), then this buffer
-        buf_idx = 1 + layer_num + match_index
+        base_buf_idx = 0 if is_ttft else 1
+        buf_idx = base_buf_idx + layer_num + match_index
         external_buffers.extend([lora_input_index, ext_buf_index, buf_idx, buf_idx])
         ryzenai_onnx_utils.matcher.add_attribute(matmul_node, "external_buffers", external_buffers)
 

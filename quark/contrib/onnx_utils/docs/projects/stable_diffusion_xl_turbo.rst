@@ -66,7 +66,7 @@ And *vae_decoder*:
 
     onnx_utils partition "/path/to/sdxl-turbo/vae_decoder/optimized.onnx" "/path/to/sdxl-turbo/vae_decoder" "sdxl_turbo_bfp_vae_decoder.yaml" -v --combine-dd --force
 
-These steps will generate a ``replaced.onnx`` models in the respective directories and a ``.cache`` directory containing DD metadata files.
+These steps will generate a ``replaced.onnx`` models in the respective directories and a ``cache`` directory containing DD metadata files.
 SDXL-Turbo is offloaded to the NPU using kernels from Mrinal's team (reach out to Akshay Jain for more information).
 
 Run
@@ -82,14 +82,14 @@ For SDXL-Turbo, you need to use the following ORT session configurations:
 
     decoder_session_options = ort.SessionOptions()
     decoder_session_options.add_session_config_entry("model_name", "DECODER")
-    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sdxl-turbo/vae_decoder/.cache")
+    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sdxl-turbo/vae_decoder/cache")
     decoder_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     # this should be the last step
     decoder_session_options.register_custom_ops_library("/path/to/shared/library")
 
     unet_session_options = ort.SessionOptions()
     unet_session_options.add_session_config_entry("model_name", "UNET")
-    unet_session_options.add_session_config_entry("dd_cache", "/path/to/sdxl-turbo/unet/.cache")
+    unet_session_options.add_session_config_entry("dd_cache", "/path/to/sdxl-turbo/unet/cache")
     unet_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     # this should be the last step
     unet_session_options.register_custom_ops_library("/path/to/shared/library")

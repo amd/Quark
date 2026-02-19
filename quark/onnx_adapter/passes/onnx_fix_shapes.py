@@ -226,7 +226,7 @@ class ONNXFixShapesPass(ONNXAdapterPass):
         Returns:
             ModelProto: The processed model.
         """
-        if "input_output_name_shapes" in config and config["input_output_name_shapes"] is not None:
+        if "input_output_name_shapes" in config and config["input_output_name_shapes"]:
             model = self._onnx_fix_shapes(model, config["input_output_name_shapes"])
         else:
             logger.warning(

@@ -9,6 +9,7 @@
 #include <ops/op_interface.hpp>
 
 #include "common.hpp"
+#include "mladf_version.hpp"
 #include "ops/mladfrmsnorm/mladfrmsnorm.hpp"
 #include "ops/ops_common/dtype_utils.h"
 
@@ -22,7 +23,7 @@ inline std::size_t alignTo4096(std::size_t size) {
 }
 
 inline std::map<std::string, size_t> get_NPU_tensor_size(
-  const std::vector<OpArgMap>& arg_map, std::string op_version
+  const std::vector<OpArgMap>& arg_map, MladfVersion op_version
 ) {
   std::map<std::string, size_t> size_map;
   size_t pad_bo_size = 0;
@@ -31,13 +32,14 @@ inline std::map<std::string, size_t> get_NPU_tensor_size(
     if (arg.arg_type == OpArgMap::OpArgType::INPUT) {
       size_map["in" + std::to_string(arg.onnx_arg_idx)] = arg.size;
     }
-    if (op_version == "v1") {
-      if (arg.arg_type == OpArgMap::OpArgType::SCRATCH_PAD) {
-        pad_bo_size = arg.size;
-      }
-    } else {
-      if (arg.arg_type == OpArgMap::OpArgType::SCRATCH_PAD) {
-        size_map["scratch"] = arg.size;
+    if (arg.arg_type == OpArgMap::OpArgType::SCRATCH_PAD) {
+      switch (op_version) {
+        case MladfVersion::v1:
+          pad_bo_size = arg.size;
+          break;
+        default:
+          size_map["scratch"] = arg.size;
+          break;
       }
     }
     if (arg.arg_type == OpArgMap::OpArgType::OUTPUT) {

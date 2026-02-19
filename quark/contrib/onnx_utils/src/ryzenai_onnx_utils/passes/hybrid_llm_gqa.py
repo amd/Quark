@@ -39,7 +39,8 @@ def replacement(
     ryzenai_onnx_utils.matcher.set_attribute(new_gqa, "do_rotary", 1)
     with contextlib.suppress(ValueError):
         rotary_embedding_dim = onnx.helper.get_node_attr_value(q_rotary, "rotary_embedding_dim")
-        ryzenai_onnx_utils.matcher.add_attribute(new_gqa, "rotary_embedding_dim", rotary_embedding_dim)
+        if rotary_embedding_dim != 0:
+            ryzenai_onnx_utils.matcher.add_attribute(new_gqa, "rotary_embedding_dim", rotary_embedding_dim)
 
     return [new_gqa], [], []
 

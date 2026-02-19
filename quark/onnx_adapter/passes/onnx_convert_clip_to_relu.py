@@ -214,7 +214,7 @@ class ONNXConvertClipToReluPass(ONNXAdapterPass):
         Returns:
             ModelProto: The processed model (or the unchanged model if disabled).
         """
-        if "convert_clip_to_relu" in config and config["convert_clip_to_relu"] is not None:
+        if "convert_clip_to_relu" in config and config["convert_clip_to_relu"]:
             model = self._onnx_convert_clip_to_relu(model)
         else:
             logger.warning(

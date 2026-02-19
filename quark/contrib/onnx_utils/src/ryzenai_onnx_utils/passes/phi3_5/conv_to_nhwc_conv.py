@@ -23,7 +23,7 @@ def replacement(
 
     tvis = []
 
-    weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(conv.input[1], extractor)
+    weight = ryzenai_onnx_utils.matcher.get_initializer_or_const(conv.input[1], extractor)
     weight_shape = weight.shape
     transpose_indices = [0, *list(range(2, len(weight_shape))) + [1]]
     np_transpose = np.transpose(weight, transpose_indices)
@@ -32,7 +32,7 @@ def replacement(
     initializers = [weight_transpose]
 
     if len(conv.input) == 3:
-        bias_np = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(conv.input[2], extractor)
+        bias_np = ryzenai_onnx_utils.matcher.get_initializer_or_const(conv.input[2], extractor)
         bias_tensor = onnx.numpy_helper.from_array(bias_np, name=conv.input[2])
         initializers.append(bias_tensor)
 

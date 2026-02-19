@@ -203,6 +203,7 @@ def extract_supported_nodes(
 
         # exclude initializer inputs
         inputs = [x for x in node.input if x not in extractor.wmap]
+        inputs = list(filter(None, inputs))  # remove empty strings
         outputs = node.output
 
         # remove any global model inputs from the new outputs
@@ -365,7 +366,7 @@ def save_intermediate_tensors(
     # # custom_op_path = ort.__path__[0] + "/capi/dynamic_dispatch_custom_op.dll"
     # custom_op_path = "C:/Users/varunsh/Documents/onnx_utils/build/install/bin/onnx_custom_ops.dll"
     # if os.path.exists(custom_op_path):
-    #     dd_cache_path = MODEL_DIR + "/" +  DIFFUSION_MODEL_UNET_SUBFOLDER + "/.cache"
+    #     dd_cache_path = MODEL_DIR + "/" +  DIFFUSION_MODEL_UNET_SUBFOLDER + "/cache"
     #     sess_options.add_session_config_entry("dd_cache", dd_cache_path)
     #     sess_options.register_custom_ops_library(custom_op_path)
     sess = rt.InferenceSession(tmp_onnx_file, sess_options=sess_options, providers=providers)

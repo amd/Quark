@@ -590,11 +590,13 @@ void SSMLPBase<T>::initializeKernels() {
 
     use op attributes to skip creating buffers for DD operators
   */
-  if (mladfVersion() != "v1" && mladfVersion() != "v2") {
+  if (!mladfVersion().anyOf(
+        {MladfVersion::v1, MladfVersion::v2, MladfVersion::aie4_v1}
+      )) {
     std::cerr << "Invalid version: " << mladfVersion() << std::endl;
   }
 
-  if (is_ssgmlp_ && mladfVersion() != "v2") {
+  if (is_ssgmlp_ && mladfVersion() != MladfVersion::v2) {
     std::cerr << "Only v2 supported for ssgmlp: " << mladfVersion()
               << std::endl;
   }
@@ -635,7 +637,7 @@ void SSMLPBase<T>::initializeKernels() {
 
       // for Gemma2, need to use eps6 to fix accuracy issue
       std::map<std::string, std::any> attr_rmsnorm_3 = {
-        {"op_version", mladfVersion()}
+        {"op_version", mladfVersion().str()}
       };
       ss_->rms_norm3_ =
         std::make_unique<ryzenai::rms_norm<uint16_t, uint16_t, uint16_t>>(
@@ -648,7 +650,7 @@ void SSMLPBase<T>::initializeKernels() {
       // ssgmlp gemma ssmlp second additional simplified layer norm
       // for Gemma2, need to use eps6 to fix accuracy issue
       std::map<std::string, std::any> attr_rmsnorm_4 = {
-        {"op_version", mladfVersion()}
+        {"op_version", mladfVersion().str()}
       };
       ss_->rms_norm4_ =
         std::make_unique<ryzenai::rms_norm<uint16_t, uint16_t, uint16_t>>(
@@ -815,13 +817,13 @@ void SSMLPBase<T>::get_fused_size(size_t kernel_size) {
   size_t scratch0_bo_size = 0;
   buffer_size_ = 0;
 
-  if (mladfVersion() == "v2") {
+  if (mladfVersion().anyOf({MladfVersion::v2, MladfVersion::aie4_v1})) {
     scratch0_bo_size = size_map["scratch"];
   }
 
   size_map = get_NPU_tensor_size(arg_map_g, mladfVersion());
   size_t g_bo_size = size_map["out"];
-  if (mladfVersion() == "v2") {
+  if (mladfVersion().anyOf({MladfVersion::v2, MladfVersion::aie4_v1})) {
     if (scratch0_bo_size < size_map["scratch"])
       scratch0_bo_size = size_map["scratch"];
   }
@@ -841,12 +843,13 @@ void SSMLPBase<T>::get_fused_size(size_t kernel_size) {
     {"dp", alignTo4096(d_bo_size)},
   };
 
-  if (mladfVersion() == "v2") {
+  if (mladfVersion().anyOf({MladfVersion::v2, MladfVersion::aie4_v1})) {
     shared_buffer_reqs.emplace_back("scratch", alignTo4096(scratch0_bo_size));
   }
 
   shared_buffer_.Update(std::move(shared_buffer_reqs));
 }
+
 template <typename T>
 void SSMLPBase<T>::UpdateSharedBuffer(size_t kernel_size) {
   if (gate_up_fused_) {
@@ -955,18 +958,29 @@ void SSMLPBase<T>::UpdateSharedBuffer(size_t kernel_size) {
   size_t d_bo_size = size_map["out"];
   size_t scratch0_bo_size = 0;
 
-  if (mladfVersion() == "v2") {
+  if (size_map.find("scratch") != size_map.end()) {
+    has_scratch_buffer_dp_ = true;
     scratch0_bo_size = size_map["scratch"];
+  } else {
+    has_scratch_buffer_dp_ = false;
   }
+
   size_map = get_NPU_tensor_size(arg_map_u, mladfVersion());
   size_t u_bo_size = size_map["out"];
-  if (mladfVersion() == "v2" && scratch0_bo_size < size_map["scratch"]) {
-    scratch0_bo_size = size_map["scratch"];
+  if (size_map.find("scratch") != size_map.end() &&
+      scratch0_bo_size < size_map["scratch"]) {
+    has_scratch_buffer_up_ = true;
+  } else {
+    has_scratch_buffer_up_ = false;
   }
+
   size_map = get_NPU_tensor_size(arg_map_g, mladfVersion());
   size_t g_bo_size = size_map["out"];
-  if (mladfVersion() == "v2" && scratch0_bo_size < size_map["scratch"]) {
-    scratch0_bo_size = size_map["scratch"];
+  if (size_map.find("scratch") != size_map.end() &&
+      scratch0_bo_size < size_map["scratch"]) {
+    has_scratch_buffer_gp_ = true;
+  } else {
+    has_scratch_buffer_gp_ = false;
   }
 
   auto size_map_add = get_NPU_tensor_size(
@@ -985,7 +999,8 @@ void SSMLPBase<T>::UpdateSharedBuffer(size_t kernel_size) {
     {"dp", alignTo4096(std::max(d_bo_size, alignTo4096(size_map_add["in0"])))},
   };
 
-  if (mladfVersion() == "v2") {
+  if (has_scratch_buffer_dp_ || has_scratch_buffer_up_ ||
+      has_scratch_buffer_gp_) {
     shared_buffer_reqs.emplace_back("scratch", alignTo4096(scratch0_bo_size));
   }
 
@@ -1254,6 +1269,7 @@ void SSMLPBase<T>::activation_execute(
     });
   });
 }
+
 template <typename T>
 void SSMLPBase<T>::Compute(OrtKernelContext* context) {
   // to dump to file
@@ -1292,7 +1308,8 @@ void SSMLPBase<T>::Compute(OrtKernelContext* context) {
   // passing true to execute causes it to wait
   const bool execute_sync = !continueOnException();
 #ifdef _WIN32
-  const bool execute_async = false;
+  // AIE4 is not able to run async mode
+  const bool execute_async = mladfVersion() == MladfVersion::aie4_v1;
 #else
   // on Linux, cannot execute in async mode: xrt::run objects go out of scope
   // in DD eager execute. Windows makes a copy unlike Linux
@@ -1733,7 +1750,8 @@ void SSMLPBase<T>::Compute(OrtKernelContext* context) {
     ewmul->create_bo(rebind->ptr, rebind->len, 2);
   }
 
-  if (mladfVersion() == "v2") {
+  if (has_scratch_buffer_dp_ || has_scratch_buffer_gp_ ||
+      has_scratch_buffer_up_) {
     if (auto rebind = shared_buffer_.Validate(
           "scratch", ss_->gemm_last_scratch_ptr_, ss_->gemm_last_scratch_len_
         )) {
@@ -1949,7 +1967,7 @@ void SSMLPBase<T>::Compute(OrtKernelContext* context) {
       // Don't wait if M=supported shape; i.e. NPU sslrn2
       tryContinueOnException([&]() {
         RecordDuration(Metric::KernelExecution, [&]() {
-          dp_->execute(dp_inputs, dp_outputs, wait);
+          dp_->execute(dp_inputs, dp_outputs, true);
         });
       });
     }

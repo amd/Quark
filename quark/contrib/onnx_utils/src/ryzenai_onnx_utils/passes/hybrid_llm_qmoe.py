@@ -21,7 +21,7 @@ def replacement(
     qmoe_node = subgraph[0]
     domain = params.get_domain(qmoe_node.op_type)
 
-    assert len(qmoe_node.input) == 11, f"For QMoE {qmoe_node.name} got {len(qmoe_node.input)} inputs, expected 11"
+    assert len(qmoe_node.input) == 14, f"For QMoE {qmoe_node.name} got {len(qmoe_node.input)} inputs, expected 14"
     assert len(qmoe_node.output) == 1, f"For QMoE {qmoe_node.name} got {len(qmoe_node.output)} outputs"
 
     new_nodes = []

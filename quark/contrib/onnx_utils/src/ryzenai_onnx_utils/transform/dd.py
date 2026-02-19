@@ -13,8 +13,6 @@ import onnx
 import ryzenai_dynamic_dispatch as dd
 
 import ryzenai_onnx_utils.matcher
-import ryzenai_onnx_utils.partitioner
-import ryzenai_onnx_utils.preprocess
 import ryzenai_onnx_utils.utils
 from ryzenai_onnx_utils.matcher import add_attribute, delete_attribute
 
@@ -22,6 +20,28 @@ if TYPE_CHECKING:
     import collections.abc
 
 _logger = logging.getLogger(__name__)
+
+
+def get_state_table_list(subgraph):
+    # TODO just update state for StateOperation.INCR
+    state_ids = set()
+    for node in subgraph:
+        try:
+            update_buffers = onnx.helper.get_node_attr_value(node, "update_tensor_offsets")
+        except ValueError:
+            update_buffers = None
+
+        if update_buffers:
+            idx_state = 1
+            while idx_state < len(update_buffers):
+                b = update_buffers[idx_state]
+                idx_state = idx_state + 4
+                if b not in state_ids:
+                    state_ids.add(b)
+    state_table_list = []
+    for state in state_ids:
+        state_table_list.append([state, int(dd.onnx_graph.StateOperation.INCR), 1])
+    return state_table_list
 
 
 def build_dd_node(
@@ -32,6 +52,7 @@ def build_dd_node(
     op_name: str | None = None,
     extra_attributes: dict[str, Any] | None = None,
     extra_inputs: list[str] | None = None,
+    meta_name: str | None = None,
 ) -> onnx.NodeProto:
     include_global_inputs = True
     include_initializers = False
@@ -56,8 +77,9 @@ def build_dd_node(
 
     inputs_num = len(inputs)
     outputs_num = len(outputs)
-
-    filename = ryzenai_onnx_utils.utils.get_valid_filename(subgraph[0].name)
+    if meta_name is None:
+        meta_name = ""
+    filename = meta_name + ryzenai_onnx_utils.utils.get_valid_filename(subgraph[0].name)
     if not filename:
         raise ValueError("Cannot use an empty filename: node has no name")
     if op_name is None:
@@ -141,6 +163,7 @@ def build_dd_node(
     is_llm = params.get_bool_attr("is_llm", False)
     if is_llm:
         aux_info["is_llm"] = True
+        aux_info["states"] = get_state_table_list(subgraph)
     graph = dd.onnx_graph.ONNXGraph(graph_dd, aux_info)
 
     prefix = f"{filename}_"

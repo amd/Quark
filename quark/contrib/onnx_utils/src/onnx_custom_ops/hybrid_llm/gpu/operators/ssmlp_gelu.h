@@ -44,6 +44,7 @@ enum SSMLPGeluNodeIndex : uint32_t {
   sg_normBottomIndex,
   sg_skipAddOpIndex,
   sg_mvnOpIndex,
+  sg_NodeCount
 };
 
 // =====================================================================================================================
@@ -69,6 +70,13 @@ class SSMLPGeluOperator : public DmlOperator {
     const SkipSimplifiedLayerNormParams& sslrnParam, bool skipInput = false,
     bool scaleInput = false, bool createOutput = false
   );
+
+  void CreateDmlCastTensorDesc(
+    DML_TENSOR_DATA_TYPE dataType, const DmlTensorDesc& dmlTensorDesc,
+    DmlTensorDesc* castDmlTensorDesc
+  );
+  std::shared_ptr<TensorDesc> m_layerNormIOTensorDesc = nullptr;
+
   void DequantizeBForMatmul(
     DmlTensorDesc& dmlTensorQBDequant, const TensorDesc* inputTensorDesc,
     const DML_TENSOR_DATA_TYPE& dequantDataType
@@ -80,6 +88,8 @@ class SSMLPGeluOperator : public DmlOperator {
   );
 
   const SSMLPGeluParams m_ssMlp;
+  DML_TENSOR_DATA_TYPE
+  m_internalDataType;
   const DML_TENSOR_DATA_TYPE
     m_dataType;  // All tensors must use this data type.
   const DML_TENSOR_DATA_TYPE m_quantDataType;  // Quantized datatype

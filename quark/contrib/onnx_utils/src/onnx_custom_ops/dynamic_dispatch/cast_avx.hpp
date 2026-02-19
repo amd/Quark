@@ -40,48 +40,45 @@ struct CastAvxKernel : ExecutionProviderExtensions {
 
     auto output_tensor = ctx.GetOutput(0, input_shape);
     auto* output_data = output_tensor.GetTensorMutableRawData();
-    if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
-        to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) {
-      RecordDuration(Metric::Casting, [&]() {
+    RecordDuration(Metric::Casting, [&]() {
+      if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
+          to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) {
         ryzenai::float_buffer_to_bfloat16(
           (float*)input_data, elements, (uint16_t*)output_data
         );
-      });
-    } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 &&
-               to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      RecordDuration(Metric::Casting, [&]() {
+      } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
+                 to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+        ryzenai::float_buffer_to_float16(
+          (float*)input_data, elements, (uint16_t*)output_data
+        );
+      } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 &&
+                 to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
         ryzenai::bfloat16_buffer_to_float(
           (uint16_t*)input_data, elements, (float*)output_data
         );
-      });
-    } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
-               to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) {
-      RecordDuration(Metric::Casting, [&]() {
+      } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
+                 to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) {
         ryzenai::float16_buffer_to_bfloat16(
           (uint16_t*)input_data, elements, (uint16_t*)output_data
         );
-      });
-    } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 &&
-               to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
-      RecordDuration(Metric::Casting, [&]() {
+      } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 &&
+                 to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
         ryzenai::bfloat16_buffer_to_float16(
           (uint16_t*)input_data, elements, (uint16_t*)output_data
         );
-      });
-    } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
-               to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      RecordDuration(Metric::Casting, [&]() {
+      } else if (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
+                 to_ == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
         ryzenai::float16_buffer_to_float(
           (uint16_t*)input_data, elements, (float*)output_data
         );
-      });
-    } else {
-      throw std::invalid_argument(
-        "Unsupported CastAvx type from " +
-        std::string(type_to_str(input_dtype)) + " to " +
-        std::string(type_to_str(to_))
-      );
-    }
+      } else {
+        throw std::invalid_argument(
+          "Unsupported CastAvx type from " +
+          std::string(type_to_str(input_dtype)) + " to " +
+          std::string(type_to_str(to_))
+        );
+      }
+    });
   }
 
  private:

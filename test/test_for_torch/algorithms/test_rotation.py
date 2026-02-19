@@ -26,7 +26,7 @@ from transformers import (
 )
 from transformers.loss.loss_utils import fixed_cross_entropy
 
-from quark.shares.utils.testing_utils import require_torch_cuda, torch_device
+from quark.shares.utils.testing_utils import require_torch_cuda, require_vllm, torch_device
 from quark.testing import slow_test
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.algorithm.rotation.cayley import SGDG
@@ -39,6 +39,7 @@ from quark.torch.quantization import (
     Int4PerChannelSpec,
     Int8PerChannelSpec,
     Int8PerTensorSpec,
+    OCP_MXFP4Spec,
     OnlineRotationConfig,
     QConfig,
     QLayerConfig,
@@ -235,7 +236,7 @@ MODEL_TYPE_TO_SCALING_LAYERS = {
 
 
 def run_rotation_training(
-    quant_config: QConfig, learning_rate: float, dtype: str, model_id: str, online_r1_rotation: bool
+    quant_config: QConfig, learning_rate: float, dtype: str, model_id: str, online_r1_rotation: bool, steps: int = 30
 ):
     model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
     model = model.eval()
@@ -349,7 +350,7 @@ def run_rotation_training(
             do_train=True,
             overwrite_output_dir=True,
             gradient_checkpointing=True,
-            max_steps=30,
+            max_steps=steps,
             lr_scheduler_type="cosine",
             save_strategy="no",
         )
@@ -1174,13 +1175,21 @@ def test_serialization_and_reload(
         with torch.no_grad(), TemporaryDirectory() as tmpdir:
             export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
+            if Path(tmpdir, "model-00001-of-00002.safetensors").exists():
+                checkpoint_name = "model-00001-of-00002.safetensors"
+            else:
+                checkpoint_name = "model.safetensors"
+
             found_online = False
-            with safe_open(Path(tmpdir, "model.safetensors"), framework="pt", device=torch_device.type) as f:
+            with safe_open(Path(tmpdir, checkpoint_name), framework="pt", device=torch_device.type) as f:
                 for key in f.keys():  # noqa
                     if "input_rotation" in key:
                         param = f.get_tensor(key)
                         found_online = True
-                        assert param.dtype == torch.bool
+                        assert param.dtype == torch.int8
+
+                        if rotation_size is not None:
+                            assert param.shape[0] == rotation_size
 
             if online_r1_rotation:
                 assert found_online
@@ -1457,3 +1466,151 @@ def test_get_online_rotation_layers(r1: bool, r2: bool, r4: bool, online_r1_rota
     expected_online_total = expected_r1_online + expected_r2_online + expected_r4_online
 
     assert len(online_rotation_layers) == expected_online_total
+
+
+@pytest.mark.skipif(
+    os.environ.get("QUARK_EXTENSIVE_TEST", "0") == "0", reason="skipping in the CI as useful only for local debugging"
+)
+@require_torch_cuda
+@require_vllm
+def test_load_vllm_hadamard():
+    from vllm import LLM, SamplingParams
+
+    model_id = "HuggingFaceTB/SmolLM-135M"
+
+    mxfp4_input_spec = OCP_MXFP4Spec(is_dynamic=True, ch_axis=-1).to_quantization_spec()
+    mxfp4_weight_spec = OCP_MXFP4Spec(is_dynamic=False, ch_axis=-1).to_quantization_spec()
+
+    layer_quant_config = QLayerConfig(weight=mxfp4_weight_spec, input_tensors=mxfp4_input_spec)
+
+    rotation_config = RotationConfig(
+        scaling_layers=MODEL_TYPE_TO_SCALING_LAYERS["llama"],
+        rotation_size=64,
+        r1=True,
+        r2=True,
+        r3=False,
+        r4=False,
+        online_r1_rotation=True,
+        trainable=False,
+        mlp="mlp",
+    )
+    algo_config = [rotation_config]
+
+    quant_config = QConfig(
+        global_quant_config=layer_quant_config, algo_config=algo_config, exclude=["lm_head", "*.gate"]
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
+    model = model.eval()
+
+    model = model.to("cuda")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    quantizer = ModelQuantizer(quant_config)
+    model = quantizer.quantize_model(model)
+
+    with torch.no_grad(), TemporaryDirectory() as tmpdir:
+        export_safetensors(model=model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
+
+        tokenizer.save_pretrained(tmpdir)
+
+        llm = LLM(model=tmpdir)
+
+        prompts = [
+            "Hello, my name is",
+            "The president of the United States is",
+            "The capital of France is",
+            "The future of AI is",
+        ]
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+        outputs = llm.generate(prompts, sampling_params)
+
+        for output in outputs:
+            prompt = output.prompt
+
+        generated_text = output.outputs[0].text
+        print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+
+
+@pytest.mark.skipif(
+    os.environ.get("QUARK_EXTENSIVE_TEST", "0") == "0", reason="skipping in the CI as useful only for local debugging"
+)
+@require_torch_cuda
+@require_vllm
+def test_load_vllm_tuned_orthogonal():
+    from vllm import LLM, SamplingParams
+
+    model_id = "HuggingFaceTB/SmolLM-135M"
+
+    mxfp4_input_spec = OCP_MXFP4Spec(is_dynamic=True, ch_axis=-1).to_quantization_spec()
+    mxfp4_weight_spec = OCP_MXFP4Spec(is_dynamic=False, ch_axis=-1).to_quantization_spec()
+
+    layer_quant_config = QLayerConfig(weight=mxfp4_weight_spec, input_tensors=mxfp4_input_spec)
+
+    rotation_config = RotationConfig(
+        scaling_layers=MODEL_TYPE_TO_SCALING_LAYERS["llama"],
+        rotation_size=64,
+        r1=True,
+        r2=True,
+        r3=False,
+        r4=False,
+        online_r1_rotation=True,
+        trainable=True,
+        mlp="mlp",
+    )
+    algo_config = [rotation_config]
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
+    model = model.eval()
+
+    model = model.to("cuda")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    quant_config_rotation = QConfig(
+        global_quant_config=layer_quant_config, algo_config=algo_config, exclude=["lm_head", "*.gate"]
+    )
+
+    model, _, _, _, _, _, _ = run_rotation_training(
+        quant_config_rotation, learning_rate=1.5, dtype="fp32", model_id=model_id, online_r1_rotation=True, steps=5
+    )
+
+    model = model.eval()
+
+    quant_config_quantization = copy.deepcopy(quant_config_rotation)
+    quant_config_quantization.algo_config = []
+
+    model = RotationProcessor.post_process_trained_rotation(model=model, quantization_config=quant_config_quantization)
+
+    quantizer = ModelQuantizer(quant_config_quantization)
+
+    with torch.no_grad():
+        model = quantizer.quantize_model(model)
+        model.quant_config.algo_config = quant_config_rotation.algo_config
+
+    model = quantizer.freeze(model)
+
+    with torch.no_grad(), TemporaryDirectory() as tmpdir:
+        export_safetensors(model=model, output_dir=tmpdir, weight_format="real_quantized", pack_method="reorder")
+
+        tokenizer.save_pretrained(tmpdir)
+
+        llm = LLM(model=tmpdir)
+
+        prompts = [
+            "Hello, my name is",
+            "The president of the United States is",
+            "The capital of France is",
+            "The future of AI is",
+        ]
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+        outputs = llm.generate(prompts, sampling_params)
+
+        for output in outputs:
+            prompt = output.prompt
+
+        generated_text = output.outputs[0].text
+        print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")

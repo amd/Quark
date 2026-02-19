@@ -53,7 +53,7 @@ static void map_experts(
     DWORD size = packed_expert_sz_fc + (delta);
 
     auto mapped_ptr =
-      MapViewOfFile(hMapping, FILE_MAP_WRITE, offset_hi, offset_lo, size);
+      MapViewOfFile(hMapping, FILE_MAP_READ, offset_hi, offset_lo, size);
 
     if (mapped_ptr == nullptr) {
       CloseHandle(hMapping);
@@ -107,6 +107,8 @@ static void bind_experts(
   std::unique_ptr<
     ryzenai::mladfmatmulbias<uint16_t, int8_t, uint16_t, uint16_t>>& gemm
 ) {
+  constexpr bool kReadOnly = true;
+
   for (auto expert_idx = 0; expert_idx < num_experts; expert_idx++) {
     bool need_expert = expert_ids.end() != expert_ids.find(expert_idx);
     bool is_loaded = const_bo_map.end() != const_bo_map.find(expert_idx);
@@ -115,7 +117,7 @@ static void bind_experts(
 
     if (need_expert && !is_loaded) {
       const_bo_map[expert_idx] = gemm->bind_bo(
-        (void*)packed_expert_ptrs.at(fc_expert_idx), packed_expert_sz
+        (void*)packed_expert_ptrs.at(fc_expert_idx), packed_expert_sz, kReadOnly
       );
     }
   }
@@ -298,8 +300,8 @@ AMDQMoEKernel::AMDQMoEKernel(
 #ifdef _WIN32
     hFile_ = CreateFile(
       external_data_path_.c_str(),  // File name
-      GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr
+      GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, nullptr
     );
 
     if (hFile_ == INVALID_HANDLE_VALUE) {
@@ -309,7 +311,7 @@ AMDQMoEKernel::AMDQMoEKernel(
     // always go through mmap
     hMapping_ = CreateFileMapping(
       hFile_, nullptr,
-      PAGE_READWRITE,  // Read/write access
+      PAGE_READONLY,  // Read access
       0, 0,
       nullptr
     );  // No name
@@ -795,7 +797,7 @@ void AMDQMoEKernel::UpdateSharedBuffer(size_t kernel_size) {
     a_bo_size = size_map["in0"];
     // output for gate_up - will be re-used for general activations input
     c_bo_size = size_map["out"];
-    if (mladfVersion() == "v2") {
+    if (mladfVersion() == MladfVersion::v2) {
       size_t scratch_bo_size = size_map["scratch"];
       scratch_size = std::max(scratch_size, alignTo4096(scratch_bo_size));
     }
@@ -841,7 +843,7 @@ void AMDQMoEKernel::UpdateSharedBuffer(size_t kernel_size) {
     c_bo_size = std::max(c_bo_size, size_map["out"]);
 
     down_out_size = size_map["out"];
-    if (mladfVersion() == "v2") {
+    if (mladfVersion() == MladfVersion::v2) {
       size_t scratch_bo_size = size_map["scratch"];
       scratch_size = std::max(scratch_size, alignTo4096(scratch_bo_size));
     }
@@ -1055,7 +1057,7 @@ void AMDQMoEKernel::Compute(OrtKernelContext* context) {
     ss_->gate_up_gemm_->create_bo(res->ptr, res->len, 1, kGemmBOsSelector);
   }
 
-  if (mladfVersion() == "v2") {
+  if (mladfVersion() == MladfVersion::v2) {
     if (auto res = shared_buffer_.Validate(
           "scratch", ss_->gemm_last_scratch_ptr_, ss_->gemm_last_scratch_len_
         )) {

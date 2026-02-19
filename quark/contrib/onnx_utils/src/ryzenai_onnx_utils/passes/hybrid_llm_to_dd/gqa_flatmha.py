@@ -70,10 +70,16 @@ def replacement(
 ) -> PassOutputArgs:
     domain = params.get_domain("FLATMHATTFT")
     q_matmul = subgraph[0]
-    v_matmul = subgraph[2]
-    q_rotary = subgraph[3]
-    k_rotary = subgraph[4]
-    gqa = subgraph[5]
+    if len(subgraph) == 6:
+        v_matmul = subgraph[2]
+        q_rotary = subgraph[3]
+        k_rotary = subgraph[4]
+        gqa = subgraph[5]
+    else:
+        v_matmul = subgraph[12]
+        q_rotary = subgraph[13]
+        k_rotary = subgraph[14]
+        gqa = subgraph[15]
 
     new_nodes: list[onnx.NodeProto] = []
     new_initializers: list[onnx.TensorProto] = []
@@ -144,7 +150,9 @@ def replacement(
     )
     ryzenai_onnx_utils.matcher.add_attribute(mha, "use_gm", "v2")
     match_index = int(pass_id.split("_")[-1])
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(mha, "pdi_id", int(pdi_id))
     # controls how many outputs are being converted to external. 4 if past k/v
     # and present k/v; 2 if just present k/v
     buffer_factor = params.attributes.get("buffer_factor", 4)
@@ -159,20 +167,53 @@ def replacement(
     external_buffers.extend([2, 0, buffer_offset + 1, alias_offset + 1])
     ryzenai_onnx_utils.matcher.add_attribute(mha, "external_buffers", external_buffers)
     new_nodes.append(mha)
-
-    new_nodes.append(subgraph[0])
-    new_nodes.append(subgraph[1])
-    new_nodes.append(subgraph[2])
-
+    if len(subgraph) == 6:
+        new_nodes.append(subgraph[0])
+        new_nodes.append(subgraph[1])
+        new_nodes.append(subgraph[2])
+    else:
+        new_nodes.append(subgraph[0])
+        new_nodes.append(subgraph[1])
+        new_nodes.append(subgraph[2])
+        new_nodes.append(subgraph[3])
+        new_nodes.append(subgraph[4])
+        new_nodes.append(subgraph[5])
+        new_nodes.append(subgraph[6])
+        new_nodes.append(subgraph[7])
+        new_nodes.append(subgraph[8])
+        new_nodes.append(subgraph[9])
+        new_nodes.append(subgraph[10])
+        new_nodes.append(subgraph[11])
+        new_nodes.append(subgraph[12])
     return new_nodes, new_initializers, new_tvis
 
 
 PATTERN = [
-    "MatMulNBits([?,?,?,?,?], [a0])",  # q
-    "MatMulNBits([?,?,?,?,?], [a1])",  # k
-    "MatMulNBits([?,?,?,?,?], [a2])",  # v
-    "RotaryEmbedding([a0,?,?,?], a3)",
-    "RotaryEmbedding([a1,?,?,?], a4)",
-    "GroupQueryAttention([a3,a4,a2,?,?,?,?,?,?], [?,?,?])",
+    [
+        "MatMulNBits([?,?,?,?,?], [a0])",  # q
+        "MatMulNBits([?,?,?,?,?], [a1])",  # k
+        "MatMulNBits([?,?,?,?,?], [a2])",  # v
+        "RotaryEmbedding([a0,?,?,?], a3)",
+        "RotaryEmbedding([a1,?,?,?], a4)",
+        "GroupQueryAttention([a3,a4,a2,?,?,?,?,?,?], [?,?,?])",
+    ],
+    [
+        "MatMulNBits([?,?,?,?,?], [a0])",  # q
+        "Reshape([a0, ?], [c00])",
+        "Cast(c00, c0)",
+        "SimplifiedLayerNormalization([c0,?], b00)",
+        "Cast(b00, b0)",
+        "Reshape([b0, ?], [d0])",
+        "MatMulNBits([?,?,?,?,?], [a1])",  # k
+        "Reshape([a1, ?], [c01])",
+        "Cast(c01, c1)",
+        "SimplifiedLayerNormalization([c1,?], b01)",
+        "Cast(b01, b1)",
+        "Reshape([b1, ?], [d1])",
+        "MatMulNBits([?,?,?,?,?], [a2])",  # v
+        "RotaryEmbedding([d0,?,?,?], a3)",
+        "RotaryEmbedding([d1,?,?,?], a4)",
+        "GroupQueryAttention([a3,a4,a2,?,?,?,?,?,?], [?,?,?])",
+    ],
 ]
-REPLACEMENT = replacement
+REPLACEMENT = [replacement] * 2

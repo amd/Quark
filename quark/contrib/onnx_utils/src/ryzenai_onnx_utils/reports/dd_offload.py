@@ -24,7 +24,16 @@ def _get_io_as_str(node: onnx.NodeProto, extractor: onnx.utils.Extractor, io_nam
             io_list.append("[] - N/A")
         else:
             shape = ryzenai_onnx_utils.matcher.get_shape(name, extractor)
-            shape_str = f"[{','.join(map(str, shape))}]"
+            # Handle dynamic dimensions: if it's a string (dim_param), display it clearly
+            shape_parts = []
+            for dim in shape:
+                if isinstance(dim, str):
+                    # Dynamic dimension - use the dim_param name or '?' if empty
+                    shape_parts.append(f"'{dim}'" if dim else "?")
+                else:
+                    # Static dimension
+                    shape_parts.append(str(dim))
+            shape_str = f"[{','.join(shape_parts)}]"
             dtype = ryzenai_onnx_utils.matcher.get_dtype_str(name, extractor).split(".")[1]
             io_list.append(f"{shape_str} - {dtype}")
     return "\n".join(io_list)

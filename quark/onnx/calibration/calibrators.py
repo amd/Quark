@@ -29,10 +29,10 @@ from tqdm import tqdm
 
 from quark.onnx.quantization.quant_utils import ExtendedQuantType
 from quark.onnx.utils.file_utils import save_quantized_info
-from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
+from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model, sanitize_model_outputs
 from quark.shares.utils.log import ScreenLogger, log_errors
 
-from .collectors import OverridedHistogramCollector, PowOfTwoCollector
+from .collectors import LoadingDataFromDisk, OverridedHistogramCollector, PowOfTwoCollector
 from .methods import LayerWiseMethod, PowerOfTwoMethod
 
 logger = ScreenLogger(__name__)
@@ -46,6 +46,75 @@ def GenerateAnEmptyOnnxModel(model_path: str) -> None:
     graph = onnx.helper.make_graph(name="EmptyGraph", inputs=[], outputs=[], nodes=[])
     model = onnx.helper.make_model(graph, producer_name="empty-model")
     onnx.save(model, model_path)
+
+
+def CachingDataOnDisk(
+    session: onnxruntime.InferenceSession, inputs: dict[str, Any], cache_dir: str, to_append: bool
+) -> tuple[list[str], int]:
+    """
+    Execute a session run and save the outputs to the caching directory.
+    This function encapsulates the session run within a function and save the outputs
+    to local files, ensuring that memory of output arrays is released.
+
+    :param onnxruntime.InferenceSession session: the session to run
+    :param dict[str, Any] inputs: the input data for the run
+    :param str cache_dir: the caching directory to store the files
+    :param str to_append: to append the data to existing file or not
+    :return: The list of saved file paths and the number of bytes it saved
+    """
+    outputs = session.run(None, inputs)
+    sanitize_model_outputs(outputs)
+
+    file_list: list[str] = []
+    cached_nbytes = 0
+
+    for output_index, output in enumerate(outputs):
+        if to_append:
+            # For append mode, the data is stored in float16 to save disk space
+            nbytes = output.nbytes / 2 if output.dtype == np.float32 else output.nbytes
+            file_path = os.path.join(cache_dir, f"output{output_index}_data.npz")
+            with open(file_path, "ab") as f:
+                np.save(f, output.astype(np.float16))
+        else:
+            nbytes = output.nbytes
+            file_path = os.path.join(cache_dir, f"output{output_index}_data.npy")
+            with open(file_path, "wb") as f:
+                np.save(f, output)
+
+        file_list.append(file_path)
+        cached_nbytes += nbytes
+
+    return file_list, cached_nbytes
+
+
+def GetCleanMergedDict(
+    intermediate_outputs: list[list[Any]], output_names: list[str], tensors_to_calibrate: list[str] | None
+) -> dict[str, list[list[Any]]]:
+    """
+    Based on the tensor_to_calibrate list, filter out tensors from output_names
+    that do not require calibration to form the clean dictionary. In this dict,
+    the keys are tensor names, and the values come from intermediate_outputs.
+
+    :param list[Any] intermediate_outputs: the intermediate outputs
+    :param list[str] output_names: the list of output names
+    :param list[str] | None tensors_to_calibrate: the list of tensors to calibrate
+    :return: the cleaned and merged dictionary
+    """
+
+    output_dicts_list = [
+        dict(zip(output_names, intermediate_output, strict=False)) for intermediate_output in intermediate_outputs
+    ]
+
+    merged_dict: dict[str, Any] = {}
+    for d in output_dicts_list:
+        for k, v in d.items():
+            merged_dict.setdefault(k, []).append(v)
+
+    clean_merged_dict: dict[str, Any] = merged_dict
+    if tensors_to_calibrate is not None:
+        clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in tensors_to_calibrate}
+
+    return clean_merged_dict
 
 
 class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
@@ -73,6 +142,7 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
         moving_average: bool = False,
         averaging_constant: float = 0.01,
         max_intermediate_outputs: int | None = None,
+        optimize_mem: bool = True,
     ):
         if isinstance(model_input, onnx.ModelProto):
             GenerateAnEmptyOnnxModel(augmented_model_path)
@@ -95,6 +165,8 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
             # Replace the empty model with the real input model.
             # The copy is to avoid modifying the input model.
             self.model = copy.deepcopy(model_input)
+
+        self.optimize_mem = optimize_mem
 
     def augment_graph(self) -> None:
         """
@@ -151,12 +223,45 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
                 save_as_external_data=self.use_external_data_format,
             )
 
+    def collect_data(self, data_reader: CalibrationDataReader) -> None:
+        """
+        Collect intermediate outputs from the model using the provided data_reader,
+        and prepare data for calibration.
+        """
+        try:
+            data_size = len(data_reader)
+        except NotImplementedError:
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
+
+        for _ in tqdm(range(data_size)):
+            inputs = data_reader.get_next()
+            if not inputs:
+                break
+            self.intermediate_outputs.append(self.infer_session.run(None, inputs))
+            if (
+                self.max_intermediate_outputs is not None
+                and len(self.intermediate_outputs) == self.max_intermediate_outputs
+            ):
+                self.clear_collected_data()
+
+        if not self.intermediate_outputs and self.calibrate_tensors_range is None:
+            raise ValueError("No data is collected.")
+
+        sanitize_model_outputs(self.intermediate_outputs[0])
+
+        t = self.compute_data()
+        if not isinstance(t, TensorsData):
+            raise TypeError(f"compute_data must return a TensorsData not {type(t)}.")
+
     def create_inference_session(self) -> None:
         """
         create an OnnxRuntime InferenceSession.
         """
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
+        if self.optimize_mem and self.execution_providers == ["CPUExecutionProvider"]:
+            sess_options.enable_cpu_mem_arena = False
+
         if self.use_external_data_format:
             self.infer_session = create_infer_session_for_onnx_model(
                 self.augmented_model_path,
@@ -190,6 +295,8 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         the algorithm weights and float 8 follow the same distribution,
         if ``scenario="p3"``, it assumes the weights follow
         a gaussian law and float 8 ~ X^3 where X is a gaussian law. Defaults to ``"same"``.
+    :param bool layer_wise: Whether to work on layerwise percentile mode. Default is False.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
 
@@ -205,6 +312,8 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         num_quantized_bins: int = 2048,
         percentile: float = 99.999,
         scenario: str = "same",
+        layer_wise: bool = False,
+        optimize_mem: bool = True,
         worker_num: int = 1,
     ):
         if isinstance(model_input, onnx.ModelProto):
@@ -231,6 +340,10 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             # The copy is to avoid modifying the input model.
             self.model = copy.deepcopy(model_input)
 
+        self.layer_wise = layer_wise
+        self.clean_merged_dict: dict[str, list[list[Any]]] = {}  # Only for layerwise percentile
+
+        self.optimize_mem = optimize_mem
         self.worker_num = worker_num
 
     def augment_graph(self) -> None:
@@ -272,6 +385,10 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             )
 
     def collect_data(self, data_reader: CalibrationDataReader) -> None:
+        """
+        Calibrator collects activation tensors.
+        """
+
         # Initialize the collector
         if not self.collector:  # type: ignore
             self.collector = OverridedHistogramCollector(
@@ -281,6 +398,7 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
                 num_quantized_bins=self.num_quantized_bins,
                 percentile=self.percentile,
                 scenario=self.scenario,
+                optimize_mem=self.optimize_mem,
                 worker_num=self.worker_num,
             )
 
@@ -292,40 +410,47 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         except NotImplementedError:
             raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
 
+        cache_dir = os.path.dirname(self.augmented_model_path)  # For caching tensors
+        cache_capacity = 0
+
         onnx_infer_time = []
         numpy_stat_time = []
-        for _ in tqdm(range(data_size)):
+
+        pbar = tqdm(range(data_size))
+        for _ in pbar:
             collect_data_start_time = time.perf_counter()
-            self.intermediate_outputs = []
-
             inputs = data_reader.get_next()
-
             if not inputs:
                 break
 
-            outputs = self.infer_session.run(None, inputs)
+            fixed_outputs: list[str | np.ndarray[Any, Any]] = []
+
+            if self.optimize_mem:
+                to_append = self.method == "percentile" and self.layer_wise
+                fixed_outputs, cached_nbytes = CachingDataOnDisk(self.infer_session, inputs, cache_dir, to_append)  # type: ignore
+            else:
+                outputs = self.infer_session.run(None, inputs)
+                sanitize_model_outputs(outputs)
+
+                cached_nbytes = 0
+                for output_index, output in enumerate(outputs):
+                    # Copy np.ndarray only for graph outputs that are also graph inputs to workaround bug:
+                    # https://github.com/microsoft/onnxruntime/issues/21922
+                    if output_names[output_index] in input_names_set:
+                        fixed_outputs.append(copy.copy(output))
+                    else:
+                        fixed_outputs.append(output)
+                    cached_nbytes += output.nbytes
+
             collect_data_onnx_infer_time = time.perf_counter()
 
-            fixed_outputs = []
-            for output_index, output in enumerate(outputs):
-                if output_names[output_index] in input_names_set:
-                    fixed_outputs.append(copy.copy(output))
-                else:
-                    fixed_outputs.append(output)
+            clean_merged_dict = GetCleanMergedDict([fixed_outputs], output_names, self.tensors_to_calibrate)
 
-            self.intermediate_outputs.append(fixed_outputs)
-
-            output_dicts_list = [
-                dict(zip(output_names, intermediate_output, strict=False))
-                for intermediate_output in self.intermediate_outputs
-            ]
-
-            merged_dict: dict[str, Any] = {}
-            for d in output_dicts_list:
-                for k, v in d.items():
-                    merged_dict.setdefault(k, []).append(v)
-
-            clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
+            if self.method == "percentile" and self.layer_wise:
+                self.intermediate_outputs.append(fixed_outputs)
+                cache_capacity += cached_nbytes
+            else:
+                cache_capacity = cached_nbytes
 
             collect_data_acquired_data_time = time.perf_counter()
             self.collector.collect(clean_merged_dict)
@@ -333,6 +458,10 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
 
             onnx_infer_time.append(collect_data_onnx_infer_time - collect_data_start_time)
             numpy_stat_time.append(collect_data_end_time - collect_data_acquired_data_time)
+
+            pbar.set_description(
+                f"Cached {cache_capacity / (1024**3):.2f}GB on {'disk' if self.optimize_mem else 'memory'}"
+            )
 
         onnx_infer_time_sum = np.sum(onnx_infer_time)
         numpy_stat_time_sum = np.sum(numpy_stat_time)
@@ -349,8 +478,11 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             f"Quark_latency_profiler: calibration collect data (numpy statistics) time consumed: {numpy_stat_time_sum:1f}"
         )
 
-        if len(self.intermediate_outputs) == 0:
-            raise ValueError("No data is collected.")
+        if len(self.intermediate_outputs):
+            # For layer-wise percentile, all data may be used
+            self.clean_merged_dict = GetCleanMergedDict(
+                self.intermediate_outputs, output_names, self.tensors_to_calibrate
+            )
 
         self.clear_collected_data()
 
@@ -397,6 +529,7 @@ class MinMaxCalibrater(OverridedMinMaxCalibrater):
         use_external_data_format: bool = False,
         moving_average: bool = False,
         averaging_constant: float = 0.01,
+        optimize_mem: bool = True,
     ) -> None:
         super().__init__(
             model_input,
@@ -406,6 +539,7 @@ class MinMaxCalibrater(OverridedMinMaxCalibrater):
             use_external_data_format=use_external_data_format,
             moving_average=moving_average,
             averaging_constant=averaging_constant,
+            optimize_mem=optimize_mem,
         )
         self.intermediate_outputs: list[str] = []
         self.calibrate_tensors_range = None
@@ -429,6 +563,7 @@ class EntropyCalibrater(OverridedHistogramCalibrater):
     :param bool symmetric: Whether to make the range of tensor symmetric (central point is 0). Default is ``False``.
     :param int num_bins: Number of bins to create a new histogram for collecting tensor values. Default is ``128``.
     :param int num_quantized_bins: Number of quantized bins. Default is ``128``.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
 
@@ -442,6 +577,7 @@ class EntropyCalibrater(OverridedHistogramCalibrater):
         symmetric: bool = False,
         num_bins: int = 128,
         num_quantized_bins: int = 128,
+        optimize_mem: bool = True,
         worker_num: int = 1,
     ) -> None:
         super().__init__(
@@ -453,6 +589,7 @@ class EntropyCalibrater(OverridedHistogramCalibrater):
             symmetric=symmetric,
             num_bins=num_bins,
             num_quantized_bins=num_quantized_bins,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
         self.collector: Any = None
@@ -470,6 +607,8 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
     :param bool symmetric: Whether to make the range of tensor symmetric (central point is 0). Default is ``False``.
     :param int num_bins: Number of bins to create a new histogram for collecting tensor values. Default is ``2048``.
     :param float percentile: Percentile value for calibration, a float between [0, 100]. Default is ``99.999``.
+    :param bool layer_wise: Whether to work on layerwise percentile mode. Default is False.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
 
@@ -483,6 +622,8 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
         symmetric: bool = False,
         num_bins: int = 2048,
         percentile: float = 99.999,
+        layer_wise: bool = False,
+        optimize_mem: bool = True,
         worker_num: int = 1,
     ):
         super().__init__(
@@ -494,6 +635,8 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
+            layer_wise=layer_wise,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
         self.collector: Any = None
@@ -513,6 +656,7 @@ class DistributionCalibrater(OverridedHistogramCalibrater):
         the algorithm weights and float 8 follow the same distribution,
         if ``scenario="p3"``, it assumes the weights follow
         a gaussian law and float 8 ~ X^3 where X is a gaussian law. Defaults to ``"same"``.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
 
@@ -525,6 +669,7 @@ class DistributionCalibrater(OverridedHistogramCalibrater):
         method: str = "distribution",
         num_bins: int = 128,
         scenario: str = "same",
+        optimize_mem: bool = True,
         worker_num: int = 1,
     ):
         super().__init__(
@@ -535,8 +680,10 @@ class DistributionCalibrater(OverridedHistogramCalibrater):
             method=method,
             num_bins=num_bins,
             scenario=scenario,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
+        self.collector: Any = None
 
 
 class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
@@ -604,10 +751,6 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         self.worker_num = worker_num
         self.quantized_tensor_type = quantized_tensor_type
 
-        if minmse_mode == "MostCommon" and symmetric and optimize_mem:
-            logger.warning("No need to optimize memory for MinMSE of MostCommon mode.")
-            self.optimize_mem = False
-
     def augment_graph(self) -> None:
         """
         make all quantization_candidates op type nodes as part of the graph output.
@@ -634,23 +777,6 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         """
         MinMSE Calibrator collects operators' tensors.
         """
-
-        def get_clean_merged_dict(intermediate_outputs: list[Any]) -> dict[Any, Any]:
-            output_dicts_list = [
-                dict(zip(output_names, intermediate_output, strict=False))
-                for intermediate_output in intermediate_outputs
-            ]
-
-            merged_dict: dict[Any, Any] = {}
-            for d in output_dicts_list:
-                for k, v in d.items():
-                    merged_dict.setdefault(k, []).append(v)
-
-            clean_merged_dict: dict[Any, Any] = merged_dict
-            if self.tensors_to_calibrate is not None:
-                clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
-
-            return clean_merged_dict
 
         if not self.collector:
             self.collector = PowOfTwoCollector(
@@ -680,47 +806,43 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
             inputs = data_reader.get_next()
             if not inputs:
                 break
-            outputs = self.infer_session.run(None, inputs)
 
-            fixed_outputs: list[Any] = []
+            fixed_outputs: list[str | np.ndarray[Any, Any]] = []
 
-            cached_mem = 0
-            for output_index, output in enumerate(outputs):
-                output = output.astype(np.float16)  # To reduce memory consumption
-                cached_mem += output.nbytes
+            if self.optimize_mem:
+                to_append = not (self.collector and self.collector.optimized_mostcommon)
+                fixed_outputs, cached_nbytes = CachingDataOnDisk(self.infer_session, inputs, cache_dir, to_append)  # type: ignore
+                cache_capacity = cache_capacity + cached_nbytes if to_append else cached_nbytes
+            else:
+                outputs = self.infer_session.run(None, inputs)
+                sanitize_model_outputs(outputs)
 
-                if not self.optimize_mem:
+                for output_index, output in enumerate(outputs):
                     # Copy np.ndarray only for graph outputs that are also graph inputs to workaround bug:
                     # https://github.com/microsoft/onnxruntime/issues/21922
                     if output_names[output_index] in input_names_set:
                         fixed_outputs.append(copy.copy(output))
                     else:
                         fixed_outputs.append(output)
-                else:
-                    # To save memory, each time we cache the output to a file in appending style,
-                    # note that the content in the list will be file paths instead of numpy arrays
-                    file_path = os.path.join(cache_dir, f"output{output_index}_data.npz")
-                    with open(file_path, "ab") as f:
-                        np.save(f, output)
-                    fixed_outputs.append(file_path)
+                    cache_capacity += output.nbytes
 
-            if self.collector.is_mostcommon:
-                clean_merged_dict = get_clean_merged_dict([fixed_outputs])
+            if self.collector and self.collector.optimized_mostcommon:
+                clean_merged_dict = GetCleanMergedDict([fixed_outputs], output_names, self.tensors_to_calibrate)
                 self.collector.collect(clean_merged_dict)
-                cache_capacity = cached_mem
             else:
                 self.intermediate_outputs.append(fixed_outputs)
-                cache_capacity += cached_mem
 
-            pbar.set_description(f"Cached {cache_capacity / (1024**3):.2f}GB")
+            pbar.set_description(
+                f"Cached {cache_capacity / (1024**3):.2f}GB on {'disk' if self.optimize_mem else 'memory'}"
+            )
 
-        if self.collector.is_mostcommon:
+        if self.collector.optimized_mostcommon:
             return None
 
         if len(self.intermediate_outputs) == 0:
             raise ValueError("No data is collected.")
 
-        clean_merged_dict = get_clean_merged_dict(self.intermediate_outputs)
+        clean_merged_dict = GetCleanMergedDict(self.intermediate_outputs, output_names, self.tensors_to_calibrate)
 
         self.collector.collect(clean_merged_dict)
 
@@ -789,11 +911,11 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         symmetric: bool = False,
         num_bins: int = 2048,
         percentile: float = 99.999,
+        optimize_mem: bool = True,
         worker_num: int = 1,
         lwp_metric: str = "mae",
         activation_bitwidth: int = 8,
         percentile_candidates: list[float] = [99.99, 99.999, 99.9999],
-        optimize_mem: bool = True,
     ):
         super().__init__(
             model_input,
@@ -804,99 +926,27 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
+            layer_wise=True,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
         self.minmax_dict: dict[str, float] = {}
         self.percentile_dict: dict[str, float] = {}
-        self.collector: Any = None
-        self.worker_num = worker_num
         self.lwp_metric = lwp_metric
         self.activation_bitwidth = activation_bitwidth
         self.q_min = 0
         self.q_max = 2**self.activation_bitwidth - 1
         self.percentile_candidates = percentile_candidates
-        self.optimize_mem = optimize_mem
 
     def collect_data(self, data_reader: CalibrationDataReader) -> None:
-        # Initialize the collector
-        if not self.collector:
-            self.collector = OverridedHistogramCollector(
-                method=self.method,
-                symmetric=self.symmetric,
-                num_bins=self.num_bins,
-                num_quantized_bins=self.num_quantized_bins,
-                percentile=self.percentile,
-                scenario=self.scenario,
-                worker_num=self.worker_num,
-            )
+        # Call the parent class method to calculate the histogram
+        super().collect_data(data_reader)
+        assert self.clean_merged_dict, "No data for the layerwise percentile"
 
-        try:
-            data_size = len(data_reader)
-        except NotImplementedError:
-            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
-
-        lwp_cache_dir = os.path.dirname(self.augmented_model_path)
-        lwp_cache_files = []
-
-        intermdiate_dict: dict[str, Any] = {}
-
-        for _ in tqdm(range(data_size)):
-            self.intermediate_outputs = []
-
-            inputs = data_reader.get_next()
-            if not inputs:
-                break
-
-            self.intermediate_outputs.append(self.infer_session.run(None, inputs))
-
-            output_names = [self.infer_session.get_outputs()[i].name for i in range(len(self.intermediate_outputs[0]))]
-            output_dicts_list = [
-                dict(zip(output_names, intermediate_output, strict=False))
-                for intermediate_output in self.intermediate_outputs
-            ]
-
-            if self.optimize_mem:
-                # To save memory, each time we cache the output to a file in appending style,
-                # note that the content in the list will be file paths instead of numpy arrays
-                output_names_dict = {}
-                output_names_idxs = []
-                for i in range(len(output_names)):
-                    output_names_dict[output_names[i]] = i
-                    output_names_idxs.append(i)
-
-                for output_index, output in zip(output_names_idxs, self.intermediate_outputs[0], strict=False):
-                    file_path = os.path.join(lwp_cache_dir, f"output{output_index}_data.npz")
-                    with open(file_path, "ab") as f:
-                        np.save(f, output)
-                    if file_path not in lwp_cache_files:
-                        lwp_cache_files.append(file_path)
-
-            merged_dict: dict[str, Any] = {}
-            for d in output_dicts_list:
-                for k, v in d.items():
-                    merged_dict.setdefault(k, []).append(v)
-                    if not self.optimize_mem and k in self.tensors_to_calibrate:
-                        intermdiate_dict.setdefault(k, []).append(v)
-
-            clean_merged_dict = {i: merged_dict[i] for i in merged_dict if i in self.tensors_to_calibrate}
-
-            self.collector.collect(clean_merged_dict)
-
-        if len(self.intermediate_outputs) == 0:
-            raise ValueError("No data is collected.")
-        elif self.optimize_mem:
-            # To measure how much disk space has been occupied
-            total_size = 0
-            for file_path in lwp_cache_files:
-                total_size += os.path.getsize(file_path)
-            logger.info(
-                f"{len(lwp_cache_files)} tensors consumed {total_size / (1024**3):.2f}GB of disk space for caching."
-            )
-
-        self.clear_collected_data()
-
-        # assign different percentiles to compute the tensors range
+        # Assign different percentiles to compute the tensors range. Note that the list
+        # stores dictionaries that the key is tensor name and the value is the range
         tensors_ranges_percentiles = []
+
         for temp_percentile in self.percentile_candidates:
             self.collector.percentile = temp_percentile
             temp_ranges = self.collector.compute_percentile()
@@ -916,17 +966,12 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             for idx in range(len(tensors_ranges_percentiles)):
                 temp_value = tensors_ranges_percentiles[idx][key]
                 q_min, q_max = self.q_min, self.q_max
-                if self.optimize_mem:
-                    temp_tensor = []
-                    temp_path = os.path.join(lwp_cache_dir, f"output{output_names_dict[key]}_data.npz")
-                    # attention to .npz data read method
-                    with open(temp_path, "rb") as f:
-                        for _ in range(data_size):
-                            arr = np.load(f)
-                            temp_tensor.append(arr)
-                    temp_tensor = np.array(temp_tensor).reshape(-1)
-                else:
-                    temp_tensor = np.array(intermdiate_dict[key]).reshape(-1)
+
+                data_arr = self.clean_merged_dict[key]
+                assert isinstance(data_arr, list), "The value should be a list"
+                data_list = LoadingDataFromDisk(data_arr)
+                temp_tensor = np.asarray(data_list).reshape(-1)
+
                 temp_scale = (temp_value[1] - temp_value[0]) / (q_max - q_min)
                 # Preventing spills of scale value
                 temp_scale = temp_scale + 1e-6
@@ -997,6 +1042,7 @@ def create_calibrator_power_of_two(
         symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
         moving_average = False if "moving_average" not in extra_options else extra_options["moving_average"]
         averaging_constant = 0.01 if "averaging_constant" not in extra_options else extra_options["averaging_constant"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = MinMaxCalibrater(
             model_input,
             op_types_to_calibrate,
@@ -1005,6 +1051,7 @@ def create_calibrator_power_of_two(
             symmetric=symmetric,
             moving_average=moving_average,
             averaging_constant=averaging_constant,
+            optimize_mem=optimize_mem,
         )
     elif calibrate_method == PowerOfTwoMethod.MinMSE:
         symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
@@ -1066,6 +1113,7 @@ def create_calibrator_float_scale(
         symmetric = False if "symmetric" not in extra_options else extra_options["symmetric"]
         moving_average = False if "moving_average" not in extra_options else extra_options["moving_average"]
         averaging_constant = 0.01 if "averaging_constant" not in extra_options else extra_options["averaging_constant"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = MinMaxCalibrater(
             model_input,
             op_types_to_calibrate,
@@ -1074,12 +1122,14 @@ def create_calibrator_float_scale(
             symmetric=symmetric,
             moving_average=moving_average,
             averaging_constant=averaging_constant,
+            optimize_mem=optimize_mem,
         )
     elif calibrate_method == CalibrationMethod.Entropy:
         # default settings for entropy algorithm
         num_bins = 128 if "num_bins" not in extra_options else extra_options["num_bins"]
         num_quantized_bins = 128 if "num_quantized_bins" not in extra_options else extra_options["num_quantized_bins"]
         symmetric = False if "symmetric" not in extra_options else extra_options["symmetric"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = EntropyCalibrater(
             model_input,
@@ -1089,6 +1139,7 @@ def create_calibrator_float_scale(
             symmetric=symmetric,
             num_bins=num_bins,
             num_quantized_bins=num_quantized_bins,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
     elif calibrate_method == CalibrationMethod.Percentile:
@@ -1096,6 +1147,7 @@ def create_calibrator_float_scale(
         num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
         percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
         symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = PercentileCalibrater(
             model_input,
@@ -1105,12 +1157,14 @@ def create_calibrator_float_scale(
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
     elif calibrate_method == CalibrationMethod.Distribution:
         # default settings for distribution algorithm
         num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
         scenario = "same" if "scenario" not in extra_options else extra_options["scenario"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = DistributionCalibrater(
             model_input,
@@ -1119,6 +1173,7 @@ def create_calibrator_float_scale(
             use_external_data_format=use_external_data_format,
             num_bins=num_bins,
             scenario=scenario,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
     elif calibrate_method == LayerWiseMethod.LayerWisePercentile:
@@ -1126,6 +1181,7 @@ def create_calibrator_float_scale(
         num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
         percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
         symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
+        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         lwp_metric = "mae" if "lwp_metric" not in extra_options else extra_options["lwp_metric"]
         activation_bitwidth = 8 if "activation_bitwidth" not in extra_options else extra_options["activation_bitwidth"]
@@ -1143,11 +1199,11 @@ def create_calibrator_float_scale(
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
+            optimize_mem=optimize_mem,
             worker_num=worker_num,
             lwp_metric=lwp_metric,
             activation_bitwidth=activation_bitwidth,
             percentile_candidates=percentile_candidates,
-            optimize_mem=optimize_mem,
         )
 
     if calibrator:

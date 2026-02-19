@@ -11,7 +11,6 @@ import importlib.util
 import json
 import logging
 import logging.handlers
-import os
 import shutil
 import sys
 import time
@@ -24,66 +23,19 @@ import onnx
 import sympy as sp
 import yaml
 
+import ryzenai_onnx_utils.auto
+import ryzenai_onnx_utils.extract
+import ryzenai_onnx_utils.lora
 import ryzenai_onnx_utils.matcher
+import ryzenai_onnx_utils.optimize
+import ryzenai_onnx_utils.pattern_builder as pb
+import ryzenai_onnx_utils.pattern_generator as pg
+import ryzenai_onnx_utils.postprocess
+import ryzenai_onnx_utils.preprocess
+import ryzenai_onnx_utils.report
 import ryzenai_onnx_utils.utils
+import ryzenai_onnx_utils.vaiml
 from ryzenai_onnx_utils.typing import PassFunction, PatternType, SubPass, is_sequence_of
-
-try:
-    import ryzenai_onnx_utils.extract
-
-    EXTRACT = True
-except ImportError:
-    EXTRACT = False
-
-try:
-    import ryzenai_onnx_utils.pattern_builder as pb
-    import ryzenai_onnx_utils.pattern_generator as pg
-
-    MATCH = True
-except ImportError:
-    MATCH = False
-
-try:
-    import ryzenai_onnx_utils.postprocess
-
-    POSTPROCESS = True
-except ImportError:
-    POSTPROCESS = False
-
-try:
-    import ryzenai_onnx_utils.preprocess
-
-    PREPROCESS = True
-except ImportError:
-    PREPROCESS = False
-
-try:
-    import ryzenai_onnx_utils.report
-
-    REPORT = True
-except ImportError:
-    REPORT = False
-
-try:
-    import ryzenai_onnx_utils.auto
-
-    AUTO = True
-except ImportError:
-    AUTO = False
-
-try:
-    import ryzenai_onnx_utils.lora
-
-    LORA = True
-except ImportError:
-    LORA = False
-
-try:
-    import ryzenai_onnx_utils.vaiml
-
-    VAIML = True
-except ImportError:
-    VAIML = False
 
 dd: ModuleType | None
 try:
@@ -110,7 +62,7 @@ def configure_parser(subparser: argparse._SubParsersAction[Any]) -> None:
     partition_parser.add_argument(
         "--dd-files-path",
         type=Path,
-        default=Path(".cache"),
+        default=Path("cache"),
         help="Path to create DD files in, either absolute or relative to output_path",
     )
     partition_parser.add_argument("--model-name", default="replaced", help="Name of the new onnx model")
@@ -196,29 +148,15 @@ def get_parser() -> argparse.ArgumentParser:
 
     configure_parser(subparsers)
 
-    if MATCH:
-        ryzenai_onnx_utils.matcher.configure_parser(subparsers)
-
-    if EXTRACT:
-        ryzenai_onnx_utils.extract.configure_parser(subparsers)
-
-    if PREPROCESS:
-        ryzenai_onnx_utils.preprocess.configure_parser(subparsers)
-
-    if POSTPROCESS:
-        ryzenai_onnx_utils.postprocess.configure_parser(subparsers)
-
-    if REPORT:
-        ryzenai_onnx_utils.report.configure_parser(subparsers)
-
-    if AUTO:
-        ryzenai_onnx_utils.auto.configure_parser(subparsers)
-
-    if LORA:
-        ryzenai_onnx_utils.lora.configure_parser(subparsers)
-
-    if VAIML:
-        ryzenai_onnx_utils.vaiml.configure_parser(subparsers)
+    ryzenai_onnx_utils.matcher.configure_parser(subparsers)
+    ryzenai_onnx_utils.extract.configure_parser(subparsers)
+    ryzenai_onnx_utils.preprocess.configure_parser(subparsers)
+    ryzenai_onnx_utils.optimize.configure_parser(subparsers)
+    ryzenai_onnx_utils.postprocess.configure_parser(subparsers)
+    ryzenai_onnx_utils.report.configure_parser(subparsers)
+    ryzenai_onnx_utils.auto.configure_parser(subparsers)
+    ryzenai_onnx_utils.lora.configure_parser(subparsers)
+    ryzenai_onnx_utils.vaiml.configure_parser(subparsers)
 
     return parser
 
@@ -272,7 +210,7 @@ def _include_constructor(prefix_path: Path, loader: yaml.SafeLoader, node: yaml.
     return content
 
 
-def load_strategy(strategy_path: Path) -> dict[str, Any]:
+def _load_strategy(strategy_path: Path) -> dict[str, Any]:
     strategy_prefix = importlib.resources.files("ryzenai_onnx_utils") / "data/partition_strategies"
     with importlib.resources.as_file(strategy_prefix) as strategy_prefix_path:
         strategy_file = strategy_prefix_path / strategy_path if not strategy_path.is_absolute() else strategy_path
@@ -280,6 +218,11 @@ def load_strategy(strategy_path: Path) -> dict[str, Any]:
     yaml.add_constructor("!include", include_constructor, Loader=yaml.SafeLoader)
     with open(strategy_file) as f:
         strategy: dict[str, Any] = yaml.safe_load(f)
+    return strategy
+
+
+def load_strategy(strategy_path: Path) -> dict[str, Any]:
+    strategy = _load_strategy(strategy_path)
     if "passes" not in strategy:
         strategy["passes"] = []
     if "inherit_passes_before" in strategy:
@@ -342,7 +285,11 @@ def partition(
     def recurse(sub_graph: onnx.GraphProto) -> tuple[int, onnx.GraphProto]:
         sub_model = onnx.helper.make_model(sub_graph, producer_name="from_subgraph")
         sub_extractor = ryzenai_onnx_utils.matcher.get_extractor(sub_model)
+        # some passes need to know if they are running on a nested graph
+        nested_graph = params.attributes.get("_nested_graph", False)
+        params.attributes["_nested_graph"] = True
         sub_model, sub_total_replace_num = partition(sub_extractor, passes, params, runtime_attributes)
+        params.attributes["_nested_graph"] = nested_graph
         return sub_total_replace_num, sub_model.graph
 
     if runtime_attributes is None:
@@ -507,8 +454,8 @@ def _run_manual_passes(
     )
     model, total_replaced_num = partition(extractor, passes, params, {})
     if total_replaced_num > 0:
-        ryzenai_onnx_utils.matcher.save_external_data_with_extractor(
-            model, extractor, location, output_path.parent, save_as_external, size_threshold=size_threshold
+        ryzenai_onnx_utils.matcher.save_initializers_with_extractor(
+            extractor, output_path.parent, location, size_threshold=size_threshold
         )
         ryzenai_onnx_utils.matcher.save_model_without_external_data(model, output_path)
 
@@ -613,7 +560,6 @@ def partition_main(args: argparse.Namespace) -> None:
     output_path: Path = args.output_path
     dd_files_path: Path = args.dd_files_path
     strategy_path = args.strategy
-    save_as_external = args.save_as_external
     if args.verbose > 0:
         _logger.warning(
             "Using deprecated --verbose/-v flag. Use --console-log-level [level] or use --verbose/-v before 'partition' instead."
@@ -636,22 +582,21 @@ def partition_main(args: argparse.Namespace) -> None:
     next_output_model = output_path / "tmp_1.onnx"
 
     dd_files_path_abs = dd_files_path if dd_files_path.is_absolute() else output_path / dd_files_path
-    if dd_files_path_abs.exists():
-        prompt = f"{str(dd_files_path_abs)} exists. Delete directory and continue? (y|n) "
+    if dd_files_path_abs.exists() and any(dd_files_path_abs.iterdir()):
+        prompt = f"{str(dd_files_path_abs)} exists and is non-empty. Delete directory and continue? (y|n) "
         confirm_or_exit(prompt, args.force)
         shutil.rmtree(dd_files_path_abs)
 
     # this directory gets deleted and created by the build_dd_node function
     # when creating the DD files. If DD can generate files in the output path
     # directly, we can delete this
-    delete_dd_files_path = False
+    backup_path = None
     if not dd_files_path.is_absolute():
-        if dd_files_path.exists():
-            prompt = f"{str(dd_files_path)} exists. Continue? (y|n) "
-            confirm_or_exit(prompt, args.force)
-        else:
-            delete_dd_files_path = True
-            dd_files_path.mkdir(parents=True, exist_ok=True)
+        tmp_dd_files_path = dd_files_path.resolve()
+        if tmp_dd_files_path.exists() and any(tmp_dd_files_path.iterdir()):
+            backup_path = tmp_dd_files_path.with_name(f"{tmp_dd_files_path.name}_backup")
+            tmp_dd_files_path.rename(backup_path)
+        tmp_dd_files_path.mkdir(parents=True, exist_ok=True)
 
     output_path.mkdir(parents=True, exist_ok=True)
     dd_files_path_abs.mkdir(parents=True, exist_ok=True)
@@ -701,12 +646,10 @@ def partition_main(args: argparse.Namespace) -> None:
             if not run_all_passes:
                 _logger.info("Saving temporary model...")
                 external_data_name = f"{curr_output_model.stem}.{args.external_data_extension}"
-                ryzenai_onnx_utils.matcher.save_external_data_with_extractor(
-                    model,
+                ryzenai_onnx_utils.matcher.save_initializers_with_extractor(
                     extractor,
-                    external_data_name,
                     output_model_path.parent,
-                    save_as_external,
+                    external_data_name,
                     size_threshold=args.external_data_threshold,
                 )
 
@@ -730,12 +673,10 @@ def partition_main(args: argparse.Namespace) -> None:
             extractor.model = model
 
         external_data_name = f"{args.model_name}.{args.external_data_extension}"
-        ryzenai_onnx_utils.matcher.save_external_data_with_extractor(
-            extractor.model,
+        ryzenai_onnx_utils.matcher.save_initializers_with_extractor(
             extractor,
-            external_data_name,
             output_model_path.parent,
-            save_as_external,
+            external_data_name,
             size_threshold=args.external_data_threshold,
         )
 
@@ -751,8 +692,10 @@ def partition_main(args: argparse.Namespace) -> None:
 
         # onnx.checker.check_model(output_path / "replaced.onnx", full_check=True)
 
-    if delete_dd_files_path:
+    if not dd_files_path.is_absolute():
         shutil.rmtree(dd_files_path)
+    if backup_path is not None:
+        backup_path.rename(backup_path.with_name(dd_files_path.name))
 
     ryzenai_onnx_utils.matcher.delete_model(curr_output_model, args.external_data_extension)
     ryzenai_onnx_utils.matcher.delete_model(next_output_model, args.external_data_extension)
@@ -798,27 +741,6 @@ def pattern_match(args: argparse.Namespace) -> None:
         _logger.info(original_pattern)
 
 
-class RelativePathFilter(logging.Filter):
-    """
-    Filter to modify log records to include the relative path instead of the
-    absolute path.
-    """
-
-    def filter(self, record):
-        pathname = record.pathname
-        record.relativepath = None
-        abs_sys_paths_map = map(os.path.abspath, sys.path)
-        # longer paths first
-        abs_sys_paths = sorted(abs_sys_paths_map, key=len, reverse=True)
-        for path in abs_sys_paths:
-            if not path.endswith(os.sep):
-                path += os.sep
-            if pathname.startswith(path):
-                record.relativepath = os.path.relpath(pathname, path)
-                break
-        return True
-
-
 def main() -> None:
     parser = get_parser()
     args = parser.parse_args()
@@ -844,7 +766,6 @@ def main() -> None:
         logger.removeHandler(file_handler)
     else:
         file_handler.setLevel(args.file_log_level.upper())
-        file_handler.addFilter(RelativePathFilter())
         if isinstance(file_handler, logging.handlers.RotatingFileHandler):
             # change rotation from x.log -> x.log.1 to x.log -> x.1.log
             file_handler.namer = lambda name: name.replace(".log", "") + ".log"
@@ -887,6 +808,8 @@ def main() -> None:
             args.pattern = user_pattern.user_pattern
 
         ryzenai_onnx_utils.extract.main(args)
+    elif args.subparser == "optimize":
+        ryzenai_onnx_utils.optimize.main(args)
     elif args.subparser == "postprocess":
         ryzenai_onnx_utils.postprocess.main(args)
     elif args.subparser == "preprocess":

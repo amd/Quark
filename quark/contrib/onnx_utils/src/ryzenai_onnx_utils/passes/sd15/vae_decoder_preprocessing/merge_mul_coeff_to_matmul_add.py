@@ -18,7 +18,7 @@ def is_matmul_mul_coeff_pattern(matmul, add, reshape, transpose, mul, extractor)
         return False
     if not ryzenai_onnx_utils.matcher.is_initializer(matmul.input[1], extractor):
         return False
-    if not ryzenai_onnx_utils.matcher.is_initializer(add.input[0], extractor):
+    if not ryzenai_onnx_utils.matcher.is_initializer(add.input[1], extractor):
         return False
     if not ryzenai_onnx_utils.matcher.is_initializer(mul.input[1], extractor):
         return False
@@ -39,16 +39,16 @@ def replacement(
 
     coeff = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(mul.input[1], extractor)
     weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(matmul.input[1], extractor)
-    bias = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(add.input[0], extractor)
+    bias = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(add.input[1], extractor)
 
     new_weight = weight * coeff
     new_bias = bias * coeff
 
     weight_dtype = ryzenai_onnx_utils.matcher.get_dtype(matmul.input[1], extractor)
-    bias_dtype = ryzenai_onnx_utils.matcher.get_dtype(add.input[0], extractor)
+    bias_dtype = ryzenai_onnx_utils.matcher.get_dtype(add.input[1], extractor)
 
     new_weight_name = matmul.input[1] + f"_by_{mul.input[1]}"
-    new_bias_name = add.input[0] + f"_by_{mul.input[1]}"
+    new_bias_name = add.input[1] + f"_by_{mul.input[1]}"
     new_weight_tvi = onnx.helper.make_tensor_value_info(new_weight_name, weight_dtype, weight.shape)
     new_bias_tvi = onnx.helper.make_tensor_value_info(new_bias_name, bias_dtype, new_bias.shape)
     new_weight_tensor = onnx.helper.make_tensor(
@@ -56,7 +56,7 @@ def replacement(
     )
     new_bias_tensor = onnx.helper.make_tensor(new_bias_name, bias_dtype, new_bias.shape, new_bias.tobytes(), True)
     matmul.input[1] = new_weight_name
-    add.input[0] = new_bias_name
+    add.input[1] = new_bias_name
 
     transpose.output[0] = mul.output[0]
     return (
@@ -68,7 +68,7 @@ def replacement(
 
 PATTERN = [
     "MatMul([?,?],b0)",
-    "Add([?,b0],b1)",
+    "Add([b0,?],b1)",
     "Reshape([b1,?],b2)",
     "Transpose([b2],b3)",
     "Mul([b3,?],?)",

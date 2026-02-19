@@ -66,7 +66,7 @@ else:
     TRITON_GPU_SUPPORTS_FP8 = False
 
 # Enables counting observed tokens in `quark/torch/quantization/observer/observer.py`. This is useful for debugging / inspecting MOE quantization where different experts may see a different number of tokens during calibration.
-QUARK_COUNT_OBSERVED_SAMPLES = os.environ.get("QUARK_COUNT_OBSERVED_SAMPLES", "0") == "1"
+QUARK_COUNT_OBSERVED_SAMPLES = os.environ.get("QUARK_COUNT_OBSERVED_SAMPLES", "1") == "1"
 
 # Enables outputting the tokens number of each layer during the calibration process to a directory.7
 # Requires `QUARK_COUNT_OBSERVED_SAMPLES=1`.

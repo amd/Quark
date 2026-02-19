@@ -62,3 +62,5 @@ passes:
     - remove_parallel_casts
     - simplify_casts
     - remove_reshapes
+    - remove_dangling_nodes
+    - remove_unused_io

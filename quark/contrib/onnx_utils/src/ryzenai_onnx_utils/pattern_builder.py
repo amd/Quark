@@ -116,7 +116,7 @@ def get_model(
     if extract_inputs and extract_outputs:
         model = extractor.extract_model(extract_inputs, extract_outputs)
         if not load_external:
-            model.metadata_props.add(key="onnx_utils_load", value=str(input_path.parents[0]))
+            model.graph.metadata_props.add(key="onnx_utils_load", value=str(input_path.parents[0]))
     else:
         model = extractor.model
     return model

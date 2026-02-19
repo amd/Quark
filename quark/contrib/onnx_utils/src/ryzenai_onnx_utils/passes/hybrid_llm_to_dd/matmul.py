@@ -20,6 +20,9 @@ def replacement(
 
     matmul = subgraph[0]
 
+    if not ryzenai_onnx_utils.matcher.is_initializer_or_const(matmul.input[1], extractor):
+        return subgraph, [], None
+
     new_nodes = []
     new_tvis = []
     matmul_shape = ryzenai_onnx_utils.matcher.get_shape(matmul.output[0], extractor)
@@ -47,9 +50,7 @@ def replacement(
     wts_bias_shuffle = sd.gemm_to_bfp16_ctrlpkt_preempt(
         wts_tmp, in_bias, "Lfm2Gemm", input_shape_tmp, bias_enable, 0, 1, "", True, False
     )
-    wts_new = onnx.helper.make_tensor(
-        matmul.input[1] + "_t", onnx.TensorProto.UINT8, wts_bias_shuffle.shape, wts_bias_shuffle
-    )  # wts_shape, weight)#
+    wts_new = onnx.numpy_helper.from_array(wts_bias_shuffle, name=matmul.input[1] + "_t")
 
     gemm = onnx.helper.make_node(
         "LiquidAILFM2GemmBf16",

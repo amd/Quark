@@ -38,6 +38,7 @@ import onnx
 import safetensors
 
 import ryzenai_onnx_utils.proto as proto
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 
 LORA_K_SV_DIM = 32
 LORA_N_SV_DIM = 64
@@ -419,7 +420,7 @@ def lora_process(
         print(f"lora_a_data.shape after padding = {lora_a_data.shape}")
         print(f"lora_b_data.shape after padding = {lora_b_data.shape}")
 
-    if args.lora_type == "v2":
+    if args.lora_type == MladfVersion.AIE2_V2:
         lora_a_final = process_lora_a_v2(lora_a_data * args.scaling_factor)
         lora_b_final = process_lora_b_v2(lora_b_data)
     else:
@@ -485,7 +486,8 @@ def configure_parser(subparser: argparse._SubParsersAction[Any]) -> argparse.Arg
     lora_parser.add_argument(
         "--lora-type",
         type=str,
-        default="flat",
+        default=MladfVersion.FLAT,
+        choices=[MladfVersion.FLAT, MladfVersion.AIE2_V2],
         help="Type of LoRA adapter to process. Options: 'flat', 'v2'",
     )
 
@@ -521,9 +523,9 @@ def configure_parser(subparser: argparse._SubParsersAction[Any]) -> argparse.Arg
 
 def lora(args: argparse.Namespace) -> None:
     if args.mode == "prefill":
-        args.lora_type = "v2"
+        args.lora_type = MladfVersion.AIE2_V2
     if args.mode == "token":
-        args.lora_type = "flat"
+        args.lora_type = MladfVersion.FLAT
     header = proto.external_data.Header()
     header_file_name: str = args.output_dir + f"/{args.lora_name}_{args.mode}.pb.bin"
     bin_file_name: str = args.output_dir + f"/{args.lora_name}_{args.mode}.bin"

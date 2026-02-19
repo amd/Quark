@@ -40,8 +40,7 @@ def replacement(
         ]
 
     lora = params.get_bool_attr("lora", False)
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(node, "is_bfp16", params.attributes["is_bfp16"])
+    ryzenai_onnx_utils.matcher.add_attribute(node, "mladf_version", params.attributes["mladf_version"])
 
     new_initializers = []
     npu_only = params.get_bool_attr("npu_only", False)
@@ -49,7 +48,8 @@ def replacement(
         if node.op_type == "SSMLP":
             new_inputs = [*node.input[:bias_offset], *[""] * 9, node.input[12]]
         else:
-            new_inputs = [*node.input[:bias_offset], *[""] * 9, node.input[13:15]]
+            new_inputs = [*node.input[:bias_offset], *[""] * 9]
+            new_inputs.extend(node.input[13:15])
         for i in range(bias_offset, bias_offset + 9):
             dtype = ryzenai_onnx_utils.matcher.get_dtype(node.input[i], extractor)
             new_name = node.input[i] + ".empty"
@@ -61,6 +61,7 @@ def replacement(
     hash_vals = []
     fuse_mlp = params.get_bool_attr("fuse_mlp", False)
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
+    fuse_ssmlp = params.get_bool_attr("fuse_ssmlp", False)
 
     if fuse_mlp:
         # gate/up
@@ -100,7 +101,14 @@ def replacement(
         hash_vals.append(hash_val)
         new_initializers.append(new_tensor)
         new_inputs.append(new_tensor.name)
-
+    elif fuse_ssmlp:
+        ryzenai_onnx_utils.matcher.add_attribute(node, "fuse_ssmlp", fuse_ssmlp)
+        tensors, names, hash_val, packed_weights = (
+            ryzenai_onnx_utils.transform.hybrid_llm.preprocess_ssmlp_packed_weights(node, extractor)
+        )
+        new_initializers.extend(tensors)
+        new_inputs.extend(names)
+        hash_vals.append(hash_val)
     else:
         for index, label in matmuls:
             k = onnx.helper.get_node_attr_value(node, f"{label}_K")
@@ -119,6 +127,8 @@ def replacement(
             hash_vals.append(hash_val)
             new_inputs.append(new_tensor.name)
 
+    if fuse_ssmlp:
+        node.op_type = "SSMLP_FUSE"
     new_node = onnx.helper.make_node(
         node.op_type,
         inputs=new_inputs,
@@ -133,6 +143,8 @@ def replacement(
         if fuse_mlp:
             ryzenai_onnx_utils.matcher.add_attribute(new_node, "gate_up_wts_hash", hash_vals[0])
             ryzenai_onnx_utils.matcher.add_attribute(new_node, "down_wts_hash", hash_vals[1])
+        elif fuse_ssmlp:
+            ryzenai_onnx_utils.matcher.add_attribute(new_node, "ssmlp_wts_hash", hash_vals[0])
         else:
             ryzenai_onnx_utils.matcher.add_attribute(new_node, "gate_wts_hash", hash_vals[0])
             ryzenai_onnx_utils.matcher.add_attribute(new_node, "up_wts_hash", hash_vals[1])

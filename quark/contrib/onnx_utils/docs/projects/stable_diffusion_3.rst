@@ -177,7 +177,7 @@ With the optimized models, you can partition them for NPU.
     onnx_utils partition "/path/to/sd3/vae_encoder/optimized.onnx" "/path/to/sd3/vae_encoder" "sd3_vae.yaml" -v
 
 
-These steps will generate a ``replaced.onnx`` models in the respective directories and a ``.cache`` directory containing DD metadata files.
+These steps will generate a ``replaced.onnx`` models in the respective directories and a ``cache`` directory containing DD metadata files.
 SD3 is offloaded to the NPU using kernels from Tianping's team and others.
 
 Run
@@ -193,7 +193,7 @@ For SD3, you need to use the following ORT session configurations:
 
     decoder_session_options = ort.SessionOptions()
     decoder_session_options.add_session_config_entry("model_name", "SD30_DECODER")
-    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/vae_decoder/.cache")
+    decoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/vae_decoder/cache")
     decoder_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     decoder_session_options.add_session_config_entry("compile_fusion_rt", "True")
     # this should be the last step
@@ -201,7 +201,7 @@ For SD3, you need to use the following ORT session configurations:
 
     mmdit_session_options = ort.SessionOptions()
     mmdit_session_options.add_session_config_entry("model_name", "SD30_MMDIT")
-    mmdit_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/mmdit/.cache")
+    mmdit_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/mmdit/cache")
     mmdit_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     mmdit_session_options.add_session_config_entry("compile_fusion_rt", "True")
     # this should be the last step
@@ -209,7 +209,7 @@ For SD3, you need to use the following ORT session configurations:
 
     encoder_session_options = ort.SessionOptions()
     encoder_session_options.add_session_config_entry("model_name", "SD30_DECODER")
-    encoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/vae_encoder/.cache")
+    encoder_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/vae_encoder/cache")
     encoder_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     encoder_session_options.add_session_config_entry("compile_fusion_rt", "True")
     # this should be the last step
@@ -218,7 +218,7 @@ For SD3, you need to use the following ORT session configurations:
 
     controlnet_session_options = ort.SessionOptions()
     controlnet_session_options.add_session_config_entry("model_name", "SD30_MMDIT")
-    controlnet_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/controlnet/.cache")
+    controlnet_session_options.add_session_config_entry("dd_cache", "/path/to/sd3/controlnet/cache")
     controlnet_session_options.add_session_config_entry("dd_root", "/path/to/DD/source")
     controlnet_session_options.add_session_config_entry("compile_fusion_rt", "True")
     # this should be the last step

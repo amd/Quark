@@ -139,6 +139,8 @@ class ReplaceParams:
         raise ValueError(f"Unsupported {prop_name} type saved or unhandled key {key}")
 
     def _get_properties(self, prop_name: str) -> list[str | int | float]:
+        if prop_name not in self.attributes:
+            return []
         prop = self.attributes[prop_name]
         if isinstance(prop, str | int | float):
             return [prop]
@@ -167,7 +169,9 @@ PatternType = str | list[str] | list[SubPass]
 ShapeType = Sequence[int | str | None]
 # newer versions of ONNX have onnx.TensorProto.DataType with a custom metaclass
 # from Protobuf that doesn't implement | support in Protobuf<=5.28. Using Union
-# is a workaround to prevent TypeError in this case
-DtypeType = Union[onnx.TensorProto.DataType, int]  # noqa: UP007
+# is a workaround to prevent TypeError in this case. Putting quotes on it is
+# further necessary for Python 3.10 compatibility. Once we drop support for
+# old protobuf, this should be replaced with a | again
+DtypeType = Union["onnx.TensorProto.DataType", int]  # noqa: UP007
 
 TupleInts4 = tuple[int, int, int, int]

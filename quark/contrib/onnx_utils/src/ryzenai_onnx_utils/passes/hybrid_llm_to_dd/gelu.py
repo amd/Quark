@@ -4,6 +4,7 @@ import onnx
 
 import ryzenai_onnx_utils.matcher
 import ryzenai_onnx_utils.transform.cast as cast
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
 from ..hybrid_llm_prune_logits import prune_config
@@ -36,14 +37,14 @@ def replacement(
         domain=domain,
     )
     prune_config(sigmoid, silu, params)
-    op_version = "v2"
+    op_version = MladfVersion.AIE2_V2
     lora = params.get_bool_attr("lora", False)
     ryzenai_onnx_utils.matcher.add_attribute(silu, "op_name", "gelu")
 
     if lora:
-        op_version = "flat"
+        op_version = MladfVersion.FLAT
         ryzenai_onnx_utils.matcher.add_attribute(silu, "lora", lora)
-    ryzenai_onnx_utils.matcher.add_attribute(silu, "op_version", op_version)
+    ryzenai_onnx_utils.matcher.add_attribute(silu, "op_version", str(op_version))
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(silu, "enable_ctrl_pkt", enable_ctrl_pkt)

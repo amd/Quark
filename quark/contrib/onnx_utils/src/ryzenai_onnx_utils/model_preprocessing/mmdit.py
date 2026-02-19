@@ -18,6 +18,8 @@ def pre_optimize_passes() -> list[str]:
 
 def finalize() -> list[str]:
     return [
+        "normalize_binary_ops",
+        "Nitro_E.transformer_preprocessing.normalize_mul_and_add_constants",
         "phi3_5.conv_to_nhwc_conv",
         "sd15.unet_preprocessing.gemm_to_matmul",
         "sd3.merge_mmdit_reshape_concat",

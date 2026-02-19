@@ -88,7 +88,8 @@ def apply_pre_optimization_before_algo(
 
     if extra_options.get("SimplifyModel", True):
         try:
-            float_model = optimize_model_using_onnxslim(float_model)
+            onnxslim_config = extra_options.get("SimplifyModelOptions", {})
+            float_model = optimize_model_using_onnxslim(float_model, onnxslim_config)
         except Exception as e:
             logger.warning(f"Fail to simplify the float model because of {e}.")
 
@@ -312,6 +313,7 @@ def apply_pre_process(
     nodes_to_quantize: list[str] = [],
     nodes_to_exclude: list[str] = [],
     op_types_to_quantize: list[str] | None = None,
+    skip_pre_process_graph_optimization: bool = False,
     use_external_data_format: bool = False,
     convert_fp16_to_fp32: bool = False,
     convert_nchw_to_nhwc: bool = False,
@@ -333,6 +335,7 @@ def apply_pre_process(
     :param list[str] nodes_to_quantize: List of nodes names to quantize. When this list is not None only the nodes in this list.
     :param list[str] nodes_to_exclude: List of nodes names to exclude. The nodes in this list will be excluded from quantization when it is not None.
     :param Optional[List[str]] op_types_to_quantize: Specify the types of operators to quantize. It quantizes all supported operators by default.
+    :param bool skip_pre_process_graph_optimization: Whether to skip all graph optimizations in pre_process func.
     :param bool use_external_data_format: Option used for large size (>2GB) model.
     :param bool convert_fp16_to_fp32: Convert the fp16 model to a fp32 one. Default is False.
     :param bool convert_nchw_to_nhwc: Convert the dimension order of inputs from 'nchw' to 'nhwc', which has better performance on NPU. Default is False.
@@ -345,21 +348,22 @@ def apply_pre_process(
     :return: The optimized model.
     """
 
-    float_model = apply_pre_optimization_before_algo(
-        float_model,
-        model_path,
-        calibrate_method,
-        activation_type,
-        weight_type,
-        nodes_to_quantize,
-        nodes_to_exclude,
-        op_types_to_quantize,
-        use_external_data_format,
-        convert_fp16_to_fp32,
-        convert_nchw_to_nhwc,
-        optimize_model_flag,
-        extra_options,
-    )
+    if not skip_pre_process_graph_optimization:
+        float_model = apply_pre_optimization_before_algo(
+            float_model,
+            model_path,
+            calibrate_method,
+            activation_type,
+            weight_type,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            use_external_data_format,
+            convert_fp16_to_fp32,
+            convert_nchw_to_nhwc,
+            optimize_model_flag,
+            extra_options,
+        )
 
     float_model = apply_pre_quantization_algorithms(
         float_model,
@@ -374,12 +378,13 @@ def apply_pre_process(
         extra_options,
     )
 
-    float_model = apply_pre_optimization_after_algo(
-        float_model,
-        nodes_to_quantize,
-        nodes_to_exclude,
-        op_types_to_quantize,
-        extra_options,
-    )
+    if not skip_pre_process_graph_optimization:
+        float_model = apply_pre_optimization_after_algo(
+            float_model,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            extra_options,
+        )
 
     return float_model

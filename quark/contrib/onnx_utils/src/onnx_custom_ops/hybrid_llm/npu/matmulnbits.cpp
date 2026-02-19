@@ -592,11 +592,11 @@ void AMDMatMulNBitsKernel::UpdateSharedBuffer(size_t kernel_size) {
     {"in", a_size}, {"out", c_size}
   };
 
-  if (mladfVersion() == "v2") {
+  if (size_map.find("scratch") != size_map.end()) {
     size_t scratch0_bo_size = size_map["scratch"];
     auto scratch0_size = alignTo4096(scratch0_bo_size);
-
     shared_buffer_reqs.emplace_back("scratch", scratch0_size);
+    has_scratch_buffer_ = true;
   }
 
   shared_buffer_.Update(std::move(shared_buffer_reqs));
@@ -710,7 +710,7 @@ void AMDMatMulNBitsKernel::Compute(
   auto input_data = input_tensor.GetTensorData<uint16_t>();  // bfloat16 input
   auto input_shape = input_tensor.GetTensorTypeAndShapeInfo().GetShape();
 
-  auto prompt_size = input_shape[1];
+  const auto prompt_size = input_shape[0] * input_shape[1];
 
   const auto npu_kernel_size = getNPUKernelGranularity(prompt_size);
 
@@ -790,7 +790,7 @@ void AMDMatMulNBitsKernel::Compute(
     ss_->gemm_output = ss_->gemm->bind_bo(res->ptr, res->len);
   }
 
-  if (mladfVersion() == "v2") {
+  if (has_scratch_buffer_) {
     if (auto res = shared_buffer_.Validate(
           "scratch", ss_->gemm_last_scratch_ptr, ss_->gemm_last_scratch_len
         )) {

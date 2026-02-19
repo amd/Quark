@@ -15,6 +15,12 @@ from ryzenai_onnx_utils.typing import PassOutputArgs
 
 _logger = logging.getLogger(__name__)
 
+CASTAVX_SUPPORTED_TYPES = {
+    onnx.TensorProto.FLOAT,
+    onnx.TensorProto.FLOAT16,
+    onnx.TensorProto.BFLOAT16,
+}
+
 
 def replacement(
     extractor: onnx.utils.Extractor,
@@ -39,6 +45,7 @@ def replacement(
 
     multiple_successors = ryzenai_onnx_utils.matcher.has_multiple_successors(cast_0.output[0], extractor.graph)
     if input_0 == output_1 and output_0 == input_1:
+        # if the two casts are effectively inverses of each other, we can remove both
         if not multiple_successors:
             _logger.debug(f"Removing simple back-to-back casts {cast_0.name} and {cast_1.name}")
             return [], [], None
@@ -53,6 +60,17 @@ def replacement(
                     node.input[index] = cast_0.input[0]
         _logger.debug(f"Removing casts with multiple successors from {cast_0.name}")
         return [cast_0], [], None
+    elif not multiple_successors:
+        # if the two casts are not inverses but the first cast's output
+        # only goes to the second cast, we can try to simplify the casts
+        _logger.debug(f"Simplifying back-to-back casts {cast_0.name} and {cast_1.name}")
+        if cast_0.op_type == "CastAvx" and output_1 in CASTAVX_SUPPORTED_TYPES:
+            cast_0.output[0] = cast_1.output[0]
+            ryzenai_onnx_utils.matcher.set_attribute(cast_0, "to", output_1)
+            return [cast_0], [], None
+        else:
+            cast_1.input[0] = cast_0.input[0]
+            return [cast_1], [], None
     return subgraph, [], None
 
 
@@ -61,6 +79,8 @@ PATTERN = [
     ["SDCastBf2Bfp(?, a0)", "SDCastBfp2Bf(a0, ?)"],
     ["SDCastBfp2Bf(?, a0)", "SDCastBf2Bfp(a0, ?)"],
     ["Cast(?, a0)", "Cast(a0, ?)"],
+    ["Cast(?, a0)", "CastAvx(a0, ?)"],
+    ["CastAvx(?, a0)", "Cast(a0, ?)"],
     ["CastAvx(?, ?)"],
     ["Cast(?, ?)"],
 ]

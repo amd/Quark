@@ -154,6 +154,12 @@ def convert_conv(
     ], f"Incorrect layer type: {node.op_type}"
 
     kwargs = _extract_attributes(node)
+    if "kernel_size" not in kwargs:
+        if layer_params and len(layer_params[0].shape) > 2:
+            kwargs["kernel_size"] = layer_params[0].shape[2:]
+        else:
+            raise ValueError(f"Cannot extract 'kernel_shape' for the Conv node {node.name}.")
+
     kernel_size_length = len(kwargs["kernel_size"])
     layer: QuantizeWrapper | type[QuantizeWrapper] = QConv2d
     if kernel_size_length == 1:

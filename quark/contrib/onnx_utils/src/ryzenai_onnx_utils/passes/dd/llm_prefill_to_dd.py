@@ -10,7 +10,7 @@ import ryzenai_onnx_utils.pattern_generator as pg
 from ryzenai_onnx_utils.transform.dd import build_dd_node, split_dd_node
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
-from . import ModelType
+from ..model_type import ModelType
 
 
 def generate_pattern(
@@ -32,10 +32,8 @@ def generate_pattern(
             "MLADFRMSNORM",
             "SILU",
             "ELWMUL",
+            "FlatMLP",
         ]:
-            pdi_id = int(params.attributes.get("pdi_id", 0))
-            if pdi_id != 0:
-                ryzenai_onnx_utils.matcher.add_attribute(node, "pdi_id", int(pdi_id))
             hints["Llama"].append(node)
 
     # topological sort before pattern generation to support splitting by layers
@@ -84,6 +82,8 @@ def replacement(
 
         ryzenai_onnx_utils.matcher.add_attribute(dd_node, "input_num", len(dd_node.input) - 1)
         ryzenai_onnx_utils.matcher.add_attribute(dd_node, "seq_len", len(dd_node.input) - 1)
+        if "model_hash" in params.attributes:
+            ryzenai_onnx_utils.matcher.add_attribute(dd_node, "model_hash", params.attributes["model_hash"])
 
         # must match with ModelType enum for Llm_Prefill in dynamic_dispatch.hpp
         ryzenai_onnx_utils.matcher.add_attribute(dd_node, "model_type", int(ModelType.LLM_PREFILL))

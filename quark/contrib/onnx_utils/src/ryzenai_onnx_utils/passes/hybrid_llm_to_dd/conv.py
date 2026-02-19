@@ -6,6 +6,7 @@ import onnx
 import ryzenai_onnx_utils.matcher
 import ryzenai_onnx_utils.transform.cast as cast
 import ryzenai_onnx_utils.utils
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
 
@@ -78,21 +79,16 @@ def replacement(
     new_nodes.extend(output_cast)
     new_tvis.extend(output_cast_tvis)
 
-    bfp16 = (
-        params.attributes["is_bfp16"]
-        if "is_bfp16" in params.attributes and params.attributes["is_bfp16"]
-        else "weights"
-    )
-    op_version = "v2" if bfp16 == "weights" else "flat"
+    op_version = MladfVersion(params.attributes["mladf_version"])
     lora = params.get_bool_attr("lora", False)
     if lora:
-        op_version = "flat"
+        op_version = MladfVersion.FLAT
 
     # TODO(varunsh): this is assuming the pass_id will be separated by underscores
     # get the count of how many passes have run and use that to offset the indices below
     # this is also assuming the order of the subpasses below
     # +1 for sin_cos cache
-    match_index = int(pass_id.split("_")[2]) + 1
+    match_index = int(pass_id.split("_")[-1]) + 1
 
     weights = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(conv.input[1], extractor)
     weights_tensor = ryzenai_onnx_utils.utils.float_numpy_to_bfloat_tensor(
@@ -107,7 +103,10 @@ def replacement(
         name=conv.name,
         domain=domain,
     )
-    ryzenai_onnx_utils.matcher.add_attribute(new_conv, "op_version", op_version)
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(new_conv, "pdi_id", int(pdi_id))
+    ryzenai_onnx_utils.matcher.add_attribute(new_conv, "op_version", str(op_version))
     ryzenai_onnx_utils.matcher.add_attribute(new_conv, "in_dtypes", ["bfloat16", "bfloat16", "bfloat16", "bfloat16"])
     ryzenai_onnx_utils.matcher.add_attribute(new_conv, "out_dtypes", ["bfloat16", "bfloat16"])
     external_buffers = []

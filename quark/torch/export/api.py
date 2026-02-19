@@ -738,9 +738,31 @@ class SafetensorsImporter(BaseImporter):
             )
 
             if has_non_persistent_buffers:
-                raise NotImplementedError(
-                    "Reloading a safetensors model using the original non-quantized model placed on meta device while it contains non-persistent buffers is not supported, as the non-persistent buffers can not be reloaded from the serialized checkpoint. Please consider initializing the original non-quantized model on cpu or cuda device. Please open an issue for the feature to be supported."
-                )
+                if not self.multi_device:
+                    raise ValueError(
+                        "Importing a model on meta device while it contains non-persistent buffers is not supported when multi_device=False. "
+                        "Please use multi_device=True or load the model on a real device first."
+                    )
+                # Initialize non-persistent buffers from meta device (only when multi_device=True)
+                for name, module in self.model.named_modules():
+                    if len(module._non_persistent_buffers_set) > 0:
+                        target_device = (
+                            module._hf_hook.execution_device
+                            if hasattr(module, "_hf_hook")
+                            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                        )
+                        for buffer_name in module._non_persistent_buffers_set:
+                            buffer = getattr(module, buffer_name, None)
+                            if buffer is not None and buffer.device.type == "meta":
+                                setattr(
+                                    module,
+                                    buffer_name,
+                                    torch.zeros(
+                                        buffer.shape,
+                                        dtype=buffer.dtype,
+                                        device=target_device,
+                                    ),
+                                )
 
         # Build model with quantization support
         model = _build_quantized_model(self.model, model_config, checkpoint_weights)
@@ -919,7 +941,7 @@ def _map_to_quark(model: nn.Module, quantization_config: QConfig, pack_method: s
     """
     named_modules = dict(model.named_modules(remove_duplicate=False))
 
-    layers_online_rotation = set()
+    layers_online_rotation = []
     rotation_config = quantization_config.get_rotation_config()
     if rotation_config is not None:
         layers_online_rotation = RotationProcessor.get_online_rotation_layers(rotation_config, model)

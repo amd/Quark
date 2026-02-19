@@ -57,9 +57,8 @@ def replacement(
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> PassOutputArgs:
     domain = params.get_domain("FlatRMSAdd")
-
     ssln = subgraph[0]
-
+    output = subgraph[-1]
     new_nodes = []
     new_initializers = []
     new_tvis = []
@@ -93,7 +92,7 @@ def replacement(
     gamma_bf = ryzenai_onnx_utils.utils.float_numpy_to_bfloat_tensor(gamma, ssln.input[2] + ".bf")
     new_initializers.append(gamma_bf)
     new_initializers.append(eps_tensor)
-    output_cast_0, output_tvi_0 = add_cast_bfloat16_to_dtype_auto(ssln.output[0], pass_id, domain, extractor)
+    output_cast_0, output_tvi_0 = add_cast_bfloat16_to_dtype_auto(output.output[0], pass_id, domain, extractor)
     new_nodes.extend(output_cast_0)
     new_tvis.extend(output_tvi_0)
 
@@ -132,10 +131,14 @@ def replacement(
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(rmsadd, "enable_ctrl_pkt", True)
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(rmsadd, "pdi_id", int(pdi_id))
     return new_nodes, new_initializers, new_tvis
 
 
 PATTERN = [
-    "SkipSimplifiedLayerNormalization([?,?,?], [?,?,?,?])",
+    ["SkipSimplifiedLayerNormalization([?,?,?], [a1,?,?,?])", "Cast([a1], ?)"],
+    ["SkipSimplifiedLayerNormalization([?,?,?], [?,?,?,?])"],
 ]
-REPLACEMENT = replacement
+REPLACEMENT = [replacement] * 2

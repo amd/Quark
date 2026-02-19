@@ -168,7 +168,7 @@ class ONNXFuseInstanceNormPass(ONNXAdapterPass):
         Returns:
             ModelProto: The ONNX model after applying the InstanceNormalization fusion, if enabled.
         """
-        if "fuse_instance_norm" in config and config["fuse_instance_norm"] is not None:
+        if "fuse_instance_norm" in config and config["fuse_instance_norm"]:
             model = self._onnx_fuse_instance_norm(model)
         else:
             logger.warning(

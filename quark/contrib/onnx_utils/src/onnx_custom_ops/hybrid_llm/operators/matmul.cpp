@@ -71,18 +71,31 @@ void MatMulKernel::Compute(OrtKernelContext* context) {
 
   const bool run_prune_logits = prune_en_ && (input_0_dim.at(0) == 1);
 
-  auto K = input_0_dim.back();
-  auto M = input_0_dim.at(input_0_dim.size() - 2);
+  const auto K = input_0_dim.back();
+  const auto M = input_0_dim.at(input_0_dim.size() - 2);
 
-  const Ort::Float16_t* input_data_ptr =
-    input_0.GetTensorData<Ort::Float16_t>();
+  const auto in_dtype = input_0.GetTensorTypeAndShapeInfo().GetElementType();
+  const auto datum_size =
+    (in_dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) ? 2 : 4;
+
+  if ((in_dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) &&
+      (in_dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)) {
+    throw std::runtime_error(
+      "unsupported input dtype for matmul, expect float16 or float32"
+    );
+  }
+
+  const bool input_cast = (in_dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+
+  const std::uint8_t* input_data_ptr = input_0.GetTensorData<std::uint8_t>();
+
   const float* wts_data_ptr = input_1.GetTensorData<float>();
 
   if (run_prune_logits) {
     input_0_dim.at(input_0_dim.size() - 2) = 1;
     // assume output is sized for pruned output
     // need to slice input tensor and pass last row to op
-    input_data_ptr = &input_data_ptr[(M - 1) * K];
+    input_data_ptr = &input_data_ptr[(M - 1) * K * datum_size];
   }
 
   auto output_dim = input_0_dim;
@@ -95,33 +108,55 @@ void MatMulKernel::Compute(OrtKernelContext* context) {
 
   auto output_0 = ctx.GetOutput(0, output_dim);
 
+  const auto out_dtype = output_0.GetTensorTypeAndShapeInfo().GetElementType();
+
+  bool output_cast = (out_dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+
   auto output_num_elems = std::accumulate(
     output_dim.begin(), output_dim.end(), 1ULL, std::multiplies<>()
   );
 
-  Ort::Float16_t* out_data_ptr =
-    output_0.GetTensorMutableData<Ort::Float16_t>();
+  std::uint8_t* out_data_ptr = output_0.GetTensorMutableData<std::uint8_t>();
 
-  // need to implement/verfiy NPU/GPU path
+  // need to implement/verify NPU/GPU path
   auto backend = Backend::Cpu;  // getBackend(ctx);
 
   switch (backend) {
     case Backend::Cpu: {
-      std::vector<float> input_tmp(input_num_elems);
-      std::vector<float> output_tmp(output_num_elems);
+      std::vector<float> input_tmp;
+      std::vector<float> output_tmp;
 
-      ort_cast_fp16_to_fp32_->execute(
-        input_tmp.data(), const_cast<Ort::Float16_t*>(input_data_ptr),
-        input_0_dim, context
-      );
+      float* matmul_in_ptr =
+        (float*)(const_cast<std::uint8_t*>(input_data_ptr));
+      float* matmul_output_ptr = (float*)out_data_ptr;
+
+      if (input_cast) {
+        input_tmp.resize(input_num_elems);
+        matmul_in_ptr = input_tmp.data();
+
+        ort_cast_fp16_to_fp32_->execute(
+          matmul_in_ptr,
+          (Ort::Float16_t*)(const_cast<std::uint8_t*>(input_data_ptr)),
+          input_0_dim, context
+        );
+      }
+
+      if (output_cast) {
+        output_tmp.resize(output_num_elems);
+        matmul_output_ptr = output_tmp.data();
+      }
+
       ort_matmul_->execute(
-        context, input_tmp.data(), input_0_dim,
-        const_cast<float*>(wts_data_ptr), input_1_dim, output_tmp.data(),
-        output_dim
+        context, matmul_in_ptr, input_0_dim, const_cast<float*>(wts_data_ptr),
+        input_1_dim, matmul_output_ptr, output_dim
       );
-      ort_cast_fp32_to_fp16_->execute(
-        out_data_ptr, output_tmp.data(), output_dim, context
-      );
+
+      if (output_cast) {
+        ort_cast_fp32_to_fp16_->execute(
+          (Ort::Float16_t*)out_data_ptr, matmul_output_ptr, output_dim, context
+        );
+      }
+
       break;
     }
     case Backend::Gpu: {

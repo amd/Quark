@@ -2124,3 +2124,48 @@ def recursive_update(base: dict[str, Any], new: dict[str, Any]) -> None:
             recursive_update(base[k], v)
         else:
             base[k] = v
+
+
+def get_pre_defined_preprocess_config(pre_defined_template_name: str) -> dict[str, Any]:
+    general_preprocess_config = {
+        "passes": {
+            "onnx_convert_opset_version": {"target_opset_version": 21},
+            "onnx_simplify": {"simplify": True},
+            "onnx_remove_input_init": {"remove_input_init": True},
+            "onnx_copy_bias_init": {"shared_bias_op_types": ["Conv", "ConvTranspose", "Gemm"]},
+            "onnx_optimize_with_ort": {"optimize_with_ort": True},
+            "onnx_fold_batch_norm": {"fold_batch_norm": True},
+            "onnx_fuse_instance_norm": {"fuse_instance_norm": True},
+            "onnx_fuse_l2_norm": {"fuse_l2_norm": True},
+            "onnx_fuse_gelu": {"fuse_gelu": True},
+            "onnx_fuse_layer_norm": {"fuse_layer_norm": True},
+        }
+    }
+    xint8_preprocess_config = {
+        "passes": {
+            "onnx_convert_opset_version": {"target_opset_version": 21},
+            "onnx_simplify": {"simplify": True},
+            "onnx_remove_input_init": {"remove_input_init": True},
+            "onnx_copy_bias_init": {"shared_bias_op_types": ["Conv", "ConvTranspose", "Gemm"]},
+            "onnx_optimize_with_ort": {"optimize_with_ort": True},
+            "onnx_fold_batch_norm": {"fold_batch_norm": True},
+            "onnx_fuse_instance_norm": {"fuse_instance_norm": True},
+            "onnx_fuse_l2_norm": {"fuse_l2_norm": True},
+            "onnx_fuse_gelu": {"fuse_gelu": True},
+            "onnx_fuse_layer_norm": {"fuse_layer_norm": True},
+            "onnx_convert_split_to_slice": {"convert_split_to_slice": True},
+            "onnx_convert_bn_to_conv": {"convert_bn_to_conv": True},
+            "onnx_convert_reduce_mean_to_global_avg_pool": {"convert_reduce_mean_to_global_avg_pool": True},
+            "onnx_split_large_kernel_pool": {"split_large_kernel_pool": True},
+        }
+    }
+
+    if pre_defined_template_name.lower() in ["a8w8", "a16w8", "bf16", "bfp16"]:
+        return general_preprocess_config
+    elif pre_defined_template_name.lower() == "xint8":
+        return xint8_preprocess_config
+    else:
+        logger.warning(
+            f"The param PreprocessYAML {pre_defined_template_name} is valid. Please choose from xint8, a8w8, a16w8, bf16, bfp16."
+        )
+        return general_preprocess_config

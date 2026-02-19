@@ -15,6 +15,7 @@
 #include "external_buffers.hpp"
 #include "external_data.hpp"
 #include "lora.hpp"
+#include "memory_manager/VAIMemoryManager.hpp"
 #include "onnx.hpp"
 #include "onnxruntime_c_api.h"
 #include "onnxruntime_cxx_api.h"
@@ -23,6 +24,7 @@
 #include "operator.hpp"
 #include "ops/ops_common/dtype_utils.h"
 #include "ryzenai/onnx_utils/custom_ops_options.hpp"
+#include "xclbin_container.hpp"
 
 namespace fs = std::filesystem;
 
@@ -48,13 +50,17 @@ class DynamicDispatchKernelBase : public LoraOpInterface {
   virtual void LoadLora();
 
   ModelType model_type_ = ModelType::Unknown;
-  std::string cache_directory_;
+  std::string model_directory_;
   std::string dd_root_;
   std::string xclbin_;
   std::string node_name_;
   std::string compile_fusion_rt_;
   std::string dd_const_key_;
   std::unique_ptr<::OpsFusion::FusionRuntime> rt_;
+  // Keep xrt_context and hw_context alive for shared memory manager
+  std::shared_ptr<ryzenai::dynamic_dispatch::xrt_context> xrt_ctx_;
+  // Persistent hw_context for shared memory manager
+  xrt::hw_context ctx_;
   std::vector<std::vector<int64_t>> input_shapes_;
   std::vector<std::vector<std::string>> dynamic_input_shapes_;
   std::vector<std::vector<bool>> is_inputs_dims_dynamic_;
@@ -68,11 +74,13 @@ class DynamicDispatchKernelBase : public LoraOpInterface {
   ExternalBuffers external_buffers_;
   OpsFusion::Metadata meta_;
   uint32_t past_seq_len_ = 0;
+  int64_t local_window_size_ = 0;
   int64_t seq_len_index_ = -1;
   std::vector<OpsFusion::DynamicShapeInfo> dynamic_dim_maps_;
   int64_t find_dynamic_shape_list(
     const OpsFusion::DynamicShapeInfo& partial_shape_info
   );
+  bool use_shared_memory_ = false;
 
  private:
   // if the legacy LLM prefill model support can be dropped, this should be

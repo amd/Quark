@@ -60,7 +60,7 @@ template class JitNode<AMDSLRNKernel>;
 using NPUTensor = ::Tensor;
 
 void AMDSLRNKernel::initializeKernels() {
-  if (mladfVersion() != "v1" && mladfVersion() != "v2") {
+  if (!mladfVersion().anyOf({MladfVersion::v1, MladfVersion::v2})) {
     std::cerr << "Invalid version: " << mladfVersion() << std::endl;
   }
 
@@ -151,7 +151,6 @@ AMDSLRNKernel::AMDSLRNKernel(
       wts_data_.push_back(wts_data_ort[i]);
     }
   }
-
   wts_ =
     init_rmsnorm_wts(ss_->rms_norm_.get(), epsilon_, wts_data_, allocator_);
   num_el_bo = wts_.size();

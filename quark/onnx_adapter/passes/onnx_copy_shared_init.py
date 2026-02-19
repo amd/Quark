@@ -101,7 +101,7 @@ class ONNXCopySharedInitPass(ONNXAdapterPass):
         Returns:
             ModelProto: The modified ONNX model after applying the pass.
         """
-        if "shared_init_op_types" in config and config["shared_init_op_types"] is not None:
+        if "shared_init_op_types" in config and config["shared_init_op_types"]:
             model = self._onnx_copy_shared_init(model, config["shared_init_op_types"], "duplicated", False)
         else:
             logger.warning(

@@ -35,13 +35,22 @@ def replacement(
     if not fuse_qk_mha:
         # if qk is not fused, there's an extra input for k
         ort_offset = 1
+
+    window_offset = 0
+
+    # flatmha with widnow enabled has one more input, this check is to see if sliding window is enabled
+    if len(mha.input) > (6 + ort_offset):
+        window_offset = 2
     # first is the onnx arg index (inputs + outputs) and second is buffer index,
     # third is index in the buffer, fourth is an alias index
-    external_buffers.extend([4 + ort_offset, 1, 0, 0])  # sin/cos cache
+    if window_offset > 0:
+        external_buffers.extend([4 + ort_offset, 2, 0, 0])  # sin/cos cache
+    else:
+        external_buffers.extend([4 + ort_offset, 1, 0, 0])  # sin/cos cache
     external_buffers.extend([1 + ort_offset, 0, buffer_offset + 0, alias_offset + 0])  # past k
     external_buffers.extend([2 + ort_offset, 0, buffer_offset + 1, alias_offset + 1])  # past v
     external_buffers.extend(
-        [6 + ort_offset + attention_mask_offset, 0, buffer_offset + 2, alias_offset + 0]
+        [6 + ort_offset + attention_mask_offset + window_offset, 0, buffer_offset + 2, alias_offset + 0]
     )  # present k
     ryzenai_onnx_utils.matcher.add_attribute(mha, "external_buffers", external_buffers)
     # [onnx_arg_index, state_table_idx, function, function_arg]
@@ -52,12 +61,22 @@ def replacement(
     ryzenai_onnx_utils.matcher.add_attribute(
         mha, "update_tensor_offsets", [4 + ort_offset, 0, mul_func, sin_cos_shape[-1] * 2]
     )
-    # present_k
     present_k_shape = ryzenai_onnx_utils.matcher.get_shape(mha.output[1], extractor)
-    ryzenai_onnx_utils.matcher.append_value_in_attribute(
-        mha, "update_tensor_offsets", [6 + ort_offset + attention_mask_offset, 0, mul_func, present_k_shape[-1] * 2]
-    )
 
+    if window_offset > 0:
+        # if op has window_size supported in NPU, we should update past k v state
+        ryzenai_onnx_utils.matcher.append_value_in_attribute(
+            mha, "update_tensor_offsets", [1 + ort_offset, 1, mul_func, present_k_shape[-1] * 2]
+        )
+        ryzenai_onnx_utils.matcher.append_value_in_attribute(
+            mha, "update_tensor_offsets", [2 + ort_offset, 1, mul_func, present_k_shape[-1] * 2]
+        )
+    # present_k
+    ryzenai_onnx_utils.matcher.append_value_in_attribute(
+        mha,
+        "update_tensor_offsets",
+        [6 + ort_offset + attention_mask_offset + window_offset, 0, mul_func, present_k_shape[-1] * 2],
+    )
     return subgraph, [], None
 
 

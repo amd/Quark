@@ -70,10 +70,18 @@ _pil_available, _pil_version = _is_package_available("PIL")  # pragma: no cover
 _datasets_available, _datasets_version = _is_package_available("datasets")  # pragma: no cover
 _requests_available, _requests_version = _is_package_available("requests")  # pragma: no cover
 _psutil_available, _psutil_version = _is_package_available("psutil")  # pragma: no cover
+_is_vllm_available, _ = _is_package_available("vllm")  # pragma: no cover
+_compressed_tensors_available, _compressed_tensors_version = _is_package_available(
+    "compressed_tensors"
+)  # pragma: no cover
 
 
 def is_torch_available() -> bool:  # pragma: no cover
     return _torch_available
+
+
+def is_vllm_available() -> bool:  # pragma: no cover
+    return _is_vllm_available
 
 
 def is_torch_greater_or_equal_2_5() -> bool:
@@ -143,3 +151,7 @@ def is_package_lower_or_equal(package_name: str, target_version: str) -> bool:
 
 def is_gguf_available_and_version_0_6_0() -> bool:  # pragma: no cover
     return _gguf_available and version.parse(_gguf_version) == version.parse("0.6.0")
+
+
+def is_compressed_tensors_available() -> bool:  # pragma: no cover
+    return _compressed_tensors_available

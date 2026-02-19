@@ -164,9 +164,9 @@ def replacement(
                 True,
             )
             initializers.append(add_input_tensor)
-            add_input_names = [add_input_tvi.name, matmul_out_name]
+            add_input_names = [matmul_out_name, add_input_tvi.name]
         else:
-            add_input_names = [gemm.input[2], matmul_out_name]
+            add_input_names = [matmul_out_name, gemm.input[2]]
 
         add_node = onnx.helper.make_node(
             "Add",

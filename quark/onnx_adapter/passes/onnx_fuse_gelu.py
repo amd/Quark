@@ -106,7 +106,7 @@ class ONNXFuseGeluPass(ONNXAdapterPass):
         Returns:
             onnx.ModelProto: The resulting ONNX model after executing this pass.
         """
-        if "fuse_gelu" in config and config["fuse_gelu"] is not None:
+        if "fuse_gelu" in config and config["fuse_gelu"]:
             model = self._onnx_fuse_gelu(model)
         else:
             logger.warning(

@@ -20,9 +20,14 @@ def replacement(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> PassOutputArgs:
-    reshape_in = subgraph[0]
-    sln_node = subgraph[1]
-    reshape_out = subgraph[2]
+    if len(subgraph) == 3:
+        reshape_in = subgraph[0]
+        sln_node = subgraph[1]
+        reshape_out = subgraph[2]
+    else:
+        reshape_in = subgraph[0]
+        sln_node = subgraph[2]
+        reshape_out = subgraph[4]
     domain = params.get_domain(sln_node.op_type)
 
     new_nodes = []
@@ -53,15 +58,19 @@ def replacement(
     add_attribute(new_sln, "shape_in", shape_in)
     add_attribute(new_sln, "shape_out", shape_out)
 
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(new_sln, "is_bfp16", params.attributes["is_bfp16"])
+    ryzenai_onnx_utils.matcher.add_attribute(new_sln, "mladf_version", params.attributes["mladf_version"])
 
     return new_nodes, [], tvis
 
 
-REPLACEMENT = replacement
+REPLACEMENT = [replacement] * 2
 PATTERN = [
-    "Reshape([?, ?], [a1])",
-    "SimplifiedLayerNormalization([a1,?], a2)",
-    "Reshape([a2, ?], [?])",
+    ["Reshape([?, ?], [a1])", "SimplifiedLayerNormalization([a1,?], a2)", "Reshape([a2, ?], [?])"],
+    [
+        "Reshape([?, ?], [a1])",
+        "Cast([a1], [a11])",
+        "SimplifiedLayerNormalization([a11,?], a2)",
+        "Cast([a2], [a22])",
+        "Reshape([a22, ?], [?])",
+    ],
 ]

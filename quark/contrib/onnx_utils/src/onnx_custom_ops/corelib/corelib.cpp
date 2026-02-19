@@ -111,8 +111,18 @@ struct CoreLibMatmulKernelBase : CoreLibKernelBase {
     !GetAttributes<int64_t>("hybrid_llm_cast_input", {}).empty();
   const bool cast_output_ =
     !GetAttributes<int64_t>("hybrid_llm_cast_output", {}).empty();
-  const bool non_bfp16_weights_ =
-    GetAttribute<std::string>("is_bfp16", "") != "weights";
+
+  // Try to read mladf_version first, then is_bfp16 for backward compatibility
+  // once it is removed, we can just use mladf_version
+  const MladfVersion v1 = MladfVersion::v1;
+  const MladfVersion v2 = MladfVersion::v2;
+  const auto mladf_version =
+    GetAttribute<std::string>("mladf_version", v1.str());
+  if (mladf_version == v1.str()) {
+    non_bfp16_weights_ = GetAttribute<std::string>("is_bfp16", "") != "weights";
+  } else {
+    non_bfp16_weights_ = mladf_version != v2.str();
+  }
 
   corelib::MatMulOperator op_;
 };

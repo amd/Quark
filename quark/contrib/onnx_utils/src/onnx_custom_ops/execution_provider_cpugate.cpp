@@ -7,7 +7,13 @@
 #include <iostream>
 #include <thread>
 
+#include "custom_ops.hpp"
 #include "execution_provider.hpp"
+
+extern "C" RYZENAI_EP_EXPORT_API OrtStatus* ORT_API_CALL
+RyzenAI_RegisterCPUGateCustomOps(
+  OrtSessionOptions* options, const OrtApiBase* api_base
+);
 
 namespace ryzenai::CPUGate {
 using InitFunction = std::function<void(const OrtKernelInfo*)>;
@@ -76,7 +82,17 @@ struct Manager : Interface {
 
     so.DisableCpuMemArena();
     so.DisableMemPattern();
-    so.RegisterCustomOpsUsingFunction("RyzenAI_RegisterCPUGateCustomOps");
+
+    RegisterCustomOpsOverride = &RyzenAI_RegisterCPUGateCustomOps;
+    Defer resetRegisterCustomOpsOverride{[]() {
+      RegisterCustomOpsOverride = nullptr;
+    }};
+#ifdef _WIN32
+    so.RegisterCustomOpsLibrary(L"onnxruntime_providers_ryzenai.dll");
+#else
+    so.RegisterCustomOpsLibrary("libonnxruntime_providers_ryzenai.so");
+#endif
+
     so.AddConfigEntry("session.inter_op.allow_spinning", "0");
     so.AddConfigEntry("session.intra_op.allow_spinning", "0");
 

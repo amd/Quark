@@ -47,7 +47,7 @@ def configure_parser(subparser: argparse._SubParsersAction[Any]) -> argparse.Arg
     auto_parser.add_argument(
         "--dd-files-path",
         type=Path,
-        default=Path(".cache"),
+        default=Path("cache"),
         help="Path to create DD files in, either absolute or relative to output_path",
     )
     auto_parser.add_argument("--model-name", default="replaced", help="Name of the new onnx model")
@@ -121,7 +121,7 @@ def execute(args: argparse.Namespace) -> None:
     session_options = onnxruntime.SessionOptions()
     session_options.add_session_config_entry("dd_root", args.dd_root)
     if os.path.exists(args.custom_op_path):
-        session_options.add_session_config_entry("dd_cache", str(args.output_path / ".cache"))
+        session_options.add_session_config_entry("dd_cache", str(args.output_path / "cache"))
         session_options.add_session_config_entry("compile_fusion_rt", "True")
         session_options.register_custom_ops_library(args.custom_op_path)
     ryzenai_onnx_utils.utils.run_onnx_model_with_dummy_inputs(

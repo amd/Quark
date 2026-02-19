@@ -1,0 +1,43 @@
+# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+attributes:
+    # domain to use for new ops
+    domains: com.ryzenai
+    xclbins: ""
+    op_namespaces: "hybrid"
+    mladf_version: "aie4_v1"
+    # flag to enable logits prune
+    prune_logits: "lmhead"
+    npu_jit: true
+# define the passes to run. These passes are defined in passes/ and are executed
+# in order
+# NOTE: any new passes that you add here may need to be added to the
+# hybrid_llm.gitignore file
+passes:
+    - fastgelu_to_gelu
+    - normalize_gqa
+    - normalize_matmulnbits
+    # - hybrid_llm_embedding
+    - hybrid_llm_ssmlp
+    - hybrid_llm_gqa
+    - hybrid_llm_qkv_matmul
+    - hybrid_llm_qkv_lrn_matmul
+    - hybrid_llm_sln
+    - hybrid_llm_gqo
+    - hybrid_llm_matmulnbits
+    - hybrid_llm_gqa_rotary_dim
+    - hybrid_llm_add_npu_weights
+    - hybrid_llm_transpose_matmul
+    - hybrid_llm_prune_logits
+    - remove_parallel_casts
+    - hybrid_llm_simplify_casts
+    - hybrid_llm_add_cast_attributes
+    - simplify_casts
+    - hybrid_llm_add_empty_cast_attributes
+    - simplify_matmulnbits
+    - hybrid_llm_prune_validate
+    - hybrid_llm_cast_logits
+inherit_passes_after: !include [cleanup.yaml]
+postprocess:
+    - hybrid_llm_jit

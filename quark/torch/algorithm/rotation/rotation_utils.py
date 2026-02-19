@@ -344,9 +344,7 @@ class InputRotationWrapperHadamard(InputRotationWrapper):
             == input_rotation.numel()
         )
 
-        input_rotation[input_rotation == -1] = 0
-
-        input_rotation = input_rotation.to(torch.bool)
+        input_rotation = input_rotation.to(torch.int8)
 
         self.register_buffer("input_rotation", input_rotation)
 

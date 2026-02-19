@@ -27,6 +27,31 @@ from .methods import PowerOfTwoMethod
 logger = ScreenLogger(__name__)
 
 
+def LoadingDataFromDisk(data_arr: list[NDArray[Any] | str]) -> list[NDArray[Any]]:
+    """
+    If the list contains file paths, read the files and store their contents in a list.
+    If the elements are already Numpy arrays, return them directly.
+    """
+    data_size = len(data_arr)
+    assert data_size, "The list should be non empty"
+
+    data_list: list[NDArray[Any]] = []
+    if isinstance(data_arr[0], str):
+        assert all(isinstance(item, str) for item in data_arr), "Not all elements are string"
+        with open(data_arr[0], "rb") as f:
+            for _ in range(data_size):
+                d = np.load(f)
+                data_list.append(d.astype(np.float32, copy=False))
+    else:
+        assert all(isinstance(item, np.ndarray) for item in data_arr), "Not all elements are np.ndarray"
+        data_list = data_arr  # type: ignore
+
+    dtypes = {a.dtype for a in data_list}
+    assert len(dtypes) == 1, f"The calibration expects only one element type but got {dtypes}"
+
+    return data_list
+
+
 class OverridedHistogramCollector(HistogramCollector):  # type: ignore
     """
     Collecting histogram for each tensor. Distribution, Percentile and Entropy method are supported.
@@ -48,9 +73,12 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
         num_quantized_bins: int,
         percentile: float,
         scenario: str = "same",
+        optimize_mem: bool = True,
         worker_num: int = 1,
     ) -> None:
         super().__init__(method, symmetric, num_bins, num_quantized_bins, percentile, scenario)
+
+        self.optimize_mem = optimize_mem
 
         if worker_num > multiprocessing.cpu_count():
             logger.warning(
@@ -59,6 +87,19 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
             self.worker_num = multiprocessing.cpu_count()
         else:
             self.worker_num = max(worker_num, 1)
+
+    def collect(self, name_to_arr: dict[str, list[tuple[NDArray[Any], str]]]) -> None:
+        # TODO: Currently we have different collect() for entropy and percentile method respectively.
+        #       Need unified collect in the future.
+        if self.method in {"distribution", "entropy"}:
+            return self.collect_value(name_to_arr)
+        elif self.method == "percentile":
+            if self.symmetric:
+                return self.collect_absolute_value(name_to_arr)
+            else:
+                return self.collect_value(name_to_arr)
+        else:
+            raise ValueError("Only 'entropy', 'percentile' or 'distribution' methods are supported")
 
     def compute_percentile(self) -> dict[str, tuple[NDArray[Any], NDArray[Any]]]:
         """
@@ -79,7 +120,7 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
         logger.info(f"Number of histogram bins : {self.num_bins}")
         logger.info(f"Percentile : ({100.0 - percentile},{percentile})")
 
-        def compute_layer_wise_percentile(tensor: str, histogram: tuple[Any]) -> None:
+        def compute_percentile_worker(tensor: str, histogram: tuple[Any]) -> None:
             hist = histogram[0]
             hist_edges = histogram[1]
             total = hist.sum()
@@ -109,33 +150,28 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
 
         if self.worker_num > 1:
             Parallel(n_jobs=self.worker_num, backend="threading")(
-                delayed(compute_layer_wise_percentile)(tensor, histogram)
-                for tensor, histogram in histogram_dict.items()
+                delayed(compute_percentile_worker)(tensor, histogram) for tensor, histogram in histogram_dict.items()
             )
         else:
             for tensor, histogram in histogram_dict.items():
-                compute_layer_wise_percentile(tensor, histogram)
+                compute_percentile_worker(tensor, histogram)
 
         return thresholds_dict
 
-    def collect_absolute_value(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> None:
+    def collect_absolute_value(self, name_to_arr: dict[str, list[tuple[NDArray[Any], str]]]) -> None:
         """
         Collect histogram on absolute value
         """
 
-        def collect_layer_wise_absolute_value(tensor: str, data_arr: list[NDArray[Any]]) -> None:
+        def collect_absolute_value_worker(tensor: str, data_arr: list[tuple[NDArray[Any], str]]) -> None:
             if isinstance(data_arr, list):
-                for arr in data_arr:
-                    assert isinstance(arr, np.ndarray), f"Unexpected type {type(arr)} for tensor={tensor!r}"
-                dtypes = {a.dtype for a in data_arr}
-                assert len(dtypes) == 1, (
-                    f"The calibration expects only one element type but got {dtypes} for tensor={tensor!r}"
-                )
-                data_arr_np = np.asarray(data_arr)
-            elif not isinstance(data_arr, np.ndarray):
-                raise ValueError(f"Unexpected type {type(data_arr)} for tensor={tensor!r}")
-            else:
+                data_list = LoadingDataFromDisk(data_arr)
+                data_arr_np = np.asarray(data_list)
+            elif isinstance(data_arr, np.ndarray):
                 data_arr_np = data_arr
+            else:
+                raise ValueError(f"Unexpected type {type(data_arr)} for tensor={tensor!r}")
+
             data_arr_np = data_arr_np.flatten()
             if data_arr_np.size > 0:
                 min_value = np.nanmin(data_arr_np)
@@ -179,37 +215,38 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
 
         if self.worker_num > 1:
             Parallel(n_jobs=self.worker_num, backend="threading")(
-                delayed(collect_layer_wise_absolute_value)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
+                delayed(collect_absolute_value_worker)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
             )
         else:
             for tensor, data_arr in name_to_arr.items():
-                collect_layer_wise_absolute_value(tensor, data_arr)
+                collect_absolute_value_worker(tensor, data_arr)
 
-    def collect_value(self, name_to_arr: dict[str, list[NDArray[Any]]]) -> None:
+    def collect_value(self, name_to_arr: dict[str, list[tuple[NDArray[Any], str]]]) -> None:
         """
         Collect histogram on real value
         """
 
-        def collect_layer_wise_value(tensor: str, data_arr: list[NDArray[Any]]) -> None:
-            data_arr = np.asarray(data_arr)  # noqa: PLW2901
-            data_arr = data_arr.flatten()  # noqa: PLW2901
+        def collect_value_worker(tensor: str, data_arr: list[tuple[NDArray[Any], str]]) -> None:
+            data_list = LoadingDataFromDisk(data_arr)
+            data_arr_np = np.asarray(data_list)  # noqa: PLW2901
+            data_arr_np = data_arr_np.flatten()  # noqa: PLW2901
 
-            if data_arr.size > 0:
-                min_value = np.nanmin(data_arr)
-                max_value = np.nanmax(data_arr)
+            if data_arr_np.size > 0:
+                min_value = np.nanmin(data_arr_np)
+                max_value = np.nanmax(data_arr_np)
             else:
-                min_value = np.array(0, dtype=data_arr.dtype)
-                max_value = np.array(0, dtype=data_arr.dtype)
+                min_value = np.array(0, dtype=data_arr_np.dtype)
+                max_value = np.array(0, dtype=data_arr_np.dtype)
 
-            threshold = np.array(max(abs(min_value), abs(max_value)), dtype=data_arr.dtype)
+            threshold = np.array(max(abs(min_value), abs(max_value)), dtype=data_arr_np.dtype)
 
             if tensor in self.histogram_dict:
                 old_histogram = self.histogram_dict[tensor]
                 self.histogram_dict[tensor] = self.merge_histogram(
-                    old_histogram, data_arr, min_value, max_value, threshold
+                    old_histogram, data_arr_np, min_value, max_value, threshold
                 )
             else:
-                hist, hist_edges = np.histogram(data_arr, self.num_bins, range=(-threshold, threshold))
+                hist, hist_edges = np.histogram(data_arr_np, self.num_bins, range=(-threshold, threshold))
                 self.histogram_dict[tensor] = (
                     hist,
                     hist_edges,
@@ -220,11 +257,11 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
 
         if self.worker_num > 1:
             Parallel(n_jobs=self.worker_num, backend="threading")(
-                delayed(collect_layer_wise_value)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
+                delayed(collect_value_worker)(tensor, data_arr) for tensor, data_arr in name_to_arr.items()
             )
         else:
             for tensor, data_arr in name_to_arr.items():
-                collect_layer_wise_value(tensor, data_arr)
+                collect_value_worker(tensor, data_arr)
 
 
 calib_quant_types = [
@@ -246,7 +283,6 @@ def compute_minmse_worker(
     tensor_data: list[Any],
     quantized_tensor_type: dict[Any, Any],
     minmse_mode: str,
-    optimize_mem: bool,
     activation_qType: Any,
     symmetric: Any,
     method: Any,
@@ -282,7 +318,7 @@ def compute_minmse_worker(
                 # We have calculated the quantization parameters already in collecting data process
                 rmin_mse, rmax_mse, scale_mse = d[0], d[1], d[2]
             else:
-                # This needs caching data in memory, abandoned
+                # This needs to calculate the quantization parameters using the original data
                 rmin_mse, rmax_mse, _, scale_mse, _ = quantize_data(
                     data=d.astype(np.float32, copy=False), qType=act_type, symmetric=symmetric, method=method
                 )
@@ -296,6 +332,8 @@ def compute_minmse_worker(
     def _percentile_mode(
         data_arr: list[Any], act_type: Any, symmetric: Any, method: Any, percentile: Any
     ) -> tuple[Any, Any]:
+        assert all(isinstance(item, np.ndarray) for item in data_arr), "Not all elements are np.ndarray"
+
         if _all_dims_equal(data_arr):
             # The np.array() requires all dims to be exactly the same
             d = np.array(data_arr).flatten()
@@ -319,6 +357,8 @@ def compute_minmse_worker(
         return (rmin_mse, rmax_mse)
 
     def _all_arrays_mode(data_arr: list[Any], act_type: Any, symmetric: Any, method: Any) -> tuple[Any, Any]:
+        assert all(isinstance(item, np.ndarray) for item in data_arr), "Not all elements are np.ndarray"
+
         if _all_dims_equal(data_arr):
             # The np.array() requires all dims to be exactly the same
             d = np.array(data_arr).flatten()
@@ -333,18 +373,18 @@ def compute_minmse_worker(
         )
         return (rmin_mse, rmax_mse)
 
-    if not optimize_mem:
-        data_arr = tensor_data
-    else:
+    if not tensor_data:
+        raise ValueError(f"Missed data for the tensor {tensor_name}, please check.")
+
+    if isinstance(tensor_data[0], str):
         # In this case, the content in the list is the caching file name,
         # need to load data to memory
         data_arr = []
         with open(tensor_data[0], "rb") as f:
             for _ in range(len(tensor_data)):
                 data_arr.append(np.load(f))
-
-    if len(data_arr) == 0:
-        raise ValueError(f"Missed data for the tensor {tensor_name}, please check.")
+    else:
+        data_arr = tensor_data
 
     act_type = activation_qType
     if tensor_name in quantized_tensor_type and quantized_tensor_type[tensor_name] in calib_quant_types:
@@ -406,11 +446,13 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
         self.worker_num = worker_num
         self.quantized_tensor_type = quantized_tensor_type
 
-        self.is_mostcommon = True if self.minmse_mode == "MostCommon" and self.symmetric else False
+        self.optimized_mostcommon = (
+            True if self.minmse_mode == "MostCommon" and self.symmetric and optimize_mem else False
+        )
         self.name_to_arr: dict[Any, Any] = {}  # For MostCommon, the value is a 2D list storing the quant params
 
     def collect(self, name_to_arr: dict[Any, Any]) -> None:
-        if self.is_mostcommon:
+        if self.optimized_mostcommon:
             return self.collect_mostcommon_value(name_to_arr)
         else:
             return self.collect_value(name_to_arr)
@@ -426,17 +468,21 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
                 act_type = get_tensor_type_from_qType(self.quantized_tensor_type[tensor_name])
 
             assert len(data_arr) == 1, "Each time it only supports collect a sample"
-            rmin_mse, rmax_mse, _, scale_mse, _ = quantize_data(
-                data=data_arr[0].astype(np.float32, copy=False),
-                qType=act_type,
-                symmetric=self.symmetric,
-                method=self.method,
-            )
+            assert isinstance(data_arr[0], str), "The data should be a path of a numpy array file"
+            with open(data_arr[0], "rb") as f:
+                d = np.load(f)
 
-            if tensor_name not in self.name_to_arr:
-                self.name_to_arr[tensor_name] = [[rmin_mse, rmax_mse, scale_mse]]
-            else:
-                self.name_to_arr[tensor_name].append([rmin_mse, rmax_mse, scale_mse])
+                rmin_mse, rmax_mse, _, scale_mse, _ = quantize_data(
+                    data=d.astype(np.float32, copy=False),
+                    qType=act_type,
+                    symmetric=self.symmetric,
+                    method=self.method,
+                )
+
+                if tensor_name not in self.name_to_arr:
+                    self.name_to_arr[tensor_name] = [[rmin_mse, rmax_mse, scale_mse]]
+                else:
+                    self.name_to_arr[tensor_name].append([rmin_mse, rmax_mse, scale_mse])
 
     def collect_value(self, name_to_arr: dict[Any, Any]) -> None:
         """Collect data for the percentile and all mode"""
@@ -484,7 +530,6 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
                     data_arr,
                     self.quantized_tensor_type,
                     self.minmse_mode,
-                    self.optimize_mem,
                     self.activation_qType,
                     self.symmetric,
                     self.method,
@@ -498,7 +543,6 @@ class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore
                     data_arr,
                     self.quantized_tensor_type,
                     self.minmse_mode,
-                    self.optimize_mem,
                     self.activation_qType,
                     self.symmetric,
                     self.method,

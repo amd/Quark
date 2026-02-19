@@ -2,7 +2,11 @@
 
 #include "conv_split_mul.hpp"
 
+#include <cassert>
+#include <vector>
+
 #include "common.hpp"
+#include "mladf_version.hpp"
 #include "npu_utils.hpp"
 #include "ops/ops_common/dtype_utils.h"
 
@@ -44,7 +48,7 @@ AMDConvSplitMulKernel::AMDConvSplitMulKernel(
   : NpuOp(info, session_configs), ss_(session_configs) {
   if (ss_->instances__ == 0) {
     Ort::ConstKernelInfo info2(info);
-    // auto header = initializeNpuOp("ConvSplitMul", session_configs, info2);
+    auto header = initializeNpuOp("ConvSplitMul", session_configs, info2);
 
     std::map<std::string, std::any> attr{
       {"pdi_name", std::string("DPU_7")},
@@ -56,7 +60,12 @@ AMDConvSplitMulKernel::AMDConvSplitMulKernel(
 
     const auto group = info2.GetAttribute<int64_t>("group");
     auto kernel_shape = info2.GetAttributes<int64_t>("kernel_shape");
-    auto pads = info2.GetAttributes<int64_t>("pads");
+    std::vector<int64_t> pads;
+    try {
+      pads = info2.GetAttributes<int64_t>("pads");
+    } catch (...) {
+      // some models (like LFM2.5-1.2B-Thinking-ONNX) dont have it
+    }
 
     ss_->kw_ = kernel_shape[0];
     ss_->ort_trans_.construct(info2, {0, 2, 1});
@@ -78,7 +87,7 @@ AMDConvSplitMulKernel::AMDConvSplitMulKernel(
     attr_mul.insert(
       {{"skip_create_input", 1},
        {"skip_create_output", 1},
-       {"op_version", std::string("v2")}}
+       {"op_version", mladfVersion().str()}}
     );
     // ElwMul
     ss_->elwmul_ =
@@ -87,7 +96,8 @@ AMDConvSplitMulKernel::AMDConvSplitMulKernel(
       );
 
     // ss_->shared_buffer_ = SharedBuffer::Client("CSM", session_id_, name());
-    const int max_seq_len = 3072;  // max input seq len the LFM2 model supported
+    const int max_seq_len =
+      maxSeqLength();  // max input seq len the LFM2 model supported
     initBufBos(max_seq_len);
   }
   ss_->instances__++;
@@ -132,6 +142,64 @@ void AMDConvSplitMulKernel::ConvNpu(
   ss_->dd_conv_->execute(inp_tensors, out_tensors);
 }
 
+// input  : [N, W, C]
+// weight : [M, C/G, kw]
+// bias   : [M] (optional)
+// output : [N, W_out, M]
+void AMDConvSplitMulKernel::Conv1DSim(
+  const uint16_t* input, const uint16_t* weight, const uint16_t* bias,
+  uint16_t* output, int N, int W, int C, int M, int kw, int groups, int stride,
+  int padding, int dilation
+) {
+  assert(C % groups == 0);
+  assert(M % groups == 0);
+
+  const int Cg = C / groups;
+  const int Mg = M / groups;
+
+  const int W_out = (W + 2 * padding - dilation * (kw - 1) - 1) / stride + 1;
+
+  auto in_idx = [&](int n, int w, int c) { return n * W * C + w * C + c; };
+
+  auto wt_idx = [&](int m, int c, int k) {
+    // weight layout: [M, Cg, kw]
+    return m * Cg * kw + c * kw + k;
+  };
+
+  auto out_idx = [&](int n, int w, int m) {
+    if (w > 0) {  // slice out first row.
+      return n * (W_out - 1) * M + (w - 1) * M + m;
+    } else {
+      return n * (W_out - 1) * M + w * M + m;
+    }
+  };
+
+  for (int n = 0; n < N; ++n) {
+    for (int w_out = 0; w_out < W_out; ++w_out) {
+      for (int g = 0; g < groups; ++g) {
+        const int c_base = g * Cg;
+        const int m_base = g * Mg;
+
+        for (int m = 0; m < Mg; ++m) {
+          const int m_idx = m_base + m;
+          float sum = bias ? bias[m_idx] : 0.0f;
+
+          for (int k = 0; k < kw; ++k) {
+            const int w_in = w_out * stride + k * dilation - padding;
+            if (w_in < 0 || w_in >= W) continue;
+
+            for (int c = 0; c < Cg; ++c) {
+              sum += bfloat16_to_float(input[in_idx(n, w_in, c_base + c)]) *
+                     bfloat16_to_float(weight[wt_idx(m_idx, c, k)]);
+            }
+          }
+          output[out_idx(n, w_out, m_idx)] = float_to_bfloat16(sum);
+        }
+      }
+    }
+  }
+}
+
 void AMDConvSplitMulKernel::ConvCpu(
   Ort::MemoryInfo const& cpu_mem_info, uint16_t* inp_bf16_ptr,
   uint16_t* wts_bf16_ptr, uint16_t* conv_out_ptr, std::vector<int64_t> inp_dims,
@@ -170,10 +238,15 @@ void AMDConvSplitMulKernel::ConvCpu(
   PROFILING_END(cpu_trans_before, false, name().c_str())
 
   PROFILING_START(cast_wts)
+  // reuse partial split2_ptr buffer for wts.
   float* wts_fp_ptr =
-    (float*)ss_->split1_ptr_ + 4 * conv_out_dims[2] * sizeof(float);
+    (float*)ss_->split2_ptr_ + alignTo4096(4 * out_dims[2] * sizeof(float));
   ryzenai::bfloat16_buffer_to_float(wts_bf16_ptr, wts_elems, wts_fp_ptr);
   PROFILING_END(cast_wts, false, name().c_str())
+
+  std::vector<float> tmp_out_float;
+  int elem = conv_out_dims[0] * conv_out_dims[1] * conv_out_dims[2];
+  tmp_out_float.resize(elem);
 
   PROFILING_START(cpu_conv)
   ss_->ort_conv_.execute(
@@ -186,7 +259,7 @@ void AMDConvSplitMulKernel::ConvCpu(
     )
       .GetConst(),  // wts
     Ort::Value::CreateTensor<float>(
-      cpu_mem_info, (float*)ss_->conv_in_ptr_, conv_out_sz, conv_out_dims, 3
+      cpu_mem_info, (float*)tmp_out_float.data(), conv_out_sz, conv_out_dims, 3
     )
       .GetUnowned(),  // out
     context
@@ -194,22 +267,14 @@ void AMDConvSplitMulKernel::ConvCpu(
   PROFILING_END(cpu_conv, false, name().c_str())
 
   PROFILING_START(cpu_trans_after)
-  std::vector<float> tmp_float;
-  int elem = conv_out_dims[0] * conv_out_dims[1] * conv_out_dims[2];
-  tmp_float.resize(elem);
   ss_->ort_trans_.execute(
-    tmp_float.data(), (float*)ss_->conv_in_ptr_,
+    (float*)ss_->transpose_ptr_, tmp_out_float.data(),
     {conv_out_dims[0], conv_out_dims[1], conv_out_dims[2]}, context
   );
   ryzenai::float_buffer_to_bfloat16(
-    tmp_float.data() + out_dims[2],  // Slice out first row
+    (float*)ss_->transpose_ptr_ + out_dims[2],  // Slice out first row
     size_t(out_dims[1]) * size_t(out_dims[2]), (uint16_t*)conv_out_ptr
   );
-
-  /*transpose021_with_fp_2_bf16_cast(
-    (float*)ss_->conv_in_ptr_, conv_out_ptr,
-    conv_out_dims[0], conv_out_dims[1], conv_out_dims[2]
-  );*/
   PROFILING_END(cpu_trans_after, false, name().c_str())
   return;
 }
@@ -226,29 +291,30 @@ void AMDConvSplitMulKernel::initBufBos(size_t seq_len) {
   size_t concat_in0_sz = 3 * split_sizes_val[0] * sizeof(uint16_t);
   const auto conv_in0_len = ss_->split0_sz + concat_in0_sz;
 
+#if 0
   // Notice: 3k crash with the shared buffer approach, using aligned alloc
   // 1. make sure "split0" and "split2" buffer back to back,
   // and reused for ConvCpu float output.
   // 2. "transpose" buffer used by float transpose output and bf16 Conv output.
-  /*ss_->shared_buffer_.Update({
-    {"CSM_split1", alignTo4096(ss_->split1_sz)},
-    {"CSM_conv_in", alignTo4096(conv_in0_len)},
-    {"CSM_split0", alignTo4096(ss_->split0_sz)},
-    {"CSM_split2", alignTo4096(ss_->split2_sz)},
-    {"CSM_transpose", alignTo4096(conv_in0_len * 2)}, // float
+  ss_->shared_buffer_.Update({
+    {"split1", alignTo4096(ss_->split1_sz)},
+    {"conv_in", alignTo4096(conv_in0_len)},
+    {"split0", alignTo4096(ss_->split0_sz)},
+    {"split2", alignTo4096(ss_->split2_sz)},
+    {"transpose", alignTo4096(conv_in0_len * 2)}, // float
   });
 
   ss_->split0_ptr_ =
-      (uint16_t*)ss_->shared_buffer_.Get("CSM_split0").ptr;
+      (uint16_t*)ss_->shared_buffer_.Get("split0").ptr;
   ss_->split1_ptr_ =
-      (uint16_t*)ss_->shared_buffer_.Get("CSM_split1").ptr;
+      (uint16_t*)ss_->shared_buffer_.Get("split1").ptr;
   ss_->split2_ptr_ =
-      (uint16_t*)ss_->shared_buffer_.Get("CSM_split2").ptr;
+      (uint16_t*)ss_->shared_buffer_.Get("split2").ptr;
   ss_->conv_in_ptr_ =
-      (uint16_t*)ss_->shared_buffer_.Get("CSM_conv_in").ptr;
+      (uint16_t*)ss_->shared_buffer_.Get("conv_in").ptr;
   ss_->transpose_ptr_ =
-      (float*)ss_->shared_buffer_.Get("CSM_transpose").ptr;*/
-
+      (float*)ss_->shared_buffer_.Get("transpose").ptr;
+#else
   auto total_mem_size =
     alignTo4096(ss_->split0_sz) + alignTo4096(ss_->split1_sz) +
     alignTo4096(ss_->split2_sz) + alignTo4096(conv_in0_len) +
@@ -274,17 +340,22 @@ void AMDConvSplitMulKernel::initBufBos(size_t seq_len) {
 
   ss_->transpose_ptr_ = (float*)(ss_->total_buf_ + offset);
   offset += alignTo4096(conv_in0_len * 2);
-
+#endif
   ss_->mul0_bo0_ = ss_->elwmul_->bind_bo(ss_->split0_ptr_, ss_->split0_sz);
   ss_->mul0_bo1_ = ss_->elwmul_->bind_bo(ss_->split2_ptr_, ss_->split1_sz);
+  ss_->mul0_bo0_.sync(XCL_BO_SYNC_BO_TO_DEVICE, ss_->split0_sz, 0);
+  ss_->mul0_bo1_.sync(XCL_BO_SYNC_BO_TO_DEVICE, ss_->split1_sz, 0);
   if (ss_->inline_concat_en_) {
     ss_->mul0_bo2_ = ss_->elwmul_->bind_bo(
       (void*)(ss_->conv_in_ptr_ + concat_in0_elem), ss_->split1_sz
     );
+    ss_->mul0_bo2_.sync(XCL_BO_SYNC_BO_TO_DEVICE, ss_->split1_sz, 0);
   }
 
   ss_->mul1_bo0_ = ss_->elwmul_->bind_bo(ss_->split1_ptr_, ss_->split1_sz);
   ss_->mul1_bo1_ = ss_->elwmul_->bind_bo(ss_->transpose_ptr_, ss_->split1_sz);
+  ss_->mul1_bo0_.sync(XCL_BO_SYNC_BO_TO_DEVICE, ss_->split1_sz, 0);
+  ss_->mul1_bo1_.sync(XCL_BO_SYNC_BO_TO_DEVICE, ss_->split1_sz, 0);
 }
 
 void split_cpu(
@@ -473,10 +544,20 @@ void AMDConvSplitMulKernel::Compute(OrtKernelContext* context) {
   };
 
   if (conv_cpu_en || seq_len <= 256) {
-    ConvCpu(
-      cpu_mem_info, ss_->conv_in_ptr_, wts_ptr, (uint16_t*)ss_->transpose_ptr_,
-      conv_inp_dims, conv_wts_dims, conv_out_dims, context
-    );
+    bool cpu_sim_en = false;
+    if (cpu_sim_en) {
+      Conv1DSim(
+        ss_->conv_in_ptr_, wts_ptr, nullptr, (uint16_t*)ss_->transpose_ptr_,
+        conv_inp_dims[0], conv_inp_dims[1], conv_inp_dims[2], conv_wts_dims[0],
+        conv_wts_dims[2], 2048
+      );
+    } else {
+      ConvCpu(
+        cpu_mem_info, ss_->conv_in_ptr_, wts_ptr,
+        (uint16_t*)ss_->transpose_ptr_, conv_inp_dims, conv_wts_dims,
+        conv_out_dims, context
+      );
+    }
   } else {
     ConvNpu(
       ss_->conv_in_ptr_, wts_ptr, (uint16_t*)ss_->transpose_ptr_, conv_inp_dims,

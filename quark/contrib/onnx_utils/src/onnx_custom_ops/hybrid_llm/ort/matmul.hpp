@@ -13,8 +13,8 @@ class OrtMatMul : public OrtOperator {
  public:
   void construct(const Ort::ConstKernelInfo& info);
   void execute(
-    OrtKernelContext* context, float* activation_ptr,
-    std::vector<int64_t> act_dim, float* weights_ptr,
+    OrtKernelContext* context, const float* activation_ptr,
+    std::vector<int64_t> act_dim, const float* weights_ptr,
     std::vector<int64_t> wts_dim, float* output_ptr,
     std::vector<int64_t> out_dim
   );

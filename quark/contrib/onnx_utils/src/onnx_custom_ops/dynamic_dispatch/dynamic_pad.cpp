@@ -252,7 +252,7 @@ DynamicPadKernel::DynamicPadKernel(
   ker_info_ = info;
   auto info_ptr = Ort::ConstKernelInfo(info);
   logger_ = info_ptr.GetLogger();
-  dd_cache_dir_ = getCacheDirectory(session_configs) + "/.cache";
+  dd_cache_dir_ = getCacheDirectory(session_configs);
   node_name_ = info_ptr.GetNodeName();
 
   read_attributes(info_ptr);

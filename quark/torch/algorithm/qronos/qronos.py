@@ -14,6 +14,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
@@ -409,7 +410,7 @@ class QronosProcessor(BaseHessianProcessor):
         num_batches: int,
         current_layer_device: torch.device,
     ) -> None:
-        for batch_idx in range(num_batches):
+        for batch_idx in tqdm(range(num_batches), desc="Collecting Qronos statistics"):
             batch_input = [layer_inputs[batch_idx]]
             orig_batch_input = [orig_layer_inputs[batch_idx]]
 

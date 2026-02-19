@@ -63,6 +63,7 @@ def replacement(
     ryzenai_onnx_utils.matcher.set_attribute(
         new_conv, "split_axis", int(ryzenai_onnx_utils.matcher.get_attribute(split, "axis"))
     )
+    ryzenai_onnx_utils.matcher.set_attribute(new_conv, "mladf_version", params.attributes["mladf_version"])
     new_nodes.append(new_conv)
 
     return new_nodes, new_initializers, new_tvis

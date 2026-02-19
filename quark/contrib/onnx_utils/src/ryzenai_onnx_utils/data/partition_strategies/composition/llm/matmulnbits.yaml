@@ -1,0 +1,9 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup:
+    - normalize_matmulnbits
+passes:
+    - hybrid_llm_matmulnbits
+cleanup:
+    - simplify_matmulnbits

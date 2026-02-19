@@ -19,6 +19,7 @@ def convert_kv_cache(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> None:
+    # TODO(varunsh): remove once legacy strategies are removed
     enable = params.get_bool_attr("convert_kv_cache", True)
     if not enable:
         return

@@ -426,6 +426,8 @@ void DMLOps::CreateSlrnOp(
 
   params.dataType = pTensorDescInput[0].dataType;
   params.epsilon = attr.epsilon;
+  params.isWtsFp32 =
+    (winrt::to_string(pTensorDescInput[1].dataType) == "Float");
 
   // check if scale shape and input hiddensize are same
   if (!attr.shapeIn.empty() &&
@@ -606,33 +608,39 @@ void DMLOps::CreateSSMLPOp(
 
   if (attr.has_gelu == 1) {
     params.normTop.inputShape = inputShape;
-    params.normTop.dataType = pTensorDescInput[0].dataType;
+    params.normTop.dataType = pTensorDescInput[1].dataType;
     params.normTop.epsilon = attr.epsilon;
     params.normTop.hasScale = true;
     params.normTop.hasBias = false;
+    params.normTop.isWtsFp32 =
+      (winrt::to_string(pTensorDescInput[2].dataType) == "Float");
 
     params.normBottom.inputShape = inputShape;
-    params.normBottom.dataType = pTensorDescInput[0].dataType;
+    params.normBottom.dataType = pTensorDescInput[1].dataType;
     params.normBottom.epsilon = attr.epsilon;
     params.normBottom.hasScale = true;
     params.normBottom.hasBias = false;
+    params.normBottom.isWtsFp32 = params.normTop.isWtsFp32;
   }
 
   params.sslrnTop.inputShape = inputShape;
   params.sslrnTop.dataType = pTensorDescInput[0].dataType;
-
   params.sslrnTop.epsilon = attr.epsilon;
   params.sslrnTop.hasScale = true;
   params.sslrnTop.hasBias = false;
   params.sslrnTop.hasNonMVNBias = false;
+  params.sslrnTop.isWtsFp32 =
+    (winrt::to_string(pTensorDescInput[3].dataType) == "Float");
 
   params.sslrnBottom.inputShape =
     params.sslrnTop.inputShape;  // shapes for both the SSLRN should be same
+  params.sslrnBottom.dataType = params.sslrnTop.dataType;
   params.sslrnBottom.epsilon = attr.epsilon;
   params.sslrnBottom.hasScale = true;
   params.sslrnBottom.hasBias = false;
   params.sslrnBottom.hasNonMVNBias = false;
   params.sslrnBottom.outputCount = pTensorDescOutput.size();
+  params.sslrnBottom.isWtsFp32 = params.sslrnTop.isWtsFp32;
 
   params.matMulNBitsGate.hasC = false;
   params.matMulNBitsGate.hasZeroPoint =

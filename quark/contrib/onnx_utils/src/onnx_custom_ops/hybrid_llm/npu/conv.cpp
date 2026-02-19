@@ -24,7 +24,12 @@ AMDConvKernel::AMDConvKernel(
 
   const auto group = info2.GetAttribute<int64_t>("group");
   auto kernel_shape = info2.GetAttributes<int64_t>("kernel_shape");
-  auto pads = info2.GetAttributes<int64_t>("pads");
+  std::vector<int64_t> pads;
+  try {
+    pads = info2.GetAttributes<int64_t>("pads");
+  } catch (...) {
+    // some models (LFM2.5-1.2B-Thinking-ONNX) dont have it
+  }
 
   kw_ = kernel_shape[0];
   transpose_.construct(info2, {0, 2, 1});

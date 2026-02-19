@@ -1,0 +1,9 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup:
+    - normalize_gqa
+    - hybrid_llm_gqa
+passes:
+    - hybrid_llm_qkv_matmul
+cleanup: []

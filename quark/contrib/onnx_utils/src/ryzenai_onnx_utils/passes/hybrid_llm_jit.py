@@ -52,7 +52,7 @@ def is_npu_weight(initializer_name: str) -> bool:
 
 
 def is_gpu_weight(initializer_name: str) -> bool:
-    return "MatMulNBits" in initializer_name and not is_npu_weight(initializer_name)
+    return "MatMul" in initializer_name and not is_npu_weight(initializer_name)
 
 
 def is_embedding(initializer_name: str, op_type: str) -> bool:
@@ -393,6 +393,13 @@ def extract_jit_weights(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> None:
+    nested_graph = params.attributes.get("_nested_graph", False)
+    if nested_graph:
+        # for models with nested graphs, we assume any JIT weights will only
+        # be in the parent graph. The external data file is not handling
+        # weights that may be in different graphs at the moment
+        return
+
     npu_jit = params.get_bool_attr("npu_jit", False)
     gpu_jit = params.get_bool_attr("gpu_jit", False)
     offload_embedding = params.get_bool_attr("offload_embedding", False)

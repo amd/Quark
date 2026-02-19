@@ -42,18 +42,13 @@ def replacement(
         name=f"add_{pass_id}",
         domain=domain,
     )
-    bfp16 = (
-        params.attributes["is_bfp16"]
-        if "is_bfp16" in params.attributes and params.attributes["is_bfp16"]
-        else "weights"
-    )
-    op_version = "v2" if bfp16 == "weights" else "flat"
     lora = params.get_bool_attr("lora", False)
     if lora:
-        op_version = "flat"
         ryzenai_onnx_utils.matcher.add_attribute(elw_add, "lora", lora)
-
-    ryzenai_onnx_utils.matcher.add_attribute(elw_add, "op_version", op_version)
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(elw_add, "pdi_id", int(pdi_id))
+    ryzenai_onnx_utils.matcher.add_attribute(elw_add, "op_version", params.attributes["mladf_version"])
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(elw_add, "enable_ctrl_pkt", enable_ctrl_pkt)

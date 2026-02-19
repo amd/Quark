@@ -17,7 +17,9 @@ std::vector<OpsFusion::Metadata::TensorInfo> get_external_tensors(
 ) {
   std::vector<OpsFusion::Metadata::TensorInfo> external_buffers;
 
-  std::array<std::string, 2> ext_buf_names = {"ext_buf_0", "ext_buf_1"};
+  std::array<std::string, 3> ext_buf_names = {
+    "ext_buf_0", "ext_buf_1", "ext_buf_2"
+  };
 
   for (const auto& ext_buf_name : ext_buf_names) {
     if (meta.fused_tensors.find(ext_buf_name) == meta.fused_tensors.end()) {
@@ -52,11 +54,11 @@ void ExternalBuffers::construct(
   bool legacy_llm_prefill, bool io_bind_kv_cache
 ) {
   auto external_tensors = get_external_tensors(meta);
-
+  model_type_ = model_type;
   // for fusion prefill, assumption is KV cache is flattened from OGA/ORT
   // and we just need to query underlying bo;
   bool is_llm_prefill_model =
-    model_type == ModelType::Llm_Prefill || legacy_llm_prefill;
+    model_type_ == ModelType::Llm_Prefill || legacy_llm_prefill;
   bool bind_kv_cache = io_bind_kv_cache;
   skip_ext_buf_copy_.resize(external_tensors.size(), bind_kv_cache);
   fillSkipExtBufCopy(skip_ext_buf_copy, skip_ext_buf_copy_);
@@ -149,7 +151,9 @@ void ExternalBuffers::loadLoraBin(
   Lora::loadBinData(
     (int8_t*)(external_buffers_.at(kLoraBufIndex_).first) +
       meta.tensor_map.at(tensor_name).offset,
-    bin_size, bin_offset, LoraDataType::Token
+    bin_size, bin_offset,
+    model_type_ == ModelType::Llm_Prefill ? LoraDataType::Prefill
+                                          : LoraDataType::Token
   );
 }
 

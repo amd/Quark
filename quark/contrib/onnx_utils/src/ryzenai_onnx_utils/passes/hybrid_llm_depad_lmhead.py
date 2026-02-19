@@ -13,6 +13,7 @@ from typing import Any
 import onnx
 
 import ryzenai_onnx_utils.matcher
+from ryzenai_onnx_utils.transform import hybrid_llm
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
 
@@ -51,7 +52,8 @@ def add_pad(
         new_tvis.append(const_0_tvi)
 
     ends_name = "sequence_length"
-    shape_node = onnx.helper.make_node("Shape", inputs=["input_ids"], outputs=[ends_name], start=1)
+    io_to_pad = hybrid_llm.get_input_ids_name(extractor.graph, params.attributes)
+    shape_node = onnx.helper.make_node("Shape", inputs=[io_to_pad], outputs=[ends_name], start=1)
     new_nodes.append(shape_node)
 
     new_tvis.append(

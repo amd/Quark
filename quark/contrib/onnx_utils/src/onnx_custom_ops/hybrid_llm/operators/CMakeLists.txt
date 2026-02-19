@@ -19,6 +19,7 @@ set(
   "ssgmlp.cpp"
   "sslrn.cpp"
   "ssmlp.cpp"
+  "ssmlpfuse.cpp"
   "sub.cpp"
 )
 

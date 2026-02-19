@@ -7,6 +7,12 @@ ryzenai_onnx_utils_resolve_protobuf()
 
 find_package(XRT REQUIRED)
 find_package(DynamicDispatch CONFIG QUIET)
+
+if(DynamicDispatch_FOUND)
+  message(STATUS "Using pre-built DynamicDispatch")
+  return()
+endif()
+
 if(NOT DEFINED DYNAMIC_DISPATCH_SRC)
   message(STATUS "Using DynamicDispatch from FetchContent")
   FetchContent_Declare(
@@ -15,7 +21,7 @@ if(NOT DEFINED DYNAMIC_DISPATCH_SRC)
     GIT_REPOSITORY
       "https://gitenterprise.xilinx.com/VitisAI/DynamicDispatch.git"
     # current latest tag of main
-    GIT_TAG "f7bbad58ad5e22e8393de7147592db2257a327a4"
+    GIT_TAG "87a1abaaa65e5466a0eeb56c2aaf22d80be1ef86"
     SYSTEM
   )
   set(
@@ -59,6 +65,7 @@ if(NOT DynamicDispatch_FOUND)
       INTERFACE_INCLUDE_DIRECTORIES
         ${DYNAMIC_DISPATCH_SRC}/src
         ${DYNAMIC_DISPATCH_SRC}/include
+        ${DYNAMIC_DISPATCH_SRC}/xclbin/include
         ${XRT_INCLUDE_DIRS}
   )
 
@@ -77,6 +84,7 @@ else()
       INTERFACE_INCLUDE_DIRECTORIES
         ${DYNAMIC_DISPATCH_SRC}/src
         ${DYNAMIC_DISPATCH_SRC}/include
+        ${DYNAMIC_DISPATCH_SRC}/xclbin/include
         ${XRT_INCLUDE_DIRS}
   )
   set_target_properties(

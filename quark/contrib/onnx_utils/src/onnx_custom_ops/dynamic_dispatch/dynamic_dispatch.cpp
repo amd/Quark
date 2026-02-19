@@ -93,6 +93,38 @@ void loadKVCache(
 namespace ryzenai::onnx_utils {
 
 namespace {
+
+using VAI_MM = VitisAI::RM::VAIMemoryManager;
+
+std::shared_ptr<VAI_MM>& getSharedMemoryManagerInstance() {
+  static std::shared_ptr<VAI_MM> instance = nullptr;
+  return instance;
+}
+
+std::mutex& getMemoryManagerMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+// Get or create shared memory manager
+std::shared_ptr<VAI_MM> getSharedMemoryManager(xrt::hw_context& ctx) {
+  std::lock_guard<std::mutex> lock(getMemoryManagerMutex());
+
+  auto& shared_mm = getSharedMemoryManagerInstance();
+  if (!shared_mm) {
+    shared_mm = std::make_shared<VAI_MM>();
+
+    // Configure BO lifecycle strategies
+    auto sc_bo_lc = VitisAI::RM::BOLifeCycle::SHARED;
+    auto in_bo_lc = VitisAI::RM::BOLifeCycle::SHARED;
+    auto out_bo_lc = VitisAI::RM::BOLifeCycle::SHARED;
+
+    shared_mm->init_xrt_allocator(ctx, sc_bo_lc, in_bo_lc, out_bo_lc);
+  }
+
+  return shared_mm;
+}
+
 bool isLlmModel(ModelType model_type) {
   if (model_type != ModelType::Unknown) {
     return model_type == ModelType::Llm_Token ||
@@ -124,33 +156,67 @@ size_t getStackSize(
 
 }  // namespace
 
-std::string getCacheDirectory(
+std::string getModelDirectory(
   const std::unordered_map<std::string, std::string>& session_configs
 ) {
+  // 1. dd_cache explicitly provided
   if (const auto& dd_cache_config = session_configs.at("dd_cache");
       !dd_cache_config.empty()) {
-    // Need to remove ".cache" at the end of the string if it's present as on
-    // legacy models
-    auto pos = dd_cache_config.find(".cache");
-    if (pos != std::string::npos) {
-      return dd_cache_config.substr(0, pos - 1);
+    fs::path p(dd_cache_config);
+    p = p.lexically_normal();
+
+    // dd_cache must be an existing directory
+    if (!fs::exists(p) || !fs::is_directory(p)) {
+      throw std::runtime_error(
+        "dd_cache must be an existing directory: " + p.string()
+      );
     }
-    return dd_cache_config;
+
+    // If dd_cache points to cache/.cache, return its parent as base directory
+    const auto name = p.filename().string();
+    if (name == "cache" || name == ".cache") {
+      return p.parent_path().string();
+    }
+
+    // Otherwise treat dd_cache as base cache directory
+    return p.string();
   }
 
-  std::string model_directory;
+  // 2. Infer from external_data_file
   if (const auto& external_data_file = session_configs.at("external_data_file");
       !external_data_file.empty()) {
-    auto external_data_path = fs::path(external_data_file);
-    if (fs::is_directory(external_data_path)) {
-      return external_data_file;
+    fs::path external_data_path(external_data_file);
+
+    if (fs::exists(external_data_path) &&
+        fs::is_directory(external_data_path)) {
+      return external_data_path.lexically_normal().string();
     }
-    return external_data_path.parent_path().string();
+
+    // external_data_file is a file, use its parent directory
+    return external_data_path.parent_path().lexically_normal().string();
   }
 
   throw std::runtime_error(
     "At least one of external_data_file and dd_cache session options must be "
     "set"
+  );
+}
+
+std::string getCacheDirectory(
+  const std::unordered_map<std::string, std::string>& session_configs
+) {
+  auto model_directory = getModelDirectory(session_configs);
+
+  // Resolve actual cache directory: <base>/cache or <base>/.cache
+  for (const auto& sub : {"cache", ".cache"}) {
+    fs::path p = fs::path(model_directory) / sub;
+    if (fs::exists(p) && fs::is_directory(p)) {
+      return p.string();
+    }
+  }
+
+  throw std::runtime_error(
+    "No valid cache directory found under: " + model_directory
   );
 }
 
@@ -164,7 +230,7 @@ DynamicDispatchKernelBase::DynamicDispatchKernelBase(
   auto info_ptr = Ort::ConstKernelInfo(info);
 
   node_name_ = info_ptr.GetNodeName();
-  cache_directory_ = getCacheDirectory(session_configs);
+  model_directory_ = getModelDirectory(session_configs);
   read_attributes(info_ptr);
   Lora::enableLora(session_configs);
 
@@ -246,6 +312,12 @@ std::pair<std::string, OpsFusion::DDConfig> getConfig(
   return {kernel_name, cfg};
 }
 
+bool useSharedMemory(ModelType model_type) {
+  // Enable shared memory for SD30 models
+  return model_type == ModelType::Sd30_Mmdit ||
+         model_type == ModelType::Sd30_VAE;
+}
+
 const std::string ModelTypeToString(ModelType type) {
   switch (type) {
     case ModelType::Unet:
@@ -280,7 +352,9 @@ void DynamicDispatchKernelBase::initialize_fusion_rt(
   const std::unordered_map<std::string, std::string>& session_configs
 ) {
   if (rt_ == nullptr) {
-    auto dd_cache = cache_directory_ + "/.cache";
+    // Resolve actual cache directory: <base>/cache or <base>/.cache
+    auto dd_cache = getCacheDirectory(session_configs);
+
     const auto op_dir = dd_cache + "/" + node_name_;
     const auto meta_json = op_dir + "_meta.json";
     meta_ = OpsFusion::load_meta_json(meta_json);
@@ -290,26 +364,58 @@ void DynamicDispatchKernelBase::initialize_fusion_rt(
     bool preemption =
       getAttribute<int64_t>(info, "preemption", preemption_default) == 1;
     auto model_hash = getAttribute<std::string>(info, "model_hash", "");
+    local_window_size_ = getAttribute<int64_t>(info, "local_window_size", -1);
 
     auto [kernel_name, cfg] =
       model_type_ == ModelType::Unknown
         ? getConfig(model_type_, preemption, model_hash)
         : getConfig(model_type_, preemption, model_hash);
-    cfg.cache_dir = cache_directory_;
-    if (auto xclbin_path = dd_root_ + xclbin_;
-        xclbin_[0] == '/' && fs::exists(fs::path(xclbin_path))) {
+    cfg.cache_dir = model_directory_;
+
+    use_shared_memory_ = useSharedMemory(model_type_);
+
+    std::string xclbin_path;
+    std::vector<char> xclbin_content;
+
+    if (xclbin_[0] == '/' && fs::exists(fs::path(dd_root_ + xclbin_))) {
       // legacy name and external xclbin file exists
-      auto xclbin_content = OpsFusion::read_bin_file<char>(xclbin_path);
-      rt_ = std::make_unique<OpsFusion::FusionRuntime>(
-        xclbin_path, xclbin_content, kernel_name
-      );
+      xclbin_path = dd_root_ + xclbin_;
+      xclbin_content = OpsFusion::read_bin_file<char>(xclbin_path);
     } else {
       if (xclbin_[0] == '/') {
         // legacy name but no external xclbin file exists so assume it's in
         // the shared library
         xclbin_ = "stx_" + fs::path(xclbin_).stem().string();
       }
-      rt_ = std::make_unique<OpsFusion::FusionRuntime>(xclbin_, kernel_name);
+      xclbin_path = xclbin_;
+      xclbin_content =
+        XclbinContainer::getInstance().has_xclbin_content(xclbin_path)
+          ? XclbinContainer::getInstance().get_xclbin_content(xclbin_path)
+          : OpsFusion::read_bin_file<char>(xclbin_path);
+    }
+
+    if (use_shared_memory_) {
+      xrt_ctx_ = ryzenai::dynamic_dispatch::xrt_context::get_instance(
+        xclbin_path, 0, std::map<std::string, std::uint32_t>{}, xclbin_content
+      );
+
+      ctx_ = xrt_ctx_->get_context();
+      auto shared_mm = getSharedMemoryManager(ctx_);
+
+      // Create FusionRuntime with external context and shared memory manager
+      rt_ = std::make_unique<OpsFusion::FusionRuntime>(
+        &ctx_, xclbin_content, kernel_name, shared_mm
+      );
+    } else {
+      // Fallback to original behavior without buffer sharing
+      if (!xclbin_content.empty()) {
+        rt_ = std::make_unique<OpsFusion::FusionRuntime>(
+          xclbin_path, xclbin_content, kernel_name
+        );
+      } else {
+        rt_ =
+          std::make_unique<OpsFusion::FusionRuntime>(xclbin_path, kernel_name);
+      }
     }
 
     cfg.instr_xrt_bo_stack_size_mb =
@@ -319,7 +425,7 @@ void DynamicDispatchKernelBase::initialize_fusion_rt(
     const auto metastate_filename = "dd_metastate_" +
                                     ModelTypeToString(model_type_) + "_" +
                                     node_name_ + ".state";
-    const auto metastate_filepath = cache_directory_ + "/" + metastate_filename;
+    const auto metastate_filepath = model_directory_ + "/" + metastate_filename;
     bool force_compile =
       !compile_fusion_rt_.empty() && compile_fusion_rt_ == "1";
     if (force_compile || !fs::exists(fs::path(metastate_filepath))) {
@@ -480,7 +586,9 @@ void DynamicDispatchKernelBase::loadLoraData() {
 
       if (lora_tensor_map.count(lora_key)) {
         ExternalTensorInfo tensor_info = getExternalTensorInfo(
-          Lora::tokenHeader(), input_name, lora_tensor_map.at(lora_key)
+          (model_type_ == ModelType::Llm_Prefill) ? Lora::prefillHeader()
+                                                  : Lora::tokenHeader(),
+          input_name, lora_tensor_map.at(lora_key)
         );
         if (tensor_info.size > 0) {
           external_buffers_.loadLoraBin(
@@ -554,9 +662,18 @@ void DynamicDispatchKernel::Compute(OrtKernelContext* context) {
         });
         PROFILING_END(external_buffers_syncForDevice, false, "fusionruntime")
       }
-
-      if (past_seq_len_ == 0 || seq_len != past_seq_len_ + 1) {
+      bool local_window_enabled = local_window_size_ > 0;
+      // TODO confirm if second state can work, so always set state for sliding
+      // window
+      if (past_seq_len_ == 0 || seq_len != past_seq_len_ + 1 ||
+          (local_window_enabled && (seq_len > local_window_size_))) {
         std::vector<uint32_t> state_table = {seq_len};  // prompt length
+        if (local_window_enabled) {
+          uint32_t seq_len_present = (seq_len > local_window_size_)
+                                       ? (seq_len - local_window_size_ + 1)
+                                       : 0;
+          state_table.push_back(seq_len_present);
+        }
         if (model_type_ == ModelType::Llm_Token) {
           rt_->initialize_state_table(state_table);
         }
@@ -569,10 +686,14 @@ void DynamicDispatchKernel::Compute(OrtKernelContext* context) {
     PROFILING_START(LoadLoraData)
     const auto& lora_name = Lora::getLoraName();
     if (lora_name != external_buffers_.getLoraName()) {
-      Lora::releasePrefillHeader();
+      if (model_type_ == ModelType::Llm_Token) {
+        Lora::releasePrefillHeader();
+      }
       external_buffers_.setLora(lora_name);
       external_buffers_.syncLora((void*)rt_.get());
-      Lora::releaseTokenHeader();
+      if (model_type_ == ModelType::Llm_Token) {
+        Lora::releaseTokenHeader();
+      }
     }
     PROFILING_END(LoadLoraData, false, "fusionruntime")
   }
@@ -607,7 +728,6 @@ void DynamicDispatchKernel::Compute(OrtKernelContext* context) {
         );
       }
     }
-
     input_Tensor.push_back(input_tensor);
     tensor_idx++;
   }

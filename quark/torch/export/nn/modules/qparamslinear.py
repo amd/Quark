@@ -634,8 +634,8 @@ class QParamsLinearWithRotation(QParamsLinear):
             if trainable:
                 rotation_dtype = torch.float64  # TODO: use lower precision.
             else:
-                # In case hadamard transform is used (non-trained case), it is serialized as torch.bool wherer `0` represents `-1`.
-                rotation_dtype = torch.bool
+                # In case hadamard transform is used (non-trained case), it is serialized as torch.int8 with only `-1` and `1` values.
+                rotation_dtype = torch.int8
         else:
             raise ValueError(f"Unsupported linear type: {type(linear)}")
 
@@ -667,10 +667,9 @@ class QParamsLinearWithRotation(QParamsLinear):
                 use_matmul_hadU = False
                 K = None
 
-                # In case hadamard transform is used (non-trained case), it is serialized as torch.bool wherer `0` represents `-1`.
+                # In case hadamard transform is used (non-trained case), it is serialized as torch.int8 with only `-1` and `1` values.
                 float_dtype = torch.float  # TODO: move that to QParamsLinear, and specify the correct dtype!
                 self.input_rotation = self.input_rotation.to(float_dtype)  # type: ignore
-                self.input_rotation[self.input_rotation == 0] = -1
 
                 hadamard_K = self.input_rotation
 

@@ -5,15 +5,165 @@ import logging
 import math
 from typing import Any
 
+import ml_dtypes
 import numpy as np
 import numpy.typing as npt
 import onnx
-from ryzenai_dynamic_dispatch import Attributes, matmulnbits
+from ryzenai_dynamic_dispatch import Attributes, matmulnbits, ssmlpbits
 
 import ryzenai_onnx_utils
-import ryzenai_onnx_utils.utils
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 
 _logger = logging.getLogger(__name__)
+
+
+def _extract_ssmlp_arrays(node: onnx.NodeProto, extractor: onnx.utils.Extractor) -> dict[str, np.ndarray]:
+    """
+    Extract all SSMLP related arrays from node.inputs[] and node attributes.
+    Fully self-contained: reads gate/up/down K/N, block_size, epsilon, norms, etc.
+    """
+
+    arrays = {}
+
+    # epsilon
+    epsilon = onnx.helper.get_node_attr_value(node, "epsilon")
+    epsilon_fp32 = np.array(epsilon, dtype=np.float32)
+    arrays["epsilon_arr"] = np.array(epsilon_fp32.astype(ml_dtypes.bfloat16).view(np.uint16))
+
+    # norm_0
+    norm_0 = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[2], extractor)
+    norm_0_fp32 = np.array(norm_0, dtype=np.float32)
+    arrays["norm_0_arr"] = norm_0_fp32.astype(ml_dtypes.bfloat16).view(np.uint16)
+
+    # gate arrays
+    gate_weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[3], extractor)
+    gate_scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[4], extractor)
+    gate_zeros = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[5], extractor)
+    gate_n = onnx.helper.get_node_attr_value(node, "gate_N")
+    gate_bias = np.zeros((gate_n, 1), dtype=np.float32)
+
+    arrays.update(
+        {
+            "gate_weight_arr": gate_weight.astype(np.uint8),
+            "gate_scales_arr": gate_scales.astype(np.float32),
+            "gate_zeros_arr": gate_zeros.astype(np.uint8),
+            "gate_bias_arr": gate_bias,
+        }
+    )
+
+    # up arrays
+    up_weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[6], extractor)
+    up_scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[7], extractor)
+    up_zeros = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[8], extractor)
+    up_n = onnx.helper.get_node_attr_value(node, "up_N")
+    up_bias = np.zeros((up_n, 1), dtype=np.float32)
+
+    arrays.update(
+        {
+            "up_weight_arr": up_weight.astype(np.uint8),
+            "up_scales_arr": up_scales.astype(np.float32),
+            "up_zeros_arr": up_zeros.astype(np.uint8),
+            "up_bias_arr": up_bias,
+        }
+    )
+
+    # down arrays
+    down_weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[9], extractor)
+    down_scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[10], extractor)
+    down_zeros = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[11], extractor)
+    down_n = onnx.helper.get_node_attr_value(node, "down_N")
+    down_bias = np.zeros((down_n, 1), dtype=np.float32)
+
+    arrays.update(
+        {
+            "down_weight_arr": down_weight.astype(np.uint8),
+            "down_scales_arr": down_scales.astype(np.float32),
+            "down_zeros_arr": down_zeros.astype(np.uint8),
+            "down_bias_arr": down_bias,
+        }
+    )
+
+    # norm_1
+    norm_1 = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[12], extractor)
+    norm_1_fp32 = np.array(norm_1, dtype=np.float32)
+    arrays["norm_1_arr"] = norm_1_fp32.astype(ml_dtypes.bfloat16).view(np.uint16)
+
+    # K/N attributes
+    arrays["up_K"] = onnx.helper.get_node_attr_value(node, "up_K")
+    arrays["up_N"] = onnx.helper.get_node_attr_value(node, "up_N")
+    arrays["block_size"] = 128
+
+    return arrays
+
+
+def get_mladf_version(node: onnx.NodeProto) -> str:
+    try:
+        mladf_version = MladfVersion(onnx.helper.get_node_attr_value(node, "mladf_version").decode("utf-8"))
+    except ValueError:
+        mladf_version = MladfVersion.AIE2_V1
+    return str(mladf_version)
+
+
+def preprocess_ssmlp_packed_weights(
+    node: onnx.NodeProto,
+    extractor: onnx.utils.Extractor,
+    hidden_size: int = 512,
+    mladf_version: MladfVersion = MladfVersion.AIE4_V1,
+):
+    """
+    Fully standalone SSMLP preprocessing:
+    - extract all arrays from node.inputs[] and node attributes
+    - pack them using ssmlp_pack_const_float32
+    - generate 3 packed weight tensors
+    """
+    arr = _extract_ssmlp_arrays(node, extractor)
+
+    packed_weights = ssmlpbits.ssmlp_pack_const_float32(
+        arr["epsilon_arr"],
+        arr["norm_0_arr"],
+        arr["gate_bias_arr"],
+        arr["gate_scales_arr"],
+        arr["gate_weight_arr"],
+        arr["gate_zeros_arr"],
+        arr["up_bias_arr"],
+        arr["up_scales_arr"],
+        arr["up_weight_arr"],
+        arr["up_zeros_arr"],
+        arr["down_bias_arr"],
+        arr["down_scales_arr"],
+        arr["down_weight_arr"],
+        arr["down_zeros_arr"],
+        arr["norm_1_arr"],
+        hidden_size,
+        arr["up_K"],
+        arr["up_N"],
+        arr["block_size"],
+        mladf_version,
+    )
+
+    tensors = []
+    names = []
+    for i in range(3):
+        if i in (1, 2):
+            packed_bytes = b""
+            tensor_shape = [0]
+        else:
+            packed_bytes = packed_weights.tobytes()
+            tensor_shape = packed_weights.shape
+        # name = f"{node.name}.const.data.packed.{i}"
+        name = node.input[i * 3 + 3] + ".packed"
+        tensor = onnx.helper.make_tensor(
+            name,
+            onnx.TensorProto.UINT8,
+            tensor_shape,
+            packed_bytes,
+            True,
+        )
+        tensors.append(tensor)
+        names.append(name)
+
+    hash_val = buffer_md5sum(packed_bytes)
+    return tensors, names, hash_val, packed_weights
 
 
 def _extract_arrays(
@@ -23,32 +173,20 @@ def _extract_arrays(
     n: int,
     bias_offset: int | None,
 ) -> tuple[npt.NDArray[Any], npt.NDArray[Any], npt.NDArray[Any], npt.NDArray[Any], bool, str]:
-    weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index], extractor)
-    scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index + 1], extractor)
+    weight = ryzenai_onnx_utils.matcher.get_initializer_or_const(node.input[start_index], extractor)
+    scales = ryzenai_onnx_utils.matcher.get_initializer_or_const(node.input[start_index + 1], extractor)
     # TODO(varunsh): should detect if present and set asymmetric if so
-    zero_point = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index + 2], extractor)
+    zero_point = ryzenai_onnx_utils.matcher.get_initializer_or_const(node.input[start_index + 2], extractor)
 
     if bias_offset is not None:
-        bias = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index + bias_offset], extractor)
+        bias = ryzenai_onnx_utils.matcher.get_initializer_or_const(node.input[start_index + bias_offset], extractor)
     else:
         bias = np.zeros((n, 1))
 
     # TODO(varunsh): update
     asymmetric_quant = True
 
-    try:
-        is_bfp16 = onnx.helper.get_node_attr_value(node, "is_bfp16").decode("utf-8")
-    except ValueError:
-        mladf_version = "v1"
-    else:
-        if is_bfp16 == "weights":
-            mladf_version = "v2"
-        elif is_bfp16 == "flat":
-            mladf_version = "flat"
-        elif not is_bfp16:
-            mladf_version = "v1"
-        else:
-            raise ValueError(f"Unsupported is_bfp16: {is_bfp16}")
+    mladf_version = get_mladf_version(node)
 
     return (weight, scales, zero_point, bias, asymmetric_quant, mladf_version)
 
@@ -62,6 +200,7 @@ def preprocess_matmulnbits_weights(
     block_size: int,
     bias_offset: int,
     lora: bool,
+    enable_ctrl_pkt: bool = False,
 ) -> tuple[onnx.TensorProto, onnx.TensorProto, onnx.TensorProto, onnx.TensorProto]:
     (weight, scales, zero_point, bias, asymmetric_quant, mladf_version) = _extract_arrays(
         node, start_index, extractor, n, bias_offset
@@ -83,6 +222,7 @@ def preprocess_matmulnbits_weights(
     attr.set("asymmetric_quant", asymmetric_quant)
     attr.set("bias_en", bias_enable)
     attr.set("block_size", block_size)
+    attr.set("enable_ctrl_pkt", enable_ctrl_pkt)
     attr.set("verify", True)
 
     try:
@@ -219,10 +359,6 @@ def preprocess_matmulnbits_packed_weights(
     attr.set("bias_en", bias_enable)
     attr.set("block_size", block_size)
     attr.set("enable_ctrl_pkt", enable_ctrl_pkt)
-    if mladf_version == "flat":
-        attr.set("max_m", 1)
-    else:
-        attr.set("max_m", 4096)
 
     try:
         packed_weight: npt.NDArray[Any]
@@ -252,11 +388,12 @@ def preprocess_matmulnbits_packed_weights(
 
 
 def _extract_qmoe_arrays(
-    node: onnx.NodeProto, start_index: int, bits: int, extractor: onnx.utils.Extractor
+    node: onnx.NodeProto, start_index: int, zp_index: int, bits: int, extractor: onnx.utils.Extractor
 ) -> tuple[npt.NDArray[Any], npt.NDArray[Any], npt.NDArray[Any], npt.NDArray[Any], int, int, int, int, bool, str]:
     weight = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index], extractor)
     scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index + 1], extractor)
     bias = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[start_index + 2], extractor)
+    zero_point = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(node.input[zp_index], extractor)
 
     (num_experts, n, k_packed) = weight.shape
 
@@ -286,27 +423,10 @@ def _extract_qmoe_arrays(
         # by repeating innermost dim
         scales = np.repeat(scales[:, :, np.newaxis], k // block_size, axis=2)
 
-    # spec does not have zero-point for QMoE currently
-    # insert our own one
-    # assuming uint8 zero points and 4 bit packing.
-    # Use default value of 2**(bits-1) = 8, packed value 0x88
-    zp_k_packed = (k // block_size) // (8 // bits)
-    zero_point = np.full((num_experts, n, zp_k_packed), 0x88, dtype=np.uint8)
-
     # TODO: update
     asymmetric_quant = True
 
-    try:
-        is_bfp16 = onnx.helper.get_node_attr_value(node, "is_bfp16").decode("utf-8")
-    except ValueError:
-        mladf_version = "v1"
-    else:
-        if is_bfp16 == "weights":
-            mladf_version = "v2"
-        elif not is_bfp16:
-            mladf_version = "v1"
-        else:
-            raise ValueError(f"Unsupported is_bfp16: {is_bfp16}")
+    mladf_version = get_mladf_version(node)
 
     return (weight, scales, zero_point, bias, k, n, num_experts, block_size, asymmetric_quant, mladf_version)
 
@@ -325,9 +445,11 @@ def preprocess_qmoe_packed_weights(
     # 2: FC1 weights
     EXPERT_WEIGHT_START_INDEX = 2
 
-    # weights, scale, bias
-    # for now spec does not have zero point
+    # weights, scale, bias are clustered together
     NUM_CONST_PER_EXPERT = 3
+
+    # zero points, if available are at end in order of FC1, FC2, FC3
+    ZP_START_INDEX = 11
 
     # have FC1 and FC2 by default, optionally might have FC3
     MAX_NUM_EXPERTS = 3
@@ -347,7 +469,9 @@ def preprocess_qmoe_packed_weights(
     for i in range(MAX_NUM_EXPERTS):
         try:
             (weight, scales, zero_point, bias, k, n, num_experts, block_size, asymmetric_quant, mladf_version) = (
-                _extract_qmoe_arrays(node, EXPERT_WEIGHT_START_INDEX + NUM_CONST_PER_EXPERT * i, bits, extractor)
+                _extract_qmoe_arrays(
+                    node, EXPERT_WEIGHT_START_INDEX + NUM_CONST_PER_EXPERT * i, ZP_START_INDEX + i, bits, extractor
+                )
             )
         except KeyError:
             num_experts = 0
@@ -416,3 +540,16 @@ def preprocess_qmoe_packed_weights(
         packed_expert_sizes.append(packed_expert_size)
 
     return packed_weight_tensors, packed_expert_sizes, meta_info
+
+
+def get_input_ids_name(graph: onnx.GraphProto, attributes: dict[str, Any]) -> str | None:
+    input_name = attributes.get("input_name")
+    if input_name is not None:
+        return input_name
+    potential_names = {"input_ids", "inputs_embeds"}
+    for input_tvi in graph.input:
+        if input_tvi.name in potential_names:
+            return input_tvi.name
+    raise ValueError(
+        "Could not determine input IDs name from graph inputs. Specify explicitly with 'input_name' attribute."
+    )

@@ -22,6 +22,7 @@ from quark.torch.algorithm.utils.utils import clear_memory
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.config_verification import ConfigVerifier
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode
+from quark.torch.quantization.file2file_quantization import quantize_model_per_safetensor
 from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
 from quark.torch.quantization.graph.processor.processor import (
     post_calib_optimize,
@@ -199,6 +200,55 @@ class ModelQuantizer:
 
         return model
 
+    @gpu_memory_profiled(tag=" DirectQuantizeCheckpoint")  # type: ignore[arg-type]
+    def direct_quantize_checkpoint(
+        self,
+        pretrained_model_path: str,
+        save_path: str,
+        device: str | torch.device = "cuda",
+    ) -> None:
+        """
+        Quantize model weights by processing each safetensors file independently (file-to-file mode).
+
+        This method provides memory-efficient weight-only quantization by processing safetensors
+        files one at a time, without loading the full model into GPU memory. This is particularly
+        useful for quantizing very large models that exceed available GPU memory.
+
+        The quantized shards and all configuration files (``config.json``,
+        ``model.safetensors.index.json``, tokenizer files, etc.) are written to ``save_path``.
+
+        :param str pretrained_model_path: Path to the pretrained model directory
+            containing safetensors files.
+        :param str save_path: Directory path to save the quantized safetensors files.
+        :param str | torch.device device: Device for tensor operations (e.g., ``"cuda"``,
+            ``"cuda:0"``, ``"cpu"``). Default is ``"cuda"``.
+
+        Example:
+
+        .. code-block:: python
+
+            from quark.torch.quantization.config.config import QConfig, QLayerConfig, OCP_MXFP4Spec
+
+            from quark.torch import ModelQuantizer
+
+            weight_spec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
+            quant_config = QConfig(global_quant_config=QLayerConfig(weight=weight_spec))
+
+            quantizer = ModelQuantizer(quant_config)
+            quantizer.direct_quantize_checkpoint(
+                pretrained_model_path="/path/to/model",
+                save_path="/path/to/output",
+            )
+        """
+        logger.info(f"File-to-file quantization with the configuration:\n{self.config}")
+        quantize_model_per_safetensor(
+            pretrained_model_path=pretrained_model_path,
+            quant_config=self.config,
+            save_path=save_path,
+            device=device,
+        )
+        logger.info(f"File-to-file quantization completed. Output saved to {save_path}")
+
     def _check_model_device(self, model: nn.Module) -> None:
         # using accelerate cause, device can not be cpu or disk, temporarily
         if hasattr(model, "hf_device_map"):
@@ -266,7 +316,11 @@ class ModelQuantizer:
         frozen_names = []
 
         quantizer_names = set()
-        for name, module in named_modules.items():
+        total_modules = len(named_modules)
+        logger.info("Freezing quantizers for quantized modules...")
+        for idx, (name, module) in enumerate(
+            tqdm(named_modules.items(), desc="Freezing quantized modules", total=total_modules)
+        ):
             if isinstance(module, QuantMixin):
                 for subname, submodule in module.named_modules():
                     if isinstance(submodule, FakeQuantizeBase):
@@ -359,13 +413,32 @@ class ModelQuantizer:
                     if module.observer._num_observed_tokens is not None:
                         token_counts[name.replace("._input_quantizer", "")] = module.observer._num_observed_tokens
 
+        # Track MoE experts with zero tokens for special warning
+        moe_experts_zero_tokens: list[str] = []
+
         for module_name, token_count in token_counts.items():
-            if (token_count / float(total_token_count)) <= TOKEN_DISTRIBUTION_THRESHOLD:
+            # Check if this is a MoE expert module
+            is_moe_expert = "expert" in module_name.lower()
+
+            if is_moe_expert and token_count == 0:
+                moe_experts_zero_tokens.append(module_name)
+            elif (token_count / float(total_token_count)) <= TOKEN_DISTRIBUTION_THRESHOLD:
                 logger.warning(
                     f"The module: {module_name} "
                     f"received {token_count} tokens less than {TOKEN_DISTRIBUTION_THRESHOLD * 100:.1f}% "
                     f"of all {total_token_count} calibration tokens."
                 )
+
+        # Emit warning for MoE experts with incomplete coverage
+        if moe_experts_zero_tokens:
+            experts = moe_experts_zero_tokens[:10]
+            more = f"  ... and {len(moe_experts_zero_tokens) - 10} more\n" if len(moe_experts_zero_tokens) > 10 else ""
+            logger.warning(
+                f"\nMoE EXPERT COVERAGE WARNING: {len(moe_experts_zero_tokens)} expert(s) received 0 tokens.\n"
+                f"Affected: {', '.join(experts)}\n{more}"
+                f"Impact: Unactivated experts may cause empty weights, incomplete artifacts, or vLLM load failures.\n"
+                f"Actions: 1) Increase --calib_size  2) Use diverse calibration data"
+            )
 
         # Output the tokens distribution if enabled.
         if QUARK_TOKENS_DISTRIBUTION_PATH:
@@ -409,56 +482,7 @@ class ModelQuantizer:
                     module.disable_fake_quant()
 
             # Simply run through the observers to set min_val, max_val, scale and zero_point buffers for the weight and bias.
-            named_modules = dict(model.named_modules(remove_duplicate=False))
-            for name, module in tqdm(named_modules.items()):
-                if isinstance(module, QuantMixin):
-                    if module._weight_quantizer is not None and isinstance(
-                        module._weight_quantizer, (ScaledFakeQuantize, SequentialQuantize)
-                    ):
-                        weight_quantizers: list[ScaledFakeQuantize] | SequentialQuantize = (
-                            [module._weight_quantizer]
-                            if isinstance(module._weight_quantizer, ScaledFakeQuantize)
-                            else module._weight_quantizer
-                        )
-
-                        is_static_not_quantized = all(
-                            hasattr(quantizer, "scale") for quantizer in weight_quantizers
-                        ) and all(
-                            quantizer.scale.numel() == 1 and quantizer.scale.item() == 1
-                            for quantizer in weight_quantizers
-                        )
-                        if is_static_not_quantized:
-                            # This condition prevents layers that have already been quantized from being quantized again.
-                            if module.weight.device == torch.device("meta"):
-                                weight = module._hf_hook.weights_map["weight"].data
-                                weight = module.get_quant_weight(weight.to(module._hf_hook.execution_device))
-                                del weight
-                            else:
-                                _ = module.get_quant_weight(module.weight)
-                    if module._bias_quantizer is not None and isinstance(
-                        module._bias_quantizer, (ScaledFakeQuantize, SequentialQuantize)
-                    ):
-                        bias_quantizers: list[ScaledFakeQuantize] | SequentialQuantize = (
-                            [module._bias_quantizer]
-                            if isinstance(module._bias_quantizer, ScaledFakeQuantize)
-                            else module._bias_quantizer
-                        )
-
-                        is_static_not_quantized = all(
-                            hasattr(quantizer, "scale") for quantizer in bias_quantizers
-                        ) and all(
-                            quantizer.scale.numel() == 1 and quantizer.scale.item() == 1
-                            for quantizer in bias_quantizers
-                        )
-                        if is_static_not_quantized:
-                            if module.bias.device == torch.device("meta"):
-                                bias = module._hf_hook.weights_map["bias"].data
-                                _ = module.get_quant_bias(bias.to(module._hf_hook.execution_device))
-                                del bias
-                            else:
-                                _ = module.get_quant_bias(module.bias)
-                    torch.cuda.empty_cache()
-            clear_memory()
+            self._calibrate_all_params(model)
             logger.info("Weight calibration end.")
         else:
             logger.info("Calibration start.")
@@ -468,7 +492,26 @@ class ModelQuantizer:
                     module.disable_fake_quant()
 
             assert dataloader is not None
+            # Calibrate all weights and biases by iterating through named_modules.
+            # Disable observers for weight and bias quantizers after calibration
+            if self.config.quant_mode is QuantizationMode.eager_mode:
+                # as for fx graph mode: QuantizedConvBatchNorm2d, must perform calib during forward
+                logger.info("Calibrating all weights and biases...")
+                self._calibrate_all_params(model)
+                for module in model.modules():
+                    if isinstance(module, QuantMixin):
+                        for quantizer in [module._weight_quantizer, module._bias_quantizer]:
+                            if quantizer is None:
+                                continue
+                            quantizers = [quantizer] if isinstance(quantizer, ScaledFakeQuantize) else quantizer
+                            for q in quantizers:
+                                if isinstance(q, ScaledFakeQuantize):
+                                    q.disable_observer()
+                logger.info("Running forward pass calibration for activations...")
+            elif self.config.quant_mode is QuantizationMode.fx_graph_mode:
+                logger.info("Calibrating for fx graph model...")
 
+            # Forward pass calibration (mainly for activations)
             with torch.no_grad():
                 for data in tqdm(dataloader):
                     if isinstance(data, dict):  # pragma: no cover
@@ -525,6 +568,59 @@ class ModelQuantizer:
                 elif isinstance(module, NonScaledFakeQuantize):
                     module.enable_fake_quant()
         return model
+
+    def _calibrate_all_params(self, model: nn.Module) -> None:
+        named_modules = dict(model.named_modules(remove_duplicate=False))
+        for name, module in tqdm(named_modules.items(), desc="Calibrating all params"):
+            if isinstance(module, QuantMixin):
+                # Calibrate weight
+                if module._weight_quantizer is not None and isinstance(
+                    module._weight_quantizer, (ScaledFakeQuantize, SequentialQuantize)
+                ):
+                    weight_quantizers: list[ScaledFakeQuantize] | SequentialQuantize = (
+                        [module._weight_quantizer]
+                        if isinstance(module._weight_quantizer, ScaledFakeQuantize)
+                        else module._weight_quantizer
+                    )
+
+                    # Check if weight has already been calibrated (scale != 1 indicates calibrated)
+                    is_not_calibrated = all(hasattr(quantizer, "scale") for quantizer in weight_quantizers) and all(
+                        quantizer.scale.numel() == 1 and quantizer.scale.item() == 1 for quantizer in weight_quantizers
+                    )
+
+                    if is_not_calibrated and module.weight is not None:
+                        if module.weight.device == torch.device("meta"):
+                            weight = module._hf_hook.weights_map["weight"].data
+                            _ = module.get_quant_weight(weight.to(module._hf_hook.execution_device))
+                            del weight
+                        else:
+                            _ = module.get_quant_weight(module.weight)
+
+                # Calibrate bias
+                if module._bias_quantizer is not None and isinstance(
+                    module._bias_quantizer, (ScaledFakeQuantize, SequentialQuantize)
+                ):
+                    bias_quantizers: list[ScaledFakeQuantize] | SequentialQuantize = (
+                        [module._bias_quantizer]
+                        if isinstance(module._bias_quantizer, ScaledFakeQuantize)
+                        else module._bias_quantizer
+                    )
+
+                    is_not_calibrated = all(hasattr(quantizer, "scale") for quantizer in bias_quantizers) and all(
+                        quantizer.scale.numel() == 1 and quantizer.scale.item() == 1 for quantizer in bias_quantizers
+                    )
+
+                    if is_not_calibrated and module.bias is not None:
+                        if module.bias.device == torch.device("meta"):
+                            bias = module._hf_hook.weights_map["bias"].data
+                            _ = module.get_quant_bias(bias.to(module._hf_hook.execution_device))
+                            del bias
+                        else:
+                            _ = module.get_quant_bias(module.bias)
+
+                torch.cuda.empty_cache()
+
+        clear_memory()
 
     def _do_post_calib_optimazation(self, model: nn.Module) -> nn.Module:
         """

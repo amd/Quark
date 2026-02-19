@@ -1,6 +1,14 @@
 [build-system]
 build-backend = "setuptools.build_meta"
-requires = ["setuptools >= 61.0"]
+requires = [
+  "setuptools >= 61.0",
+  # these are used by contrib/onnx_utils to generate protobuf files,
+  # see setup.py for the invocation
+  # version is arbitrarily set to 31.1 for an older protoc binary for wider
+  # runtime compatibility
+  "protobuf-protoc-bin==31.1",
+  "mypy-protobuf"
+]
 
 [project]
 authors = [{ name = 'AMD' }]

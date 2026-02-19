@@ -11,7 +11,7 @@ import ryzenai_onnx_utils.transform.cast as cast
 import ryzenai_onnx_utils.transform.hybrid_llm
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
-from .hybrid_llm_prune_logits import is_logits_node, pruned_tvi
+from .hybrid_llm_prune_logits import prune_config
 
 
 def replacement(
@@ -26,6 +26,14 @@ def replacement(
     new_nodes = []
     tvis = []
 
+    if "lm_head" in node.name and params.get_bool_attr("skip_lm_head", False):
+        return subgraph, [], None
+
+    bits = ryzenai_onnx_utils.matcher.get_attribute(node, "bits", 4)
+    if bits != 4:
+        # we only support 4 bit NPU MatMulNBits
+        return subgraph, [], None
+
     pre_cast, pre_tvi = cast.add_cast_dtype_to_bfloat16_auto(node.input[0], pass_id, domain, extractor)
     pre_cast[0].name += ".hybrid_llm_0"
     new_nodes.extend(pre_cast)
@@ -33,16 +41,7 @@ def replacement(
     new_inputs = [pre_cast[0].output[0], *node.input[1:4], node.input[-1]]
     new_initializers: list[onnx.TensorProto] = []
 
-    prune_last_layer = params.get_bool_attr("prune_logits", False)
-    prune_lm_head = "prune_logits" in params.attributes and params.attributes["prune_logits"] == "lmhead"
-    prune_logits = prune_last_layer or prune_lm_head
-    if prune_logits and is_logits_node(node.output[0]):
-        new_tvi = pruned_tvi(node.output[0], extractor)
-        pruned_shape = ryzenai_onnx_utils.matcher.get_shape(new_tvi)
-    else:
-        pruned_shape = None
-
-    post_cast, post_tvi = cast.add_cast_bfloat16_to_dtype_auto(node.output[0], pass_id, domain, extractor, pruned_shape)
+    post_cast, post_tvi = cast.add_cast_bfloat16_to_dtype_auto(node.output[0], pass_id, domain, extractor)
     post_cast[0].name += ".hybrid_llm_1"
     new_nodes.extend(post_cast)
     tvis.extend(post_tvi)
@@ -55,6 +54,7 @@ def replacement(
         name=node.name,
     )
     new_nodes.append(matmul_node)
+    prune_config(node, matmul_node, params)
     ryzenai_onnx_utils.matcher.copy_attributes(node, matmul_node)
 
     return new_nodes, new_initializers, tvis

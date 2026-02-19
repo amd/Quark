@@ -9,13 +9,15 @@ import onnx
 
 import ryzenai_onnx_utils.matcher
 import ryzenai_onnx_utils.transform.cast as transform_cast
+import ryzenai_onnx_utils.transform.hybrid_llm as hybrid_llm
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 from ryzenai_onnx_utils.transform.reshape import add_reshape
 from ryzenai_onnx_utils.typing import PassOutputArgs, StrictPassOutputArgs
 
 
 def trig_cache_builder(
     cos_data: npt.NDArray[Any], sin_data: npt.NDArray[Any], rotary_interleaved: bool = False
-) -> tuple[npt.NDArray[np.dtype("bfloat16")], npt.NDArray[np.dtype("bfloat16")]]:
+) -> tuple[npt.NDArray[np.generic], npt.NDArray[np.generic]]:
     cos_shape_0, cos_shape_1 = cos_data.shape
     m_stride = cos_shape_1 * 4
     diff_offset = cos_shape_1 * 2
@@ -76,21 +78,21 @@ def trig_cache_builder(
 
 
 def create_sin_cos_cache(
-    extractor: onnx.utils.Extractor, ends_node: str
+    extractor: onnx.utils.Extractor, ends_node: str, sin_name: str, cos_name: str
 ) -> tuple[list[onnx.NodeProto], list[onnx.ValueInfoProto]]:
     new_nodes = []
     new_tvis = []
 
-    sin_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy("sin_cache", extractor)
-    cos_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy("cos_cache", extractor)
+    sin_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(sin_name, extractor)
+    cos_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(cos_name, extractor)
     cache_size = cos_cache.shape[1]
     head_size = cache_size * 2
     cos_cache_new, sin_cache_new = trig_cache_builder(cos_cache, sin_cache)
     sin_cos_cache = np.concatenate([cos_cache_new, sin_cache_new], axis=0)
     sin_cos_cache = sin_cos_cache.reshape(2, -1, head_size * 2)
-
+    tensor_name = sin_name + "_" + cos_name + "_prefill"
     sin_cos_cache_tensor = onnx.helper.make_tensor(
-        "sin_cos_cache_prefill",
+        tensor_name,
         onnx.TensorProto.BFLOAT16,
         sin_cos_cache.shape,
         sin_cos_cache.tobytes(),
@@ -100,12 +102,12 @@ def create_sin_cos_cache(
     sin_cos_cache_node = onnx.helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["sin_cos_cache_prefill"],
+        outputs=[tensor_name],
         value=sin_cos_cache_tensor,
-        name="sin_cos_cache",
+        name=tensor_name + "_node",
     )
     new_tvi = onnx.helper.make_tensor_value_info(
-        "sin_cos_cache_prefill",
+        tensor_name,
         onnx.TensorProto.BFLOAT16,
         sin_cos_cache.shape,
     )
@@ -113,15 +115,18 @@ def create_sin_cos_cache(
     new_tvis.append(new_tvi)
 
     ends_name = f"{ends_node}_shape"
-    shape_node = onnx.helper.make_node("Shape", inputs=[ends_node], outputs=[ends_name], start=1)
-    new_nodes.append(shape_node)
-    new_tvis.append(
-        onnx.helper.make_tensor_value_info(
-            ends_name,
-            onnx.TensorProto.INT64,
-            (1,),
+    try:
+        ryzenai_onnx_utils.matcher.get_shape(ends_name, extractor)
+    except ValueError:
+        shape_node = onnx.helper.make_node("Shape", inputs=[ends_node], outputs=[ends_name], start=1)
+        new_nodes.append(shape_node)
+        new_tvis.append(
+            onnx.helper.make_tensor_value_info(
+                ends_name,
+                onnx.TensorProto.INT64,
+                (1,),
+            )
         )
-    )
 
     const_0, const_0_tvi = ryzenai_onnx_utils.matcher.get_integer_const_by_value(0, extractor)
     if const_0 is not None and const_0_tvi is not None:
@@ -135,13 +140,13 @@ def create_sin_cos_cache(
 
     sin_cos_cache_slice_node = onnx.helper.make_node(
         "Slice",
-        inputs=["sin_cos_cache_prefill", "const_0", ends_name, "const_1", "const_1"],
-        outputs=["sin_cos_cache_prefill_slice"],
-        name="sin_cos_cache_slice",
+        inputs=[tensor_name, "const_0", ends_name, "const_1", "const_1"],
+        outputs=[tensor_name + "_slice"],
+        name=tensor_name + "_slice_node",
     )
 
     new_tvi_2 = onnx.helper.make_tensor_value_info(
-        "sin_cos_cache_prefill_slice",
+        tensor_name + "_slice",
         onnx.TensorProto.BFLOAT16,
         (2, "sequence_length_padded", head_size * 2),
     )
@@ -166,13 +171,17 @@ def create_rope(
     new_tvis = []
     new_initializers = []
     input_shape = ryzenai_onnx_utils.matcher.get_shape(rope.input[0], extractor)
+    if len(input_shape) != 3:
+        return [rope], [], None
     assert isinstance(input_shape[2], int)
     head_size = ryzenai_onnx_utils.matcher.get_shape(rope.input[2], extractor)[-1] * 2
     if ryzenai_onnx_utils.matcher.has_attribute(rope, "num_heads"):
         num_heads = onnx.helper.get_node_attr_value(rope, "num_heads")
         if num_heads > 0:  # phi4 rope_dim is not head_size
             head_size = int(input_shape[2] / num_heads)
-    assert isinstance(head_size, int) and head_size > 0, "Head size must be a positive integer"
+    assert isinstance(head_size, int) and head_size > 0, (
+        f"Head size must be a positive integer: node {rope.name}, head_size={head_size}"
+    )
     rope_shape = [int(input_shape[2] / head_size), input_shape[1], head_size]
     input_cast, input_cast_tvis = transform_cast.add_cast_dtype_to_bfloat16_auto(
         rope.input[0], pass_id, domain, extractor, rope_shape
@@ -226,22 +235,31 @@ def create_rope(
         new_initializers.append(reshape_initializer)
 
     # use a common tensor across the whole model
-    sin_cos_exists = ryzenai_onnx_utils.matcher.find_consts("sin_cos_cache_prefill", extractor.graph)
+    sin_cache_name = rope.input[3]
+    cos_cache_name = rope.input[2]
+    tensor_name = sin_cache_name + "_" + cos_cache_name + "_prefill"
+    io_to_pad = hybrid_llm.get_input_ids_name(extractor.graph, params.attributes)
+
+    sin_cos_exists = ryzenai_onnx_utils.matcher.find_consts(tensor_name, extractor.graph)
     if not sin_cos_exists and create_cache:
-        sin_cos_cache, sin_cos_cache_tvi = create_sin_cos_cache(extractor, "input_ids_padded")
+        sin_cos_cache, sin_cos_cache_tvi = create_sin_cos_cache(
+            extractor, io_to_pad + "_padded", sin_cache_name, cos_cache_name
+        )
         new_nodes.extend(sin_cos_cache)
         new_tvis.extend(sin_cos_cache_tvi)
 
     new_node = onnx.helper.make_node(
         "MLADFMHAROPE",
-        inputs=[input_cast[0].output[0], "sin_cos_cache_prefill_slice"],
+        inputs=[input_cast[0].output[0], tensor_name + "_slice"],
         outputs=new_outputs,
         name=f"rope_{pass_id}",
         domain=domain,
     )
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "pdi_id", int(pdi_id))
     ryzenai_onnx_utils.matcher.add_attribute(new_node, "transpose", "input")
-    ryzenai_onnx_utils.matcher.add_attribute(new_node, "op_version", "v2")
+    ryzenai_onnx_utils.matcher.add_attribute(new_node, "op_version", str(MladfVersion.AIE2_V2))
     if is_k:
         ryzenai_onnx_utils.matcher.add_attribute(new_node, "use_gm", "v2")
         total_seq_len = int(params.attributes["total_seq_len"])

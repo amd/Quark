@@ -1,0 +1,11 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup: []
+passes:
+    - remove_parallel_casts
+    # run twice to replace any sets of three casts that would not be replaced
+    # by one pass
+    - simplify_casts
+    - simplify_casts
+cleanup: []

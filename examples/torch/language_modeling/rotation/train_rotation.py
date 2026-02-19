@@ -131,8 +131,6 @@ def main(args: argparse.Namespace) -> None:
 
     device = args.device
 
-    print("args.device", args.device)
-
     model, _ = get_model(
         args.model_dir,
         args.data_type,
@@ -314,7 +312,7 @@ def main(args: argparse.Namespace) -> None:
         fp16 = True
 
     training_args = TrainingArguments(
-        output_dir=args.output_dir + "_train",
+        output_dir=args.output_dir,
         per_device_train_batch_size=args.train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         fp16=fp16,
@@ -343,7 +341,7 @@ def main(args: argparse.Namespace) -> None:
     print("Trainable parameters summary:")
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(name, param.dtype, param.shape, param.device)
+            print(name, param.dtype, param.shape, param.device, "ptr:", param.data_ptr())
 
     print("Model:", model)
 
@@ -410,6 +408,8 @@ def main(args: argparse.Namespace) -> None:
     model = model.eval()
 
     # Sanity check that perplexity does not change after `RotationProcessor.post_process_trained_rotation` call.
+    # NOTE: This call is significantly slower than the previous one when using MXFP4 quantization for weights,
+    # as dynamic MXFP4 quantization (used during training) has a fast code path, but not static (used here).
     with torch.no_grad():
         ppl = ppl_eval(model, wikitext_data, device)
 
@@ -433,6 +433,10 @@ def main(args: argparse.Namespace) -> None:
 
     with torch.no_grad():
         model = quantizer.quantize_model(model, calibration_dataloader)
+
+        # `quant_config_rotation.algo_config` might be updated when running rotation pre-processing (e.g. filling `online_rotation_layers`).
+        algo_config[0] = quant_config_rotation.algo_config[0]
+
         model.quant_config.algo_config = algo_config
 
     model = quantizer.freeze(model)
@@ -522,7 +526,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seq_len", type=int, help="Sequence length of training  and calibration data.", default=512)
     parser.add_argument("--train_batch_size", help="Batch size for training.", type=int, default=1)
-    parser.add_argument("--batch_size", help="Batch size for training and calibration.", type=int, default=1)
+    parser.add_argument("--batch_size", help="Batch size for calibration.", type=int, default=1)
     parser.add_argument("--num_samples", help="Number of samples for training.", type=int, default=1000)
     parser.add_argument("--num_calib_data", help="Number of samples for calibration.", type=int, default=512)
 
@@ -633,6 +637,12 @@ if __name__ == "__main__":
     # Argument for evaluation
     parser.add_argument("--skip_evaluation", action="store_true")
     parser.add_argument("--use_ppl_eval_model", action="store_true")
+    parser.add_argument(
+        "--evaluation_dataset",
+        help="Dataset for evaluation",
+        default="wikitext",
+        choices=["wikitext", "wikitext_gpt_oss_120b", "wikitext_gpt_oss_20b"],
+    )
     parser.add_argument("--save_metrics_to_csv", action="store_true")
     parser.add_argument("--metrics_output_dir", default="metrics_output_dir", help="Output path of csv with metrics.")
     parser.add_argument(

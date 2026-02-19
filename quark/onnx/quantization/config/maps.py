@@ -48,6 +48,7 @@ QCONFIG_ALL_PARAMS = {
     "algo_config",
     "use_external_data_format",
     "extra_options",
+    "PreprocessYAML",
     "OpTypesToQuantize",
     "ExtraOpTypesToQuantize",
     "ExecutionProviders",

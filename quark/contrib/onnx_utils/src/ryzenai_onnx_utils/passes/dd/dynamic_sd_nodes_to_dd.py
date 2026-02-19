@@ -9,7 +9,7 @@ import ryzenai_onnx_utils.pattern_generator as pg
 from ryzenai_onnx_utils.transform.dd import build_dd_node
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
-from . import ModelType
+from ..model_type import ModelType
 
 
 def generate_pattern(

@@ -4,6 +4,7 @@
 #
 
 import argparse
+import json
 import os
 import sys
 import warnings
@@ -31,6 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from quark.contrib.llm_eval import eval_model
 from quark.torch.utils.llm import (
+    check_compatibility_before_quantization,
     get_calib_dataloader,
     get_model,
     get_tokenizer,
@@ -74,7 +76,71 @@ from quark.torch.utils.llm import (
 # print(f"[INFO]: Registered quantization scheme 'int8_wo'")
 
 
+def _get_hf_model_config(model_dir: str) -> dict:
+    """Read config.json from the model directory without loading the model."""
+    config_path = os.path.join(model_dir, "config.json")
+    with open(config_path) as f:
+        return json.load(f)
+
+
+def _build_quant_config(args: argparse.Namespace, model_config_type: str):
+    """Build quant_config from args and model_config_type (shared by normal and file-to-file paths)."""
+    if model_config_type not in LLMTemplate.list_available():
+        error_msg = (
+            f"\n[ERROR]: Model type '{model_config_type}' is not supported.\n\n"
+            f"Available templates: {LLMTemplate.list_available()}\n\n"
+            f"To add support for this model, uncomment and modify the 'Custom Model Templates'\n"
+            f"section at the top of this file to register a template for '{model_config_type}'.\n"
+        )
+        raise ValueError(error_msg)
+    template = LLMTemplate.get(model_config_type)
+
+    # Load algorithm configs from files if provided
+    algo_configs = {}
+    if args.quant_algo_config_file is not None:
+        for algo_name, algo_config_file in args.quant_algo_config_file:
+            algo_configs[algo_name] = load_quant_algo_config_from_file(algo_config_file)
+            print(f"[INFO]: Loaded algorithm configuration for {algo_name} from {algo_config_file}.")
+
+    # Build layer_config if --layer_quant_scheme is provided
+    layer_config = {}
+    if args.layer_quant_scheme is not None:
+        for layer_info in args.layer_quant_scheme:
+            layer_name = layer_info[0]
+            layer_scheme = layer_info[1]
+            layer_config[layer_name] = layer_scheme
+
+    quant_config = template.get_config(
+        scheme=args.quant_scheme,
+        algorithm=args.quant_algo,
+        kv_cache_scheme=args.kv_cache_dtype,
+        min_kv_scale=args.min_kv_scale,
+        layer_config=layer_config,
+        attention_scheme=args.attention_dtype,
+        exclude_layers=args.exclude_layers,
+        algo_configs=algo_configs if algo_configs else None,
+    )
+    return quant_config
+
+
 def main(args: argparse.Namespace) -> None:
+    # File-to-file quantization mode: bypass model loading, calibration and quantization,
+    # directly quantize safetensors files shard-by-shard and export.
+    if args.file2file_quantization:
+        print("\n[INFO]: File-to-file quantization mode enabled.")
+        hf_model_config = _get_hf_model_config(args.model_dir)
+        model_config_type = hf_model_config.get("model_type", hf_model_config.get("architectures", [None])[0])
+        quant_config = _build_quant_config(args, model_config_type)
+
+        print("\n[INFO]: Quantizing safetensors shards directly (file-to-file) ...")
+        quantizer = ModelQuantizer(quant_config)
+        quantizer.direct_quantize_checkpoint(
+            pretrained_model_path=args.model_dir,
+            save_path=args.output_dir,
+        )
+        print(f"[INFO]: File-to-file quantization output saved to {args.output_dir}")
+        return
+
     # 1. Define original model
     print("\n[INFO]: Loading model ...")
 
@@ -99,12 +165,16 @@ def main(args: argparse.Namespace) -> None:
     )
     prepare_for_moe_quant(model)
 
+    # Check model compatibility with current Transformers version
+    print("\n[INFO]: Checking model compatibility ...")
+    check_compatibility_before_quantization(model, raise_on_error=False)
+
     model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
     tokenizer = get_tokenizer(
         args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
     )
 
-    multimodal = True if model_type in ["mllama", "llama4", "gemma3", "qwen3_vl_moe"] else False
+    multimodal = True if model_type in ["mllama", "llama4", "gemma3", "qwen3_vl_moe", "deepseek_vl_v2"] else False
     if multimodal:
         processor = AutoProcessor.from_pretrained(args.model_dir)
         if args.model_export is not None:
@@ -165,42 +235,7 @@ def main(args: argparse.Namespace) -> None:
             model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
         )
 
-        # Check if model type is supported
-        if model_config_type not in LLMTemplate.list_available():
-            error_msg = (
-                f"\n[ERROR]: Model type '{model_config_type}' is not supported.\n\n"
-                f"Available templates: {LLMTemplate.list_available()}\n\n"
-                f"To add support for this model, uncomment and modify the 'Custom Model Templates'\n"
-                f"section at the top of this file to register a template for '{model_config_type}'.\n"
-            )
-            raise ValueError(error_msg)
-        template = LLMTemplate.get(model_config_type)
-
-        # Load algorithm configs from files if provided
-        algo_configs = {}
-        if args.quant_algo_config_file is not None:
-            for algo_name, algo_config_file in args.quant_algo_config_file:
-                algo_configs[algo_name] = load_quant_algo_config_from_file(algo_config_file)
-                print(f"[INFO]: Loaded algorithm configuration for {algo_name} from {algo_config_file}.")
-
-        # Build layer_config if --layer_quant_scheme is provided
-        layer_config = {}
-        if args.layer_quant_scheme is not None:
-            for layer_info in args.layer_quant_scheme:
-                layer_name = layer_info[0]
-                layer_scheme = layer_info[1]
-                layer_config[layer_name] = layer_scheme
-
-        quant_config = template.get_config(
-            scheme=args.quant_scheme,
-            algorithm=args.quant_algo,
-            kv_cache_scheme=args.kv_cache_dtype,
-            min_kv_scale=args.min_kv_scale,
-            layer_config=layer_config,
-            attention_scheme=args.attention_dtype,
-            exclude_layers=args.exclude_layers,
-            algo_configs=algo_configs if algo_configs else None,
-        )
+        quant_config = _build_quant_config(args, model_config_type)
 
         if getattr(args, "kv_cache_post_rope", False):
             if hasattr(quant_config, "kv_cache_post_rope"):
@@ -332,6 +367,12 @@ if __name__ == "__main__":
 
     # Argument for quantization
     parser.add_argument("--skip_quantization", action="store_true")
+    parser.add_argument(
+        "--file2file_quantization",
+        action="store_true",
+        help="Enable file-to-file quantization mode. Quantizes safetensors shards directly without loading the full model into memory. "
+        "Bypasses model loading, calibration, and standard quantization flow. Requires --model_export hf_format.",
+    )
 
     parser.add_argument(
         "--quant_scheme",

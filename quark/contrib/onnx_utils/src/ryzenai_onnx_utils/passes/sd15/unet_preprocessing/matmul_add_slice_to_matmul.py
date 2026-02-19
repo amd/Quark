@@ -48,7 +48,7 @@ def replacement(
     weights_data = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(weights_init.name, extractor)
     weights_shape = weights_data.shape
     assert len(weights_shape) == 2
-    add_init = ryzenai_onnx_utils.matcher.get_initializer(add.input[0], extractor, False)
+    add_init = ryzenai_onnx_utils.matcher.get_initializer(add.input[1], extractor, False)
     new_weights_data = []
     new_node = []
     initializers: list[onnx.TensorProto] = []
@@ -149,5 +149,5 @@ def replacement(
     return new_node, initializers, tvis
 
 
-PATTERN = ["MatMul([?,?], b0)", "Add([?,b0], b1)", "Slice([b1], ?)", "Slice([b1], ?)"]
+PATTERN = ["MatMul([?,?], b0)", "Add([b0, ?], b1)", "Slice([b1], ?)", "Slice([b1], ?)"]
 REPLACEMENT = replacement

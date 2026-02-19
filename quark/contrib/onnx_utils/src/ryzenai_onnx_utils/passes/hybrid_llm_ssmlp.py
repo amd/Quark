@@ -65,14 +65,24 @@ def process_ssmlp(
 def process_ssgmlp(
     subgraph: list[onnx.NodeProto], extractor: onnx.utils.Extractor
 ) -> tuple[list[str], list[str], onnx.NodeProto, onnx.NodeProto, onnx.NodeProto, onnx.NodeProto]:
-    sln_0 = subgraph[0]
-    ssln_0 = subgraph[1]
-    gate_proj = subgraph[2]
-    up_proj = subgraph[3]
-    down_proj = subgraph[6]
-    sln_1 = subgraph[7]
-    ssln_1 = subgraph[8]
-
+    if len(subgraph) == 9:
+        sln_0 = subgraph[0]
+        ssln_0 = subgraph[1]
+        gate_proj = subgraph[2]
+        up_proj = subgraph[3]
+        down_proj = subgraph[6]
+        sln_1 = subgraph[7]
+        ssln_1 = subgraph[8]
+    else:
+        sln_0 = subgraph[1]
+        ssln_0 = subgraph[2]
+        gate_proj = subgraph[4]
+        up_proj = subgraph[5]
+        down_proj = subgraph[8]
+        sln_1 = subgraph[10]
+        ssln_1 = subgraph[11]
+    first_node = subgraph[0]
+    last_node = subgraph[-1]
     assert len(gate_proj.input) == 6
     assert len(up_proj.input) == 6
     assert len(down_proj.input) == 6
@@ -93,7 +103,8 @@ def process_ssgmlp(
 
     before_cast_inputs = [
         ssln_0.input[0],
-        *sln_0.input,
+        first_node.input[0],
+        sln_0.input[1],
         ssln_0.input[2],
         # matmul initializer
         *gate_proj.input[1:4],
@@ -104,6 +115,7 @@ def process_ssgmlp(
         ssln_1.input[2],
     ]
     before_cast_outputs = get_before_cast_outputs(ssln_1)
+    before_cast_outputs[0] = last_node.output[0]
 
     return (
         before_cast_inputs,
@@ -262,6 +274,24 @@ PATTERN = [
             "MatMulNBits([a17,?,?,?],a21)",
             "SimplifiedLayerNormalization([a21,?],a23)",
             "SkipSimplifiedLayerNormalization([a7,a23,?],[?,?,?,?])",
+        ],
+    ),
+    SubPass(
+        "SSGMLPCast",
+        [
+            "Cast(?,a0)",
+            "SimplifiedLayerNormalization([a0,?],a2)",
+            "SkipSimplifiedLayerNormalization([?,a2,?],[a5,?,?,a7])",
+            "Cast(a5,a55)",
+            "MatMulNBits([a55,?,?,?],a11)",
+            "MatMulNBits([a55,?,?,?],a15)",
+            "Gelu(a11,a16)",
+            "Mul([a16,a15],a17)",
+            "MatMulNBits([a17,?,?,?],a21)",
+            "Cast(a21,a211)",
+            "SimplifiedLayerNormalization([a211,?],a23)",
+            "SkipSimplifiedLayerNormalization([a7,a23,?],[a24,?,?,?])",
+            "Cast(a24,?)",
         ],
     ),
 ]

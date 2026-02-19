@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import collections.abc
+import contextlib
 import copy
 import hashlib
 import itertools
 import logging
 import os
 import re
+import shutil
 import sys
 from collections.abc import Iterable, MutableSequence, Sequence
 from pathlib import Path
@@ -23,6 +25,7 @@ import onnx
 import onnx.external_data_helper
 import onnx.onnx_cpp2py_export.checker as c_checker
 
+import ryzenai_onnx_utils.proto as proto
 from ryzenai_onnx_utils.typing import DtypeType, PassFunction, ReplaceParams, ShapeType, is_sequence_of, is_static_shape
 
 from .lexer import Lexer
@@ -408,7 +411,7 @@ def load_tensor(name: str, extractor: onnx.utils.Extractor) -> None:
         return
     if name in extractor.wmap_loaded:  # type: ignore[attr-defined]
         return
-    props = extractor.model.metadata_props
+    props = extractor.model.graph.metadata_props
     path = None
     for prop in props:
         if prop.key == "onnx_utils_load":
@@ -503,6 +506,22 @@ def is_initializer(name: str, graph_or_extractor: onnx.utils.Extractor | onnx.Gr
     return any(initializer.name == name for initializer in graph_or_extractor.initializer)
 
 
+def is_initializer_or_const(name: str, graph_or_extractor: onnx.utils.Extractor | onnx.Graph) -> str:
+    if is_initializer(name, graph_or_extractor):
+        return name
+
+    graph = graph_or_extractor.graph if isinstance(graph_or_extractor, onnx.utils.Extractor) else graph_or_extractor
+    parent_nodes = find_nodes_by_output(name, graph)
+    if not parent_nodes:
+        return ""
+    parent_node = parent_nodes[0]
+    if parent_node.op_type == "Constant":
+        return parent_node.attribute[0].t.name
+    elif len(parent_node.input) == 1 and is_initializer(parent_node.input[0], graph_or_extractor):
+        return parent_node.input[0]
+    return ""
+
+
 def get_initializer(
     initializer_name: str,
     graph_or_extractor: onnx.GraphProto | onnx.utils.Extractor,
@@ -522,7 +541,7 @@ def get_initializer(
 def get_external_base_dir(extractor: onnx.utils.Extractor) -> str:
     path = os.getcwd()
     try:
-        props = extractor.model.metadata_props
+        props = extractor.model.graph.metadata_props
         for prop in props:
             if prop.key == "onnx_utils_load":
                 path = prop.value
@@ -532,6 +551,16 @@ def get_external_base_dir(extractor: onnx.utils.Extractor) -> str:
         if extractor.model is not None:
             raise
     return path
+
+
+def tensor_dtype_to_np_dtype(dtype: int) -> npt.DTypeLike:
+    np_dtype: npt.DTypeLike = onnx.helper.tensor_dtype_to_np_dtype(dtype)
+    if dtype == onnx.TensorProto.BFLOAT16:
+        np_dtype = ml_dtypes.bfloat16
+    elif dtype == onnx.TensorProto.INT4:
+        # INT4 data is read as UINT8
+        np_dtype = np.uint8
+    return np_dtype
 
 
 def get_initializer_as_numpy(
@@ -554,12 +583,7 @@ def get_initializer_as_numpy(
     path = get_external_base_dir(extractor)
     assert is_initializer(tensor.name, extractor)
     data = get_external_data_for_tensor(tensor, path)
-    np_dtype: npt.DTypeLike = onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)
-    if tensor.data_type == onnx.TensorProto.BFLOAT16:
-        np_dtype = ml_dtypes.bfloat16
-    elif tensor.data_type == onnx.TensorProto.INT4:
-        # INT4 data is read as UINT8
-        np_dtype = np.uint8
+    np_dtype = tensor_dtype_to_np_dtype(tensor.data_type)
 
     if do_reshape:
         assert tensor.data_type != onnx.TensorProto.INT4
@@ -578,10 +602,15 @@ def get_initializer_or_const(
 
     # we know it's a string name at this point and it might be from a Constant node
     name = name_or_tensor
-    parent_node = find_nodes_by_output(name, extractor.graph)[0]
+    parent_nodes = find_nodes_by_output(name, extractor.graph)
+    if not parent_nodes:
+        raise ValueError(f"{name} is not an initializer and may be a graph input")
+    parent_node = parent_nodes[0]
     if parent_node.op_type == "Constant":
         return get_initializer_as_numpy(parent_node.attribute[0].t, extractor, do_reshape)
-    raise ValueError(f"{name} is neither an initializer nor from a Constant node")
+    elif len(parent_node.input) == 1 and is_initializer(parent_node.input[0], extractor):
+        return get_initializer_as_numpy(parent_node.input[0], extractor, do_reshape)
+    raise ValueError(f"{name} is neither an initializer nor from a Constant/Constant-like node")
 
 
 def convert_to_external(
@@ -656,35 +685,58 @@ def save_external_data(tensor: onnx.TensorProto, base_path: str, data: bytes) ->
         set_external_data(tensor, info.location, offset, data_file.tell() - offset)
 
 
-def save_external_data_with_extractor(
-    model: onnx.ModelProto,
+def save_initializers_with_extractor(
     extractor: onnx.utils.Extractor,
-    external_data_name: str,
     output_path: Path,
-    save_as_external: bool,
+    external_data_name: str,
     alias_shared_tensors: bool = False,
     size_threshold: int = 1024,
 ) -> None:
     if external_data_name:
         assert output_path.is_dir()
         (output_path / external_data_name).unlink(True)
-    offset = 0
     tensor_addresses: dict[str, tuple[int, int, npt.DTypeLike]] = {}
 
-    def append_external_data(
+    def recurse(
         extractor: onnx.utils.Extractor,
-        external_data_name: str,
         output_path: Path,
-        save_as_external: bool,
+        external_data_name: str,
+        alias_shared_tensors: bool,
+        size_threshold: int,
         offset: int,
-    ) -> tuple[list[onnx.TensorProto], int]:
+    ) -> int:
+        for node in extractor.graph.node:
+            for attr in node.attribute:
+                if attr.type == onnx.AttributeProto.GRAPH:
+                    offset = recurse(
+                        get_extractor(attr.g),
+                        output_path,
+                        external_data_name,
+                        alias_shared_tensors,
+                        size_threshold,
+                        offset,
+                    )
+                elif attr.type == onnx.AttributeProto.GRAPHS:
+                    for subgraph in attr.graphs:
+                        offset = recurse(
+                            get_extractor(subgraph),
+                            output_path,
+                            external_data_name,
+                            alias_shared_tensors,
+                            size_threshold,
+                            offset,
+                        )
+
+        del extractor.graph.initializer[:]
+
         unused_inits = []
         inits = []
         for init_name, init in extractor.wmap.items():
-            if is_used_initializer(init.name, extractor.model.graph):
-                np_data = get_initializer_as_numpy(init_name, extractor, do_reshape=False)
+            if is_used_initializer(init.name, extractor.graph):
+                with contextlib.chdir(output_path):
+                    np_data = get_initializer_as_numpy(init_name, extractor, do_reshape=False)
                 length = np_data.size * np_data.itemsize
-                if length > size_threshold and save_as_external:
+                if length > size_threshold and external_data_name:
                     init.ClearField("raw_data")
                     if alias_shared_tensors and init_name in tensor_addresses:
                         saved_length = tensor_addresses[init_name][1]
@@ -713,62 +765,73 @@ def save_external_data_with_extractor(
                         )
                         offset += length
                     save_external_data(init, str(output_path), np_data.tobytes())
-                    model.graph.initializer.append(init)
+                    extractor.graph.initializer.append(init)
                     inits.append(init)
                 else:
                     load_tensor(init_name, extractor)
                     del init.external_data[:]
                     init.data_location = onnx.TensorProto.DEFAULT
-                    model.graph.initializer.append(init)
+                    extractor.graph.initializer.append(init)
                     inits.append(init)
             else:
                 unused_inits.append(init_name)
         for init_name in unused_inits:
             del extractor.wmap[init_name]
-        return inits, offset
-
-    def recurse(subgraph: onnx.GraphProto, offset: int) -> int:
-        sub_model = onnx.helper.make_model(subgraph, producer_name="from_subgraph")
-        sub_extractor = get_extractor(sub_model)
-        del subgraph.initializer[:]
-        inits, offset = append_external_data(
-            sub_extractor,
-            external_data_name,
-            output_path,
-            save_as_external,
-            offset,
-        )
-        subgraph.initializer.extend(inits)
         return offset
 
-    for node in model.graph.node:
-        for attr in node.attribute:
-            if attr.type == onnx.AttributeProto.GRAPH:
-                offset = recurse(attr.g, offset)
-            elif attr.type == onnx.AttributeProto.GRAPHS:
-                for subgraph in attr.graphs:
-                    offset = recurse(subgraph, offset)
-    del model.graph.initializer[:]
-    append_external_data(extractor, external_data_name, output_path, save_as_external, offset)
+    recurse(extractor, output_path, external_data_name, alias_shared_tensors, size_threshold, 0)
+
+
+def delete_custom_metadata_props(model: onnx.ModelProto) -> None:
+    for prop in reversed(model.graph.metadata_props):
+        if prop.key == "onnx_utils_load":
+            model.graph.metadata_props.remove(prop)
 
 
 def save_model_without_external_data(model: onnx.ModelProto, f: Path) -> None:
     """
     This is a snippet of onnx.save_model but only the part that serializes the
     onnx model, assuming the external data has already been saved with
-    save_external_data_with_extractor()
+    save_initializers_with_extractor()
     Args:
         model (onnx.ModelProto): Model to save
         f (Path): Path to save it to
     """
+    delete_custom_metadata_props(model)
+
     serialized = onnx._get_serializer(None, f).serialize_proto(model)
     onnx._save_bytes(serialized, f)
 
 
-def delete_model(model_path: Path, external_data_extension: str) -> None:
-    model_path.unlink(True)
-    model_path.with_suffix(f".{external_data_extension}").unlink(True)
-    model_path.with_suffix(".pb.bin").unlink(True)
+def delete_model(
+    model_path: Path,
+    external_data_extension: str,
+    model: bool = True,
+    onnx_external_data: bool = True,
+    header: bool = True,
+    external_data: bool = True,
+) -> None:
+    _logger.debug("Deleting model and associated files at %s", model_path)
+    missing_ok = True
+    if model:
+        model_path.unlink(missing_ok)
+    if onnx_external_data:
+        model_path.with_suffix(f".{external_data_extension}").unlink(missing_ok)
+    if header:
+        model_path.with_suffix(".pb.bin").unlink(missing_ok)
+    if external_data:
+        model_path.with_suffix(".bin").unlink(missing_ok)
+
+
+def rename_external_data_file(original_model: Path, final_model: Path) -> None:
+    _logger.debug("Renaming external data file from %s to %s", original_model.stem, final_model.stem)
+    original_header = original_model.with_suffix(".pb.bin")
+    new_header = final_model.with_suffix(".pb.bin")
+    new_external_data = final_model.with_suffix(".bin")
+    proto.rename_external_data_file(original_header, new_external_data.name, new_header)
+    external_data_file = original_model.with_suffix(".bin")
+    if external_data_file.exists():
+        shutil.copyfile(external_data_file, new_external_data)
 
 
 def get_initializers(
@@ -951,10 +1014,8 @@ def build_tvi(
     shape: ShapeType | None = None,
 ) -> onnx.ValueInfoProto:
     new_name = name if name is not None else io_name
-    old_dtype = get_dtype(io_name, extractor)
-    new_dtype = dtype if dtype is not None else old_dtype
-    old_shape = get_shape(io_name, extractor)
-    new_shape = shape if shape is not None else old_shape
+    new_dtype = dtype if dtype is not None else get_dtype(io_name, extractor)
+    new_shape = shape if shape is not None else get_shape(io_name, extractor)
 
     return onnx.helper.make_tensor_value_info(new_name, new_dtype, new_shape)
 
@@ -1009,8 +1070,7 @@ def split_subgraph(subgraph: list[onnx.NodeProto], split_count: int) -> list[lis
         _logger.warning("Layer indices are not strictly increasing for dynamic splitting, defaulting to numeric split")
         return _split_subgraph_by_count(subgraph, split_count)
 
-    layers_per_chunk, leftover = divmod(layer_count, split_count)
-    print(f"Splitting {layer_count} layers into {split_count} chunks of {layers_per_chunk} layers each")
+    layers_per_chunk, _leftover = divmod(layer_count, split_count)
     splits = [
         subgraph[cross_over[i * layers_per_chunk] : cross_over[(i + 1) * layers_per_chunk]]
         for i in range(0, split_count)
@@ -1193,15 +1253,21 @@ def graph_topological_sort(extractor: onnx.utils.Extractor, is_deterministic: bo
 
     graph = extractor.graph
 
-    initializer_names = list(extractor.wmap)
-    graph_input_names = [input.name for input in graph.input]
-    input_names = initializer_names + graph_input_names
+    initializer_names = set(extractor.wmap.keys())
+    graph_input_names = {input.name for input in graph.input}
+    deps_set = initializer_names | graph_input_names
 
-    if is_deterministic:
-        input_names.sort()
-
-    for input_name in input_names:
-        deps_set.add(input_name)
+    # for nested subgraphs, there can be dangling inputs in ONNX that are
+    # implicitly provided from the parent graph
+    all_inputs = set()
+    all_outputs = set()
+    for node in extractor.graph.node:
+        all_inputs.update(node.input)
+        all_outputs.update(node.output)
+    all_inputs.discard("")
+    all_outputs.discard("")
+    dangling_inputs = all_inputs - all_outputs - deps_set
+    deps_set.update(dangling_inputs)
 
     sorted_node_set_len = -1
     graph_nodes = graph.node if not is_deterministic else sorted(graph.node, key=lambda x: x.name)
@@ -1213,6 +1279,7 @@ def graph_topological_sort(extractor: onnx.utils.Extractor, is_deterministic: bo
         sorted_node_set_len = len(sorted_node_set)
         for node_idx, node in enumerate(graph_nodes):
             if node_idx in sorted_node_set:
+                _logger.debug(f"Node {node.name} is already sorted")
                 continue
             input_count = sum(1 for _ in node.input if _)
             if input_count == 0:
@@ -1225,6 +1292,7 @@ def graph_topological_sort(extractor: onnx.utils.Extractor, is_deterministic: bo
             failed = False
             for input_name in node.input:
                 if input_name and input_name not in deps_set:
+                    _logger.debug(f"Node {node.name} is waiting for input {input_name}")
                     failed = True
                     last_node_name = node.name
             if not failed:
@@ -1315,6 +1383,9 @@ def get_extractor(m: onnx.ModelProto | onnx.GraphProto) -> onnx.utils.Extractor:
         extractor.graph = m
     extractor.wmap = extractor._build_name2obj_dict(extractor.graph.initializer)  # type: ignore[no-untyped-call]
     extractor.vimap = extractor._build_name2obj_dict(extractor.graph.value_info)  # type: ignore[no-untyped-call]
+    with contextlib.suppress(AttributeError):
+        # older onnx versions don't have this function so skip it
+        extractor.outmap = extractor._build_output_dict(extractor.graph)
 
     extractor.wmap_loaded = set()  # type: ignore[attr-defined]
     return extractor
@@ -1328,8 +1399,9 @@ def load_model(path: Path | str, load_external_data: bool, infer_shapes: bool = 
         onnx.shape_inference.infer_shapes_path(path)
     model = onnx.load_model(path, load_external_data=load_external_data)
 
+    delete_custom_metadata_props(model)
     if not load_external_data:
-        model.metadata_props.add(key="onnx_utils_load", value=str(path.parent))
+        model.graph.metadata_props.add(key="onnx_utils_load", value=str(path.parent))
     return model
 
 
@@ -1503,20 +1575,9 @@ class Matcher:
         all_matched_pairs = []
         all_matched_set = set()
         for index, node in enumerate(model.graph.node):
-            if node.op_type in {"Scan", "Loop"}:
-                subgraph = onnx.helper.get_node_attr_value(node, "body")
-                sub_model = onnx.helper.make_model(subgraph, producer_name="from_subgraph")
-                all_matched_pairs.extend(self.match(sub_model))
-            elif node.op_type == "If":
-                then_branch = onnx.helper.get_node_attr_value(node, "then_branch")
-                then_branch_sub_model = onnx.helper.make_model(then_branch, producer_name="from_then_branch")
-                all_matched_pairs.extend(self.match(then_branch_sub_model))
-                else_branch = onnx.helper.get_node_attr_value(node, "else_branch")
-                else_branch_sub_model = onnx.helper.make_model(else_branch, producer_name="from_else_branch")
-                all_matched_pairs.extend(self.match(else_branch_sub_model))
+            if node.op_type in {"Scan", "Loop", "If"}:
+                continue
             else:
-                if node.op_type == "Constant":
-                    continue
                 # since the matcher can now use any node as the anchor, reduce
                 # the search space by the op determined to be the best anchor
                 if self.lexer.anchor != "?" and node.op_type != self.lexer.anchor:
@@ -1597,23 +1658,5 @@ class Matcher:
                 # don't maintain this in the interim and set it at the end
                 # extractor.graph.initializer.append(init)
                 extractor.wmap[init.name] = init
-
-        # resolve subgraph(s) if any
-        subgraph_nodes = [node for node in extractor.graph.node if node.op_type in {"Scan", "Loop", "If"}]
-        for subgraph_node in subgraph_nodes:
-            if subgraph_node.op_type in {"Scan", "Loop"}:
-                sub_graph = onnx.helper.get_node_attr_value(subgraph_node, "body")
-                sub_model = onnx.helper.make_model(sub_graph, producer_name="from_subgraph")
-                sub_extractor = get_extractor(sub_model)
-                replacement_count += self.replace(sub_extractor, new_graph_fn, pass_id, params, max_to_replace)
-            elif subgraph_node.op_type == "If":
-                then_branch = onnx.helper.get_node_attr_value(subgraph_node, "then_branch")
-                then_branch_sub_model = onnx.helper.make_model(then_branch, producer_name="from_then_branch")
-                sub_extractor = get_extractor(then_branch_sub_model)
-                replacement_count += self.replace(sub_extractor, new_graph_fn, pass_id, params, max_to_replace)
-                else_branch = onnx.helper.get_node_attr_value(subgraph_node, "else_branch")
-                else_branch_sub_model = onnx.helper.make_model(else_branch, producer_name="from_else_branch")
-                sub_extractor = get_extractor(else_branch_sub_model)
-                replacement_count += self.replace(sub_extractor, new_graph_fn, pass_id, params, max_to_replace)
 
         return replacement_count

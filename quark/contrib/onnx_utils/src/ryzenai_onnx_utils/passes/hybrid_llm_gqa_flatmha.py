@@ -68,18 +68,21 @@ def replace_output_shape(graph: onnx.GraphProto, output_name: str, dtype: int, n
     graph.output.insert(index, new_tvi)
 
 
-def create_sin_cos_cache(extractor: onnx.utils.Extractor) -> tuple[list[onnx.NodeProto], list[onnx.ValueInfoProto]]:
+def create_sin_cos_cache(
+    extractor: onnx.utils.Extractor, sin_name: str, cos_name: str
+) -> tuple[list[onnx.NodeProto], list[onnx.ValueInfoProto]]:
     new_nodes = []
     new_tvis = []
-
-    sin_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy("sin_cache", extractor)
-    cos_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy("cos_cache", extractor)
+    # gemma3-4B-text has no rope cache named "sin_cache_local" and "cos_cache_local"
+    sin_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(sin_name, extractor)
+    cos_cache = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(cos_name, extractor)
+    tensor_name = sin_name + "_" + cos_name
     sin_cos_cache = np.concatenate((cos_cache, sin_cache), 1)
 
     if sin_cos_cache.dtype != ml_dtypes.bfloat16:
         sin_cos_cache = sin_cos_cache.astype(ml_dtypes.bfloat16)
     sin_cos_cache_tensor = onnx.helper.make_tensor(
-        "sin_cos_cache_token",
+        tensor_name,
         onnx.TensorProto.BFLOAT16,
         sin_cos_cache.shape,
         sin_cos_cache.tobytes(),
@@ -89,12 +92,12 @@ def create_sin_cos_cache(extractor: onnx.utils.Extractor) -> tuple[list[onnx.Nod
     sin_cos_cache_node = onnx.helper.make_node(
         "Constant",
         inputs=[],
-        outputs=["sin_cos_cache_token"],
+        outputs=[tensor_name],
         value=sin_cos_cache_tensor,
         name="sin_cos_cache",
     )
     new_tvi = onnx.helper.make_tensor_value_info(
-        "sin_cos_cache_token",
+        tensor_name,
         onnx.TensorProto.BFLOAT16,
         sin_cos_cache.shape,
     )
@@ -176,7 +179,7 @@ def replacement(
         k_matmul = subgraph[1]
         v_matmul = subgraph[2]
         gqa = subgraph[3]
-    else:
+    elif len(subgraph) == 10:
         q_matmul = subgraph[0]
         k_matmul = subgraph[4]
         v_matmul = subgraph[8]
@@ -185,7 +188,15 @@ def replacement(
         # add back the SLNs and reshapes
         new_nodes.extend(subgraph[1:4])
         new_nodes.extend(subgraph[5:8])
-
+    else:
+        q_matmul = subgraph[0]
+        k_matmul = subgraph[6]
+        v_matmul = subgraph[12]
+        gqa = subgraph[13]
+        assert not fuse_qk_mha, "Cannot fuse qk matmulnbits when SLN is present"
+        # add back the SLNs and reshapes
+        new_nodes.extend(subgraph[1:6])
+        new_nodes.extend(subgraph[7:12])
     # assuming matmulnbits have weights, scales, zero points, g_idx, and bias
     assert len(q_matmul.input) == len(k_matmul.input) == len(v_matmul.input)
     assert len(q_matmul.input) == 6, len(q_matmul.input)
@@ -330,9 +341,12 @@ def replacement(
         kv_inputs = [gqa.input[3], gqa.input[4]]
 
     # use a common tensor across the whole model
-    sin_cos_exists = ryzenai_onnx_utils.matcher.find_consts("sin_cos_cache_token", extractor.graph)
+    sin_cache_name = gqa.input[8]
+    cos_cache_name = gqa.input[7]
+    tensor_name = sin_cache_name + "_" + cos_cache_name
+    sin_cos_exists = ryzenai_onnx_utils.matcher.find_consts(tensor_name, extractor.graph)
     if not sin_cos_exists:
-        sin_cos_cache, sin_cos_cache_tvi = create_sin_cos_cache(extractor)
+        sin_cos_cache, sin_cos_cache_tvi = create_sin_cos_cache(extractor, sin_cache_name, cos_cache_name)
         new_nodes.extend(sin_cos_cache)
         new_tvis.extend(sin_cos_cache_tvi)
 
@@ -353,7 +367,7 @@ def replacement(
             # attn mask - this should be discovered by tracing back gqa.input[5] to the model input
             "attention_mask_const_uint",
             # sin cos cache
-            "sin_cos_cache_token",
+            tensor_name,
         ]
     )
     past_k_shape = ryzenai_onnx_utils.matcher.get_shape(gqa.input[3], extractor)
@@ -364,9 +378,45 @@ def replacement(
     token_len = total_seq_len
     head_size = past_k_shape[3]
     is_dyn = False
+    window_size = -1
+    if ryzenai_onnx_utils.matcher.has_attribute(gqa, "local_window_size"):
+        # TODO get sink value from attr
+        window_size = onnx.helper.get_node_attr_value(gqa, "local_window_size")
+        # TODO some models have a large window, so just make it work for small window
+        if window_size >= 2048:
+            window_size = -1
+        if window_size > 0:
+            const_exist = ryzenai_onnx_utils.matcher.find_consts("window_size", extractor.graph)
+            if not const_exist:
+                # if op doesn't has sink, NPU flatmha needs 0xff7f for const buffer initialization
+                sink = onnx.helper.make_tensor(
+                    "mha_sink", onnx.TensorProto.INT32, [num_heads], np.full(num_heads, 0xFF7F, dtype=np.int32)
+                )
+                new_initializers.append(sink)
+                dummy_input = onnx.helper.make_tensor(
+                    "window_size", onnx.TensorProto.INT32, [1, window_size], np.zeros([1, window_size], dtype=np.uint32)
+                )
+                window_node = onnx.helper.make_node(
+                    "Constant",
+                    inputs=[],
+                    outputs=["window_size"],
+                    value=dummy_input,
+                    name="window_input",
+                )
+                new_tvi = onnx.helper.make_tensor_value_info(
+                    "window_size",
+                    onnx.TensorProto.INT32,
+                    [1, window_size],
+                )
+                new_nodes.append(window_node)
+                new_tvis.append(new_tvi)
+            new_inputs.append("mha_sink")
+            new_inputs.append("window_size")
+    # if model has local_window_size, dynamic list is disabled as the curr shape used in dynamic list is fixed to window_size
     if (
         "dynamic_shape_list" in params.attributes
         and "attention_mask_padded" in params.attributes["dynamic_shape_list"][0]
+        and window_size < 0
     ):
         new_inputs.append("attention_mask_padded")
         mask_shape = ryzenai_onnx_utils.matcher.get_shape("attention_mask_padded", extractor)
@@ -402,15 +452,19 @@ def replacement(
     num_heads = onnx.helper.get_node_attr_value(gqa, "num_heads")
     seq_len = output_shape[1]
     total_seq_len = past_k_shape[2]
+    if window_size > 0:
+        token_len = window_size
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "sliding_window", True)
     head_size = past_k_shape[3]
-    if is_dyn:
+    if is_dyn or window_size > 0:
         input_shapes = [kv_num_heads, num_heads, seq_len, token_len, head_size, total_seq_len]
     else:
         input_shapes = [kv_num_heads, num_heads, seq_len, total_seq_len, head_size]
     if ryzenai_onnx_utils.matcher.has_attribute(gqa, "rotary_embedding_dim"):
         rope_dim = onnx.helper.get_node_attr_value(gqa, "rotary_embedding_dim")
-        ryzenai_onnx_utils.matcher.add_attribute(new_node, "rotary_embedding_dim", rope_dim)
-        input_shapes.append(rope_dim)
+        if rope_dim != 0:
+            ryzenai_onnx_utils.matcher.add_attribute(new_node, "rotary_embedding_dim", rope_dim)
+            input_shapes.append(rope_dim)
     ryzenai_onnx_utils.matcher.add_attribute(
         new_node,
         "input_shape",
@@ -424,7 +478,9 @@ def replacement(
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(new_node, "enable_ctrl_pkt", enable_ctrl_pkt)
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "pdi_id", int(pdi_id))
     new_nodes.append(new_node)
 
     return new_nodes, new_initializers, new_tvis
@@ -450,6 +506,25 @@ PATTERN = [
             "MatMulNBits([?,?,?,?,?], [a1])",  # k
             "Reshape([a1, ?], [c1])",
             "SimplifiedLayerNormalization([c1,?], b1)",
+            "Reshape([b1, ?], [d1])",
+            "MatMulNBits([?,?,?,?,?], [a2])",  # v
+            "GroupQueryAttention([d0,d1,a2,?,?,?,?,?,?], [?,?,?])",
+        ],
+    ),
+    SubPass(
+        "Per-head normalization fp32 rmsnrom",
+        [
+            "MatMulNBits([?,?,?,?,?], [a0])",  # q
+            "Reshape([a0, ?], [c00])",
+            "Cast([c00], [c0])",
+            "SimplifiedLayerNormalization([c0,?], b00)",
+            "Cast([b00], [b0])",
+            "Reshape([b0, ?], [d0])",
+            "MatMulNBits([?,?,?,?,?], [a1])",  # k
+            "Reshape([a1, ?], [c11])",
+            "Cast([c11], [c1])",
+            "SimplifiedLayerNormalization([c1,?], b11)",
+            "Cast([b11], [b1])",
             "Reshape([b1, ?], [d1])",
             "MatMulNBits([?,?,?,?,?], [a2])",  # v
             "GroupQueryAttention([d0,d1,a2,?,?,?,?,?,?], [?,?,?])",

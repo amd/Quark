@@ -6,6 +6,8 @@ import onnx
 import ryzenai_onnx_utils.matcher
 import ryzenai_onnx_utils.transform.cast as cast
 import ryzenai_onnx_utils.utils
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
+from ryzenai_onnx_utils.transform import hybrid_llm
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
 from ..hybrid_llm_prune_logits import prune_config
@@ -21,14 +23,18 @@ def replacement(
     domain = params.get_domain("MLADFADD")
 
     ssln_0 = subgraph[0]
+    output = subgraph[-1]
     if ssln_0.input[0] == ssln_0.input[1]:
         return subgraph, [], None
 
     new_nodes = []
     new_tvis = []
     eps = onnx.helper.get_node_attr_value(ssln_0, "epsilon")
+    # TODO(varunsh): pad_input_ids should propagate this name change to all nodes
+    io_to_pad = hybrid_llm.get_input_ids_name(extractor.graph, params.attributes)
+    add_in = f"{io_to_pad}_padded" if ssln_0.input[0] == io_to_pad else ssln_0.input[0]
     eps_tensor = ryzenai_onnx_utils.utils.float_numpy_to_bfloat_tensor(np.array([eps]), f"eps_{pass_id}")
-    input_cast_0, input_cast_0_tvis = cast.add_cast_dtype_to_bfloat16_auto(ssln_0.input[0], pass_id, domain, extractor)
+    input_cast_0, input_cast_0_tvis = cast.add_cast_dtype_to_bfloat16_auto(add_in, pass_id, domain, extractor)
     new_nodes.extend(input_cast_0)
     new_tvis.extend(input_cast_0_tvis)
 
@@ -45,7 +51,7 @@ def replacement(
         add_output = output_cast_0[0].input[0]
     else:
         add_output = f"dummy_{pass_id}"
-        output_shape = ryzenai_onnx_utils.matcher.get_shape(ssln_0.output[0], extractor)
+        output_shape = ryzenai_onnx_utils.matcher.get_shape(output.output[0], extractor)
         new_tvis.append(onnx.helper.make_tensor_value_info(add_output, onnx.TensorProto.BFLOAT16, output_shape))
 
     add = onnx.helper.make_node(
@@ -57,11 +63,14 @@ def replacement(
     )
     prune_config(ssln_0, add, params)
 
-    ryzenai_onnx_utils.matcher.add_attribute(add, "op_version", "v2")
+    op_version = str(MladfVersion.AIE2_V2)
+    ryzenai_onnx_utils.matcher.add_attribute(add, "op_version", op_version)
     new_nodes.append(add)
-
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(add, "pdi_id", int(pdi_id))
     output_cast_1, output_cast_1_tvis = cast.add_cast_bfloat16_to_dtype_auto(
-        ssln_0.output[0], pass_id, domain, extractor
+        output.output[0], pass_id, domain, extractor
     )
     new_nodes.extend(output_cast_1)
     new_tvis.extend(output_cast_1_tvis)
@@ -80,14 +89,17 @@ def replacement(
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(rms_norm, "enable_ctrl_pkt", True)
-
-    ryzenai_onnx_utils.matcher.add_attribute(rms_norm, "op_version", "v2")
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(rms_norm, "pdi_id", int(pdi_id))
+    ryzenai_onnx_utils.matcher.add_attribute(rms_norm, "op_version", op_version)
     new_nodes.append(rms_norm)
 
     return new_nodes, [gamma_bf, eps_tensor], new_tvis
 
 
 PATTERN = [
-    "SkipSimplifiedLayerNormalization([a1,a7,?], [?,?,?,?])",
+    ["SkipSimplifiedLayerNormalization([?,?,?], [a1,?,?,?])", "Cast([a1], ?)"],
+    ["SkipSimplifiedLayerNormalization([?,?,?], [?,?,?,?])"],
 ]
-REPLACEMENT = replacement
+REPLACEMENT = [replacement] * 2

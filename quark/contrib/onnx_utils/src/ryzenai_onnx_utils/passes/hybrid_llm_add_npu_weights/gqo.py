@@ -27,8 +27,7 @@ def replacement(
     num_gqa_inputs = len(node.input) - 4
     bias_offset = 3
     lora = params.get_bool_attr("lora", False)
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(node, "is_bfp16", params.attributes["is_bfp16"])
+    ryzenai_onnx_utils.matcher.add_attribute(node, "mladf_version", params.attributes["mladf_version"])
     try:
         packed_weight_tensor, hash_val, _ = (
             ryzenai_onnx_utils.transform.hybrid_llm.preprocess_matmulnbits_packed_weights(

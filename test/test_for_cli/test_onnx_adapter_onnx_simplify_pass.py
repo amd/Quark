@@ -90,7 +90,9 @@ def prepare_yaml(output_dir, onnx_model_path, onnx_optimized_model_path):
     yaml_path = Path(output_dir, "simplify.yaml").as_posix()
     config = {
         "input_model_path": onnx_model_path,
-        "passes": {"onnx_simplify": {"simplify": True}},
+        "passes": {
+            "onnx_simplify": {"simplify": True, "skip_fusion_patterns": ["EliminationSlice"]},
+        },
         "output_model_path": onnx_optimized_model_path,
     }
 

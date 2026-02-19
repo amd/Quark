@@ -52,12 +52,14 @@ Below we share a list of recipes that enable the features above. Please
 click on each individual links below for more details.
 
 .. toctree::
-   :maxdepth: 1
+   :hidden:
+   :caption: LLM Evaluation
+   :maxdepth: 0
 
-   example_quark_torch_llm_eval_perplexity.rst
-   example_quark_torch_llm_eval_rouge_meteor.rst
-   example_quark_torch_llm_eval_harness.rst
-   example_quark_torch_llm_eval_harness_offline.rst
+   example_quark_torch_llm_eval_perplexity
+   example_quark_torch_llm_eval_rouge_meteor
+   example_quark_torch_llm_eval_harness
+   example_quark_torch_llm_eval_harness_offline
 
 Important Details
 -----------------

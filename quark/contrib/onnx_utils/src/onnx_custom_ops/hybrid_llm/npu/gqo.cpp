@@ -19,7 +19,7 @@
 #include "external_data.hpp"
 #include "jit_node_impl.hpp"
 #include "lora.hpp"
-#include "ops/ops_common/matmul_matrix.hpp"
+#include "ops/ops_common/matmul_matrix_public.hpp"
 #include "ort.hpp"
 #include "profiling/profiling.hpp"
 #include "ryzenai/onnx_utils/custom_ops_options.hpp"
@@ -162,11 +162,18 @@ bool GqaKernelInfo::isNumHeadsSupported(int num_head) const {
   return (kSupportedNumHeads.find(num_head) != kSupportedNumHeads.end());
 }
 
-void GqaKernelInfo::setVersion(const std::string& version) {
-  if (version == "v2") {
-    supported_seqlen_ = kSupportedSeqLenV2;
-  } else {
-    supported_seqlen_ = kSupportedSeqLenV1;
+void GqaKernelInfo::setVersion(const MladfVersion& version) {
+  switch (version) {
+    case MladfVersion::v1:
+      supported_seqlen_ = kSupportedSeqLenV1;
+      break;
+    case MladfVersion::v2:
+      supported_seqlen_ = kSupportedSeqLenV2;
+      break;
+    default:
+      throw std::invalid_argument(
+        "Unsupported MLADF version: " + version.str()
+      );
   }
 }
 
@@ -356,7 +363,8 @@ void getHeadSink(
 
 std::pair<RyzenMM::BufferRef, std::vector<int64_t>> getRopeCache(
   RyzenMM::Allocator* allocator, Ort::ConstValue& cos_tensor,
-  Ort::ConstValue& sin_tensor, bool rotary_interleaved
+  Ort::ConstValue& sin_tensor, bool rotary_interleaved,
+  const MladfVersion& mladf_version
 ) {
   auto cos_shape = cos_tensor.GetTensorTypeAndShapeInfo().GetShape();
   const auto cache_dtype =
@@ -433,31 +441,51 @@ std::pair<RyzenMM::BufferRef, std::vector<int64_t>> getRopeCache(
         (sin_val_bfloat16 == 0) ? (0) : (sin_val_bfloat16_low ^ (1U << 15));
 
       // Duplicate the values for second half
-      if (!rotary_interleaved) {
-        cos_cache_dest[offset + j] = cos_val_bfloat16;
-        cos_cache_dest[offset + shape_cs_1 + j] = cos_val_bfloat16;
-        cos_cache_dest[offset + diff_offset + j] = cos_val_bfloat16_low;
-        cos_cache_dest[offset + diff_offset + shape_cs_1 + j] =
-          cos_val_bfloat16_low;
-
-        sin_cache_dest[offset + j] = sin_val_bfloat16;
-        sin_cache_dest[offset + shape_cs_1 + j] = sin_val_bfloat16;
-        sin_cache_dest[offset + diff_offset + j] = sin_val_bfloat16_low;
-        sin_cache_dest[offset + diff_offset + shape_cs_1 + j] =
-          sin_val_bfloat16_low;
-      } else {
-        cos_cache_dest[offset + (2 * j)] = cos_val_bfloat16;
-        cos_cache_dest[offset + (2 * j + 1)] = cos_val_bfloat16;
-        cos_cache_dest[offset + diff_offset + (2 * j)] = cos_val_bfloat16_low;
+      if (mladf_version == MladfVersion::aie4_v1) {
+        cos_cache_dest[offset + (2 * j)] =
+          uint16_t(*(uint32_t*)&cos_val) & 0xFFFF;
+        cos_cache_dest[offset + (2 * j + 1)] =
+          uint16_t(((*(uint32_t*)&cos_val) & 0xFFFF0000) >> 16);
+        cos_cache_dest[offset + diff_offset + (2 * j)] =
+          cos_cache_dest[offset + (2 * j)];
         cos_cache_dest[offset + diff_offset + (2 * j + 1)] =
-          cos_val_bfloat16_low;
+          cos_cache_dest[offset + (2 * j + 1)];
 
-        sin_cache_dest[offset + (2 * j)] = neg_sin_val_bfloat16;
-        sin_cache_dest[offset + (2 * j + 1)] = sin_val_bfloat16;
+        sin_cache_dest[offset + (2 * j)] =
+          uint16_t(*(uint32_t*)&sin_val) & 0xFFFF;
+        sin_cache_dest[offset + (2 * j + 1)] =
+          uint16_t(((*(uint32_t*)&sin_val) & 0xFFFF0000) >> 16);
         sin_cache_dest[offset + diff_offset + (2 * j)] =
-          neg_sin_val_bfloat16_low;
+          sin_cache_dest[offset + (2 * j)];
         sin_cache_dest[offset + diff_offset + (2 * j + 1)] =
-          sin_val_bfloat16_low;
+          sin_cache_dest[offset + (2 * j + 1)];
+      } else {
+        if (!rotary_interleaved) {
+          cos_cache_dest[offset + j] = cos_val_bfloat16;
+          cos_cache_dest[offset + shape_cs_1 + j] = cos_val_bfloat16;
+          cos_cache_dest[offset + diff_offset + j] = cos_val_bfloat16_low;
+          cos_cache_dest[offset + diff_offset + shape_cs_1 + j] =
+            cos_val_bfloat16_low;
+
+          sin_cache_dest[offset + j] = sin_val_bfloat16;
+          sin_cache_dest[offset + shape_cs_1 + j] = sin_val_bfloat16;
+          sin_cache_dest[offset + diff_offset + j] = sin_val_bfloat16_low;
+          sin_cache_dest[offset + diff_offset + shape_cs_1 + j] =
+            sin_val_bfloat16_low;
+        } else {
+          cos_cache_dest[offset + (2 * j)] = cos_val_bfloat16;
+          cos_cache_dest[offset + (2 * j + 1)] = cos_val_bfloat16;
+          cos_cache_dest[offset + diff_offset + (2 * j)] = cos_val_bfloat16_low;
+          cos_cache_dest[offset + diff_offset + (2 * j + 1)] =
+            cos_val_bfloat16_low;
+
+          sin_cache_dest[offset + (2 * j)] = neg_sin_val_bfloat16;
+          sin_cache_dest[offset + (2 * j + 1)] = sin_val_bfloat16;
+          sin_cache_dest[offset + diff_offset + (2 * j)] =
+            neg_sin_val_bfloat16_low;
+          sin_cache_dest[offset + diff_offset + (2 * j + 1)] =
+            sin_val_bfloat16_low;
+        }
       }
     }
   }
@@ -684,7 +712,7 @@ void AMDGQOKernel::initializeKernels() {
       ss_->curr_local_window_size_ = -1;
     }
   } else {
-    if (!ss_->flash_mha_) {
+    if (!flash_mha_) {
       auto attr = getCommonAttrs();
       attr["disable_gm"] = true;
       // normal flash mha use DPU_3, sliding window mha use DPU_8
@@ -693,7 +721,7 @@ void AMDGQOKernel::initializeKernels() {
       if (local_window_size_ > 0) {
         attr["window_size"] = local_window_size_;
       }
-      ss_->flash_mha_ =
+      flash_mha_ =
         std::make_unique<ryzenai::dynamic_dispatch::transformer::flash_mha<
           uint16_t, uint16_t, uint16_t>>(
           "bfloat16", "bfloat16", "bfloat16", true, attr
@@ -863,6 +891,18 @@ void AMDGQOKernel::initializeMatMulNBits(
   ss_->gemm_->initialize_const_params(constant_tensors, attrs);
 }
 
+const std::vector<size_t>& AMDGQOKernel::setFlashMhaGranularity() const {
+  const auto& version = mladfVersion();
+  switch (version) {
+    case MladfVersion::v2:
+      return kFlashMhaGranularityAie2_;
+    case MladfVersion::aie4_v1:
+      return kFlashMhaGranularityAie4_;
+    default:
+      throw std::runtime_error("Unsupported MLADF version: " + version.str());
+  }
+}
+
 AMDGQOKernel::AMDGQOKernel(
   const OrtKernelInfo* k_info, const OrtApi& api,
   const std::unordered_map<std::string, std::string>& session_configs
@@ -909,6 +949,7 @@ AMDGQOKernel::AMDGQOKernel(
 
   setMladfVersion(info);
   mha_aie_kernel_info_.setVersion(mladfVersion());
+  rope_cache_name_ = info.GetInputName(kCosIdx);
 
   auto is_const_cache =
     setUseAieRope(info, rotary_embedding_dim_, session_configs);
@@ -934,6 +975,22 @@ AMDGQOKernel::AMDGQOKernel(
     } else {
       head_sink_.assign(num_heads_, 0.0f);
       has_head_sink_ = false;
+    }
+    if (local_window_size_ > 0) {
+      sink_data_ = allocator_.AllocateBuffer(num_heads_ * sizeof(uint16_t));
+      if (has_head_sink_) {
+        ryzenai::float_buffer_to_bfloat16(
+          head_sink_.data(), num_heads_, (uint16_t*)sink_data_.Data()
+        );
+
+      } else {
+        // if op doesn't has sink, NPU flatmha needs 0xFF7F for const buffer
+        // initialization
+        std::fill(
+          (uint16_t*)sink_data_.Data(),
+          ((uint16_t*)sink_data_.Data()) + num_heads_, uint16_t(0xFF7F)
+        );
+      }
     }
   }
 
@@ -967,8 +1024,9 @@ AMDGQOKernel::AMDGQOKernel(
 
   // requires setUseAieRope to have been called
   if (use_aie_rope_ && is_const_cache && !ss_->cos_sin_cache_) {
-    std::tie(ss_->cos_sin_cache_, ss_->cos_shape_) =
-      getRopeCache(&allocator_, const_cos_, const_sin_, rotary_interleaved_);
+    std::tie(ss_->cos_sin_cache_, ss_->cos_shape_) = getRopeCache(
+      &allocator_, const_cos_, const_sin_, rotary_interleaved_, mladfVersion()
+    );
   }
 
   //  Get weights
@@ -1005,9 +1063,10 @@ AMDGQOKernel::AMDGQOKernel(
         loadFirstData();
       }
     }
+    const auto& flash_mha_granularity = setFlashMhaGranularity();
     q_seq_len_ = getNPUKernelGranularity(
       getInitPromptSize(session_configs),
-      use_flash_mha_ ? flash_mha_granularity_
+      use_flash_mha_ ? flash_mha_granularity
                      : std::vector<size_t>{1024, 2048, 3072, 4096}
     );
     npu_kernel_size_q_ = q_seq_len_;
@@ -1252,7 +1311,7 @@ void execute_mha(
   size_t buffer_s, std::vector<xrt::bo>& bmm2_outputs, uint16_t* xCasted,
   uint16_t* yCasted, uint16_t* zCasted, std::vector<size_t> qkv_out_size_,
   bool wait, bool continue_on_exception, const std::string& name,
-  bool use_aie_rope, bool en_cpy, int rewind_pos
+  bool use_aie_rope, bool en_cpy, int rewind_pos, xrt::bo& sink_bo
 ) {
   // Get XRT Buffers
   auto x_elements = qkv_out_size_.at(0);
@@ -1261,6 +1320,7 @@ void execute_mha(
   if (!use_aie_rope || rewind_pos || (buffer_s != kernel_shape.at(2)) ||
       en_cpy) {
     uint16_t* a_bo_map = in.map<uint16_t*>();  // Q
+    memset(a_bo_map, 0, in.size());
     memcpy((void*)a_bo_map, (void*)xCasted, x_elements);
 
     uint16_t* b_bo_map =  // K
@@ -1277,6 +1337,10 @@ void execute_mha(
   // Execute QKT MatMul
   // std::vector<xrt::bo> inputs = {in};
   std::vector<NPUBufferSpan> inputs = {{in, 0, in.size()}};
+  if (sink_bo) {
+    NPUBufferSpan sink_tensor = {sink_bo, 0, sink_bo.size()};
+    inputs.push_back(sink_tensor);
+  }
   std::vector<NPUBufferSpan> outputs = {
     {bmm2_outputs[0], 0, qkv_out_size_.at(3)}
   };
@@ -1709,7 +1773,7 @@ void AMDGQOKernel::executeMatMulNBitsAie(
     ss_->gemm_->create_bo(rebind->ptr, rebind->len, 1, kGemmBOsSelector);
   }
 
-  if (mladfVersion() == "v2") {
+  if (has_scratch_buffer_) {
     if (auto rebind = shared_buffer_.Validate(
           "scratch", ss_->gemm_last_scratch_ptr_, ss_->gemm_last_scratch_len_
         )) {
@@ -1765,7 +1829,7 @@ void AMDGQOKernel::executeMatMulNBitsAie(
     ss_->gemm_->create_bo(rebind->ptr, rebind->len, 1, kGemmBOsSelector);
   }
 
-  if (mladfVersion() == "v2") {
+  if (has_scratch_buffer_) {
     if (auto rebind = shared_buffer_.Validate(
           "scratch", ss_->gemm_last_scratch_ptr_, ss_->gemm_last_scratch_len_
         )) {
@@ -1821,7 +1885,11 @@ void AMDGQOKernel::executeMatMulNBitsAie(
       } else {
         std::vector<xrt::bo> o_in = {inputs[0], o_wts[cnt_wts]};
         if (Lora::isEnabled()) o_in.push_back(lora_buffers_.getBo(0));
-        ss_->gemm_->execute(o_in, mm_outputs_, !continueOnException());
+        ss_->gemm_->execute(
+          o_in, mm_outputs_,
+          mladfVersion() == MladfVersion::aie4_v1 ? true
+                                                  : !continueOnException()
+        );
       }
     });
   });
@@ -1840,8 +1908,14 @@ void AMDGQOKernel::executeMatMulNBitsAie(
 }
 
 void AMDGQOKernel::rebind_flashmha_params() {
+  if ((local_window_size_ > 0) && !sink_bo_) {
+    sink_bo_ = flash_mha_->bind_bo(
+      sink_data_.Data(), head_sink_.size() * sizeof(uint16_t)
+    );
+    sink_bo_.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  }
   // TODO: shared_buffer_ Validate disable, just for Gemma3 slding attention
-  if (auto rebind = shared_buffer_.Validate("bmm2_out", ss_->flash_out_)) {
+  if (auto rebind = shared_buffer_.Validate("bmm2_out", flash_out_)) {
     const auto buffer_bmm1_in0 = shared_buffer_.Get("bmm1_in0");
     const auto buffer_bmm2_in1 = shared_buffer_.Get("bmm2_in1");
     const auto buffer_bmm1_in1 = shared_buffer_.Get("bmm1_in1");
@@ -1863,12 +1937,12 @@ void AMDGQOKernel::rebind_flashmha_params() {
     //   }
     // #endif
 
-    ss_->flash_in_ = ss_->flash_mha_->bind_bo(
+    ss_->flash_in_ = flash_mha_->bind_bo(
       buffer_bmm1_in0.ptr,
       buffer_bmm1_in0.len + buffer_bmm1_in1.len + buffer_bmm2_in1.len
     );
     ss_->flash_out_ =
-      ss_->flash_mha_->bind_bo(buffer_bmm2_out.ptr, buffer_bmm2_out.len);
+      flash_mha_->bind_bo(buffer_bmm2_out.ptr, buffer_bmm2_out.len);
 
     auto bmm1_in0 = xrt::bo(ss_->flash_in_, buffer_bmm1_in0.len, 0);
     auto bmm1_in1 =
@@ -1888,7 +1962,6 @@ void AMDGQOKernel::rebind_flashmha_params() {
 
 void AMDGQOKernel::rebind_bmm_params() {
   auto rebound = false;
-
   if (auto rebind =
         shared_buffer_.Validate("bmm1_in1", ss_->bmm1_->get_inputs()[1])) {
     ss_->bmm1_->create_bo(rebind->ptr, rebind->len, 1);
@@ -1922,7 +1995,15 @@ void AMDGQOKernel::rebind_bmm_params() {
     // Get data pointers
     ss_->bmm1_inputs_ = {ss_->bmm2_outputs_[0], ss_->bmm1_->get_inputs()[1]};
   }
-  ss_->bmm1_outputs_[0].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+  if (is_prefill_) {
+    // Note: bmm1 output is typically sized to [num_heads, total_seq, total_seq]
+    //       if large prefill is run and there is no buffer resizing this can be
+    //       large syncing on this during token phase is expensive Original
+    //       reason seemed to be back to back prompts would give incorrect
+    //       results
+    ss_->bmm1_outputs_[0].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  }
 }
 
 void static inline fill_values16b(
@@ -1942,8 +2023,8 @@ struct row_mask_info {
 
 void static inline populate_mask(
   std::vector<row_mask_info>& softmax_mask_info, const int query_start_pos_id,
-  const int key_start_pos_id, const int context_chunk_size,
-  const int num_datums, const int num_key_datums, const int local_window_size
+  const int key_start_pos_id, const int num_datums, const int num_key_datums,
+  const int local_window_size
 ) {
   const auto key_end_pos_id = key_start_pos_id + num_key_datums - 1;
 
@@ -2000,7 +2081,8 @@ struct softmax_info {
   int num_heads;
   int M;
   int K;
-  int context_chunk_size;
+  int context_chunk_size_q;
+  int context_chunk_size_k;
   float attention_scale;
 
   softmax_row_state* base_softmax_state_p;
@@ -2014,9 +2096,10 @@ static void calc_row_softmax_state(void* data, size_t index) {
 
   const auto attention_scale = payload->attention_scale;
 
-  // layout in memory is [num_heads, context_chunk_size, context_chunk_size]
+  // layout in memory is [num_heads, context_chunk_size_q, context_chunk_size_k]
   // within each head only need to do compute on [M, K] chunk, rest is padding
-  const auto context_chunk_size = payload->context_chunk_size;
+  const auto context_chunk_size_q = payload->context_chunk_size_q;
+  const auto context_chunk_size_k = payload->context_chunk_size_k;
 
   auto m_index = index % M;
   auto head_index = index / M;
@@ -2034,15 +2117,15 @@ static void calc_row_softmax_state(void* data, size_t index) {
 
   const uint16_t* input_ptr =
     &base_input_ptr
-      [head_index * context_chunk_size * context_chunk_size +
-       m_index * context_chunk_size];
+      [head_index * context_chunk_size_q * context_chunk_size_k +
+       m_index * context_chunk_size_k];
   uint16_t* output_ptr =
     &base_output_ptr
-      [head_index * context_chunk_size * context_chunk_size +
-       m_index * context_chunk_size];
+      [head_index * context_chunk_size_q * context_chunk_size_k +
+       m_index * context_chunk_size_k];
 
-  // state layout is [num_heads, context_chunk_size]
-  auto state_idx = head_index * context_chunk_size + m_index;
+  // state layout is [num_heads, context_chunk_size_q]
+  auto state_idx = head_index * context_chunk_size_q + m_index;
 
   softmax_row_state* softmax_state_p =
     &payload->base_softmax_state_p[state_idx];
@@ -2064,8 +2147,8 @@ static void calc_row_softmax_state(void* data, size_t index) {
     new_max = curr_max;
 
     // zero out entire output row
-    // [head_idx, m_index, 0:context_chunk_size - 1]
-    memset(output_ptr, 0, context_chunk_size * sizeof(std::uint16_t));
+    // [head_idx, m_index, 0:context_chunk_size_k - 1]
+    memset(output_ptr, 0, context_chunk_size_k * sizeof(std::uint16_t));
 
     return;
   }
@@ -2212,9 +2295,10 @@ static void calc_row_softmax_state(void* data, size_t index) {
     output_ptr[j] = float_to_bfloat16(val);
   }
 
-  // zero out padded region in [num_heads, 0:M, end_index:context_chunk_size]
+  // zero out padded region in [num_heads, 0:M, end_index:context_chunk_size_k]
   memset(
-    &output_ptr[K], 0, (context_chunk_size - end_index) * sizeof(std::uint16_t)
+    &output_ptr[K], 0,
+    (context_chunk_size_k - end_index) * sizeof(std::uint16_t)
   );
 }
 
@@ -2450,6 +2534,580 @@ static inline void update_bmm2_output(
   );
 }
 
+struct bmm1_info {
+  const std::uint16_t* bmm1_in0;  // [N, 1, H]
+  const std::uint16_t* bmm1_in1;  // [kv_num_heads, key_chunk_size, H]
+  std::uint16_t* bmm1_out;        // [N, 1, key_chunk_size]
+  const int num_heads;
+  const int64_t kv_num_heads;
+  const int64_t ratio;
+  const int head_dim;
+  const size_t key_start_pos_id;  // half open interval [start, end)
+  const size_t key_end_pos_id;
+  const int64_t key_chunk_size;
+};
+
+static void qk_bmm1(void* payload, size_t index) {
+  const bmm1_info* bmm_payload = (const bmm1_info*)payload;
+
+  const auto head_index = index;
+  const auto ratio = bmm_payload->ratio;
+  const auto kv_head_idx = index / ratio;
+  const auto head_dim = bmm_payload->head_dim;
+  const auto key_chunk_size = bmm_payload->key_chunk_size;
+
+  const auto key_start_pos_id = bmm_payload->key_start_pos_id;
+  const auto key_end_pos_id = bmm_payload->key_end_pos_id;
+  const auto num_elems = key_end_pos_id - key_start_pos_id;
+
+  if (num_elems == 0) {
+    return;
+  }
+
+  if (head_dim % 32 != 0) {
+    throw std::runtime_error("Expect head dim to be multiple of 32");
+  }
+
+  const std::uint16_t* bmm1_in0_base =
+    &bmm_payload->bmm1_in0[head_index * head_dim];
+  const std::uint16_t* bmm1_in1_base =
+    &bmm_payload->bmm1_in1
+       [kv_head_idx * key_chunk_size * head_dim + key_start_pos_id * head_dim];
+  std::uint16_t* bmm1_out_base =
+    &bmm_payload->bmm1_out[head_index * key_chunk_size + key_start_pos_id];
+
+  constexpr size_t kBlockSize = 8;
+  const auto num_blocks = num_elems / kBlockSize;
+
+  constexpr size_t kAccBlockSize = 32;
+  const auto num_acc_blocks = head_dim / kAccBlockSize;
+
+  std::vector<float> fp32_results(kBlockSize);
+
+  // outer loop on populating elements
+  for (auto block_idx = 0; block_idx < num_blocks; block_idx++) {
+    auto start_col_idx = kBlockSize * block_idx;
+
+    auto col0_idx = start_col_idx;
+    auto col1_idx = start_col_idx + 1;
+    auto col2_idx = start_col_idx + 2;
+    auto col3_idx = start_col_idx + 3;
+    auto col4_idx = start_col_idx + 4;
+    auto col5_idx = start_col_idx + 5;
+    auto col6_idx = start_col_idx + 6;
+    auto col7_idx = start_col_idx + 7;
+
+    // accumulators for 8 columns
+    __m512 accum_0 = _mm512_setzero_ps();
+    __m512 accum_1 = _mm512_setzero_ps();
+    __m512 accum_2 = _mm512_setzero_ps();
+    __m512 accum_3 = _mm512_setzero_ps();
+    __m512 accum_4 = _mm512_setzero_ps();
+    __m512 accum_5 = _mm512_setzero_ps();
+    __m512 accum_6 = _mm512_setzero_ps();
+    __m512 accum_7 = _mm512_setzero_ps();
+
+    for (auto acc_block_idx = 0; acc_block_idx < num_acc_blocks;
+         acc_block_idx++) {
+      // load Q
+      __m512i q_i =
+        _mm512_loadu_si512(&bmm1_in0_base[acc_block_idx * kAccBlockSize]);
+      // compiler cast
+      __m512bh q = (__m512bh)q_i;
+
+      // load K for columns [0, 1, ... 7]
+      __m512i k_0_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col0_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_1_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col1_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_2_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col2_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_3_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col3_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_4_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col4_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_5_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col5_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_6_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col6_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      __m512i k_7_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col7_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      // compiler cast
+      __m512bh k_0 = (__m512bh)k_0_i;
+      __m512bh k_1 = (__m512bh)k_1_i;
+      __m512bh k_2 = (__m512bh)k_2_i;
+      __m512bh k_3 = (__m512bh)k_3_i;
+      __m512bh k_4 = (__m512bh)k_4_i;
+      __m512bh k_5 = (__m512bh)k_5_i;
+      __m512bh k_6 = (__m512bh)k_6_i;
+      __m512bh k_7 = (__m512bh)k_7_i;
+
+      // dot product between Q and K_i
+      accum_0 = _mm512_dpbf16_ps(accum_0, q, k_0);
+      accum_1 = _mm512_dpbf16_ps(accum_1, q, k_1);
+      accum_2 = _mm512_dpbf16_ps(accum_2, q, k_2);
+      accum_3 = _mm512_dpbf16_ps(accum_3, q, k_3);
+      accum_4 = _mm512_dpbf16_ps(accum_4, q, k_4);
+      accum_5 = _mm512_dpbf16_ps(accum_5, q, k_5);
+      accum_6 = _mm512_dpbf16_ps(accum_6, q, k_6);
+      accum_7 = _mm512_dpbf16_ps(accum_7, q, k_7);
+    }
+
+    fp32_results.at(0) = _mm512_reduce_add_ps(accum_0);
+    fp32_results.at(1) = _mm512_reduce_add_ps(accum_1);
+    fp32_results.at(2) = _mm512_reduce_add_ps(accum_2);
+    fp32_results.at(3) = _mm512_reduce_add_ps(accum_3);
+    fp32_results.at(4) = _mm512_reduce_add_ps(accum_4);
+    fp32_results.at(5) = _mm512_reduce_add_ps(accum_5);
+    fp32_results.at(6) = _mm512_reduce_add_ps(accum_6);
+    fp32_results.at(7) = _mm512_reduce_add_ps(accum_7);
+
+    __m256 dst = _mm256_loadu_ps(fp32_results.data());
+    __m128bh dst_bf16 = _mm256_cvtneps_pbh(dst);
+    _mm_storeu_si128(
+      reinterpret_cast<__m128i*>(&bmm1_out_base[kBlockSize * block_idx]),
+      (__m128i)dst_bf16
+    );
+  }
+
+  const auto offset = num_blocks * kBlockSize;
+
+  for (auto i = offset; i < num_elems; i++) {
+    auto col0_idx = i;
+
+    // accumulator for column
+    __m512 accum_0 = _mm512_setzero_ps();
+
+    for (auto acc_block_idx = 0; acc_block_idx < num_acc_blocks;
+         acc_block_idx++) {
+      // load Q
+      __m512i q_i =
+        _mm512_loadu_si512(&bmm1_in0_base[acc_block_idx * kAccBlockSize]);
+      // compiler cast
+      __m512bh q = (__m512bh)q_i;
+
+      // load K
+      __m512i k_0_i = _mm512_loadu_si512(
+        &bmm1_in1_base[col0_idx * head_dim + acc_block_idx * kAccBlockSize]
+      );
+      // compiler cast
+      __m512bh k_0 = (__m512bh)k_0_i;
+
+      // dot product between Q and K_i
+      accum_0 = _mm512_dpbf16_ps(accum_0, q, k_0);
+    }
+
+    float output = _mm512_reduce_add_ps(accum_0);
+
+    bmm1_out_base[i] = float_to_bfloat16(output);
+  }
+}
+
+struct bmm2_info {
+  const std::uint16_t* bmm2_in0;  // [N, 1, key_chunk_size]
+  const std::uint16_t* bmm2_in1;  // [kv_num_heads, key_chunk_size, H]
+  std::uint16_t* bmm2_out;        // [N, 1, H]
+  const int num_heads;
+  const int64_t kv_num_heads;
+  const int64_t ratio;
+  const int head_dim;
+  const size_t key_start_pos_id;  // half open interval [start, end)
+  const size_t key_end_pos_id;
+  const int64_t key_chunk_size;
+};
+
+static void av_bmm2(void* payload, size_t index) {
+  const bmm2_info* bmm_payload = (const bmm2_info*)payload;
+
+  const auto head_index = index;
+  const auto ratio = bmm_payload->ratio;
+  const auto kv_head_idx = index / ratio;
+  const auto head_dim = bmm_payload->head_dim;
+  const auto key_chunk_size = bmm_payload->key_chunk_size;
+
+  const auto key_start_pos_id = bmm_payload->key_start_pos_id;
+  const auto key_end_pos_id = bmm_payload->key_end_pos_id;
+  const auto num_elems = key_end_pos_id - key_start_pos_id;
+
+  const std::uint16_t* bmm2_in0_base =
+    &bmm_payload->bmm2_in0[head_index * key_chunk_size + key_start_pos_id];
+  const std::uint16_t* bmm2_in1_base =
+    &bmm_payload->bmm2_in1
+       [kv_head_idx * key_chunk_size * head_dim + key_start_pos_id * head_dim];
+  std::uint16_t* bmm2_out_base =
+    &bmm_payload->bmm2_out[head_index * 1 * head_dim];
+
+  if (num_elems == 0) {
+    memset(bmm2_out_base, 0, head_dim * sizeof(std::uint16_t));
+    return;
+  }
+
+  std::vector<float> fp32_result(16, 0);
+
+  if (head_dim % 16 != 0) {
+    throw std::runtime_error("assume head dim is multiple of 16");
+  }
+
+  constexpr size_t kBlkSize = 16;
+  const auto num_blocks = head_dim / kBlkSize;
+
+  for (auto block_idx = 0; block_idx < num_blocks; block_idx++) {
+    constexpr size_t kRowBlkSize = 4;
+    const auto num_row_blocks = num_elems / kRowBlkSize;
+
+    __m512 accum_0 = _mm512_setzero_ps();
+    __m512 accum_1 = _mm512_setzero_ps();
+    __m512 accum_2 = _mm512_setzero_ps();
+    __m512 accum_3 = _mm512_setzero_ps();
+
+    for (auto row_block_idx = 0; row_block_idx < num_row_blocks;
+         row_block_idx++) {
+      // load 4 vals from single row of a
+      float a_0_s =
+        bfloat16_to_float_single(bmm2_in0_base[row_block_idx * kRowBlkSize]);
+      float a_1_s = bfloat16_to_float_single(
+        bmm2_in0_base[row_block_idx * kRowBlkSize + 1]
+      );
+      float a_2_s = bfloat16_to_float_single(
+        bmm2_in0_base[row_block_idx * kRowBlkSize + 2]
+      );
+      float a_3_s = bfloat16_to_float_single(
+        bmm2_in0_base[row_block_idx * kRowBlkSize + 3]
+      );
+
+      auto row0_idx = row_block_idx * kRowBlkSize;
+      auto row1_idx = row_block_idx * kRowBlkSize + 1;
+      auto row2_idx = row_block_idx * kRowBlkSize + 2;
+      auto row3_idx = row_block_idx * kRowBlkSize + 3;
+
+      // load 16 vals from 4 rows of V
+      __m256i v_0_i = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(
+          &bmm2_in1_base[row0_idx * head_dim + block_idx * kBlkSize]
+        )
+      );
+      __m256i v_1_i = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(
+          &bmm2_in1_base[row1_idx * head_dim + block_idx * kBlkSize]
+        )
+      );
+      __m256i v_2_i = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(
+          &bmm2_in1_base[row2_idx * head_dim + block_idx * kBlkSize]
+        )
+      );
+      __m256i v_3_i = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(
+          &bmm2_in1_base[row3_idx * head_dim + block_idx * kBlkSize]
+        )
+      );
+
+      // broadcast scalr values
+      __m512 a_0 = _mm512_set1_ps(a_0_s);
+      __m512 a_1 = _mm512_set1_ps(a_1_s);
+      __m512 a_2 = _mm512_set1_ps(a_2_s);
+      __m512 a_3 = _mm512_set1_ps(a_3_s);
+
+      // compiler cast
+      __m256bh v_0_bf = (__m256bh)v_0_i;
+      __m256bh v_1_bf = (__m256bh)v_1_i;
+      __m256bh v_2_bf = (__m256bh)v_2_i;
+      __m256bh v_3_bf = (__m256bh)v_3_i;
+
+      // convert to float32
+      __m512 v_0 = _mm512_cvtpbh_ps(v_0_bf);
+      __m512 v_1 = _mm512_cvtpbh_ps(v_1_bf);
+      __m512 v_2 = _mm512_cvtpbh_ps(v_2_bf);
+      __m512 v_3 = _mm512_cvtpbh_ps(v_3_bf);
+
+      // fused multiply-add
+      accum_0 = _mm512_fmadd_ps(a_0, v_0, accum_0);
+      accum_1 = _mm512_fmadd_ps(a_1, v_1, accum_1);
+      accum_2 = _mm512_fmadd_ps(a_2, v_2, accum_2);
+      accum_3 = _mm512_fmadd_ps(a_3, v_3, accum_3);
+    }
+
+    auto offset = num_row_blocks * kRowBlkSize;
+
+    for (auto i = offset; i < num_elems; i++) {
+      float a_0_s = bfloat16_to_float_single(bmm2_in0_base[i]);
+
+      __m256i v_0_i = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(
+          &bmm2_in1_base[i * head_dim + block_idx * kBlkSize]
+        )
+      );
+
+      __m512 a_0 = _mm512_set1_ps(a_0_s);
+
+      __m256bh v_0_bf = (__m256bh)v_0_i;
+
+      __m512 v_0 = _mm512_cvtpbh_ps(v_0_bf);
+
+      accum_0 = _mm512_fmadd_ps(a_0, v_0, accum_0);
+    }
+
+    accum_0 = _mm512_add_ps(accum_0, accum_1);
+    accum_2 = _mm512_add_ps(accum_2, accum_3);
+    accum_0 = _mm512_add_ps(accum_0, accum_2);
+
+    __m256bh out_bf16 = _mm512_cvtneps_pbh(accum_0);
+    _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(&bmm2_out_base[block_idx * kBlkSize]),
+      (__m256i)out_bf16
+    );
+  }
+}
+
+void AMDGQOKernel::token_mha_cpu(
+  const GQAattrs& gqa_attrs, OrtTensor& query_states, OrtTensor& key_states,
+  OrtTensor& value_states, const int rewind_pos, const int64_t total_seq_len,
+  const int64_t local_window_size, const bool cast_kv_bfloat16
+) {
+  Ort::KernelContext ctx{context_p_};
+
+  const int B = query_states.shape[0];    // Batch
+  const int N = query_states.shape[1];    // Number of heads
+  const int S_q = query_states.shape[2];  // Sequence length of query
+  const int H = query_states.shape[3];    // Head_size
+  const int S_k = key_states.shape[2];    // Sequence length of key
+
+  // [N, 1, H] == [1, N, H]
+  auto xCasted = static_cast<uint16_t*>(query_states.data);
+  // [kv_num_heads, total_seq_len, head_dim]
+  auto yCasted = static_cast<uint16_t*>(key_states.data);
+  auto y2Casted = static_cast<uint16_t*>(value_states.data);
+
+  const bool local_window_en = local_window_size != -1;
+
+  float attention_scale = scale_;
+
+  const std::int32_t seq_len = gqa_attrs.seq_len;
+
+  if (1 != seq_len) {
+    throw std::runtime_error("only supported for token phase");
+  }
+
+  auto key_start_pos_id = 0;
+  auto key_end_pos_id = total_seq_len - 1;
+
+  if ((0 < local_window_size) && (total_seq_len > local_window_size)) {
+    key_start_pos_id = total_seq_len - local_window_size;
+  }
+
+  int key_chunk_size = std::min((int)total_seq_len, kTokenContextMaxSize);
+
+  if (local_window_en) {
+    key_chunk_size = std::min(key_chunk_size, (int)local_window_size);
+  }
+
+  constexpr auto kNumQueryToken = 1;
+
+  const auto kv_chunk_size =
+    kv_num_heads_ * key_chunk_size * H * sizeof(std::uint16_t);
+
+  const auto bmm1_out_chunk_size =
+    N * kNumQueryToken * key_chunk_size * sizeof(std::uint16_t);
+
+  const auto bmm2_out_chunk_size =
+    N * kNumQueryToken * H * sizeof(std::uint16_t);
+
+  // xrt::bo bmm1_scratch_input = xrt::bo(
+  //   ss_->bmm1_outputs_[0], bmm1_input_scratch_size_,
+  //   bmm1_input_scratch_offset_
+  //);
+
+  //// layout is [bmm2_final_out | V_chunk]
+  // xrt::bo bmm2_scratch_input = xrt::bo(
+  //   ss_->bmm2_outputs_[0], bmm2_input_scratch_size_,
+  //   bmm2_input_scratch_offset_
+  //);
+
+  //[k_chunk_bmm2_chunk_out | bmm1_chunk_out | v_chunk]
+  auto mha_rmm_buffer = allocator_.AllocateBuffer(
+    std::max(kv_chunk_size, bmm2_out_chunk_size) + bmm1_out_chunk_size +
+    kv_chunk_size
+  );
+
+  uint8_t* buf = mha_rmm_buffer.Data<uint8_t>();
+
+  uint16_t* k_bo_map =
+    (std::uint16_t*)buf;  // bmm1_scratch_input.map<uint16_t*>(); K
+  uint16_t* v_bo_map = (std::uint16_t*)&buf
+    [std::max(kv_chunk_size, bmm2_out_chunk_size) +
+     bmm1_out_chunk_size];  // bmm2_scratch_input.map<uint16_t*>(); V
+
+  uint16_t* bmm1_out_map = (std::uint16_t*)&buf[std::max(
+    kv_chunk_size, bmm2_out_chunk_size
+  )];  // ss_->bmm1_outputs_[0].map<uint16_t*>(); bmm1 output
+  uint16_t* bmm2_out_map =
+    k_bo_map;  // in shared buffer this is assumed to be sized to hold both
+
+  int remaining_key_len = key_end_pos_id - key_start_pos_id + 1;
+
+  std::vector<row_mask_info> softmax_mask_info(kNumQueryToken);
+
+  std::vector<softmax_row_state> softmax_state(N * kNumQueryToken);
+
+  std::vector<float> cpu_attention_score_acc(kNumQueryToken * N * H, 0.0f);
+
+  auto key_chunk_idx = 0;
+
+  for (auto pos_id = key_start_pos_id; pos_id <= key_end_pos_id;
+       pos_id += key_chunk_size) {
+    const int num_key_datums = std::min(remaining_key_len, key_chunk_size);
+
+    remaining_key_len -= num_key_datums;
+
+    // copy over chunks for each kv head - K_j, V_j
+    // memoy layout [kv_num_heads_, key_chunk_size, H]
+    // valid data [kv_num_heads_, pos_id: pos_id + num_key_datums - 1, H]
+    if (!cast_kv_bfloat16) {
+      for (auto kv_head_idx = 0; kv_head_idx < kv_num_heads_; kv_head_idx++) {
+        memcpy(
+          &k_bo_map[kv_head_idx * key_chunk_size * H],
+          &yCasted
+            [kv_head_idx * S_k * H +
+             (key_chunk_idx * key_chunk_size + key_start_pos_id) * H],
+          num_key_datums * H * sizeof(uint16_t)
+        );
+        memcpy(
+          &v_bo_map[kv_head_idx * key_chunk_size * H],
+          &y2Casted
+            [kv_head_idx * S_k * H +
+             (key_chunk_idx * key_chunk_size + key_start_pos_id) * H],
+          num_key_datums * H * sizeof(uint16_t)
+        );
+      }
+    } else {
+      // need to cast from float16 to bfloat16
+      for (auto kv_head_idx = 0; kv_head_idx < kv_num_heads_; kv_head_idx++) {
+        convert_buffer_float16_to_bfloat16(
+          &k_bo_map[kv_head_idx * key_chunk_size * H],
+          &yCasted
+            [kv_head_idx * S_k * H +
+             (key_chunk_idx * key_chunk_size + key_start_pos_id) * H],
+          num_key_datums * H
+        );
+        convert_buffer_float16_to_bfloat16(
+          &v_bo_map[kv_head_idx * key_chunk_size * H],
+          &y2Casted
+            [kv_head_idx * S_k * H +
+             (key_chunk_idx * key_chunk_size + key_start_pos_id) * H],
+          num_key_datums * H
+        );
+      }
+    }
+
+    // create mask for Q x K^T
+    // rewind_pos is absolute starting position_id of query
+    populate_mask(
+      softmax_mask_info, rewind_pos, pos_id, kNumQueryToken, num_key_datums,
+      local_window_size
+    );
+
+    // run Q x K^T
+    // output memory layout [N, 1, key_chunk_size]
+
+    bmm1_info payload_bmm1 = {
+      xCasted,
+      k_bo_map,
+      bmm1_out_map,
+      N,
+      kv_num_heads_,
+      N / kv_num_heads_,
+      H,
+      softmax_mask_info.at(0).start_index,
+      softmax_mask_info.at(0).end_index,
+      key_chunk_size
+    };
+
+    ctx.ParallelFor(qk_bmm1, static_cast<size_t>(N), 0, &payload_bmm1);
+
+    // run masked softmax
+    softmax_info payload_softmax = {
+      bmm1_out_map,
+      bmm1_out_map,
+      softmax_mask_info.data(),
+      has_head_sink_ ? head_sink_.data() : nullptr,
+      N,
+      kNumQueryToken,
+      num_key_datums,
+      kNumQueryToken,
+      key_chunk_size,
+      attention_scale,
+      softmax_state.data()
+    };
+
+    ctx.ParallelFor(
+      calc_row_softmax_state, static_cast<size_t>(N), 0, &payload_softmax
+    );
+
+    // run A x V
+    // output is [N, 1, H]
+
+    bmm2_info payload_bmm2 = {
+      bmm1_out_map,
+      v_bo_map,
+      bmm2_out_map,
+      N,
+      kv_num_heads_,
+      N / kv_num_heads_,
+      H,
+      softmax_mask_info.at(0).start_index,
+      softmax_mask_info.at(0).end_index,
+      key_chunk_size
+    };
+
+    ctx.ParallelFor(av_bmm2, static_cast<size_t>(N), 0, &payload_bmm2);
+
+    // run scaled accumulation
+    accumulate_info payload_accumulate = {
+      cpu_attention_score_acc.data(),
+      bmm2_out_map,
+      softmax_state.data(),
+      kNumQueryToken,
+      N,
+      H,
+      kNumQueryToken
+    };
+
+    ctx.ParallelFor(
+      accumulate_row_attention_scores, static_cast<size_t>(N), 0,
+      &payload_accumulate
+    );
+
+    // update loop state
+    key_chunk_idx++;
+  }
+
+  //// sync K/V chunk buffers back to device
+  // bmm1_scratch_input.sync(
+  //   XCL_BO_SYNC_BO_TO_DEVICE, std::max(kv_chunk_size, bmm2_out_chunk_size), 0
+  //);
+  // bmm2_scratch_input.sync(XCL_BO_SYNC_BO_TO_DEVICE, kv_chunk_size, 0);
+  // ss_->bmm1_outputs_[0].sync(XCL_BO_SYNC_BO_TO_DEVICE, bmm1_out_chunk_size,
+  // 0);
+
+  // copy to bmm2 output that will feed o_proj matmul
+  uint16_t* bmm2_out_ptr = ss_->bmm2_outputs_[0].map<uint16_t*>();
+  update_bmm2_output(
+    bmm2_out_ptr, cpu_attention_score_acc, kNumQueryToken, N, H
+  );
+
+  ss_->bmm2_outputs_[0].sync(
+    XCL_BO_SYNC_BO_TO_DEVICE, kNumQueryToken * N * H * sizeof(std::uint16_t), 0
+  );
+}
+
 void AMDGQOKernel::chunked_mha_aie(
   const GQAattrs& gqa_attrs, OrtTensor& query_states, OrtTensor& key_states,
   OrtTensor& value_states, const int rewind_pos, const int64_t total_seq_len,
@@ -2674,8 +3332,8 @@ void AMDGQOKernel::chunked_mha_aie(
 
         // create mask for Q_i * K_j
         populate_mask(
-          softmax_mask_info, query_start_pos_id, key_start_pos_id,
-          context_chunk_size, num_datums, num_key_datums, local_window_size
+          softmax_mask_info, query_start_pos_id, key_start_pos_id, num_datums,
+          num_key_datums, local_window_size
         );
         // running softmax on cpu, so sync is not needed
         // softmax_mask_.sync(XCL_BO_SYNC_BO_TO_DEVICE, mask_size, 0);
@@ -2698,6 +3356,7 @@ void AMDGQOKernel::chunked_mha_aie(
           N,
           num_datums,
           num_key_datums,
+          context_chunk_size,
           context_chunk_size,
           attention_scale,
           softmax_state.data()
@@ -2813,7 +3472,8 @@ void AMDGQOKernel::aie_execute(
       // on Linux, cannot execute in async mode: xrt::run objects go out of
       // scope in DD eager execute. Windows makes a copy unlike Linux
 #ifdef _WIN32
-      const bool wait = false;
+      // AIE4 is not able to run async mode
+      const bool wait = mladfVersion() == MladfVersion::aie4_v1;
 #else
       const bool wait = true;
 #endif  // _WIN32
@@ -2874,8 +3534,7 @@ void AMDGQOKernel::aie_execute(
       static_cast<size_t>(num_heads_), static_cast<size_t>(seq_mha),
       static_cast<size_t>(head_size_)
     };
-    size_t len =
-      (rewind_pos || (local_window_size != -1)) ? total_seq_len : seq_mha;
+    size_t len = rewind_pos ? total_seq_len : seq_mha;
     std::vector<size_t> b_shape = {
       static_cast<size_t>(kv_num_heads_), static_cast<size_t>(len),
       static_cast<size_t>(head_size_)
@@ -2885,13 +3544,13 @@ void AMDGQOKernel::aie_execute(
     NPUTensor input_tensor_1 = {nullptr, b_shape, "bfloat16"};
     std::vector<NPUTensor> inputs = {input_tensor_0, input_tensor_1};
     std::vector<NPUTensor> outputs;
-    ss_->flash_mha_->set_tensor_shape(inputs, outputs);
+    flash_mha_->set_tensor_shape(inputs, outputs);
     bool en_cpy = qkv_out_size_.at(0) != ss_->bmm1_inputs_[0].size();
     execute_mha(
-      ss_->flash_mha_.get(), ss_->flash_in_, kernel_shape, gqa_attrs.seq_len,
+      flash_mha_.get(), ss_->flash_in_, kernel_shape, gqa_attrs.seq_len,
       total_seq_len, npu_kernel_size_, ss_->bmm2_outputs_, xCasted, yCasted,
       y2Casted, qkv_out_size_, true, continueOnException(), name(),
-      use_aie_rope_, en_cpy, rewind_pos
+      use_aie_rope_, en_cpy, rewind_pos, sink_bo_
     );
   }
 }
@@ -3228,9 +3887,13 @@ void AMDGQOKernel::UpdateSharedBuffer(size_t kernel_size) {
     //   (size_t)num_heads_, (size_t)kv_num_heads_, 128,
     //   (size_t)kernel_size, (size_t)head_size_
     // };
-    ss_->flash_mha_->set_tensor_shape(inputs_mha, outputs_mha);
+    auto attr = getCommonAttrs();
+    if (local_window_size_ > 0) {
+      attr["window_size"] = local_window_size_;
+    }
+    flash_mha_->set_tensor_shape(inputs_mha, outputs_mha, attr);
     std::vector<OpArgMap> arg_map =
-      ss_->flash_mha_->get_buffer_reqs(inputs_mha, outputs_mha, attrs);
+      flash_mha_->get_buffer_reqs(inputs_mha, outputs_mha, attrs);
     auto size_map = get_NPU_tensor_size(arg_map, mladfVersion());
     bmm2_output = size_map["out"];
     bmm1_in0 = size_map["in0"];
@@ -3286,12 +3949,15 @@ void AMDGQOKernel::UpdateSharedBuffer(size_t kernel_size) {
   const auto bmm2_size = std::max(bmm2_output, size_map_gemm["in0"]);
   shared_buffer_reqs.emplace_back("bmm2_out", alignTo4096(bmm2_size));
   // TODO this scratch buffer can be reused with bmm1 bos
-  if (mladfVersion() == "v2") {
+  if (size_map_gemm.find("scratch") != size_map_gemm.end()) {
     // TODO(gaoyue): scratch shares same space with bmm but current design make
     // it not able to share inside one group_name and the *2 factor is needed
     shared_buffer_reqs.emplace_back(
       "scratch", alignTo4096(size_map_gemm["scratch"] * 2)
     );
+    has_scratch_buffer_ = true;
+  } else {
+    has_scratch_buffer_ = false;
   }
 
   shared_buffer_reqs.emplace_back(
@@ -3452,13 +4118,6 @@ void AMDGQOKernel::Compute(
   auto sin_cache = ctx.GetInput(kSinIdx);
   const uint16_t* mm_inp = nullptr;
   RyzenMM::BufferRef output_ptr1;
-
-  if (use_aie_rope_ && !ss_->cos_sin_cache_) {
-    std::tie(ss_->cos_sin_cache_, ss_->cos_shape_) =
-      getRopeCache(&allocator_, cos_cache, sin_cache, rotary_interleaved_);
-  } else if (ss_->cos_shape_.empty()) {
-    ss_->cos_shape_ = cos_cache.GetTensorTypeAndShapeInfo().GetShape();
-  }
   // Query data / shape
   auto qkv_shape = packed_qkv.GetTensorTypeAndShapeInfo().GetShape();
   auto past_k_shape = past_k.GetTensorTypeAndShapeInfo().GetShape();
@@ -3467,6 +4126,20 @@ void AMDGQOKernel::Compute(
   auto batch_size = qkv_shape[0];
   gqa_attrs.batch_size = batch_size;
   auto seq_len = qkv_shape[1];
+  const bool is_prefill = seq_len != 1;
+  is_prefill_ = is_prefill;
+
+  // TODO aie rope just work for model just has single rope cache
+  if (use_aie_rope_ &&
+      (!ss_->cos_sin_cache_ ||
+       ((ss_->rope_name_ != rope_cache_name_) && is_prefill))) {
+    std::tie(ss_->cos_sin_cache_, ss_->cos_shape_) = getRopeCache(
+      &allocator_, cos_cache, sin_cache, rotary_interleaved_, mladfVersion()
+    );
+  } else if (ss_->cos_shape_.empty()) {
+    ss_->cos_shape_ = cos_cache.GetTensorTypeAndShapeInfo().GetShape();
+  }
+
   // todo gqa_attrs.seq_len
   gqa_attrs.seq_len = seq_len;
   auto head_size = past_k_shape[3];
@@ -3481,25 +4154,32 @@ void AMDGQOKernel::Compute(
 
   const int32_t* seq_len_k = seqlens_k.GetTensorData<int32_t>();
   int total_seq_len = seq_len_k[0] + 1;
+  const auto& flash_mha_granularity = setFlashMhaGranularity();
   npu_kernel_size_ = getNPUKernelGranularity(
-    total_seq_len, use_flash_mha_ ? flash_mha_granularity_
+    total_seq_len, use_flash_mha_ ? flash_mha_granularity
                                   : std::vector<size_t>{1024, 2048, 3072, 4096}
   );
+
+  const auto is_supported =
+    mha_aie_kernel_info_.isSeqSupported(gqa_attrs.seq_len);
+  if (mladfVersion() == MladfVersion::aie4_v1 && !is_supported) {
+    // TODO: The output is incorrect when both RoPE and FlashMHA are enabled,
+    // and TXN padding is required on AIE4.
+    use_aie_rope_ = 0;
+  }
 
   npu_kernel_size_q_ = getNPUKernelGranularity(seq_len);
   context_chunk_size_ =
     getContextChunkSize(seq_len, total_seq_len, local_window_size_);
 
-  const bool is_prefill = seq_len != 1;
-
-  use_context_chunk_ = run_context_chunk(total_seq_len);
+  use_context_chunk_ = run_context_chunk(total_seq_len, seq_len);
 
   q_seq_len_ = npu_kernel_size_;
   total_seq_len_ = total_seq_len;
 
   bool use_aie_gqa = is_prefill && use_aie_gqo_;
 
-  const bool use_aie_chunk_gqa = use_aie_gqa && use_context_chunk_;
+  const bool use_aie_chunk_gqa = use_aie_gqo_ && use_context_chunk_;
   const bool use_aie_single_gqa =
     use_aie_gqa && (seq_len <= maxSeqLength()) && !use_aie_chunk_gqa;
 
@@ -3525,7 +4205,8 @@ void AMDGQOKernel::Compute(
   Ort::BFloat16_t* q_data_ptr = nullptr;
   uint16_t* k_data_ptr = nullptr;
 
-  bool create_fp32_cache = ss_->cos_cache_fp32_.empty();
+  bool create_fp32_cache =
+    (ss_->rope_name_ != rope_cache_name_) || ss_->cos_cache_fp32_.empty();
   // AIE RoPE is disabled, AIE MHA is disabled, context chunking flow
   bool use_cpu_rope = (!use_aie_rope_) || (!use_aie_gqo_) || use_context_chunk_;
   // use CPU during token phase
@@ -3607,7 +4288,7 @@ void AMDGQOKernel::Compute(
       }
     }
   }
-
+  ss_->rope_name_ = rope_cache_name_;
   Ort::ConstValue sin_cache_fp32 = ss_->sin_cache_fp32_tensor_.GetConst();
   Ort::ConstValue cos_cache_fp32 = ss_->cos_cache_fp32_tensor_.GetConst();
 
@@ -3702,6 +4383,8 @@ void AMDGQOKernel::Compute(
 
     } else {  // For Running ORT gqo Op
       v_data_buffer = {};
+      v_data_ptr =
+        const_cast<Ort::BFloat16_t*>(value.GetTensorData<Ort::BFloat16_t>());
     }
   }
 
@@ -3766,7 +4449,6 @@ void AMDGQOKernel::Compute(
     );
   }
   std::future<void> kv_cache_update;
-
   if (use_aie_chunk_gqa) {
     runAieChunkGqa(
       gqa_attrs, total_seq_len, q_data_ptr, k_data_ptr, v_data_ptr, past_k_data,
@@ -3797,8 +4479,9 @@ void AMDGQOKernel::Compute(
   const Clock::time_point gqo_compute_end = Clock::now();
 #endif
 
-  auto output_cast =
-    executeMatMulNBits(context, qkv_shape, is_prefill, seq_len, mm_inp);
+  auto output_cast = executeMatMulNBits(
+    context, qkv_shape, is_prefill, seq_len, mm_inp, use_aie_chunk_gqa
+  );
   PROFILING_START(output_format2)
 
   output_ptr1 = {};
@@ -3869,7 +4552,8 @@ void AMDGQOKernel::Compute(
 
 bool AMDGQOKernel::executeMatMulNBits(
   OrtKernelContext* context, const std::vector<int64_t>& qkv_shape,
-  bool is_prefill, int64_t seq_len, const uint16_t* mm_inp
+  bool is_prefill, int64_t seq_len, const uint16_t* mm_inp,
+  bool use_aie_chunk_gqa
 ) {
   PROFILING_START(execute_matmul)
   Ort::KernelContext ctx{context};
@@ -3897,7 +4581,12 @@ bool AMDGQOKernel::executeMatMulNBits(
   std::pair<size_t, size_t> weights_shape = {
     matmulnbits_attrs_.k, matmulnbits_attrs_.n
   };
-  if (is_prefill && use_aie_gqo_ && seq_len <= maxSeqLength()) {
+
+  bool is_gqa_aie_output =
+    (is_prefill && use_aie_gqo_ && seq_len <= maxSeqLength()) ||
+    use_aie_chunk_gqa;
+
+  if (is_gqa_aie_output) {
     executeMatMulNBitsAie(
       ss_->bmm2_outputs_, out_ptr, output_shape1, weights_shape,
       static_cast<int>(matmulnbits_attrs_.block_size), cnt_
@@ -3999,8 +4688,9 @@ void AMDGQOKernel::setContextChunkSize(
   }
 }
 
-bool AMDGQOKernel::run_context_chunk(size_t total_seq_len) {
-  return (total_seq_len > context_size_threshold_) && context_chunk_en_ &&
+bool AMDGQOKernel::run_context_chunk(size_t total_seq_len, size_t seq_len) {
+  return (total_seq_len > context_size_threshold_) &&
+         (seq_len > context_size_threshold_) && context_chunk_en_ &&
          (!use_flash_mha_);
 }
 
@@ -5075,6 +5765,7 @@ void AMDGQOKernel::runAieChunkGqa(
 
   // start position id
   auto rewind_pos = total_seq_len - gqa_attrs.seq_len;
+  bool is_token_phase = (1 == gqa_attrs.seq_len);
 
   // bfloat16 or float16
   const auto kv_dtype = gqa_attrs.present_k_data_type;
@@ -5153,12 +5844,19 @@ void AMDGQOKernel::runAieChunkGqa(
 
   OrtTensor value_states = {kv_shape, gqa_attrs.k_num, (void*)present_v_data};
 
-  const bool use_aie_rope = false;
-  chunked_mha_aie(
-    gqa_attrs, query_states, key_states, value_states, rewind_pos,
-    total_seq_len, local_window_size_, context_chunk_size_, use_aie_rope,
-    cast_kv
-  );
+  if (is_token_phase) {
+    token_mha_cpu(
+      gqa_attrs, query_states, key_states, value_states, rewind_pos,
+      total_seq_len, local_window_size_, cast_kv
+    );
+  } else {
+    const bool use_aie_rope = false;
+    chunked_mha_aie(
+      gqa_attrs, query_states, key_states, value_states, rewind_pos,
+      total_seq_len, local_window_size_, context_chunk_size_, use_aie_rope,
+      cast_kv
+    );
+  }
 }
 
 std::future<void> AMDGQOKernel::runAieGqa(

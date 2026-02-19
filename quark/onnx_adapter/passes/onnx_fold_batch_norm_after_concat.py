@@ -292,7 +292,7 @@ class ONNXFoldBatchNormAfterConcatPass(ONNXAdapterPass):
         Returns:
             ModelProto: Output model with BatchNorm folded if enabled.
         """
-        if "fold_batch_norm_after_concat" in config and config["fold_batch_norm_after_concat"] is not None:
+        if "fold_batch_norm_after_concat" in config and config["fold_batch_norm_after_concat"]:
             model = self._onnx_fold_batch_norm_after_concat(model)
         else:
             logger.warning(

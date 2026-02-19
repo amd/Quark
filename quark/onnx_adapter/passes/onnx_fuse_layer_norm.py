@@ -106,7 +106,7 @@ class ONNXFuseLayerNormPass(ONNXAdapterPass):
         Returns:
             onnx.ModelProto: The resulting ONNX model after executing this pass.
         """
-        if "fuse_layer_norm" in config and config["fuse_layer_norm"] is not None:
+        if "fuse_layer_norm" in config and config["fuse_layer_norm"]:
             model = self._onnx_fuse_layer_norm(model)
         else:
             logger.warning(

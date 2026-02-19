@@ -38,6 +38,9 @@ class LutKernel : public HybridKernel {
   int64_t embedding_dim_ = 0;
   bool use_external_data_ = false;
   std::string external_data_path_;
+  size_t datum_size_ = 0;
+
+  static constexpr size_t kLUTIdx = 0;
 
   // file IO
 #ifdef _WIN32

@@ -35,8 +35,7 @@ JitWtsLoader::JitWtsLoader(
                 .string();
 
   m_fileHandle = CreateFileA(
-    m_wtsFile.c_str(), GENERIC_READ | GENERIC_WRITE,
-    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+    m_wtsFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
     FILE_FLAG_OVERLAPPED, NULL
   );
   if (m_fileHandle == INVALID_HANDLE_VALUE) {

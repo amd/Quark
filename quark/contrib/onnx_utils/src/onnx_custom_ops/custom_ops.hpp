@@ -5,6 +5,8 @@
 
 #include <onnxruntime_c_api.h>
 
+#include <atomic>
+
 #ifndef ONNX_UTILS_EXPORT
 #ifdef _WIN32
 #define ONNX_UTILS_EXPORT __declspec(dllexport)
@@ -12,6 +14,12 @@
 #define ONNX_UTILS_EXPORT
 #endif
 #endif
+
+namespace ryzenai {
+using RegisterCustomOpsFunction = OrtStatus*(ORT_API_CALL*)(OrtSessionOptions*,
+                                                            const OrtApiBase*);
+extern std::atomic<RegisterCustomOpsFunction> RegisterCustomOpsOverride;
+}  // namespace ryzenai
 
 #ifdef __cplusplus
 extern "C" {

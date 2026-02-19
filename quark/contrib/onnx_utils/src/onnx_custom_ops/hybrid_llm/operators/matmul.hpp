@@ -68,8 +68,10 @@ struct MatMul : MatMulBase<kMatMul> {
   ONNXTensorElementDataType GetInputType(size_t index) const noexcept override {
     switch (index) {
       case 0:
-        return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        // want to allow bfloat16/float16/float32
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
       case 1:
+        // currently weights are float32 since we use CPU ort
         return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
       default:
         return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
@@ -79,11 +81,7 @@ struct MatMul : MatMulBase<kMatMul> {
   ONNXTensorElementDataType GetOutputType(
     size_t index
   ) const noexcept override {
-    if (index == 0) {
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
-    } else {
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
-    }
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
   }
 };
 

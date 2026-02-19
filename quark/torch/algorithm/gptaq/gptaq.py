@@ -15,6 +15,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
@@ -296,7 +297,7 @@ class GptaqProcessor(BaseHessianProcessor):
     ) -> None:
         # Process one sample at a time to ensure the quantized input from each sample's
         # quantized forward pass is available for the corresponding G calculation
-        for batch_idx in range(num_batches):
+        for batch_idx in tqdm(range(num_batches), desc="Collecting GPTAQ statistics"):
             # block_forward expectes List[torch.Tensor] as input.
             # tensor shape: [1, seq_length, dim]
             batch_input = [layer_inputs[batch_idx]]

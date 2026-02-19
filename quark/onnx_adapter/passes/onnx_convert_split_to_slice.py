@@ -176,7 +176,7 @@ class ONNXConvertSplitToSlicePass(ONNXAdapterPass):
         Returns:
             ModelProto: The updated model after conversion.
         """
-        if "convert_split_to_slice" in config and config["convert_split_to_slice"] is not None:
+        if "convert_split_to_slice" in config and config["convert_split_to_slice"]:
             model = self._onnx_convert_split_to_slice(model)
         else:
             logger.warning(

@@ -443,14 +443,22 @@ class PatternGenerator:
         """
         Generates patterns from the subgraphs.
 
-        This method performs the following steps:
-        1. Initializes an empty list to store patterns.
-        2. Iterates over the subgraphs in reverse order.
-        3. For each subgraph, iterates over its nodes in reverse order.
-        4. Generates input placeholders based on the node connections.
-        5. Constructs patterns based on the node operations and their inputs/outputs.
-        6. Adds unique patterns to the patterns list.
-        7. Sorts the patterns by length in descending order and stores them in the instance variable.
+        This method uses a two-pass approach to correctly establish input/output connections
+        between nodes in the pattern:
+        1. First pass: Assign output variable names (a0, a1, ...) to ALL nodes upfront
+        2. Second pass: Build pattern strings, looking up input connections from the
+           pre-computed output variable map
+
+        This ensures that regardless of node processing order, we can always find the
+        correct variable name for any input that comes from within the subgraph.
+
+        Steps:
+        1. Iterates over the subgraphs in reverse order.
+        2. For each subgraph, iterates over its nodes in reverse order.
+        3. Generates input/output placeholders based on the node connections.
+        4. Constructs pattern strings based on node op_type and inputs/outputs.
+        5. Adds unique patterns to the patterns list.
+        6. Sorts the patterns by length in descending order.
 
         Returns
         -------
@@ -463,34 +471,46 @@ class PatternGenerator:
         if not len(self.subgraphs):
             return patterns
         for subgraph in self.subgraphs[::-1]:
-            node_visited: dict[str, list[str]] = {}
-            pattern: list[str] = []
+            # First pass: assign output variable names to all nodes upfront
+            # This creates a map from output tensor name to variable name (e.g., "a0", "a1", ...)
+            # By doing this first, we ensure all output variables are available when
+            # building input connections in the second pass, regardless of node order.
+            output_var_map: dict[str, str] = {}
             index = 0
+            for node_name in subgraph[::-1]:
+                node = self.node_mapping[node_name]
+                for output_name in node.output:
+                    if output_name:  # Skip optional outputs (empty strings)
+                        output_var_map[output_name] = f"a{index}"
+                        index += 1
+
+            # Second pass: build patterns with correct input/output connections
+            # Now we can look up any input tensor name in output_var_map to find
+            # its corresponding variable name, even if the producer node would be
+            # processed later in a single-pass approach.
+            pattern: list[str] = []
             for node_name in subgraph[::-1]:
                 node = self.node_mapping[node_name]
                 op_type = node.op_type
                 inputs = node.input
                 input_num = len(inputs)
                 output_num = len(node.output)
+
+                # Build input list - look up each input in the output_var_map
                 input_list = self.generate_placeholders(input_num)
                 for i, input_name in enumerate(inputs):
-                    input_input_nodes = ryzenai_onnx_utils.matcher.find_nodes_by_output(input_name, self.graph)
-                    input_input_node = input_input_nodes[0] if input_input_nodes else None
-                    if not input_input_node:
-                        continue
-                    if input_input_node.name not in subgraph:
-                        continue
-                    if input_input_node.name in node_visited:
-                        output_index = list(input_input_node.output).index(input_name)
-                        new_value = self.get_io_value(node_visited[input_input_node.name][1], output_index)
-                        input_list = self.modify_placeholder(input_list, i, new_value)
-                output_list = self.generate_placeholders(output_num)
-                for output_index in range(output_num):
-                    output_list = self.modify_placeholder(output_list, output_index, f"a{index}")
-                    index += 1
+                    # If this input comes from a node in the subgraph, use its variable name
+                    if input_name in output_var_map:
+                        input_list = self.modify_placeholder(input_list, i, output_var_map[input_name])
 
-                node_visited[node.name] = [input_list, output_list]
+                # Build output list
+                output_list = self.generate_placeholders(output_num)
+                for output_index, output_name in enumerate(node.output):
+                    if output_name in output_var_map:
+                        output_list = self.modify_placeholder(output_list, output_index, output_var_map[output_name])
+
                 pattern.append(f"{op_type}({input_list}, {output_list})")
+
             if pattern not in patterns:
                 patterns.append(pattern)
         patterns = sorted(patterns, key=len, reverse=True)

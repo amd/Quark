@@ -81,6 +81,8 @@ class RotationTrainer(Trainer):
         kwargs.pop("loss_type")
 
         self.original_model = kwargs["original_model"]
+        self.original_model = self.original_model.eval()
+
         kwargs.pop("original_model")
 
         super().__init__(*args, **kwargs)  # type: ignore[no-untyped-call]

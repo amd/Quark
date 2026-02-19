@@ -8,6 +8,7 @@
 
 #include "../../custom_ops.hpp"
 #include "external_data.hpp"
+#include "mladf_version.hpp"
 #include "npu_utils.hpp"
 #include "onnxruntime_cxx_api.h"
 #include "ort.hpp"
@@ -72,9 +73,17 @@ bool NpuOp::freeAfterPrefill(std::string_view node_name) const {
 }
 
 void NpuOp::setLastNode(const proto::Header* header) {
-  auto& last_operators = (header->layers().rbegin())->operators();
+  const auto& last_operators = (header->layers().rbegin())->operators();
+  // AIESW-24175: on Linux (*last_operators.rbegin()) and
+  // last_operators[last_operators.size() - 1] would crash with SIGSEGV, so we
+  // have to iterate through the vector to get the last element. obviosly, empty
+  // last_operators is not a reason.
+#if 0  // TODO: debug why following original code crashes
   auto it = last_operators.rbegin();
   global_last_node_name_ = it != last_operators.rend() ? *it : "";
+#endif
+  global_last_node_name_ = "";
+  for (const auto& op : last_operators) global_last_node_name_ = op;
 }
 
 bool NpuOp::lastNode(std::string_view node_name) {
@@ -281,19 +290,23 @@ void NpuOp::setMaxSeqLength(
 std::size_t NpuOp::maxSeqLength() const { return max_seq_length_; };
 
 void NpuOp::setMladfVersion(const Ort::ConstKernelInfo& info) {
-  std::string is_bfp16;
-  try {
-    is_bfp16 = info.GetAttribute<std::string>("is_bfp16");
-  } catch (const Ort::Exception&) {
-    mladf_version_ = "v1";
-  }
-
-  if (is_bfp16 == "weights") {
-    mladf_version_ = "v2";
-  } else if (is_bfp16.empty()) {
-    mladf_version_ = "v1";
+  // Try to read mladf_version first, then is_bfp16 for backward compatibility
+  const MladfVersion v1 = MladfVersion::v1;
+  const auto mladf_version =
+    getAttribute<std::string>(info, "mladf_version", v1.str());
+  if (mladf_version == v1.str()) {
+    auto is_bfp16 = getAttribute<std::string>(info, "is_bfp16", "");
+    if (is_bfp16 == "weights") {
+      mladf_version_ = MladfVersion::v2;
+    } else if (is_bfp16 == "aie4_v1") {
+      mladf_version_ = MladfVersion::aie4_v1;
+    } else if (is_bfp16.empty()) {
+      mladf_version_ = MladfVersion::v1;
+    } else {
+      throw std::runtime_error("Unsupported is_bfp16 specified: " + is_bfp16);
+    }
   } else {
-    throw std::runtime_error("Unsupported is_bfp16 specified: " + is_bfp16);
+    mladf_version_ = MladfVersion(mladf_version.c_str());
   }
 }
 
@@ -317,7 +330,7 @@ void NpuOp::setQos(
 }
 const std::map<std::string, uint32_t>& NpuOp::qos() const { return qos_map_; }
 
-const std::string& NpuOp::mladfVersion() const { return mladf_version_; }
+const MladfVersion& NpuOp::mladfVersion() const { return mladf_version_; }
 
 void NpuOp::setPdiName(
   const std::unordered_map<std::string, std::string>& session_configs
@@ -329,7 +342,7 @@ const std::string& NpuOp::pdiName() const { return pdi_name_; }
 
 std::map<std::string, std::any> NpuOp::getCommonAttrs() const {
   return {
-    {"op_version", mladfVersion()},
+    {"op_version", mladfVersion().str()},
     {"pdi_name", pdiName()},
     {"preemption", preemption()},
     {"lora", Lora::isEnabled()},

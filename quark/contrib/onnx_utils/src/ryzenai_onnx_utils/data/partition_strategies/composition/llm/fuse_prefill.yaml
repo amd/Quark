@@ -1,0 +1,9 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup: []
+passes:
+    - hybrid_llm_try_reorder_qkv
+    - dd.llm_prefill_to_dd
+cleanup:
+    - promote_slices

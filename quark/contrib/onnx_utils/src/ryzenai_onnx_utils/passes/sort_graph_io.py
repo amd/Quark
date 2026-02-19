@@ -14,6 +14,11 @@ def sort_graph_io(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> None:
+    nested_graph = params.attributes.get("_nested_graph", False)
+    if nested_graph:
+        # for nested graphs, we cannot easily sort IO because it needs changes
+        # to the parent graph as well
+        return
     extractor.model.graph.input.sort(key=lambda x: x.name)
     extractor.model.graph.output.sort(key=lambda x: x.name)
 

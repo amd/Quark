@@ -4,6 +4,9 @@
 #
 
 
+from .compatibility import (
+    check_compatibility_before_quantization,
+)
 from .data_preparation import get_calib_dataloader, get_loader, get_trainer_dataset, get_wikitext2
 from .model_preparation import (
     get_model,
@@ -15,6 +18,7 @@ from .model_preparation import (
 )
 
 __all__ = [
+    "check_compatibility_before_quantization",
     "get_model",
     "get_tokenizer",
     "prepare_for_moe_quant",

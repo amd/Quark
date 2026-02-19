@@ -101,6 +101,7 @@ class ExternalBuffers : public LoraInterface {
   static constexpr size_t kLoraBufIndex_ = 1;
   int lora_ext_buf_offset_ = 0;
   int lora_ext_buf_size_ = 0;
+  ModelType model_type_;
 
   size_t attention_mask_index_ = std::numeric_limits<size_t>::max();
 };

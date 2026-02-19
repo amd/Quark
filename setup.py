@@ -6,16 +6,18 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from setuptools import find_packages, setup
+from setuptools.command.build_py import build_py as _build_py
 from distutils import core
 from distutils.core import Distribution
 from distutils.errors import DistutilsArgError
 
 """
   To make a wheel package:
-    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET
+    $ python -m build . --sdist --wheel --outdir $YOUR_TARGET
   To make a wheel package with specific python version and specific platform:
-    $ python setup.py sdist bdist_wheel -d $YOUR_TARGET --python-tag py39 --plat-name=linux_x86_64
+    $ python -m build . --sdist --wheel --outdir $YOUR_TARGET -C"--python-tag=py39" -C"--plat-name=linux_x86_64"
 
   By default, the generated version is X.Y.Z+git_commit_hash.
   For a nightly build, set the environment var QUARK_NIGHTLY=1 before building the wheel package.
@@ -91,9 +93,47 @@ def read_requirements():
         requirements = f.read().splitlines()
     return requirements
 
+def generate_proto(source_dir: Path, dest_dir: Path, mypy: bool) -> None:
+    """
+    Generate python files from proto source files.
+
+    Args:
+        source_dir (Path): Path to a directory containing .proto files
+        dest_dir (Path): Path to a directory to store generated .py files
+        mypy (bool): Whether to generate mypy type stubs
+
+    Raises:
+        RuntimeError: Raised if protoc fails to generate the files
+    """
+    proto_files = source_dir.glob("*.proto")
+    for proto_file in proto_files:
+        output = dest_dir / proto_file.name.replace(".proto", "_pb2.py")
+
+        # skip generation if output is up-to-date
+        if (not os.path.exists(output) or os.path.getmtime(proto_file) > os.path.getmtime(output)):
+            protoc_command = [ "protoc", f"-I{source_dir}", f"--python_out={dest_dir}" ]
+            if mypy:
+                protoc_command.append(f"--mypy_out={dest_dir}")
+            protoc_command.append(str(proto_file))
+            retval = subprocess.run(protoc_command, capture_output=True)
+            if retval.returncode != 0:
+                raise RuntimeError(f"protoc failed for {proto_file}: {retval.stderr.decode('utf-8')}")
+
+class BuildCommand(_build_py):
+    def run(self):
+        # Generate protobuf files before building
+        source_dir = Path("quark/contrib/onnx_utils/src/onnx_custom_ops")
+        dest_dir = Path("quark/contrib/onnx_utils/src/ryzenai_onnx_utils/proto")
+        generate_proto(source_dir, dest_dir, mypy=True)
+
+        # Continue with the standard build process
+        super().run()
+
 
 def build_config_setup():
-    cmdclass={}
+    cmdclass={
+        "build_py": BuildCommand,
+    }
     return cmdclass
 
 

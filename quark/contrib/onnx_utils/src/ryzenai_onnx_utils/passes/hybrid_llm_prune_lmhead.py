@@ -18,9 +18,7 @@ Example:
 import onnx
 
 import ryzenai_onnx_utils.matcher
-from ryzenai_onnx_utils.typing import PassOutputArgs
-
-from .hybrid_llm_prune_logits import is_logits_node, pruned_tvi
+from ryzenai_onnx_utils.typing import PassOutputArgs, SubPass
 
 
 def replacement(
@@ -34,13 +32,15 @@ def replacement(
 
     matmul_input_name = matmul.input[0]  # usually: normalized hidden states
 
-    # If this MatMul is NOT actually producing a model output (not end of graph),
-    # we do NOT prune it — only prune FINAL MatMul.
-    if not ryzenai_onnx_utils.matcher.is_output_edge(matmul.output[0], extractor.graph):
+    if not ryzenai_onnx_utils.matcher.is_output_edge_or_adjacent(matmul.output[0], extractor.graph):
         return subgraph, [], None
 
-    new_tvis = []  # new ValueInfoProtos we want inserted into the graph
-    new_nodes = []  # new nodes to inject (Gather, constants, patched MatMul)
+    # only apply this to ops in the original domain
+    if matmul.domain == params.get_domain("MatMulNBits"):
+        return subgraph, [], None
+
+    new_tvis = []
+    new_nodes = []
 
     # Get or create a constant initializer with value -1 (int64)
     # This will be used as indices for Gather.
@@ -76,30 +76,11 @@ def replacement(
     # Add patched MatMul to output node list
     new_nodes.append(matmul)
 
-    for index, output_tvi in enumerate(extractor.graph.output):
-        if not is_logits_node(output_tvi.name):
-            continue
-        output_tvi = pruned_tvi(output_tvi.name, extractor)
-
-        extractor.graph.output.remove(extractor.graph.output[index])
-        extractor.graph.output.insert(index, output_tvi)
-
-        # output tvis also need to be added to the extractor vimap
-        new_tvis.append(output_tvi)
-
-        if matmul.output[0] != output_tvi.name:
-            new_tvi = pruned_tvi(matmul.output[0], extractor)
-            new_tvis.append(new_tvi)
-
-        break
-
-    # We added:
-    #   - Gather
-    #   - Constant(-1) if needed
-    #   - Modified MatMul
     return new_nodes, [], new_tvis
 
 
-PATTERN = ["MatMul([?,?],?)"]
-
+PATTERN = [
+    SubPass("MatMul", ["MatMul([?,?,?,?,?], [?])"]),
+    SubPass("MatMulNBits", ["MatMulNBits([?,?,?,?,?], [?])"]),
+]
 REPLACEMENT = replacement

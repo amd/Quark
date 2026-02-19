@@ -24,6 +24,9 @@ def replacement(
     if node.domain != params.get_domain(node.op_type):
         return subgraph, [], None
 
+    if node.op_type == "CastAvx":
+        return subgraph, [], None
+
     try:
         onnx.helper.get_node_attr_value(node, "hybrid_llm_cast_input")
     except ValueError:

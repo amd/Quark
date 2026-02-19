@@ -8,7 +8,8 @@ padded at runtime based on the values in the DD metajson.
 import onnx
 
 import ryzenai_onnx_utils.matcher
-from ryzenai_onnx_utils.typing import PassOutputArgs, ShapeType
+from ryzenai_onnx_utils.transform import hybrid_llm
+from ryzenai_onnx_utils.typing import PassOutputArgs, ShapeType, SubPass
 
 
 def add_pad(
@@ -17,39 +18,49 @@ def add_pad(
     subgraph: list[onnx.NodeProto],
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> PassOutputArgs:
-    gather = subgraph[0]
-    io_to_pad = "input_ids"
+    node = subgraph[0]
+    io_to_pad = hybrid_llm.get_input_ids_name(extractor.graph, params.attributes)
+    new_name = f"{io_to_pad}_padded"
 
-    if gather.input[1] != io_to_pad:
-        return subgraph, [], None
-
+    if node.op_type == "Gather":
+        if node.input[1] != io_to_pad:
+            return subgraph, [], None
+        input0 = node.input[0]
+        input1 = new_name
+    else:
+        if node.input[0] != io_to_pad:
+            return subgraph, [], None
+        input0 = new_name
+        input1 = node.input[1]
     new_nodes = []
     new_tvis = []
 
     domain = params.get_domain("DynamicPad")
-    new_name = f"{io_to_pad}_padded"
     new_node = onnx.helper.make_node(
         "DynamicPad",
         inputs=[io_to_pad],
         outputs=[new_name],
-        name="input_ids_padding",
+        name=io_to_pad + "_padding",
         domain=domain,
     )
-
-    output_shape: ShapeType = [1, "sequence_length_padded"]
-    ryzenai_onnx_utils.matcher.add_attribute(new_node, "input_shape", ",".join(str(x) for x in output_shape))
-
+    if node.op_type == "Gather":
+        output_shape: ShapeType = [1, "sequence_length_padded"]
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "input_shape", ",".join(str(x) for x in output_shape))
+    else:
+        shape = ryzenai_onnx_utils.matcher.get_shape(node.input[0], extractor)
+        output_shape: ShapeType = [1, "sequence_length_padded", shape[2]]
+        ryzenai_onnx_utils.matcher.add_attribute(new_node, "input_shape", ",".join(str(x) for x in output_shape))
     new_nodes.append(new_node)
 
-    new_gather = onnx.helper.make_node(
-        gather.op_type,
-        inputs=[gather.input[0], new_name],
-        outputs=gather.output,
-        name=gather.name,
-        domain=gather.domain,
+    new_node = onnx.helper.make_node(
+        node.op_type,
+        inputs=[input0, input1],
+        outputs=node.output,
+        name=node.name,
+        domain=node.domain,
     )
-    ryzenai_onnx_utils.matcher.copy_attributes(gather, new_gather)
-    new_nodes.append(new_gather)
+    ryzenai_onnx_utils.matcher.copy_attributes(node, new_node)
+    new_nodes.append(new_node)
     new_tvis.append(onnx.helper.make_tensor_value_info(new_name, onnx.TensorProto.INT64, output_shape))
 
     tvis_to_add = []
@@ -70,4 +81,7 @@ def add_pad(
 
 
 REPLACEMENT = add_pad
-PATTERN = ["Gather([?,?], ?)"]
+PATTERN = [
+    SubPass("Gather", ["Gather([?,?], ?)"]),
+    SubPass("SimplifiedLayerNormalization", ["SimplifiedLayerNormalization([?,?], ?)"]),
+]

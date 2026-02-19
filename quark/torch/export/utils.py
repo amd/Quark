@@ -330,7 +330,7 @@ def _convert_quantized_model(model: nn.Module, model_config: "PretrainedConfig")
                     submodule,
                     rotation_matrix=submodule.input_rotation,
                 )
-            elif submodule.input_rotation.dtype == torch.bool:
+            elif submodule.input_rotation.dtype == torch.int8:
                 rotation_size = submodule.input_rotation.shape[0]
 
                 layer_with_input_rotation = InputRotationWrapperHadamard(

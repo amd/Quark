@@ -63,7 +63,7 @@ build_docs() {
     export PATH=~/bin:${PATH}
 
     # When env var QUARK_SPHINX_BUILD_SKIP_TUTORIALS=1, skip ALL Jupyter notebook build when set
-    # When env var QUARK_SPHINX_BUILD_SKIP_TUTORIALS=0, skip only Jupyter notebook present in env var QUARK_DOC_MODIFIED_TUTORIALS
+    # When env var QUARK_SPHINX_BUILD_SKIP_TUTORIALS=0, build only Jupyter notebook present in env var QUARK_DOC_MODIFIED_TUTORIALS and convert the rest into ReStructuredText files
     # The skipped `tutorials` is deleted from `./_docs/` to prevent warnings from unused files from sphinx-build
     QUARK_SPHINX_BUILD_SKIP_TUTORIALS=${QUARK_SPHINX_BUILD_SKIP_TUTORIALS:-""}
     echo "[QUARK-INFO] QUARK_SPHINX_BUILD_SKIP_TUTORIALS=${QUARK_SPHINX_BUILD_SKIP_TUTORIALS}"

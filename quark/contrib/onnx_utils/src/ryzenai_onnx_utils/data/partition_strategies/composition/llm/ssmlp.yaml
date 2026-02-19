@@ -1,0 +1,12 @@
+# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+---
+setup:
+    - fastgelu_to_gelu
+    - quickgelu_to_sigmoid_mul
+    - hybrid_llm_skipsimplifiedlayernorm
+    - normalize_matmulnbits
+passes:
+    - hybrid_llm_ssmlp
+cleanup:
+    - simplify_matmulnbits

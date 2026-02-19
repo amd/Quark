@@ -38,8 +38,7 @@ void loadBin(
 ) {
 #if defined(_WIN32)
   HANDLE f_handle = CreateFile(
-    fname.c_str(), GENERIC_READ | GENERIC_WRITE,
-    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    fname.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL, nullptr
   );
   DWORD read = 0;

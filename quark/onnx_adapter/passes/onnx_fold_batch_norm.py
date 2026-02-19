@@ -229,7 +229,7 @@ class ONNXFoldBatchNormPass(ONNXAdapterPass):
         Returns:
             ModelProto: Processed model with BatchNorm folded if enabled.
         """
-        if "fold_batch_norm" in config and config["fold_batch_norm"] is not None:
+        if "fold_batch_norm" in config and config["fold_batch_norm"]:
             model = self._onnx_fold_batch_norm(model)
         else:
             logger.warning(

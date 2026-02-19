@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import GPTQConfig
@@ -306,7 +307,8 @@ def fasterquant_inner_eager(
     zero = []
     now_idx = 1
 
-    for i1 in range(0, columns, blocksize):
+    num_blocks = (columns + blocksize - 1) // blocksize
+    for i1 in tqdm(range(0, columns, blocksize), desc="GPTQ quantizing columns", total=num_blocks):
         i2 = min(i1 + blocksize, columns)
         count = i2 - i1
 

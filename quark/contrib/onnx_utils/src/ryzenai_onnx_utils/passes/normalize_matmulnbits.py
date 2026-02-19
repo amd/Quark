@@ -43,12 +43,18 @@ def replacement(
     # group idx: optional
     # bias: optional
 
-    # this is the desired case: all inputs present
-    if input_num == 6:
+    scales_shape = ryzenai_onnx_utils.matcher.get_shape(matmul.input[2], extractor)
+    # this is the desired case: all inputs present and 1D scales
+    if len(scales_shape) == 1 and input_num == 6:
         return subgraph, [], None
 
     new_inputs = matmul.input[:3]
     new_initializers = []
+
+    if len(scales_shape) != 1:
+        # NPU flow assumes 1D scales, so reshape if needed
+        scales = ryzenai_onnx_utils.matcher.get_initializer_as_numpy(matmul.input[2], extractor)
+        new_initializers.append(onnx.numpy_helper.from_array(scales.reshape(-1), matmul.input[2]))
 
     # here, matmulnbits has weights and scales but no zero points
     # current kernels assume zero point is present, so just create one with zeros

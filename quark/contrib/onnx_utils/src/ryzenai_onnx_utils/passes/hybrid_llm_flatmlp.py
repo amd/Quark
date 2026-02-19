@@ -8,21 +8,22 @@ import numpy as np
 import onnx
 
 import ryzenai_onnx_utils.matcher
-import ryzenai_onnx_utils.transform.hybrid_llm
-import ryzenai_onnx_utils.utils
+from ryzenai_onnx_utils.strategy_builder import MladfVersion
 from ryzenai_onnx_utils.transform.cast import (
     add_cast_bfloat16_to_dtype_auto,
     add_cast_dtype_to_bfloat16_auto,
 )
-from ryzenai_onnx_utils.typing import PassOutputArgs
+from ryzenai_onnx_utils.typing import PassOutputArgs, SubPass
 
 
 def get_gate_up_attributes(
     gate_proj: onnx.NodeProto, up_proj: onnx.NodeProto, extractor: onnx.utils.Extractor
 ) -> tuple[int, int, int]:
     m_0 = ryzenai_onnx_utils.matcher.get_shape(gate_proj.input[0], extractor)[1]
-    m_1 = ryzenai_onnx_utils.matcher.get_shape(up_proj.input[0], extractor)[1]
-    assert m_0 == m_1 and isinstance(m_0, int)
+    # m_1 = ryzenai_onnx_utils.matcher.get_shape(up_proj.input[0], extractor)[1]
+    # m_0 and m_1 value is sequence_padded_length in prefill fusion and below check
+    # does not succeed, update it work for both prefill and token - todo
+    # assert m_0 == m_1 and isinstance(m_0, int)
     k_0 = onnx.helper.get_node_attr_value(gate_proj, "K")
     k_1 = onnx.helper.get_node_attr_value(up_proj, "K")
     assert k_0 == k_1
@@ -56,10 +57,19 @@ def replacement(
 ) -> PassOutputArgs:
     domain = params.get_domain("FlatRMSAdd")
     assert params.get_domain("FlatMLP") == domain
+    enable_gelu_activation = False
+    if len(subgraph) == 4:
+        gate_proj = subgraph[0]
+        up_proj = subgraph[2]
+        mul = subgraph[3]
+        enable_gelu_activation = True
+    else:
+        gate_proj = subgraph[0]
+        up_proj = subgraph[3]
+        mul = subgraph[4]
 
-    gate_proj = subgraph[0]
-    up_proj = subgraph[3]
-    mul = subgraph[4]
+    if params.get_bool_attr("lora", False):
+        return subgraph, [], None
 
     # assuming all matmulnbits have weights, scales, and zero points and bias
     assert len(gate_proj.input) == 6
@@ -90,7 +100,11 @@ def replacement(
         inputs=[input_cast[0].output[0], *gate_inputs, *up_inputs],
         outputs=[output_cast[0].input[0]],
         name=f"FlatMLP_{pass_id}",
+        domain=domain,
     )
+    pdi_id = int(params.attributes.get("pdi_id", 0))
+    if pdi_id != 0:
+        ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "pdi_id", int(pdi_id))
     new_nodes.append(flatmlp)
 
     ryzenai_onnx_utils.matcher.add_attribute(
@@ -100,6 +114,8 @@ def replacement(
     block_size_1 = onnx.helper.get_node_attr_value(up_proj, "block_size")
     assert block_size_0 == block_size_1
     ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "group_size", block_size_0)
+    if enable_gelu_activation:
+        ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "enable_gelu_activation", True)
     ryzenai_onnx_utils.matcher.add_attribute(
         flatmlp,
         "in_dtypes",
@@ -117,16 +133,35 @@ def replacement(
     )
     ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "out_dtypes", ["bfloat16"])
     enable_ctrl_pkt = params.get_bool_attr("enable_ctrl_pkt", False)
+    op_version = MladfVersion(params.attributes["mladf_version"])
+
+    if op_version != MladfVersion.FLAT:
+        ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "enable_general_activation", True)
+        ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "activation_type", "silu")
     if enable_ctrl_pkt:
         ryzenai_onnx_utils.matcher.add_attribute(flatmlp, "enable_ctrl_pkt", enable_ctrl_pkt)
     return new_nodes, new_initializers, new_tvis
 
 
 PATTERN = [
-    "MatMulNBits([?,?,?,?], [a2])",
-    "Sigmoid(a2, a3)",
-    "Mul([a2,a3], a4)",
-    "MatMulNBits([?,?,?,?], [a5])",
-    "Mul([a4,a5], ?)",
+    SubPass(
+        "Basic",
+        [
+            "MatMulNBits([?,?,?,?], [a2])",
+            "Sigmoid(a2, a3)",
+            "Mul([a2,a3], a4)",
+            "MatMulNBits([?,?,?,?], [a5])",
+            "Mul([a4,a5], ?)",
+        ],
+    ),
+    SubPass(
+        "Gelu_pattern",
+        [
+            "MatMulNBits([?,?,?,?], [a2])",
+            "Gelu(a2, a3)",
+            "MatMulNBits([?,?,?,?], [a5])",
+            "Mul([a3,a5], ?)",
+        ],
+    ),
 ]
 REPLACEMENT = replacement

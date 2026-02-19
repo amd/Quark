@@ -145,7 +145,9 @@ def add_parallel_transposes(
             "Transpose",
             inputs=[original_transpose.input[0]],
             outputs=[f"{original_transpose.output[0]}.{idx}"],
-            name=f"{original_transpose.name}.{idx}",
+            # need to differentiate the name inserted by add_input_transposes
+            # to prevent a name collision
+            name=f"{original_transpose.name}.p.{idx}",
         )
         ryzenai_onnx_utils.matcher.copy_attributes(original_transpose, new_transpose)
         extractor.graph.node.append(new_transpose)

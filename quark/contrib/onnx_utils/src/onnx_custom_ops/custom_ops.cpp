@@ -18,6 +18,9 @@
 #include "hybrid_llm/main.hpp"
 #endif
 
+std::atomic<ryzenai::RegisterCustomOpsFunction>
+  ryzenai::RegisterCustomOpsOverride = nullptr;
+
 // This function shows one way of keeping domains alive until the library is
 // unloaded.
 static void AddOrtCustomOpDomainToContainer(Ort::CustomOpDomain&& domain) {
@@ -37,6 +40,9 @@ const char* ExecutionProvider = kOnnxUtilsEp;
 // provided session options.
 OrtStatus* ORT_API_CALL
 RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api) {
+  if (auto func = ryzenai::RegisterCustomOpsOverride.load())
+    return func(options, api);
+
   // Manually initialize the OrtApi to enable C++ API classes and functions.
   Ort::InitApi(api->GetApi(ORT_API_VERSION));
 

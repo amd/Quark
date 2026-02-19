@@ -43,7 +43,7 @@ class GqaKernelInfo {
   bool isSeqSupported(int seq_len) const;
   // check if the num_head is supported by aie
   bool isNumHeadsSupported(int num_head) const;
-  void setVersion(const std::string& version);
+  void setVersion(const MladfVersion& version);
 
  private:
   const static inline std::set<int> kSupportedSeqLenV1{128,  256,  512, 1024,
@@ -52,7 +52,7 @@ class GqaKernelInfo {
                                                        1024, 1152, 1280, 1536,
                                                        1664, 2048, 2176, 2304,
                                                        2560, 2816, 3072, 4096};
-  const static inline std::set<int> kSupportedNumHeads{2,  3,  4,  8,  9,
+  const static inline std::set<int> kSupportedNumHeads{1,  2,  3,  4,  8, 9,
                                                        12, 16, 24, 28, 32};
 
   std::set<int> supported_seqlen_;
@@ -185,7 +185,7 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
     const std::unordered_map<std::string, std::string>& session_configs
   );
 
-  bool run_context_chunk(size_t total_seq_len);
+  bool run_context_chunk(size_t total_seq_len, size_t seq_len);
 
   void parseUnpackedWeights(const Ort::ConstKernelInfo& info);
   void initializeMatMulNBits(
@@ -197,7 +197,8 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
   );
   bool executeMatMulNBits(
     OrtKernelContext* context, const std::vector<int64_t>& qkv_shape,
-    bool is_prefill, int64_t seq_len, const uint16_t* mm_inp
+    bool is_prefill, int64_t seq_len, const uint16_t* mm_inp,
+    bool use_aie_chunk_gqa
   );
   void updateKvCache(
     OrtKernelContext* context, Ort::BFloat16_t* k_rope_data,
@@ -287,10 +288,19 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
     const bool use_aie_rope, const bool cast_kv_bfloat16
   );
 
+  void token_mha_cpu(
+    const GQAattrs& gqa_attrs, OrtTensor& query_states, OrtTensor& key_states,
+    OrtTensor& value_states, const int rewind_pos, const int64_t total_seq_len,
+    const int64_t local_window_size, const bool cast_kv_bfloat16
+  );
+
   int getContextChunkSize(
     int seq_len, int total_seq_len, int local_window_size
   );
 
+  const std::vector<size_t>& setFlashMhaGranularity() const;
+
+  bool is_prefill_ = true;
   int64_t q_seq_len_ = 0;
   int64_t total_seq_len_ = 0;
   int64_t do_rotary_ = 0;
@@ -301,10 +311,13 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
   float scale_;
   int64_t head_size_ = 0;
   Ort::Logger m_logger{nullptr};
-  std::vector<size_t> flash_mha_granularity_ = {128,  256,  512,  640,
-                                                1024, 1152, 1280, 1536,
-                                                1664, 2048, 2176, 2304,
-                                                2560, 2816, 3072, 4096};
+  static inline const std::vector<size_t> kFlashMhaGranularityAie2_ = {
+    128,  256,  512,  640,  1024, 1152, 1280, 1536,
+    1664, 2048, 2176, 2304, 2560, 2816, 3072, 4096
+  };
+  static inline const std::vector<size_t> kFlashMhaGranularityAie4_ = {
+    128, 256, 512, 1024, 2048, 3072, 4096
+  };
 
   static constexpr size_t kHeadSinkIdx = 11;
   // threshold over which we will calculate attention in chunks
@@ -312,6 +325,10 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
   // smaller shapes are currently not as efficient
   // which would lead to unnecessary overhead if tiled with those shapes
   static inline constexpr std::int32_t kContextMaxSize = 2048;
+  // token phase currently runs on CPU and dims
+  // will be [num_heads, seq_len = 1, kTokenContextMaxSize]
+  // so have higher threshold before needing to chunk
+  static inline constexpr std::int32_t kTokenContextMaxSize = 16384;
   std::int32_t context_size_threshold_ = kContextMaxSize;
   std::int32_t context_chunk_size_ = kContextMaxSize;
   size_t bmm1_input0_scratch_offset_ = 0;
@@ -364,6 +381,7 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
   int64_t rotary_embedding_dim_ = 0;
   bool wait_for_data_;
   int cnt_;
+  bool has_scratch_buffer_{false};
 
   // attention provider
   std::unique_ptr<AttnMaskProvider> atten_mask_provider_;
@@ -385,7 +403,13 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
   OrtCast<Ort::BFloat16_t, float> ort_cast_bf16_to_fp32_;
   OrtCast<Ort::Float16_t, float> ort_cast_fp16_to_fp32_;
   OrtGQA ort_gqa_;
-
+  RyzenMM::BufferRef sink_data_;
+  xrt::bo flash_out_;
+  std::string rope_cache_name_;
+  xrt::bo sink_bo_;
+  std::unique_ptr<ryzenai::dynamic_dispatch::transformer::flash_mha<
+    uint16_t, uint16_t, uint16_t>>
+    flash_mha_{nullptr};
 #ifdef NPU_GQO_PROFILE_EN
   std::vector<Duration> measurements_;
 #endif
@@ -403,9 +427,7 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
     std::unique_ptr<ryzenai::mha_rope<uint16_t, uint16_t, uint16_t>> rope_{
       nullptr
     };
-    std::unique_ptr<ryzenai::dynamic_dispatch::transformer::flash_mha<
-      uint16_t, uint16_t, uint16_t>>
-      flash_mha_{nullptr};
+
     // aie kernel bos
     std::vector<xrt::bo> rope_inbos_{};
     std::vector<xrt::bo> rope_outbos_{};
@@ -432,6 +454,7 @@ class AMDGQOKernel : public JitNode<AMDGQOKernel>,
     int instances_ = 0;
     std::vector<float> cos_cache_fp32_, sin_cache_fp32_;
     Ort::Value cos_cache_fp32_tensor_, sin_cache_fp32_tensor_;
+    std::string rope_name_;
   };
 
   SessionState<State> ss_;

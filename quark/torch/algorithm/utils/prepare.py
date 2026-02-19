@@ -12,6 +12,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from quark.shares.utils.log import ScreenLogger
 from quark.torch.algorithm.utils.module import get_device, get_nested_attr_from_module
@@ -76,7 +77,8 @@ def cache_model_inps(
     )
     required_kwargs = inspect.signature(modules[0].forward).parameters
     modules[0] = Catcher(modules[0], inps, layer_args, layer_kwargs)
-    for sample in samples:
+    logger.info("Caching model inputs for quantization algorithm...")
+    for sample in tqdm(samples, desc="Caching layer inputs"):
         if isinstance(sample, torch.Tensor):
             try:
                 model(sample.to(cur_layer_device), use_cache=False)

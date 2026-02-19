@@ -6,8 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: ""
     op_namespaces: "hybrid"
-    # set to "" or remove to use BF16 weights
-    is_bfp16: "weights"
+    mladf_version: "v2"
     npu_jit: true
     # flag to enable logits prune
     prune_logits: "lmhead"
@@ -43,7 +42,6 @@ passes:
     # - hybrid_llm_add_cast_attributes
     - hybrid_llm_add_empty_cast_attributes
     - hybrid_llm_prune_logits
-    - hybrid_llm_prune_logits_matmulnbits
     - simplify_matmulnbits
     - hybrid_llm_cast_logits
     - hybrid_llm_prune_validate

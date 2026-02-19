@@ -142,7 +142,7 @@ Then, you can :ref:`partition <partition:Partition>` your extracted model:
 
     onnx_utils partition add_0.onnx . /abs/path/to/your/strategy.yaml -v --force
 
-This will generate ``replaced.onnx`` in this directory, along with a ``.cache`` directory containing the DD files.
+This will generate ``replaced.onnx`` in this directory, along with a ``cache`` directory containing the DD files.
 Rename ``replaced.onnx`` to the name of the original model you were running before.
 
 Build the custom op shared library

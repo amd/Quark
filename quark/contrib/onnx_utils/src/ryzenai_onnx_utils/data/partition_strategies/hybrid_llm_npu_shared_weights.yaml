@@ -6,8 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: ""
     op_namespaces: "hybrid"
-    # set to "" or remove to use BF16 weights
-    is_bfp16: "weights"
+    mladf_version: "v2"
     npu_jit: true
     fuse_qkv: false
     # flag to enable logits prune
@@ -38,12 +37,13 @@ passes:
     - initializers_to_float16
     # this must be enabled for now for renaming the op_type
     - hybrid_llm_add_npu_weights
-    - hybrid_llm_prune_logits_matmulnbits
+    - hybrid_llm_prune_logits
     - remove_parallel_casts
     - simplify_casts
     # - hybrid_llm_add_cast_attributes
     - hybrid_llm_add_empty_cast_attributes
     - simplify_matmulnbits
+    - hybrid_llm_prune_validate
     - hybrid_llm_cast_logits
 inherit_passes_after: !include [cleanup.yaml]
 postprocess:

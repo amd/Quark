@@ -6,8 +6,7 @@ attributes:
     domains: com.ryzenai
     xclbins: ""
     op_namespaces: "hybrid"
-    # set to "" or remove to use BF16 weights
-    is_bfp16: "weights"
+    mladf_version: "v2"
     npu_jit: true
 # define the passes to run. These passes are defined in passes/ and are executed
 # in order

@@ -7,6 +7,7 @@
 # Licensed under the MIT License. See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+
 import os
 import time
 from pathlib import Path
@@ -79,6 +80,7 @@ from .quant_utils import (
     get_eltwise_op,
     get_exclude_nodes,
     get_matmul_nodes_without_weights,
+    get_pre_defined_preprocess_config,
     skip_node_with_inf_tensor,
 )
 
@@ -152,6 +154,22 @@ def quantize_static(
 
     float_model: onnx.ModelProto = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
     quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
+
+    skip_pre_process_graph_optimization = extra_options.get("SkipPreprocess", False)
+    pre_process_yaml_path = extra_options.get("PreprocessYAML")
+    if pre_process_yaml_path is not None:
+        from quark.onnx_adapter import Engine, LoadConfigFromFileOrDict
+
+        skip_pre_process_graph_optimization = True
+
+        if pre_process_yaml_path.endswith(".yaml"):
+            engine_config = LoadConfigFromFileOrDict(pre_process_yaml_path).data
+        else:
+            engine_config = get_pre_defined_preprocess_config(pre_process_yaml_path)
+
+        engine = Engine(config=engine_config)
+        engine.initialize()
+        float_model = engine.run(float_model=float_model)  # type: ignore
 
     if not use_external_data_format:
         if float_model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
@@ -355,6 +373,7 @@ def quantize_static(
         nodes_to_quantize=nodes_to_quantize,
         nodes_to_exclude=nodes_to_exclude,
         op_types_to_quantize=op_types_to_quantize,
+        skip_pre_process_graph_optimization=skip_pre_process_graph_optimization,
         use_external_data_format=use_external_data_format,
         convert_fp16_to_fp32=convert_fp16_to_fp32,
         convert_nchw_to_nhwc=convert_nchw_to_nhwc,

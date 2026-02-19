@@ -34,8 +34,7 @@ def replacement(
     lora = params.get_bool_attr("lora", False)
     # this must be set prior to packing weights for correct weight formatting
     fall_back_cpu = False
-    if "is_bfp16" in params.attributes:
-        ryzenai_onnx_utils.matcher.add_attribute(node, "is_bfp16", params.attributes["is_bfp16"])
+    ryzenai_onnx_utils.matcher.add_attribute(node, "mladf_version", params.attributes["mladf_version"])
     try:
         packed_weight_tensor, hash_val, [real_K, real_N] = (
             ryzenai_onnx_utils.transform.hybrid_llm.preprocess_matmulnbits_packed_weights(

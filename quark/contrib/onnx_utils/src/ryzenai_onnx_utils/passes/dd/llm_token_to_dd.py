@@ -9,7 +9,7 @@ import ryzenai_onnx_utils.pattern_generator as pg
 from ryzenai_onnx_utils.transform.dd import build_dd_node, split_dd_node
 from ryzenai_onnx_utils.typing import PassOutputArgs
 
-from . import ModelType
+from ..model_type import ModelType
 
 
 def generate_pattern(
@@ -18,10 +18,18 @@ def generate_pattern(
     params: ryzenai_onnx_utils.ReplaceParams,
 ) -> list[list[str]]:
     fuse_qk_mha = params.get_bool_attr("fuse_qk_mha", True)
-    lora = params.get_bool_attr("lora", False)
-    hints_key = {"MladfMatMul", "FlatMLP", "FlatRMSAdd", "FLATMHA", "MLADFRMSNORM"}
-    if lora:
-        hints_key = {"MladfMatMul", "FlatRMSAdd", "FLATMHA", "SILU", "ELWMUL", "MLADFRMSNORM"}
+    hints_key = {
+        "MladfMatMul",
+        "FlatMLP",
+        "FlatRMSAdd",
+        "FLATMHA",
+        "MLADFADD",
+        "SILU",
+        "ELWMUL",
+        "MLADFRMSNORM",
+        "LiquidAILFM2GemmBf16",
+        "LiquidAILFM2MulConv1d",
+    }
 
     # topological sort before pattern generation to support splitting by layers
     # accurately
@@ -32,11 +40,11 @@ def generate_pattern(
     engine.partition()
     pattern_ = pg.PatternGenerator(engine)
     patterns = pattern_.get_patterns()
-    assert len(patterns) == 1
+    assert len(patterns) == 1, f"Expected one pattern, got {len(patterns)}"
     # for LLMs, we have a "floating" v_matmul on the front that doesn't match
     # otherwise so insert a parent cast so we can match correctly
-    patterns[0].insert(0, "CastAvx(?, b0)")
 
+    patterns[0].insert(0, "CastAvx(?, b0)")
     matmul_0 = ryzenai_onnx_utils.pattern.Pattern(patterns[0][1])
     matmul_0.inputs[0] = "b0"
     if "MLADFRMSNORM" in patterns[0][1]:
@@ -71,7 +79,13 @@ def replacement(
             split,
             params,
             extra_outputs=extra_outputs,
+            meta_name="Token_",
         )
+
+        mha = subgraph[6] if params.get_bool_attr("fuse_qk_mha", True) else subgraph[7]
+        local_window_size = ryzenai_onnx_utils.matcher.get_attribute(mha, "local_window_size", -1)
+        if local_window_size > 0:
+            ryzenai_onnx_utils.matcher.add_attribute(dd_node, "local_window_size", local_window_size)
 
         # must match with ModelType enum for Llm_Token in dynamic_dispatch.hpp
         ryzenai_onnx_utils.matcher.add_attribute(dd_node, "model_type", int(ModelType.LLM_TOKEN))

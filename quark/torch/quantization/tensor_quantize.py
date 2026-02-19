@@ -453,7 +453,7 @@ class DynamicScaledFakeQuantize(ScaledFakeQuantize):
             )
         self.is_dynamic = True
 
-        if quant_spec.is_ocp_mxfp4():
+        if quant_spec.is_ocp_mxfp4() and quant_spec.scale_calculation_mode == "even":
             self.fake_quantize_func = mxfp4_dynamic_fake_quantize
             self.fake_quantize_func_kwargs = {
                 "fake_quantizer": self,

@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 
+from typing import Any
+
 import onnxslim  # type: ignore
 from onnx import ModelProto
 
@@ -36,12 +38,23 @@ class ONNXSimplifyPass(ONNXAdapterPass):
                 default_value=True,
                 required=True,
                 description="Whether to simplify the input model.",
-            )
+            ),
+            "simplify_Options": PassConfigParam(
+                type_=dict,
+                default_value={},
+                required=False,
+                description="Optional configuration dictionary for onnxslim optimization."
+                "All parameters are passed directly to ``onnxslim.slim()`` as keyword arguments."
+                "Example configurations (e.g., {'skip_fusion_patterns': ['EliminationSlice']} to skip"
+                "slice fusion patterns, or {'verbose': True, 'model_check': True} for debugging)."
+                "For a complete list of supported parameters, refer to the `onnxslim source code"
+                "<https://github.com/inisis/OnnxSlim>`_ or the ``onnxslim.slim()`` function signature.",
+            ),
         }
         config.update(self.config)
         return config
 
-    def _onnx_simplify(self, model: ModelProto) -> ModelProto:
+    def _onnx_simplify(self, model: ModelProto, config: dict[str, Any]) -> ModelProto:
         """Simplifies the given ONNX model using the `onnxslim` package.
 
         Args:
@@ -58,7 +71,7 @@ class ONNXSimplifyPass(ONNXAdapterPass):
                 "The 'onnxslim' is required but not installed. Please install it via 'pip install onnxslim'."
             )
 
-        simplified_model = onnxslim.slim(model)
+        simplified_model = onnxslim.slim(model, **config)
 
         return simplified_model
 
@@ -75,7 +88,8 @@ class ONNXSimplifyPass(ONNXAdapterPass):
             otherwise, returns the original model and logs a warning.
         """
         if "simplify" in config and config["simplify"]:
-            simplified_model = self._onnx_simplify(model)
+            config.pop("simplify")
+            simplified_model = self._onnx_simplify(model, config.get("simplify_Options", {}))
         else:
             logger.warning("Please ensure that the onnx_simplify pass contains the simplify parameter and it is True.")
         return simplified_model

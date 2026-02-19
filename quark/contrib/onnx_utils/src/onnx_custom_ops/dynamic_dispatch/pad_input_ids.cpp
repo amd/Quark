@@ -29,7 +29,7 @@ PadInputIdsKernel::PadInputIdsKernel(
 ) {
   auto info_ptr = Ort::ConstKernelInfo(info);
 
-  dd_cache_dir_ = getCacheDirectory(session_configs) + "/.cache";
+  dd_cache_dir_ = getCacheDirectory(session_configs);
 
   node_name_ = info_ptr.GetNodeName();
   read_attributes(info_ptr);

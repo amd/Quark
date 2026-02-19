@@ -35,6 +35,11 @@ class AMDConvSplitMulKernel : public NpuOp {
     std::vector<int64_t> inp_dims, std::vector<int64_t> wts_dims,
     std::vector<int64_t> out_dims, OrtKernelContext* context
   );
+  void Conv1DSim(
+    const uint16_t* input, const uint16_t* weight, const uint16_t* bias,
+    uint16_t* output, int N, int W, int C, int M, int kw, int groups,
+    int stride = 1, int padding = 0, int dilation = 1
+  );
   void initBufBos(size_t seq_len);
 
  private:

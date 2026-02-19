@@ -17,6 +17,7 @@
 #include "operators/ssgmlp.hpp"
 #include "operators/sslrn.hpp"
 #include "operators/ssmlp.hpp"
+#include "operators/ssmlpfuse.hpp"
 #include "operators/sub.hpp"
 
 namespace ryzenai::onnx_utils {
@@ -39,6 +40,7 @@ std::vector<const OrtCustomOp*> create_hybrid_llm_ops(
   hybrid_llm_ops.emplace_back(GetCustomOp<SimplifiedLayerNorm>(options));
   hybrid_llm_ops.emplace_back(GetCustomOp<SkipSimplifiedLayerNorm>(options));
   hybrid_llm_ops.emplace_back(GetCustomOp<SSGMlp>(options));
+  hybrid_llm_ops.emplace_back(GetCustomOp<SSMlpFuse>(options));
   hybrid_llm_ops.emplace_back(GetCustomOp<SSMlp>(options));
   hybrid_llm_ops.emplace_back(GetCustomOp<Sub>(options));
 

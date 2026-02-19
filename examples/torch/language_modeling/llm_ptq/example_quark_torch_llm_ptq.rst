@@ -323,6 +323,42 @@ Supported Models
      -
      -
      -
+   * - moonshotai/Kimi-K2.5-\*
+     -
+     -
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - moonshotai/Kimi-K2-Instruct-\*
+     -
+     -
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - moonshotai/Kimi-K2-Thinking-\*
+     -
+     -
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - deepseek-ai/DeepSeek-V3.2-\*
+     -
+     -
+     - ✓
+     -
+     -
+     -
+     -
+     -
 
 .. note::
 
@@ -333,6 +369,7 @@ Supported Models
    - GPTQ only supports QuantScheme as 'PerGroup' and 'PerChannel'.
    - ``\*`` represents different model sizes, such as ``7b``.
    - meta-llama/Llama-3.2-\*B-Vision models only quantize language parts.
+   - moonshotai/Kimi-K2.5-\*, moonshotai/Kimi-K2-Instruct-\*, moonshotai/Kimi-K2-Thinking-\*, and deepseek-ai/DeepSeek-V3.2-\* are supported via file-to-file quantization mode.
 
 Preparation
 -----------
@@ -472,6 +509,23 @@ The quantized model can be imported and evaluated:
 
    Exporting quantized BFP16 and MX6 models is not supported yet.
 
+Recipe 11: File-to-File Quantization (No Full Model Loading)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For ultra-large models (e.g., 600B+) that cause OOM when loaded into memory, Quark provides a file-to-file quantization workflow via the ``--file2file_quantization`` mode.
+It quantizes safetensors files **one-by-one** without loading the full model, so peak memory is proportional to a single file (~5-10 GB) rather than the entire model.
+
+This mode supports **weight-only quantization** and **dynamic activation quantization + weight quantization**, exports **hf_format** only, and can also accept pre-quantized inputs (FP8, compressed-tensors) and re-quantize them to a different format. For example, the command below runs file-to-file quantization to MXFP4 and shows common layer exclusions:
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [model checkpoint folder] \
+                             --output_dir [output folder] \
+                             --quant_scheme mxfp4 \
+                             --exclude_layers "*self_attn*" "*mlp.gate" "*lm_head" \
+                             --file2file_quantization \
+                             --skip_evaluation
+
 Tutorial: Running a Model Not on the Supported List
 ---------------------------------------------------
 
@@ -579,14 +633,7 @@ Follow these steps:
 End to end tutorials
 --------------------
 
-In addition to the snippets above, you can refer to end-to-end tutorials:
-
-.. toctree::
-   :caption: More examples
-   :maxdepth: 1
-
-   FP4 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp4>
-   FP8 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp8>
+In addition to the snippets above, you can refer to end-to-end tutorials in the :doc:`Tutorials <../../tutorials_pytorch>` section.
 
 Tutorial: Generating AWQ Configuration Automatically (Experimental)
 -------------------------------------------------------------------
