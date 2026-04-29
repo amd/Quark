@@ -637,7 +637,7 @@ def _quantize_and_save_safetensor_shard(
                 qscheme.value,
             )
             pack_method = create_pack_method(qscheme=qscheme.value, dtype=dtype.value)
-            quantized_tensors[tensor_name] = pack_method.pack(quantized_weight, False)
+            quantized_tensors[tensor_name] = pack_method.pack(quantized_weight, reorder=True)
 
             if getattr(weight_config, "scale_format", None) == "e8m0":
                 # Convert scale to e8m0 format (MXFP4 standard)
