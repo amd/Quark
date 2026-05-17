@@ -352,7 +352,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
                 output_shape = [*input.shape[:-1], weight.shape[1]]
                 input_scale = self.input_quantizer.scale
                 weight_scale = self.weight_quantizer.scale
-                if SCALED_MM_AVAILABLE_DEV == "hip":
+                if SCALED_MM_AVAILABLE_DEV == "hip_fnuz":
                     weight, qinput, weight_scale, input_scale = normalize_e4m3fn_to_e4m3fnuz(
                         weight=weight, qinput=qinput, weight_scale=weight_scale, input_scale=input_scale
                     )
@@ -405,7 +405,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator):
                 weight = weight.permute(1, 0)
 
                 output_shape = [*input.shape[:-1], weight.shape[1]]
-                if SCALED_MM_AVAILABLE_DEV == "hip":
+                if SCALED_MM_AVAILABLE_DEV == "hip_fnuz":
                     qinput, input_scale = e4m3fn_to_e4m3fnuz(tensor=qinput, tensor_scale=input_scale)
 
                 output = torch._scaled_mm(

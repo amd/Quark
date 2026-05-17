@@ -30,6 +30,22 @@ def test_check_scaled_mm_available_dev():
         mock_subprocess.return_value = Mock(returncode=0, stdout="gfx940")
         _ = _check_scaled_mm_available_dev()
 
+    with (
+        patch("torch.cuda.is_available", return_value=True),
+        patch("torch.version.cuda", new=None),
+        patch("torch.version.hip", new="7.0.0"),
+        patch("subprocess.run") as mock_subprocess,
+    ):
+        mock_subprocess.return_value = Mock(
+            returncode=0,
+            stdout=(
+                "Name:                    gfx1201\n"
+                "Name:                    amdgcn-amd-amdhsa--gfx1201\n"
+                "Name:                    amdgcn-amd-amdhsa--gfx12-generic\n"
+            ),
+        )
+        assert _check_scaled_mm_available_dev() == "hip_ocp"
+
     with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch("torch.version.cuda", new=True):
         _ = _check_scaled_mm_available_dev()
 
@@ -50,7 +66,7 @@ def test_check_scaled_mm_available_dev():
     )
     input = torch.randn([512, 512], dtype=dtype, device=device)
 
-    with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", "hip", module_name_prefix="quark"):
+    with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", "hip_fnuz", module_name_prefix="quark"):
         try:
             _ = qparam_linear(input)
         except ValueError as e:
@@ -86,3 +102,40 @@ def test_check_scaled_mm_available_dev():
         ) as mock_scaled_mm:
             output = qparam_linear(input)
             mock_scaled_mm.assert_not_called()
+
+
+def test_fp8_scaled_mm_rocm_modes():
+    FP8_PER_TENSOR_SPEC = QTensorConfig(
+        dtype=Dtype.fp8_e4m3, qscheme=QSchemeType.per_tensor, observer_cls=PerTensorMinMaxObserver, is_dynamic=False
+    )
+    config = QLayerConfig(input_tensors=FP8_PER_TENSOR_SPEC, weight=FP8_PER_TENSOR_SPEC)
+    qparam_linear = QParamsLinear.from_module(
+        nn.Linear(in_features=512, out_features=512, bias=False, dtype=torch.float16),
+        custom_mode="fp8",
+        pack_method=None,
+        quant_config=config,
+    )
+    qparam_linear.weight = nn.Parameter(torch.empty_like(qparam_linear.weight, dtype=torch.float8_e4m3fn))
+    input_tensor = torch.randn([512, 512], dtype=torch.float16)
+
+    with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", "hip_ocp", module_name_prefix="quark"):
+        with patch(
+            "torch._scaled_mm", return_value=(torch.randn(512, 512, dtype=torch.float32), torch.tensor(1.0))
+        ) as mock_scaled_mm:
+            output = qparam_linear(input_tensor)
+            mock_scaled_mm.assert_called_once()
+            scaled_mm_args = mock_scaled_mm.call_args.args
+            assert scaled_mm_args[0].dtype == torch.float8_e4m3fn
+            assert scaled_mm_args[1].dtype == torch.float8_e4m3fn
+            assert output is not None
+
+    with PatchEverywhere("SCALED_MM_AVAILABLE_DEV", "hip_fnuz", module_name_prefix="quark"):
+        with patch(
+            "torch._scaled_mm", return_value=(torch.randn(512, 512, dtype=torch.float32), torch.tensor(1.0))
+        ) as mock_scaled_mm:
+            output = qparam_linear(input_tensor)
+            mock_scaled_mm.assert_called_once()
+            scaled_mm_args = mock_scaled_mm.call_args.args
+            assert scaled_mm_args[0].dtype == torch.float8_e4m3fnuz
+            assert scaled_mm_args[1].dtype == torch.float8_e4m3fnuz
+            assert output is not None

@@ -93,7 +93,17 @@ REVERSE_MISMATCHING_PARAMETERS_NAMES = [
 
 def _check_scaled_mm_available_dev() -> str | None:
     """
-    Determine if torch._scaled_mm is available, there are three return values, None, "hip", "cuda"
+    Determine if torch._scaled_mm is available.
+
+    Return values:
+    - None: no supported scaled-mm path.
+    - "cuda": CUDA scaled-mm path.
+    - "hip_fnuz": ROCm scaled-mm path that requires E4M3 FNUZ conversion.
+    - "hip_ocp": ROCm scaled-mm path that uses OCP E4M3 directly.
+
+    ROCm 7.2 on gfx12 reports both the concrete target, for example gfx1201,
+    and a generic alias, gfx12-generic. The generic alias is not a real ISA
+    version for this check and must not be interpreted as gfx12 < gfx940.
     """
     scaled_mm_available_dev = None
 
@@ -113,17 +123,19 @@ def _check_scaled_mm_available_dev() -> str | None:
             raise RuntimeError("The `rocminfo` command failed or was not found.")
 
         output = result.stdout.strip()
-        matches = re.findall(r"gfx(\d+)", output.lower())
+        matches = [int(match) for match in re.findall(r"gfx(\d{3,4})", output.lower())]
 
-        scaled_mm_available_dev = "hip" if len(matches) > 0 else None
-        for match in matches:
-            version_number = int(match)
-            if version_number < 940:
+        if len(matches) > 0:
+            if any(version_number < 940 for version_number in matches):
                 # In general, all video card models should be the same,
-                # All graphics cards must be eligible
+                # All graphics cards must be eligible.
                 scaled_mm_available_dev = None
-                break
-        if scaled_mm_available_dev == "hip":
+            elif all(version_number >= 950 for version_number in matches):
+                scaled_mm_available_dev = "hip_ocp"
+            else:
+                scaled_mm_available_dev = "hip_fnuz"
+
+        if scaled_mm_available_dev == "hip_fnuz":
             print(
                 "[Warning] When the dtype of your model is float32 and custom_mode = 'fp8', a version of torch (rocm) lower than 2.4.0 will result in calculation errors of 'torch._scaled_mm', \n"
                 "If you find that the ppl value is large, try to increase the version of torch. Besides, you should ensure your torch version matches your rocm to prevent errors."
