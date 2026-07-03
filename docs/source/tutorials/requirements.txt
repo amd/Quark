@@ -1,0 +1,10 @@
+accelerate
+diffusers==0.34.0
+gguf==0.17.1
+huggingface_hub
+matplotlib
+nbstripout
+netron
+notebook
+safetensors
+transformers

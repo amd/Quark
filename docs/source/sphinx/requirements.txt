@@ -14,44 +14,44 @@ astroid==3.3.11
     #   sphinx-autoapi
 asttokens==3.0.1
     # via stack-data
-attrs==25.4.0
+attrs==26.1.0
     # via
     #   jsonschema
     #   jupyter-cache
     #   referencing
-babel==2.17.0
+babel==2.18.0
     # via
     #   pydata-sphinx-theme
     #   sphinx
-beautifulsoup4==4.14.3
+beautifulsoup4==4.15.0
     # via
     #   nbconvert
     #   pydata-sphinx-theme
-bleach[css]==6.3.0
+bleach[css]==6.4.0
     # via nbconvert
 breathe==4.36.0
     # via rocm-docs-core
-certifi==2026.1.4
+certifi==2026.6.17
     # via requests
 cffi==2.0.0
     # via
     #   cryptography
     #   pynacl
-charset-normalizer==3.4.4
+charset-normalizer==3.4.7
     # via requests
-click==8.3.1
+click==8.4.2
     # via
     #   jupyter-cache
     #   sphinx-external-toc
 comm==0.2.3
     # via ipykernel
-cryptography==48.0.1
+cryptography==49.0.0
     # via
     #   -r source/sphinx/requirements.in
     #   pyjwt
-debugpy==1.8.19
+debugpy==1.8.21
     # via ipykernel
-decorator==5.2.1
+decorator==5.3.1
     # via ipython
 defusedxml==0.7.1
     # via nbconvert
@@ -68,27 +68,27 @@ fastjsonschema==2.21.2
     #   rocm-docs-core
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.46
+gitpython==3.1.50
     # via rocm-docs-core
-greenlet==3.3.0
+greenlet==3.5.3
     # via sqlalchemy
-idna==3.11
+idna==3.18
     # via requests
-imagesize==1.4.1
+imagesize==2.0.0
     # via sphinx
-importlib-metadata==8.7.1
+importlib-metadata==9.0.0
     # via
     #   jupyter-cache
     #   myst-nb
-ipykernel==7.1.0
+ipykernel==7.3.0
     # via myst-nb
-ipython==9.9.0
+ipython==9.15.0
     # via
     #   ipykernel
     #   myst-nb
 ipython-pygments-lexers==1.1.1
     # via ipython
-jedi==0.19.2
+jedi==0.20.0
     # via ipython
 jinja2==3.1.6
     # via
@@ -102,7 +102,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 jupyter-cache==1.0.1
     # via myst-nb
-jupyter-client==8.8.0
+jupyter-client==8.9.1
     # via
     #   ipykernel
     #   nbclient
@@ -115,7 +115,7 @@ jupyter-core==5.9.1
     #   nbformat
 jupyterlab-pygments==0.3.0
     # via nbconvert
-markdown-it-py==4.0.0
+markdown-it-py==4.2.0
     # via
     #   mdit-py-plugins
     #   myst-parser
@@ -123,28 +123,28 @@ markupsafe==3.0.3
     # via
     #   jinja2
     #   nbconvert
-matplotlib-inline==0.2.1
+matplotlib-inline==0.2.2
     # via
     #   ipykernel
     #   ipython
-mdit-py-plugins==0.5.0
+mdit-py-plugins==0.6.1
     # via myst-parser
 mdurl==0.1.2
     # via markdown-it-py
-mistune==3.2.0
+mistune==3.3.2
     # via nbconvert
-myst-nb==1.3.0
+myst-nb==1.4.0
     # via
     #   -r source/sphinx/requirements.in
     #   rocm-docs-core
-myst-parser==5.0.0
+myst-parser==5.1.0
     # via myst-nb
-nbclient==0.10.4
+nbclient==0.11.0
     # via
     #   jupyter-cache
     #   myst-nb
     #   nbconvert
-nbconvert==7.16.6
+nbconvert==7.17.1
     # via -r source/sphinx/requirements.in
 nbformat==5.10.4
     # via
@@ -152,25 +152,27 @@ nbformat==5.10.4
     #   myst-nb
     #   nbclient
     #   nbconvert
-nest-asyncio==1.6.0
+nest-asyncio2==1.7.2
     # via ipykernel
-packaging==26.0
+packaging==26.2
     # via
     #   ipykernel
     #   nbconvert
     #   sphinx
 pandocfilters==1.5.1
     # via nbconvert
-parso==0.8.5
+parso==0.8.7
     # via jedi
 pexpect==4.9.0
     # via ipython
-platformdirs==4.5.1
+platformdirs==4.10.0
     # via jupyter-core
 prompt-toolkit==3.0.52
     # via ipython
-psutil==7.2.1
-    # via ipykernel
+psutil==7.2.2
+    # via
+    #   ipykernel
+    #   ipython
 ptyprocess==0.7.0
     # via pexpect
 pure-eval==0.2.3
@@ -181,9 +183,9 @@ pydata-sphinx-theme==0.16.1
     # via
     #   rocm-docs-core
     #   sphinx-book-theme
-pygithub==2.8.1
+pygithub==2.9.1
     # via rocm-docs-core
-pygments==2.19.2
+pygments==2.20.0
     # via
     #   accessible-pygments
     #   ipython
@@ -191,11 +193,11 @@ pygments==2.19.2
     #   nbconvert
     #   pydata-sphinx-theme
     #   sphinx
-pyjwt[crypto]==2.10.1
+pyjwt[crypto]==2.13.0
     # via pygithub
 pynacl==1.6.2
     # via pygithub
-pypandoc==1.16.2
+pypandoc==1.17
     # via -r source/sphinx/requirements.in
 python-dateutil==2.9.0.post0
     # via jupyter-client
@@ -215,7 +217,7 @@ referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
-requests==2.32.5
+requests==2.34.2
     # via
     #   -r source/sphinx/requirements.in
     #   pygithub
@@ -224,17 +226,17 @@ rocm-docs-core==1.21.1
     # via -r source/sphinx/requirements.in
 roman-numerals==4.1.0
     # via sphinx
-rpds-py==0.30.0
+rpds-py==2026.6.3
     # via
     #   jsonschema
     #   referencing
 six==1.17.0
     # via python-dateutil
-smmap==5.0.2
+smmap==5.0.3
     # via gitdb
-snowballstemmer==3.0.1
+snowballstemmer==3.1.1
     # via sphinx
-soupsieve==2.8.3
+soupsieve==2.8.4
     # via beautifulsoup4
 sphinx==9.1.0
     # via
@@ -252,7 +254,7 @@ sphinx==9.1.0
     #   sphinx-notfound-page
 sphinx-autoapi==3.6.0
     # via -r source/sphinx/requirements.in
-sphinx-book-theme==1.1.3
+sphinx-book-theme==1.2.0
     # via rocm-docs-core
 sphinx-copybutton==0.5.2
     # via rocm-docs-core
@@ -276,19 +278,19 @@ sphinxcontrib-qthelp==2.0.0
     # via sphinx
 sphinxcontrib-serializinghtml==2.0.0
     # via sphinx
-sqlalchemy==2.0.46
+sqlalchemy==2.0.51
     # via jupyter-cache
 stack-data==0.6.3
     # via ipython
-tabulate==0.9.0
+tabulate==0.10.0
     # via jupyter-cache
-tinycss2==1.4.0
+tinycss2==1.5.1
     # via bleach
-tornado==6.5.4
+tornado==6.5.7
     # via
     #   ipykernel
     #   jupyter-client
-traitlets==5.14.3
+traitlets==5.15.1
     # via
     #   ipykernel
     #   ipython
@@ -298,22 +300,23 @@ traitlets==5.14.3
     #   nbclient
     #   nbconvert
     #   nbformat
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   beautifulsoup4
+    #   jupyter-client
     #   myst-nb
     #   pydata-sphinx-theme
     #   pygithub
     #   sqlalchemy
-urllib3==2.6.3
+urllib3==2.7.0
     # via
     #   pygithub
     #   requests
-wcwidth==0.3.0
+wcwidth==0.8.2
     # via prompt-toolkit
 webencodings==0.5.1
     # via
     #   bleach
     #   tinycss2
-zipp==3.23.0
+zipp==4.1.0
     # via importlib-metadata
