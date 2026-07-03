@@ -7,7 +7,20 @@
 
 set -e
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${THIS_DIR}/../tools/ci/utils.sh"
+
+# Defined inline (not sourced from tools/ci/utils.sh) because tools/ is not shipped to
+# the public repo, so utils.sh is absent when Read the Docs builds from github.com/amd/quark.
+configure_ci_verbose() {
+    if [[ "${QUARK_CI_VERBOSE:-0}" == "1" ]]; then
+        set -x
+        unset TQDM_DISABLE
+        unset HF_HUB_DISABLE_PROGRESS_BARS
+    else
+        set +x
+        export TQDM_DISABLE=1
+        export HF_HUB_DISABLE_PROGRESS_BARS=1
+    fi
+}
 configure_ci_verbose
 
 install_jupyter_notebooks_dependencies() {

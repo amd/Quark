@@ -25,8 +25,6 @@ build:
      build:
        htmlzip:
          - echo "Overriding default build command for htmlzip format to use Quark doc build script!"
-         - echo "Copying tutorials from root to docs/source/tutorials/ for Sphinx build"
-         - bash -c "if [ -d $READTHEDOCS_REPOSITORY_PATH/tutorials ]; then rm -rf $READTHEDOCS_REPOSITORY_PATH/docs/source/tutorials; cp -r $READTHEDOCS_REPOSITORY_PATH/tutorials $READTHEDOCS_REPOSITORY_PATH/docs/source/tutorials; else echo 'Warning: tutorials folder not found at root'; fi"
          - mkdir -p $READTHEDOCS_OUTPUT/html
          - bash -c "export QUARK_SPHINX_SKIP_BUILD_TUTORIALS=1; cd docs && ./build_docs.sh"
          - bash -c "cp -rv _docs_build/html/* $READTHEDOCS_OUTPUT/html/"
