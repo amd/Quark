@@ -1,6 +1,6 @@
 datasets
 huggingface-hub~=0.24.5
-onnx>=1.17.0,<=1.19.0
+onnx>=1.21.0,<=1.22.0
 onnxruntime>=1.22.2,<=1.25.1
 onnxruntime-genai==0.4.0
 onnxruntime_extensions>=0.4.2

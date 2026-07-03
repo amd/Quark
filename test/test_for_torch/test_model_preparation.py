@@ -11,10 +11,15 @@ import torch
 # Add the examples directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../examples/torch/language_modeling")))
 
+from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
 from quark.torch.utils.llm import get_model
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(
+    not is_transformers_version_higher_or_equal("5.2.0"),
+    reason="Qwen3.5 model_type=qwen3_5 requires transformers >= 5.2.0",
+)
 def test_get_model_qwen35_0_8b():
     """Test loading Qwen/Qwen3.5-0.8B model using get_model()."""
     model_id = "Qwen/Qwen3.5-0.8B"

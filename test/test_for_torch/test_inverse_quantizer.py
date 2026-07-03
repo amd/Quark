@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,7 +33,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
-from quark.common.utils.testing_utils import require_torch_cuda, torch_device
+from quark.common.utils.testing_utils import TEST_WITH_EXTENSIVE, require_torch_cuda, torch_device
 from quark.torch import LLMTemplate, ModelQuantizer, export_safetensors
 from quark.torch.quantization import OCP_MXFP4Spec
 from quark.torch.quantization.config.config import QConfig, QLayerConfig
@@ -44,6 +45,7 @@ from quark.torch.quantization.inverse_quantizer import (
     dequantize_prequantized_to_linear,
     is_prequantized_linear,
 )
+from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.utils.llm.model_preparation import get_model
 
 FP8_LINEAR_MODEL_ID = "Qwen/Qwen3-0.6B-FP8"
@@ -102,6 +104,7 @@ def compressed_int4_model() -> Iterator[nn.Module]:
 
 
 @pytest.fixture(scope="module")
+@require_torch_cuda
 def fp8_linear_model() -> Iterator[nn.Module]:
     """Load the transformers FP8Linear model once per module (requires CUDA)."""
     model = AutoModelForCausalLM.from_pretrained(
@@ -227,68 +230,138 @@ def test_base_class_dequantize_not_implemented() -> None:
         InverseWeightQuantizer().dequantize(torch.randn(4, 4))
 
 
+def _snapshot_download_or_skip(model_id: str) -> str:
+    """Return the local snapshot directory for ``model_id``.
+
+    Skips the test when the model is not available offline -- i.e. running with
+    ``HF_HUB_OFFLINE=1`` (as the CI does) and the model is not in the local HF
+    cache. Pre-populating the shared cache re-enables the test automatically.
+    """
+    try:
+        return huggingface_hub.snapshot_download(model_id)
+    except huggingface_hub.errors.LocalEntryNotFoundError:
+        pytest.skip(
+            f"Model {model_id} is not in the local HF cache and outgoing traffic is disabled "
+            "(HF_HUB_OFFLINE). Pre-cache the model to run this test."
+        )
+
+
+def _dir_size_bytes(path: str) -> int:
+    """Total size, in bytes, of all files under ``path`` (recursively)."""
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+
+
 # TODO: verify whether Kimi-K2.5 / Kimi-K2.6 custom modeling code is compatible with Transformers v5.
 @pytest.mark.skipif(
     is_transformers_version_higher_or_equal("5.0"),
     reason="requires transformers < 5.0",
 )
-def test_kimi_k25_quantize_export() -> None:
-    """Full quantize_model + freeze + export_safetensors flow on Kimi-K2.5 loaded via get_model."""
-    model_id = "amd-quark/Kimi-K2.5-2-layers-tiny"
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "amd-quark/Kimi-K2.5-2-layers-tiny",
+        pytest.param(
+            "moonshotai/Kimi-K2.6",
+            marks=pytest.mark.skipif(not TEST_WITH_EXTENSIVE, reason="set QUARK_EXTENSIVE_TEST=1 to enable"),
+        ),
+    ],
+)
+def test_kimi_k25_quantize_export(model_id: str) -> None:
+    """Full quantize_model + freeze + export_safetensors flow on Kimi models loaded via get_model."""
+    model_dir = _snapshot_download_or_skip(model_id)
 
-    model_dir = huggingface_hub.snapshot_download(model_id)
-    model, _ = get_model(model_dir, device=torch_device)
+    required_disk_space = 2 * _dir_size_bytes(model_dir)
+    available_disk_space = shutil.disk_usage(tempfile.gettempdir()).free
+
+    if available_disk_space < required_disk_space:
+        pytest.fail(
+            f"Not enough disk space to save two quantized models for {model_id}. "
+            f"Required: {required_disk_space / (1024**3):.1f} GB, "
+            f"available: {available_disk_space / (1024**3):.1f} GB."
+        )
+
+    model, _ = get_model(model_dir, multi_gpu=True)
 
     # MXFP4 weight-only quantization config
     mxfp4_spec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
     quant_config = QConfig(
         global_quant_config=QLayerConfig(weight=mxfp4_spec),
-        exclude=["lm_head", "*vision_tower*", "*.mlp.gate"],
+        exclude=[
+            "*lm_head*",
+            "*vision_tower*",
+            "*.mlp.gate",
+            "*mm_projector*",
+            "*shared_experts*",
+            "*self_attn*",
+            "*mlp.gate_proj*",
+            "*mlp.up_proj*",
+            "*mlp.gate_up_proj*",
+            "*mlp.down_proj*",
+        ],
     )
 
-    quantizer = ModelQuantizer(copy.deepcopy(quant_config))
-    quant_model = quantizer.quantize_model(model)
+    original_get_normal_quant_weight = QuantLinear._get_normal_quant_weight
+    get_normal_quant_weight_call_count = 0
 
-    quant_model = quantizer.freeze(quant_model)
+    def tracking_get_normal_quant_weight(self: QuantLinear, *args: object, **kwargs: object) -> torch.Tensor:
+        nonlocal get_normal_quant_weight_call_count
+        get_normal_quant_weight_call_count += 1
+        return original_get_normal_quant_weight(self, *args, **kwargs)
 
-    # Export via standard flow.
-    with tempfile.TemporaryDirectory() as in_memory_dir, tempfile.TemporaryDirectory() as file_to_file_dir:
-        with torch.no_grad():
-            export_safetensors(
-                model=quant_model,
-                output_dir=in_memory_dir,
-                weight_format="real_quantized",
-                pack_method="reorder",
+    with patch.object(QuantLinear, "_get_normal_quant_weight", tracking_get_normal_quant_weight):
+        quantizer = ModelQuantizer(copy.deepcopy(quant_config))
+        quant_model = quantizer.quantize_model(model)
+
+        quant_model = quantizer.freeze(quant_model)
+
+        # Export via standard flow.
+        with tempfile.TemporaryDirectory() as in_memory_dir, tempfile.TemporaryDirectory() as file_to_file_dir:
+            with torch.no_grad():
+                export_safetensors(
+                    model=quant_model,
+                    output_dir=in_memory_dir,
+                    weight_format="real_quantized",
+                    pack_method="reorder",
+                )
+
+            del quant_model
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # Export via file-to-file flow
+            quantizer = ModelQuantizer(copy.deepcopy(quant_config))
+            quantizer.direct_quantize_checkpoint(
+                pretrained_model_path=model_dir,
+                save_path=file_to_file_dir,
             )
 
-        # Export via file-to-file flow
-        quantizer = ModelQuantizer(copy.deepcopy(quant_config))
-        quantizer.direct_quantize_checkpoint(
-            pretrained_model_path=model_dir,
-            save_path=file_to_file_dir,
-        )
+            # Load and compare weights from both flows
+            in_memory_weights: dict[str, torch.Tensor] = {}
+            for safetensors_path in sorted(Path(in_memory_dir).glob("*.safetensors")):
+                with safe_open(str(safetensors_path), framework="pt", device="cpu") as f:
+                    for key in f.keys():  # noqa
+                        in_memory_weights[key] = f.get_tensor(key)
 
-        # Load and compare weights from both flows
-        in_memory_weights: dict[str, torch.Tensor] = {}
-        for safetensors_path in sorted(Path(in_memory_dir).glob("*.safetensors")):
-            with safe_open(str(safetensors_path), framework="pt", device="cpu") as f:
-                for key in f.keys():  # noqa
-                    in_memory_weights[key] = f.get_tensor(key)
+            file_to_file_weights: dict[str, torch.Tensor] = {}
+            for safetensors_path in sorted(Path(file_to_file_dir).glob("*.safetensors")):
+                with safe_open(str(safetensors_path), framework="pt", device="cpu") as f:
+                    for key in f.keys():  # noqa
+                        file_to_file_weights[key] = f.get_tensor(key)
 
-        file_to_file_weights: dict[str, torch.Tensor] = {}
-        for safetensors_path in sorted(Path(file_to_file_dir).glob("*.safetensors")):
-            with safe_open(str(safetensors_path), framework="pt", device="cpu") as f:
-                for key in f.keys():  # noqa
-                    file_to_file_weights[key] = f.get_tensor(key)
+            assert "vision_tower.encoder.blocks.3.norm0.weight_scale" not in in_memory_weights
+            assert "vision_tower.encoder.blocks.3.norm0.weight_scale" not in file_to_file_weights
 
-        assert "vision_tower.encoder.blocks.3.norm0.weight_scale" not in in_memory_weights
-        assert "vision_tower.encoder.blocks.3.norm0.weight_scale" not in file_to_file_weights
+            assert set(in_memory_weights.keys()) == set(file_to_file_weights.keys())
 
-        assert set(in_memory_weights.keys()) == set(file_to_file_weights.keys())
+            # Every tensor must match exactly
+            for key in sorted(in_memory_weights.keys()):
+                assert in_memory_weights[key].dtype == file_to_file_weights[key].dtype
+                assert in_memory_weights[key].shape == file_to_file_weights[key].shape
+                assert torch.equal(in_memory_weights[key], file_to_file_weights[key])
 
-        # Every tensor must match exactly
-        for key in sorted(in_memory_weights.keys()):
-            assert torch.equal(in_memory_weights[key], file_to_file_weights[key])
+    assert get_normal_quant_weight_call_count == 0, (
+        f"QuantLinear._get_normal_quant_weight was called {get_normal_quant_weight_call_count} time(s), expected 0"
+    )
 
 
 # TODO: verify whether Kimi-K2.5 / Kimi-K2.6 custom modeling code is compatible with Transformers v5.
@@ -301,14 +374,14 @@ def test_kimi_k25_nvfp4_quantization_and_export() -> None:
     """NVFP4 quantize_model + freeze + export_safetensors flow on Kimi-K2.5 loaded via get_model."""
     model_id = "amd-quark/Kimi-K2.5-2-layers-tiny"
 
-    model_dir = huggingface_hub.snapshot_download(model_id)
+    model_dir = _snapshot_download_or_skip(model_id)
     model, _ = get_model(model_dir, device=torch_device)
 
     template = LLMTemplate.get(model.config.model_type)
     quant_config = template.get_config("nvfp4")
 
     text = "Hello, how are you?"
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     tokenized_outputs = tokenizer(text, return_tensors="pt")
     calib_dataloader = DataLoader(tokenized_outputs["input_ids"].to(torch_device))
 

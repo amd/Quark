@@ -4,6 +4,6 @@ DistVAE
 huggingface-hub
 open-clip-torch==2.7.0
 opencv-python-headless
-scipy
+scipy<1.16
 sentencepiece
 xfuser

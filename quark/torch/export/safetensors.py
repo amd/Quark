@@ -5,7 +5,7 @@
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -15,8 +15,8 @@ from quark.torch.export.utils import (
     get_state_dict_for_export,
 )
 
-if TYPE_CHECKING and is_transformers_available():
-    from transformers import PreTrainedModel, PreTrainedTokenizer  # type: ignore[attr-defined]
+if TYPE_CHECKING and is_transformers_available():  # pragma: no cover
+    from transformers import PreTrainedModel  # type: ignore[attr-defined]
 
 if is_safetensors_available():
     from safetensors.torch import load_file
@@ -26,9 +26,7 @@ SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 logger = ScreenLogger(__name__)
 
 
-def export_hf_model(
-    model: "PreTrainedModel", export_dir: str | Path, tokenizer: Optional["PreTrainedTokenizer"] = None
-) -> None:
+def export_hf_model(model: "PreTrainedModel", export_dir: str | Path) -> None:
     """
     This function is used to export models in Hugging Face safetensors format.
     """
@@ -59,10 +57,6 @@ def export_hf_model(
     # Save model to safetensors.
     # NOTE: Tied weights sharing the same `tensor.data_ptr()` are removed in the `save_pretrained` call.
     model.save_pretrained(export_dir, state_dict=state_dict)  # type: ignore[attr-defined]
-
-    # Optionally, save the tokenizer from the original model.
-    if tokenizer is not None:
-        tokenizer.save_pretrained(export_dir)
 
     logger.info(f"hf_format quantized model exported to {export_dir} successfully.")
 

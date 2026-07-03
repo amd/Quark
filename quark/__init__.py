@@ -17,6 +17,8 @@ For further details on the features and capabilities of Quark, please refer to t
 """
 
 try:
-    from .version import __version__  # type: ignore[unused-ignore, import-not-found]
+    from .version import __version__ as __version__  # type: ignore[unused-ignore, import-not-found]
 except ImportError:
     __version__ = "unknown"
+
+__all__ = ["__version__"]

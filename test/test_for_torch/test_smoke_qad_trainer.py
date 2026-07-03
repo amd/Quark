@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 
-from quark.common.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import require_torch_cuda, torch_device
 from quark.torch import LLMTemplate, ModelQuantizer
 from quark.torch.algorithm.qad_trainer import QADSFTTrainer, QADTrainer
 
@@ -99,6 +99,7 @@ def _build_student_and_teacher(
     return student, teacher
 
 
+@require_torch_cuda
 def test_smoke_qad_trainer():
     """Run a few QAD steps: student=MXFP4 opt-125m (2 layers), teacher=fp opt-125m. No QLoRA."""
     model_name = "facebook/opt-125m"
@@ -132,6 +133,7 @@ def test_smoke_qad_trainer():
     trainer.train()
 
 
+@require_torch_cuda
 def test_smoke_qad_sft_trainer():
     """Same as test_smoke_qad_trainer but uses QADSFTTrainer (SFT + QAD). Same model and dataset."""
     model_name = "facebook/opt-125m"

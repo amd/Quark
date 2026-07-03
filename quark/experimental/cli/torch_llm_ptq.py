@@ -218,7 +218,6 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         main_device = model.device if hasattr(model, "device") else args.device
         calib_dataloader = get_calib_dataloader(
             dataset_name=args.dataset,
-            processor=processor if multimodal else None,
             tokenizer=tokenizer,
             batch_size=args.batch_size,
             num_calib_data=args.num_calib_data,

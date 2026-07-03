@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import quark.torch.kernel
-from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.profiler import GlobalProfiler, ProfileStep, profile_scope
 from quark.common.utils.import_utils import is_safetensors_available, is_transformers_available
 from quark.common.utils.log import ScreenLogger, log_errors
 from quark.torch.algorithm.api import add_algorithm_config_by_model, apply_advanced_quant_algo
@@ -25,6 +25,7 @@ from quark.torch.export.prequantized_layer_handler import apply_prequantized_rou
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.config_verification import ConfigVerifier
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode
+from quark.torch.quantization.constants import LOG_EVERY_SECONDS
 from quark.torch.quantization.file2file_quantization import (
     _resolve_legacy_positional_device_arg,
     quantize_model_per_safetensor,
@@ -398,9 +399,21 @@ class ModelQuantizer:
         quantizer_names = set()
         total_modules = len(named_modules)
         logger.info("Freezing quantizers for quantized modules...")
+
+        counter = 0
+        last_time = time.time()
+        start_time = last_time
+
         for idx, (name, module) in enumerate(
             tqdm(named_modules.items(), desc="Freezing quantized modules", total=total_modules)
         ):
+            current_time = time.time()
+
+            if current_time > last_time + LOG_EVERY_SECONDS:
+                last_time = current_time
+                GlobalProfiler.log_torch_memory()
+                logger.info(f"Elapsed: {current_time - start_time:.2f} s. Frozen layers: {counter}")
+
             if isinstance(module, QuantMixin):
                 # Check if the model has sequential weight or bias quantizer
                 # If so, only store the quantizer parameters, not quantize weight and bias.
@@ -412,6 +425,8 @@ class ModelQuantizer:
                         quantizer_names.add(full_name)
 
                         if not submodule.is_dynamic:
+                            counter += 1
+
                             frozen_names.append(full_name)
 
                             if quantize:
@@ -697,7 +712,18 @@ class ModelQuantizer:
 
     def _calibrate_all_params(self, model: nn.Module) -> None:
         named_modules = dict(model.named_modules(remove_duplicate=False))
+
+        counter = 0
+        last_time = time.time()
+        start_time = last_time
         for name, module in tqdm(named_modules.items(), desc="Calibrating all params"):
+            current_time = time.time()
+
+            if current_time > last_time + LOG_EVERY_SECONDS:
+                last_time = current_time
+                GlobalProfiler.log_torch_memory()
+                logger.info(f"Elapsed: {current_time - start_time:.2f} s. Quantized layers: {counter}")
+
             if isinstance(module, QuantMixin):
                 # Calibrate weight
                 if module._weight_quantizer is not None and isinstance(
@@ -715,6 +741,8 @@ class ModelQuantizer:
                     )
 
                     if is_not_calibrated:
+                        counter += 1
+
                         # Trigger calibration by calling get_quant_weight
                         if module.weight is not None and module.weight.device == torch.device("meta"):
                             # Offloaded model: get weight from hook
@@ -740,6 +768,8 @@ class ModelQuantizer:
                     )
 
                     if is_not_calibrated:
+                        counter += 1
+
                         if module.bias is not None and module.bias.device == torch.device("meta"):
                             bias_data = module._hf_hook.weights_map["bias"].data
                             _ = module.get_quant_bias(bias_data.to(module._hf_hook.execution_device))

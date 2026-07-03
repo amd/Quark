@@ -34,6 +34,7 @@ def fake_save(monkeypatch):
 def _build_model(generation_config):
     model = types.SimpleNamespace()
     model.generation_config = generation_config
+    model.config = None
     # bind save_pretrained as a no-op method
     model.save_pretrained = lambda export_dir, state_dict=None, **kwargs: None  # noqa: ARG005
     return model

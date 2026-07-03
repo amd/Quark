@@ -194,7 +194,11 @@ def _collect_lost_mxfp4_layers(model: nn.Module, linear_namespace: set[str]) -> 
     patterns: list[str] = list(skip_patterns) if skip_patterns else []
 
     def is_excluded(name: str) -> bool:
-        return any(name == pattern or name.startswith(f"{pattern}.") for pattern in patterns)
+        # ``modules_to_not_convert`` may contain wildcards (e.g. ``*.mlp.router``);
+        # use fnmatch. ``{pattern}.*`` also skips nested linears (e.g. ``router.linear``).
+        return any(
+            fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name, f"{pattern}.*") for pattern in patterns
+        )
 
     return [name for name in linear_namespace if not is_excluded(name)], scheme
 

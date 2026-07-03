@@ -798,7 +798,10 @@ def create_infer_session_for_onnx_model(
     """
     Create an Inference Session for onnx model
     :param model_input: the onnx model, can be a path or ModelProto
-    :param session_options: session options
+    :param sess_options: session options
+    :param providers: executor providers
+    :param provider_options: options for providers
+    :param use_external_data_format: usr external data format or not
     """
 
     if USER_CUSTOM_OP_LIB_PATHS != []:
@@ -875,7 +878,9 @@ def collect_tensor_shapes_from_feed(
 
     result_map: dict[str, tuple[int, tuple[int, ...]]] = {}
     try:
-        session = create_infer_session_for_onnx_model(model)
+        sess_options = onnxruntime.SessionOptions()
+        register_custom_ops_library(sess_options)  # For simplicity, CPU library is used here
+        session = create_infer_session_for_onnx_model(model, sess_options)
         results: list[np.ndarray[Any, Any]] = session.run(output_list, feed_dict)
         for name, arr in zip(output_list, results, strict=True):
             if arr is None:

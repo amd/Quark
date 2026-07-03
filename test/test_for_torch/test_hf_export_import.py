@@ -22,6 +22,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from quark.common.utils.import_utils import (
     is_transformers_available,
     is_transformers_version_higher_or_equal,
+    is_triton_available,
 )
 from quark.common.utils.testing_utils import (
     PatchEverywhere,
@@ -62,6 +63,7 @@ from quark.torch.quantization.observer.observer import (
 from quark.torch.utils import QPARAMSLINEAR_OVERRIDES_STATE_DICT
 from quark.torch.utils.llm import preprocess_for_quantization
 from quark.torch.utils.llm.model_preparation import get_model
+from quark.torch.utils.llm.preprocessing import maybe_load_preprocessors, maybe_save_preprocessors
 
 if is_transformers_version_higher_or_equal("5.0"):
     from transformers.initialization import no_init_weights
@@ -1962,11 +1964,16 @@ def _run_prequantized_export_import_test(
 @pytest.mark.parametrize(
     "model_id, expected_layer_type",
     [
-        ("Qwen/Qwen3-4B-FP8", "FP8Linear"),
-        ("RedHatAI/Qwen2.5-0.5B-quantized.w4a16", "compressed-tensors"),
-        ("RedHatAI/Llama-3.2-1B-Instruct-FP8-dynamic", "compressed-tensors"),
+        pytest.param(
+            "Qwen/Qwen3-4B-FP8",
+            "FP8Linear",
+            id="fp8-native",
+            # transformers FP8Linear dequant path pulls in a Triton kernel; absent on CPU-only builds.
+            marks=pytest.mark.skipif(not is_triton_available(), reason="Triton is not installed."),
+        ),
+        pytest.param("RedHatAI/Qwen2.5-0.5B-quantized.w4a16", "compressed-tensors", id="compressed-w4a16"),
+        pytest.param("RedHatAI/Llama-3.2-1B-Instruct-FP8-dynamic", "compressed-tensors", id="compressed-fp8-dynamic"),
     ],
-    ids=["fp8-native", "compressed-w4a16", "compressed-fp8-dynamic"],
 )
 @pytest.mark.parametrize("weight_format", ["real_quantized"])
 @retry_flaky_test()
@@ -2137,3 +2144,10 @@ def test_kimi_loading():
     for name, expected_dtype in expected_dtypes.items():
         assert name in params
         assert params[name].dtype == expected_dtype
+
+
+def test_preprocessors_load_save():
+    _ = maybe_load_preprocessors("facebook/opt-125m")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        maybe_save_preprocessors("facebook/opt-125m", tmpdir)

@@ -17,6 +17,7 @@ from .model_preparation import (
     save_model,
     set_seed,
 )
+from .preprocessing import maybe_save_preprocessors
 
 __all__ = [
     "check_compatibility_before_quantization",
@@ -31,4 +32,5 @@ __all__ = [
     "get_loader",
     "get_trainer_dataset",
     "get_wikitext2",
+    "maybe_save_preprocessors",
 ]

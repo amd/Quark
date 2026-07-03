@@ -6,7 +6,7 @@ jupyter
 nbstripout
 netron
 notebook
-onnx==1.19.0
+onnx>=1.21.0,<=1.22.0
 onnxconverter-common==1.15.0
 onnxruntime~=1.25.1
 onnxruntime-genai

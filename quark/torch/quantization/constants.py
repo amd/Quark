@@ -39,3 +39,5 @@ SCALED_QUANT_DTYPES = set(INT_QUANT_DTYPES) | {
 USING_NON_SCALED_QUANT = [Dtype.mx, Dtype.mx6, Dtype.mx9, Dtype.bfp16]
 
 ONLY_DTYPE_CHANGE = [Dtype.bfloat16, Dtype.float16]
+
+LOG_EVERY_SECONDS = 10

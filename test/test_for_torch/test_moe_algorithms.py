@@ -139,7 +139,17 @@ def test_moe_awq():
 
 @pytest.mark.parametrize(
     "global_quant_config,model_config_name",
-    [(W_FP8_A_FP8_PER_TENSOR_CONFIG, "config.json"), (W_MXFP4_A_DYN_MXFP4_CONFIG, "config_128.json")],
+    [
+        (W_FP8_A_FP8_PER_TENSOR_CONFIG, "config.json"),
+        pytest.param(
+            W_MXFP4_A_DYN_MXFP4_CONFIG,
+            "config_128.json",
+            marks=pytest.mark.skipif(
+                not (isinstance(torch_device, torch.device) and torch_device.type == "cuda"),
+                reason="MXFP4 (qdq_mxfp4) is only implemented for CUDA devices",
+            ),
+        ),
+    ],
 )
 def test_moe_autosmoothquant(global_quant_config, model_config_name):
     # dataset

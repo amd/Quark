@@ -23,7 +23,6 @@ def get_tokenizer(model_id: str, max_seq_len: int = 512) -> PreTrainedTokenizer:
         model_max_length=max_seq_len,
         padding_side="left",
         trust_remote_code=True,
-        use_fast=False,
     )
     if tokenizer.pad_token is None:
         # Ensure pad_token is set, use eos_token if not available

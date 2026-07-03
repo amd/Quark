@@ -97,7 +97,6 @@ def fine_tune_process() -> None:
     main_device = model.device if quant_args.multi_gpu or quant_args.multi_device else device_string
     calibration_dataloader = get_calib_dataloader(
         dataset_name=quant_args.calibration_dataset,
-        processor=processor if is_multimodal else None,
         tokenizer=tokenizer,
         batch_size=quant_args.batch_size,
         num_calib_data=quant_args.num_calibration_examples,

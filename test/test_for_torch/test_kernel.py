@@ -91,6 +91,7 @@ def test_compile_kernel_rocm():
     assert single_arch_compile_time < 0.6 * multi_arch_compile_time
 
 
+@require_torch_cuda
 @pytest.mark.parametrize("scale", [1.0, 2.0, 0.5])
 @pytest.mark.parametrize(
     "device",
@@ -188,6 +189,7 @@ def _qdq_mxfp4_inplace_via_runner(inp_seed: torch.Tensor, group_size: int) -> to
     return run_torch_op_variants(pipeline)
 
 
+@require_torch_cuda
 @pytest.mark.parametrize("float_dtype", [torch.bfloat16, torch.float16])
 def test_mxfp4_fused_qdq(float_dtype: torch.dtype):
     hidden_size = 128
@@ -237,6 +239,7 @@ def test_mxfp4_fused_qdq(float_dtype: torch.dtype):
         assert ref_mxfp4_qdq(inp_clone[0, 96 + i].item(), 2 ** (-2)) == val.item()
 
 
+@require_torch_cuda
 @pytest.mark.parametrize("hidden_size", [64 * 32, 2880, 128 * 7])
 @pytest.mark.parametrize("float_dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("scalings", [[2.3, 0.03, 7.3, 0.1, 0.004, 17.3, 1e4, 1e-4]])
@@ -324,6 +327,7 @@ def test_mxfp4_fused_qdq_match_quark(
         )
 
 
+@require_torch_cuda
 @pytest.mark.parametrize("shape", [(11008, 512), (256, 4194304)])
 @pytest.mark.parametrize("scale_dtype", ["uint8", "float"])
 @pytest.mark.parametrize("float_dtype", [torch.bfloat16, torch.float16])

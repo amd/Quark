@@ -32,7 +32,6 @@ if is_torch_available():
     from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
 if is_transformers_available():
     from transformers import (  # type: ignore[attr-defined]
-        AutoProcessor,
         AutoTokenizer,
         PreTrainedTokenizer,
         default_data_collator,
@@ -253,7 +252,7 @@ def get_ultrachat(
 
 
 def get_calib_dataloader(
-    dataset_name: str, processor: AutoProcessor | None = None, **kwargs: Any
+    dataset_name: str, **kwargs: Any
 ) -> DataLoader[torch.Tensor] | DataLoader[list[dict[str, torch.Tensor]]] | DataLoader[dict[str, torch.Tensor]]:
     if dataset_name in ["pileval", "cnn_dailymail", "abisee/cnn_dailymail", "wikitext", "Salesforce/wikitext"]:
         return get_calib_dataloader_to_tensor(dataset_name, **kwargs)

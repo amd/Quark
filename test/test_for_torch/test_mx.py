@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch_testing_utils import run_torch_op_variants  # type: ignore[import-not-found]
 
+from quark.common.utils.testing_utils import require_torch_cuda
 from quark.torch import ModelQuantizer
 from quark.torch.export.nn.modules import realquantizer
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
@@ -2296,6 +2297,7 @@ def test_compare_quark_ao_mx_repo(elem_dtype):
     assert max_diff_MX == 0, f"The {elem_dtype} quantization result of quark and MX is different"
 
 
+@require_torch_cuda
 def test_realquantizer_pipline():
     torch.manual_seed(42)
     qspec = OCP_MXINT8Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()

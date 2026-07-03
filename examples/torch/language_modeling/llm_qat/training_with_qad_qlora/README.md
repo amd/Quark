@@ -42,7 +42,7 @@ tokenizer = get_tokenizer(quant_args.model_dir, **args)
 Build a `calib_dataloader`, call `preprocess_for_quantization`, then `ModelQuantizer.quantize_model` to finish PTQ:
 
 ```python
-calib_dataloader = get_calib_dataloader(quant_args.calib_dataset, processor, tokenizer,**args)
+calib_dataloader = get_calib_dataloader(quant_args.calib_dataset, tokenizer,**args)
 preprocess_for_quantization(model)
 quant_config = LLMTemplate.get(model_type).get_config(scheme=quant_args.quant_scheme, **args)
 quantizer = ModelQuantizer(quant_config, quant_args.multi_device)

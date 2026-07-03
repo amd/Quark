@@ -113,6 +113,18 @@ def test_collect_lost_layers_filters_by_modules_to_not_convert():
     assert "layers.0.mlp.router" in lost  # only top-level "router" matches
 
 
+def test_collect_lost_layers_filters_by_wildcard_modules_to_not_convert():
+    """Wildcard skip_patterns (e.g. ``*.mlp.router``) must match via fnmatch; the old
+    ``startswith`` matcher would leak ``layers.0.mlp.router`` into ``lost``."""
+    model = _model_with_qconfig(_typed_qconfig("mxfp4", ["*.mlp.router"]))
+    namespace = {"layers.0.mlp.gate", "layers.0.mlp.router", "layers.1.mlp.router"}
+    lost, scheme = _collect_lost_mxfp4_layers(model, namespace)
+    assert scheme == "mxfp4_weight_only"
+    assert "layers.0.mlp.gate" in lost
+    assert "layers.0.mlp.router" not in lost
+    assert "layers.1.mlp.router" not in lost
+
+
 class _EnumMethod:
     value = "mxfp4"
 

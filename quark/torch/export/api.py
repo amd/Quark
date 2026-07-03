@@ -49,6 +49,7 @@ from quark.torch.export.utils import (
     _fix_state_dict_key_on_save,
     _handle_multi_device_loading,
     _untie_parameters,
+    copy_missing_aux_files,
 )
 from quark.torch.quantization.config.type import QuantizationMode
 from quark.torch.quantization.inverse_quantizer import is_prequantized_linear
@@ -270,6 +271,12 @@ class SafetensorsExporter(BaseExporter):
 
         # Export using HF format
         export_hf_model(model=processed_model, export_dir=str(self.output_dir))
+
+        # Restore auxiliary files (merges.txt, vocab.json, preprocessor_config.json, LICENSE, ...)
+        # that the source checkpoint has but tokenizer/processor `save_pretrained` did not emit.
+        # Runs after export so already-written artifacts are preserved (copy-missing-only).
+        # Best-effort: copy_missing_aux_files swallows and logs its own errors, never failing export.
+        copy_missing_aux_files(original_config.get("_name_or_path"), self.output_dir)
 
         # Clean up any temporary buffers we inserted
         for module, buffer_name in inserted_buffers:

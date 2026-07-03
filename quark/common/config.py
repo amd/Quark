@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import Any, TypeVar
 
+from quark import __version__
 from quark.common.data_type import (
     BaseDtype,
     BaseObserverBase,
@@ -15,7 +16,6 @@ from quark.common.data_type import (
     BaseScaleType,
     BaseZeroPointType,
 )
-from quark.version import __version__
 
 T = TypeVar("T", bound="BaseConfigImpl")
 

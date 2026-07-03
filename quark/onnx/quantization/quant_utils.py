@@ -30,6 +30,7 @@ from onnxruntime.quantization.quant_utils import load_model_with_shape_infer as 
 from onnxruntime.quantization.tensor_quant_overrides import TensorQuantOverridesHelper
 from packaging import version as pv
 
+from quark import __version__ as versions
 from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration.methods import ExtendedCalibrationMethod, Int16Method, PowerOfTwoMethod
 from quark.onnx.operators.custom_ops import (
@@ -43,7 +44,6 @@ from quark.onnx.operators.custom_ops import (
     _COP_VERSION,
 )
 from quark.onnx.utils.system_utils import create_tmp_dir
-from quark.version import __version__ as versions
 
 
 def is_version_below(package: types.ModuleType, target_version: str) -> bool:
@@ -2338,10 +2338,7 @@ def insert_quant_nodes_at_boundaries(
 
         for output_index, output_name in enumerate(node.output):
             consumers = input_name_to_nodes.get(output_name, [])
-            if consumers:
-                # Reference the first consumer.
-                consumer = consumers[0]
-
+            for consumer in consumers:
                 downstream_stage = _downstream_stage_from_consumer(consumer)
                 if downstream_stage:
                     downstream_kind, downstream_signature, downstream_nodes, downstream_source_name = downstream_stage
@@ -2365,7 +2362,7 @@ def insert_quant_nodes_at_boundaries(
     # Phase 2: determine the template nodes for the boundaries to insert quant nodes.
     inserted_count = 0
 
-    inserted_tensors: set[tuple[str, str]] = set()
+    inserted_tensors: set[tuple[str, str, str]] = set()
     for node_key, stage_infos in node_stage_infos.items():
         if not stage_infos:
             continue
@@ -2409,14 +2406,15 @@ def insert_quant_nodes_at_boundaries(
         template_nodes = template_info["stage_nodes"]
 
         for info in stage_infos:
-            if info["tensor_name"] == template_info["tensor_name"]:
+            if info is template_info:
                 continue
             if info["stage_signature"] == template_signature:
                 continue
             info["template_index"] = template_index  # Update the template index for potential use
             qparam_tensor_name = info["override_tensor_name"] or info["tensor_name"]
 
-            inserted_tensor_key = (node_name, info["tensor_name"])
+            target_node_name = info["target_node"].name or info["target_node"].op_type
+            inserted_tensor_key = (node_name, info["tensor_name"], target_node_name)
             if inserted_tensor_key not in inserted_tensors:
                 _insert_stage_between(
                     source_tensor=info["tensor_name"],
@@ -2425,7 +2423,7 @@ def insert_quant_nodes_at_boundaries(
                     stage_kind=template_kind,
                     stage_nodes=template_nodes,
                     qparam_tensor_name=qparam_tensor_name,
-                    name_scope=f"{qparam_tensor_name}_{node_name}_{info['tensor_index']}",
+                    name_scope=f"{qparam_tensor_name}_{node_name}_{info['tensor_index']}_{target_node_name}",
                 )
                 inserted_tensors.add(inserted_tensor_key)
 

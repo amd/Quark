@@ -2,7 +2,7 @@ evaluate
 joblib
 ninja
 numpy>=2.0
-onnx>=1.16.0,<=1.19.0
+onnx>=1.21.0,<=1.22.0
 onnxscript
 onnxslim>=0.1.84
 pandas

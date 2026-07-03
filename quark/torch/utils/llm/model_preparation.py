@@ -20,6 +20,7 @@ from quark.torch.integrations.compressed_tensors.loading import (
     _is_compressed_tensors_model,
     _load_from_compressed_tensors,
 )
+from quark.torch.utils.llm.preprocessing import maybe_save_preprocessors
 
 if is_psutil_available():
     import psutil  # type: ignore[import-untyped]
@@ -530,16 +531,17 @@ def create_model_skeleton(
     return build_skeleton_from_config(config, trust_remote_code=trust_remote_code)
 
 
+# TODO: test this function in CI.
 def save_model(model: nn.Module, tokenizer: "PreTrainedTokenizerBase | None", save_dir: str) -> None:
     model.save_pretrained(save_dir, safe_serialization=True)  # type: ignore[attr-defined]
-    if tokenizer is None and getattr(model.config, "_name_or_path", None):  # type: ignore[attr-defined]
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(model.config._name_or_path, trust_remote_code=True)  # type: ignore
-            logger.info(f"Saving tokenizer from pretrained: {model.config._name_or_path}")  # type: ignore[attr-defined]
-        except Exception:
-            logger.exception("Failed to load tokenizer for saving.")
+
     if tokenizer is not None:
         tokenizer.save_pretrained(save_dir)  # type: ignore[attr-defined]
+    elif tokenizer is None and getattr(model.config, "_name_or_path", None):  # type: ignore[attr-defined]  # pragma: no cover
+        maybe_save_preprocessors(
+            model.config._name_or_path,
+            save_dir,
+        )
 
 
 def set_seed(seed: int) -> None:

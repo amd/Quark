@@ -31,6 +31,7 @@ class _StubModel:
     def __init__(self, generation_config):
         self.generation_config = generation_config
         self.saved_to = None
+        self.config = None
 
     def save_pretrained(self, export_dir, state_dict=None):
         self.saved_to = (str(export_dir), state_dict)
@@ -90,6 +91,7 @@ def test_no_generation_config_attribute_is_safe(stub_export_helpers, tmp_path):
     class _ModelNoGenCfg:
         def __init__(self):
             self.saved_to = None
+            self.config = None
 
         def save_pretrained(self, export_dir, state_dict=None):
             self.saved_to = str(export_dir)

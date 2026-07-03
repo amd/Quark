@@ -12,7 +12,6 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import snapshot_download
-from transformers import AutoProcessor
 
 from quark.common.profiler import GlobalProfiler, ProfileStep
 from quark.common.utils.log import ScreenLogger
@@ -40,6 +39,7 @@ from quark.torch.utils.llm import (
     get_calib_dataloader,
     get_model,
     get_tokenizer,
+    maybe_save_preprocessors,
     preprocess_for_quantization,
 )
 
@@ -155,13 +155,12 @@ def _build_quant_config(args: argparse.Namespace, model_config_type: str):
 
 
 def main(args: argparse.Namespace) -> None:
-    if args.revision is not None:
-        if os.path.isdir(args.model_dir):
-            raise ValueError(
-                f"The argument --revision {args.revision} is not supported using a local directory: {args.model_dir}"
-            )
-        else:
-            args.model_dir = snapshot_download(args.model_dir, revision=args.revision)
+    if args.revision is not None and os.path.isdir(args.model_dir):
+        raise ValueError(
+            f"The argument --revision {args.revision} is not supported using a local directory: {args.model_dir}"
+        )
+    elif not os.path.isdir(args.model_dir):
+        args.model_dir = snapshot_download(args.model_dir, revision=args.revision)
 
     # Initialize global profiler
     profiler = GlobalProfiler(output_path=os.path.join(args.output_dir, "quark_profile.yaml"))
@@ -208,16 +207,30 @@ def main(args: argparse.Namespace) -> None:
         else:
             device = args.device
 
-        with profiler.scope(ProfileStep.MODEL_LOADING):
-            model, _ = get_model(
-                args.model_dir,
-                args.data_type,
-                device,
-                args.multi_gpu,
-                args.multi_device,
-                args.model_attn_implementation,
-                trust_remote_code=args.trust_remote_code,
-            )
+        try:
+            with profiler.scope(ProfileStep.MODEL_LOADING):
+                model, _ = get_model(
+                    args.model_dir,
+                    args.data_type,
+                    device,
+                    args.multi_gpu,
+                    args.multi_device,
+                    args.model_attn_implementation,
+                    trust_remote_code=args.trust_remote_code,
+                )
+        except torch.OutOfMemoryError as exception:
+            if torch.cuda.device_count() <= 1:
+                raise torch.OutOfMemoryError(
+                    f"Out of memory error when loading the model {args.model_dir}. Only one device visible; this model does not fit on a single GPU."
+                ) from exception
+            elif not args.multi_gpu:
+                raise torch.OutOfMemoryError(
+                    f"Out of memory error when loading the model {args.model_dir}. Consider using `--multi_gpu` as {torch.cuda.device_count()} devices are available."
+                ) from exception
+            else:
+                raise torch.OutOfMemoryError(
+                    f"Out of memory error when loading the model {args.model_dir}. The model does not fit even with `--multi_gpu` across {torch.cuda.device_count()} devices. Consider using file-to-file quantization with `--file2file_quantization`, or make more GPU memory available."
+                ) from exception
 
         # Check model compatibility with current Transformers version
         print("\n[INFO]: Checking model compatibility ...")
@@ -263,12 +276,6 @@ def main(args: argparse.Namespace) -> None:
         getattr(model.config, k, None) is not None
         for k in ("vision_config", "audio_config", "image_config", "video_config")
     )
-    if multimodal:
-        processor = AutoProcessor.from_pretrained(args.model_dir)
-        if args.model_export is not None:
-            export_dir = Path(args.output_dir)
-            export_dir.mkdir(parents=True, exist_ok=True)
-            processor.save_pretrained(args.output_dir)
 
     if args.use_tp:
         if TPDeviceManager._tp_mesh is not None:
@@ -296,7 +303,6 @@ def main(args: argparse.Namespace) -> None:
     with profiler.scope(ProfileStep.DATASET_LOADING):
         calib_dataloader = get_calib_dataloader(
             dataset_name=args.dataset,
-            processor=processor if multimodal else None,
             tokenizer=tokenizer,
             batch_size=args.batch_size,
             num_calib_data=args.num_calib_data,
@@ -342,6 +348,15 @@ def main(args: argparse.Namespace) -> None:
         model = quantizer.freeze(model, runtime_options=runtime_options)
 
     if args.model_export is not None:
+        # Save pre-processors (tokenizer, image processor, etc.).
+        export_dir = Path(args.output_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        maybe_save_preprocessors(
+            args.model_dir,
+            export_dir,
+            trust_remote_code=args.trust_remote_code,
+        )
+
         if args.custom_mode != "quark" and args.export_weight_format == "fake_quantized":
             raise ValueError("Exporting with 'fake_quantized' only supports custom_mode=quark")
 
@@ -356,8 +371,6 @@ def main(args: argparse.Namespace) -> None:
                     weight_format=args.export_weight_format,
                     pack_method=args.pack_method,
                 )
-                if not multimodal:
-                    tokenizer.save_pretrained(args.output_dir)
 
         # Export option 2: onnx
         if "onnx" in args.model_export:

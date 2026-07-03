@@ -22,6 +22,7 @@ from onnxruntime.quantization.quant_utils import (
     save_and_reload_model_with_shape_infer,
 )
 
+from quark import __version__
 from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration import (
     CachedDataReader,
@@ -71,7 +72,6 @@ from quark.onnx.utils.system_utils import (
     create_tmp_dir,
     update_tmp_dir,
 )
-from quark.version import __version__
 
 from .quant_utils import (
     ExtendedQuantFormat,
