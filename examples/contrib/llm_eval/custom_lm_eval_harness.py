@@ -12,11 +12,16 @@ from lm_eval import evaluator
 from lm_eval.api.model import LM
 from lm_eval.models.huggingface import HFLM
 from onnxruntime import InferenceSession
-from optimum.onnxruntime import ORTModelForCausalLM
 from transformers import AutoConfig
 
-from quark.shares.utils.import_utils import is_package_lower_or_equal
+from quark.common.utils.import_utils import UnavailableObject, is_optimum_available, is_package_lower_or_equal
 from quark.torch import import_model_from_safetensors
+
+if is_optimum_available():
+    from optimum.onnxruntime import ORTModelForCausalLM
+else:
+    ORTModelForCausalLM = UnavailableObject("optimum[onnxruntime]")
+
 
 if is_package_lower_or_equal("lm_eval", "0.4.9.2"):
     from lm_eval.models.utils import get_dtype

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -15,7 +15,7 @@ try:
 except ModuleNotFoundError:
     raise ImportError(
         "Quark depends on ONNXRuntime. Please install ONNXRuntime by following the instructions at: https://onnxruntime.ai/docs/install/"
-    )
+    ) from None
 
 from quark.onnx.calibration import (
     CachedDataReader,
@@ -182,5 +182,3 @@ __all__ = [
     "_COP_VERSION",
     "get_library_path",
 ]
-
-# dummy change to trigger a new CI build

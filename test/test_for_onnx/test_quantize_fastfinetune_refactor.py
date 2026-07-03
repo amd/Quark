@@ -2,6 +2,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import os
 import unittest
 from pathlib import Path
 
@@ -9,8 +10,13 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 import torch
+from onnx_testing_utils import _stable_abi_ops, run_onnx_op_variants
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import (
+    assert_outputs_equivalent,
+    use_temporary_directory,
+)
 from quark.onnx import AdaRoundConfig, ModelQuantizer, QConfig, QLayerConfig, QuantGranularity, UInt8Spec
 from quark.onnx.algorithm.finetuning.create_torch.base_fn_quantizers import BFPQuantizer, MXQuantizer
 from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
@@ -26,7 +32,6 @@ from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
 )
 from quark.onnx.algorithm.finetuning.create_torch.quant_base_ops import QuantizationModule, create_fn_quantizer
 from quark.onnx.quantization.quant_utils import COP_BFP_OP_NAME, COP_MX_OP_NAME
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -83,7 +88,7 @@ output_tensor = np.array(
 # In order to cover all the op types we supported, we create a customized model here
 class CustomModel(torch.nn.Module):
     def __init__(self, in_channels=3, out_channels=4, kernel_size=3, matmul_dim=4, layernorm_dim=4):
-        super(CustomModel, self).__init__()
+        super().__init__()
 
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=kernel_size // 2)
         self.matmul_weight = torch.nn.Parameter(torch.randn(matmul_dim, matmul_dim))
@@ -142,7 +147,7 @@ class DataReader(CalibrationDataReader):
         self.index = 0
 
 
-def prepare_config(MemOptLevel: int = 0):
+def prepare_config(MemOptLevel: int = 0, save_and_restore: str | None = None):
     adaround_algo = AdaRoundConfig(
         learning_rate=0.1,
         fixed_seed=1705472343,
@@ -158,7 +163,9 @@ def prepare_config(MemOptLevel: int = 0):
     weight_spec.set_symmetric(True)
     weight_spec.set_quant_granularity(QuantGranularity.Channel)
     quant_config = QConfig(
-        global_config=QLayerConfig(activation=act_spec, weight=weight_spec), algo_config=[adaround_algo]
+        global_config=QLayerConfig(activation=act_spec, weight=weight_spec),
+        algo_config=[adaround_algo],
+        SaveAndRestore=save_and_restore,
     )
     return quant_config
 
@@ -192,10 +199,10 @@ def infer_quantized_model(quantized_model_path):
     return output
 
 
-def tensor_quantize(output_dir, MemOptLevel: int = 0):
+def tensor_quantize(output_dir, MemOptLevel: int = 0, save_and_restore: str | None = None):
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
-    quant_config = prepare_config(MemOptLevel)
+    quant_config = prepare_config(MemOptLevel, save_and_restore)
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -205,24 +212,18 @@ def tensor_quantize(output_dir, MemOptLevel: int = 0):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fastfinetune0(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=0)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=0))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     @use_temporary_directory
     def test_quantize_fastfinetune1(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=1)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=1))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     @use_temporary_directory
     def test_quantize_fastfinetune2(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=2)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=2))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     def test_quantize_intfunc(self):
         int_quant_dequant_func = INTQuantDequantFunction.apply
@@ -295,6 +296,25 @@ class TestTensorQuantize(unittest.TestCase):
         out2 = fp.quantize_dequantize(inp)
         comp_equal = out1.detach().numpy() == out2.detach().numpy()
         self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_fastfinetune_saveandrestore(self, tmpdir: str):
+        # Both save+restore halves must run inside the same variant's context
+        # to share state; per-variant subdirs avoid JSON cross-contamination.
+        stable_dir = os.path.join(tmpdir, "stable")
+        legacy_dir = os.path.join(tmpdir, "legacy")
+        os.makedirs(stable_dir, exist_ok=True)
+        os.makedirs(legacy_dir, exist_ok=True)
+        dirs = iter([stable_dir, legacy_dir]) if _stable_abi_ops() is not None else iter([legacy_dir])
+
+        def _pipeline():
+            subdir = next(dirs)
+            save_and_restore = os.path.join(subdir, "save_and_restore_fastft.json")
+            tensor_quantize(subdir, MemOptLevel=0, save_and_restore=save_and_restore)
+            return tensor_quantize(subdir, MemOptLevel=0, save_and_restore=save_and_restore)
+
+        out = run_onnx_op_variants(_pipeline)
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
 
 if __name__ == "__main__":

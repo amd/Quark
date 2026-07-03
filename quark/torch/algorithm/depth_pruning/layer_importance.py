@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import move_to_device
 from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
@@ -51,7 +51,7 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
 
         # ----------valid data set & config ---------------
         self.test_dataset: list[torch.Tensor] = data_loader  # type: ignore
-        assert len(set([x.numel() for x in self.test_dataset])) == 1
+        assert len({x.numel() for x in self.test_dataset}) == 1  # pragma: no cover
         self.seqlen_for_eval: int = [x.numel() for x in self.test_dataset][0]
         # ---------evaluation---------------
         self.min_ppl = torch.tensor(float("inf"))
@@ -93,7 +93,7 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
         layers_list = get_model_layers(self.model, self.model_decoder_layers)
         num_batches = len(self.layer_inputs)
         layer_outputs: list[torch.Tensor] = []
-        layer_inputs = [inp for inp in self.layer_inputs]
+        layer_inputs = list(self.layer_inputs)  # pragma: no cover
         for i in tqdm(range(len(layers_list)), desc="PPL influence"):
             layer = layers_list[i]
             # NOTE at least using one gpu
@@ -166,7 +166,9 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
 
     def apply(self) -> None:
         forward_pass_use_cache = self.model.config.use_cache
-        original_model_ppl = self.eval_func(self.model, remain_layer_idx=[i for i in range(self.num_hidden_layers)])
+        original_model_ppl = self.eval_func(  # pragma: no cover
+            self.model, remain_layer_idx=list(range(self.num_hidden_layers))
+        )
         bf_prune_param = sum(p.numel() for p in self.model.parameters())
         logger.info(f"Original PPL: {original_model_ppl.item()} param: {bf_prune_param}")
         # assume you skip the quant process
@@ -179,7 +181,7 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
 
         total_layer_num = len(self.decode_layers)
         for i in range(total_layer_num + 1 - self.delete_layer_num):
-            layers_to_trim = [num for num in range(i, i + self.delete_layer_num)]
+            layers_to_trim = list(range(i, i + self.delete_layer_num))  # pragma: no cover
             self._trim_layers(layers_to_trim)
             remained_layer = [i for i in range(self.num_hidden_layers) if i not in layers_to_trim]
             ppl = self.eval_func(self.model, remain_layer_idx=remained_layer)

@@ -1,10 +1,11 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import inspect
 from typing import Any, cast
@@ -14,7 +15,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.utils.module import get_device, get_nested_attr_from_module
 from quark.torch.algorithm.utils.utils import clear_memory
 
@@ -72,7 +73,7 @@ def cache_model_inps(
 
     cur_layer_device = (
         get_device(modules[0])
-        if not get_device(modules[0]) == torch.device("meta")
+        if get_device(modules[0]) != torch.device("meta")
         else modules[0]._hf_hook.execution_device
     )
     required_kwargs = inspect.signature(modules[0].forward).parameters
@@ -80,15 +81,11 @@ def cache_model_inps(
     logger.info("Caching model inputs for quantization algorithm...")
     for sample in tqdm(samples, desc="Caching layer inputs"):
         if isinstance(sample, torch.Tensor):
-            try:
+            with contextlib.suppress(ValueError):  # work with early exit
                 model(sample.to(cur_layer_device), use_cache=False)
-            except ValueError:  # work with early exit
-                pass
         else:
-            try:
+            with contextlib.suppress(ValueError):  # work with early exit
                 model(**{key: val.to(cur_layer_device) for key, val in sample.items()})
-            except ValueError:  # work with early exit
-                pass
     del samples
     modules[0] = modules[0].module  # restore
 

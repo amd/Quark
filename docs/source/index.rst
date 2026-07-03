@@ -1,4 +1,4 @@
-.. Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+.. Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 
 Welcome to AMD Quark Documentation!
 ===================================
@@ -63,7 +63,7 @@ Key Features
    :caption: Release Notes
    :maxdepth: 1
 
-   Release Information <release_note>
+   Release Information <release_notes>
 
 .. toctree::
    :hidden:
@@ -73,10 +73,11 @@ Key Features
    Introduction to Quantization <intro>
    Installation <install>
    Getting started: Introduction <basic_usage>
-   Getting started: Quark for ONNX <onnx/basic_usage_onnx>
    Getting started: Quark for PyTorch <pytorch/basic_usage_pytorch>
+   Getting started: Quark for ONNX <onnx/basic_usage_onnx>
+   PyTorch Tutorials <tutorials_pytorch>
    PyTorch Examples <pytorch/pytorch_examples>
-   ONNX Examples <onnx/onnx_examples>
+   ONNX Tutorials <tutorials_onnx>
 
 .. supported-accelerators:
 .. toctree::
@@ -104,6 +105,7 @@ Key Features
    Activation/Weight Smoothing (SmoothQuant) <pytorch/smoothquant>
    Auto SmoothQuant <tutorials/torch/auto_smoothquant_document_and_example>
    Activation-aware Weight Quantization (AWQ) <pytorch/awq_document>
+   SVD-Based Error Correction (SVDQuant) <pytorch/svdquant>
    Block Floating Point 16 <pytorch/tutorial_bfp16>
    Extensions <pytorch/extensions>
    Using MX (Microscaling) <pytorch/adv_mx>
@@ -117,28 +119,10 @@ Key Features
 
 
    Configuring ONNX Quantization <onnx/user_guide_config_description>
-   Data and OP Types <onnx/user_guide_supported_optype_datatype>
-   Accelerate with GPUs <onnx/gpu_usage_guide>
-   Mixed Precision <onnx/tutorial_mix_precision>
-   Block Floating Point 16 (BFP16) <onnx/tutorial_bfp16_quantization>
-   BF16 Quantization <onnx/tutorial_bf16_quantization>
-   Microscaling (MX) <onnx/tutorial_microscaling_quantization>
-   Microexponents (MX) <onnx/tutorial_microexponents_quantization>
-   Accuracy Improvement Algorithms <onnx/accuracy_improvement_algorithms>
-   Automatic Search for Model Quantization <onnx/user_guide_auto_search>
-   Automatic Search Pro for Model Quantization <onnx/user_guide_auto_search_pro>
-   Latency and Memory profiling <onnx/tutorial_profiling>
-   Using ONNX Model Inference and Saving Input Data in NPY Format <onnx/config/user_guide_onnx_model_inference_save_input_npy>
-   Optional Utilities <onnx/optional_utilities>
-   Tools <onnx/tools>
-
-.. toctree::
-   :hidden:
-   :caption: Tutorials
-   :maxdepth: 1
-
-   Quark for PyTorch <tutorials_pytorch>
-   Quark for ONNX <tutorials_onnx>
+   Data and Op Types <onnx/data_and_op_types>
+   Accuracy Improvement <onnx/accuracy_improvement>
+   Efficiency Improvement <onnx/efficiency_improvement>
+   Tooling <onnx/tooling>
 
 .. toctree::
    :hidden:
@@ -153,6 +137,9 @@ Key Features
    :maxdepth: 1
 
    Quark CLI <quark_cli>
+   Mix Precision Auto-Search <mix_precision>
+   Built-in Profiling <builtin_profiling>
+   ONNX Examples <onnx/onnx_examples>
 
 .. toctree::
    :hidden:

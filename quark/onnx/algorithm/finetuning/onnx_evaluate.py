@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -10,9 +10,9 @@ import numpy as np
 import onnx
 import onnxruntime
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration import CachedDataReader
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model, register_custom_ops_library
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 

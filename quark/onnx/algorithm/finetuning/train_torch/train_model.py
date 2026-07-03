@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,7 +9,7 @@ import numpy
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.utils.log import ScreenLogger, log_errors
 
 from ..create_torch.base_qdq_quantizers import AdaroundINTQuantizer, INTQuantizer
 from .train_model_loss import TrainLoss
@@ -410,7 +410,7 @@ class ModelOptimizer:
             params.batch_size = 1
 
         if (
-            isinstance(params.lr_adjust, (tuple, list))
+            isinstance(params.lr_adjust, tuple | list)
             and len(params.lr_adjust) == 2
             and recons_err > params.lr_adjust[0]
         ):
@@ -496,7 +496,11 @@ class ModelOptimizer:
     @classmethod
     @log_errors
     def _optimize_kernel_with_dataset(
-        self, module_instance: torch.nn.Module, dataset: Dataset[Any], params: TrainParameters
+        self,
+        module_instance: torch.nn.Module,
+        dataset: Dataset[Any],
+        params: TrainParameters,
+        gds_info: dict[str, Any] = {"use_gds": False},
     ) -> Any:
         """
         Optimizes the weight (for adaquant) or its rounding mode (for adaround)
@@ -534,16 +538,20 @@ class ModelOptimizer:
             prefetch_factor = 2
             persistent_workers = True
 
-        dataloader = DataLoader(
-            dataset,
-            batch_size=params.batch_size,
-            shuffle=True,
-            drop_last=True,
-            pin_memory=params.pin_memory,
-            num_workers=params.num_workers,
-            prefetch_factor=prefetch_factor,
-            persistent_workers=persistent_workers,
-        )
+        use_nv_gds = gds_info["use_gds"]
+        if use_nv_gds:
+            dataloader = dataset
+        else:
+            dataloader = DataLoader(
+                dataset,
+                batch_size=params.batch_size,
+                shuffle=True,
+                drop_last=True,
+                pin_memory=params.pin_memory,
+                num_workers=params.num_workers,
+                prefetch_factor=prefetch_factor,
+                persistent_workers=persistent_workers,
+            )
 
         num_steps = len(dataset) // params.batch_size  # type: ignore
         num_epochs = (params.num_iterations + num_steps - 1) // num_steps  # Equivalent to Ceiling
@@ -554,14 +562,24 @@ class ModelOptimizer:
         best_loss = float("inf")
         for epoch in range(num_epochs):
             mean_loss = 0.0
-            for inp_data_quant, inp_data_float, out_data_float in dataloader:
+            for idx, batch in enumerate(dataloader):
                 if iteration >= params.num_iterations:
                     break
+                if idx >= num_steps - 1:
+                    break
 
-                if self._cuda_is_available(params):
-                    inp_data_quant = inp_data_quant.to("cuda", non_blocking=True)
-                    inp_data_float = inp_data_float.to("cuda", non_blocking=True)
-                    out_data_float = out_data_float.to("cuda", non_blocking=True)
+                if use_nv_gds:
+                    inp_data_quant = batch[0]["inp_quant"].squeeze(1)
+                    inp_data_float = batch[0]["inp_float"].squeeze(1)
+                    out_data_float = batch[0]["out_float"].squeeze(1)
+                elif not use_nv_gds and self._cuda_is_available(params):
+                    inp_data_quant = batch[0].to("cuda", non_blocking=True)
+                    inp_data_float = batch[1].to("cuda", non_blocking=True)
+                    out_data_float = batch[2].to("cuda", non_blocking=True)
+                else:
+                    inp_data_quant = batch[0]
+                    inp_data_float = batch[1]
+                    out_data_float = batch[2]
 
                 # Droped quantized input data with a ratio
                 # If drop_ratio = 1, the input data is all from quantized model
@@ -652,7 +670,9 @@ class ModelOptimizer:
             torch.cuda.empty_cache()
 
     @classmethod
-    def run_with_dataset(self, quant_module: torch.nn.Module, dataset: Dataset[Any], params: TrainParameters) -> None:
+    def run_with_dataset(
+        self, quant_module: torch.nn.Module, dataset: Dataset[Any], params: TrainParameters, gds_info: Any
+    ) -> None:
         """
         Run the optimization for the target module with dataset
         :param quant_module: Quantized wrapper module which consists of a compute module and a optional act module
@@ -689,7 +709,7 @@ class ModelOptimizer:
 
         module_instance = self._assign_module_device(quant_module, device_ids)
 
-        self._optimize_kernel_with_dataset(module_instance, dataset, params)
+        self._optimize_kernel_with_dataset(module_instance, dataset, params, gds_info)
 
         quant_module = (
             module_instance.module.to("cpu")

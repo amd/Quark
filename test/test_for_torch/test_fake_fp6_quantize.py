@@ -7,6 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
+from torch_testing_utils import run_torch_op_variants  # type: ignore[import-not-found]
 
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 from quark.torch.quantization.config.config import FP6E2M3PerGroupSpec, FP6E3M2PerGroupSpec
@@ -16,7 +17,7 @@ from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 
 class ToyModel(nn.Module):
     def __init__(self, in_features, out_features):
-        super(ToyModel, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(in_features=in_features, out_features=out_features)
 
     def forward(self, x):
@@ -54,14 +55,17 @@ def test_fp6_per_group_scaled_and_non_scaled_fake_quantize(dtype, scale_calculat
         is_dynamic=False,
     ).to_quantization_spec()
     quantizer = FakeQuantizeBase.get_fake_quantize(spec)
-    scaled_fake_quantize = quantizer(x.clone())
 
-    non_scaled_fake_quantize = fake_quantize_mx(
-        input_tensor=x.clone(),
-        axis=axis,
-        block_size=block_size,
-        mx_element_dtype=dtype,
-        scale_calculation_mode=scale_calculation_mode,
-    )
+    def pipeline():
+        scaled = quantizer(x.clone())
+        non_scaled = fake_quantize_mx(
+            input_tensor=x.clone(),
+            axis=axis,
+            block_size=block_size,
+            mx_element_dtype=dtype,
+            scale_calculation_mode=scale_calculation_mode,
+        )
+        return scaled, non_scaled
 
+    scaled_fake_quantize, non_scaled_fake_quantize = run_torch_op_variants(pipeline)
     assert torch.allclose(scaled_fake_quantize, non_scaled_fake_quantize)

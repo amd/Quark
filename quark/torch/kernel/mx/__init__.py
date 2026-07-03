@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch  # noqa  # TODO: can we remove this?
 
-from quark.shares.utils.import_utils import is_triton_available
+from quark.common.utils.import_utils import is_triton_available
 from quark.torch.kernel.mx.hip import dq_mxfp4_hip, qdq_mxfp4_hip
 from quark.torch.utils import QUARK_MXFP4_IMPL
 

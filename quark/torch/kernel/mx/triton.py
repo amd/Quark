@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # type: ignore
@@ -75,12 +75,12 @@ def _compute_quant_and_scale(
         # DequantScaleRoundingMode.EVEN
         # compute 2 ** (floor(log2(rounding(max_abs(v)))-max_exp))
         assert DEQUANT_SCALE_ROUNDING_MODE == 2
-        # eps =  tl.where(max_val == 0.0, 2**(-126), 0.0)
         max_val = max_val.to(tl.int32, bitcast=True)
         max_val = (max_val + 0x200000).to(tl.uint32, bitcast=True) & 0x7F800000
         max_val = max_val.to(tl.float32, bitcast=True)
-        # scale_e8m0_unbiased = tl.log2(max_val + eps).floor() - _get_max_quant_exp(mx_tensor_dtype)
-        scale_e8m0_unbiased = tl.log2(max_val).floor() - _get_max_quant_exp(mx_tensor_dtype)  # no eps
+        # Add epsilon to prevent log2(0) = -inf when max_val is zero (all-zero input block)
+        eps = tl.where(max_val == 0.0, 2 ** (-126), 0.0)
+        scale_e8m0_unbiased = tl.log2(max_val + eps).floor() - _get_max_quant_exp(mx_tensor_dtype)
         scale_e8m0_unbiased = tl.clamp(scale_e8m0_unbiased, min=-127, max=127)
         dequant_scale_rounded = tl.exp2(scale_e8m0_unbiased)
         dequant_scale_exponent = dequant_scale_rounded.to(tl.uint32, bitcast=True)
@@ -606,6 +606,12 @@ def upcast_from_mxfp(
     blocks_quant_dim = triton.cdiv(logical_quant_dim_shape, BLOCK_QUANT_DIM)
 
     out = torch.empty((outer_dim, logical_quant_dim_shape), dtype=dtype, device=tensor.device)
+
+    if blocks_quant_dim > 65536:
+        raise ValueError(
+            f"blocks_quant_dim={blocks_quant_dim} is larger than the supported grid dimension on dimension y (maximum 65536)."
+        )
+
     _upcast_from_mxfp[(blocks_out_dim, blocks_quant_dim)](
         out,
         out.stride(0),

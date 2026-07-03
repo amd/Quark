@@ -7,12 +7,16 @@ import unittest
 
 import numpy as np
 import onnxruntime
+from onnx_testing_utils import prepare_model, run_onnx_op_variants
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import (
+    assert_outputs_equivalent,
+    require_torch_cuda,
+    use_temporary_directory,
+)
 from quark.onnx import Config, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import BFP16_CONFIG
-from quark.shares.utils.testing_utils import require_torch_cuda, use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -152,32 +156,30 @@ def tensor_quantize(output_dir: str, torch_device="CPU", ort_device="CPU"):
 
 
 class TestTensorQuantize(unittest.TestCase):
+    # ``run_onnx_op_variants`` runs the pipeline under each loaded ops surface
+    # and asserts bit-exact stable-vs-legacy equivalence when both are present.
     @use_temporary_directory
     def test_quantize_BFP_cpu_cpu_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, "CPU", "CPU")
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, "CPU", "CPU"))
+        assert_outputs_equivalent(out[0], output_tensor, atol=1e-1)
 
     @use_temporary_directory
     @require_torch_cuda
     def test_quantize_BFP_cuda_cpu_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, "CUDA", "CPU")
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, "CUDA", "CPU"))
+        assert_outputs_equivalent(out[0], output_tensor, atol=1e-1)
 
     @use_temporary_directory
     @require_torch_cuda
     def test_quantize_BFP_cpu_cuda_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, "CPU", "CUDA")
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, "CPU", "CUDA"))
+        assert_outputs_equivalent(out[0], output_tensor, atol=1e-1)
 
     @use_temporary_directory
     @require_torch_cuda
     def test_quantize_BFP_cuda_cuda_fastfinetune(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, "CUDA", "CUDA")
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, "CUDA", "CUDA"))
+        assert_outputs_equivalent(out[0], output_tensor, atol=1e-1)
 
 
 if __name__ == "__main__":

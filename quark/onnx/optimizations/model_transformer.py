@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Apply graph transformations to a onnx model."""
@@ -12,7 +12,7 @@ from typing import Any
 import onnx
 from onnx import ModelProto, NodeProto, TensorProto, ValueInfoProto
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 from .transforms import NodeTree, OpTypePattern, Transform
 
@@ -205,10 +205,7 @@ class ModelTransformer:
         return self._transform_matched_nodes_map.get(self._name(transform), [])
 
     def _match_pattern(self, target: str, pattern: str) -> bool:
-        for p in pattern.split("|"):
-            if re.match("^" + p + "$", target) is not None:
-                return True
-        return False
+        return any(re.match("^" + p + "$", target) is not None for p in pattern.split("|"))  # pragma: no cover
 
     def _match_node(self, node: NodeProto | TensorProto | ValueInfoProto, pattern: OpTypePattern) -> bool:
         """Check if any specific node or initializer matches the pattern."""

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
@@ -15,6 +15,7 @@ from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import find_by_name
 from tqdm import tqdm
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.quantization.quant_utils import (
     BFP_OP_DEFAULT_ATTRS,
     COP_BFP_OP_NAME,
@@ -27,7 +28,6 @@ from quark.onnx.quantization.quant_utils import (
     scale2pos,
 )
 from quark.onnx.utils.model_utils import ONNXQuantizedModel
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 from ..finetuning.create_torch.create_model_utils import (
     ComputeOperations,

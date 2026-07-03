@@ -1,131 +1,142 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+"""ONNX custom-ops: wheel/JIT lookup and fallback compilation.
 
-import base64
+Source lists and include paths come only from the ``*_sources`` /
+``*_include_paths`` helpers in :mod:`quark.common.torch_cpp_build_specs.onnx_ops`,
+not inline section helpers; see :mod:`quark.common.torch_cpp_build_specs`.
+
+Stable-ABI ``_C`` (torch >= 2.10) loads the precompiled setuptools extension —
+built into the source tree by ``pip install -e .`` or shipped in the wheel —
+before falling back to JIT. ``QUARK_BUILD_DISABLE_JIT_FALLBACK=1`` hard-fails
+every JIT path (stable-ABI fallback AND legacy ``libcustom_ops{,_gpu}``) so
+wheel-only installs cannot silently compile; the gate fires even when ``_C``
+is already loaded. A failure of *both* the precompiled load and the JIT
+compile on stable-ABI-capable PyTorch is also a hard error (shared message
+with the torch-side ``hw_emulation`` loader via
+:func:`quark.common.torch_cpp_ext.load_or_jit_stable_abi`).
+"""
+
 import glob
-import hashlib
 import logging
 import os
 import platform
-import site
 import time
-import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.cpp_extension import load
+from torch.utils.cpp_extension import _get_build_directory
 
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.torch_cpp_build_specs import (
+    ONNX_CUSTOM_OPS_JIT_BASENAME,
+    ORT_WINDOWS_DEFINE,
+    TORCH_TARGET_VERSION_DEFINE,
+)
+from quark.common.torch_cpp_build_specs.onnx_ops import (
+    onnx_ops_sources,
+    onnx_ort_cpu_sources,
+    ort_include_paths,
+    ort_lib_jit_sources,
+    stable_abi_include_paths,
+    torch_legacy_jit_sources,
+)
+from quark.common.torch_cpp_ext import (
+    find_setuptools_extension,
+    get_platform_lib_suffix,
+    jit_compile_nonabi_library,
+    jit_compile_stable_abi_library,
+    load_or_jit_stable_abi,
+    raise_if_jit_fallback_disabled,
+)
+from quark.common.utils.log import ScreenLogger, log_errors
+from quark.common.utils.torch_utils import torch_supports_stable_abi
 
 logger = ScreenLogger(__name__)
-
 path = Path(__file__).parent
 
-folder_name = "lib"
-library_name = "custom_ops"
+# On torch >= 2.10, ``custom_ops`` is ORT-only and ``custom_ops_torch_legacy``
+# is a test-only pybind11 surface; on torch < 2.10 the pybind11 surface ships
+# inside ``custom_ops`` via ``-DTORCH_OP``.
+ORT_LIBRARY_NAME = "custom_ops"
+TORCH_LEGACY_LIBRARY_NAME = "custom_ops_torch_legacy"
 
 
 @log_errors
-def compile_custom_op_cpu(
+def compile_custom_op_cpu_legacy(
     name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
 ) -> None:
-    """Compile CPU version custom ops library using torch's cpp_extension.
-    :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
-    :param build_directory: Optional path to use as build workspace
-    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
-    :param extra_cflags: Optional list of compiler flags to forward to the build
-    """
-    extra_cflags.append("-DNO_GPU")  # It has a higher priority than USE_ROCM
-    try:
-        sources_list = [
-            str(path / "src/custom_op_library.cc"),
-            str(path / "src/custom_op_qdq.cc"),
-            str(path / "src/custom_op_in.cc"),
-            str(path / "src/custom_op_bfp.cc"),
-            str(path / "src/custom_op_mx.cc"),
-            str(path / "src/custom_op_lstm.cc"),
-            str(path / "src/bfp/cpu/bfp.cc"),
-            str(path / "src/bfp/cpu/bfp_kernel.cc"),
-            str(path / "src/mx/cpu/mx.cc"),
-            str(path / "src/mx/cpu/mx_kernel.cc"),
-        ]
-        if "-DTORCH_OP" in extra_cflags:
-            sources_list.append(str(path / "src/torch_ops.cc"))
-        logger.info("Start compiling CPU version of custom ops library.")
-        load(
-            name=name,
-            sources=sources_list,
-            build_directory=build_directory,
-            extra_cuda_cflags=extra_cuda_cflags,
-            extra_cflags=extra_cflags,
-            extra_include_paths=[str(path / "include"), str(path / "src")],
-            verbose=False,
-        )
-        logger.info("CPU version of custom ops library compiled successfully.")
-    except Exception as e:
-        if isinstance(e, ImportError):
-            logger.info("CPU version of custom ops library compiled successfully.")
-        else:
-            raise RuntimeError("CPU version of custom ops library compilation failed:" + str(e))
-    extra_cflags.remove("-DNO_GPU")  # Restore original cflags
+    """JIT-compile the CPU ORT custom-ops library; includes pybind11 torch surface iff ``-DTORCH_OP``."""
+    jit_compile_nonabi_library(
+        name=name,
+        build_directory=build_directory,
+        sources=ort_lib_jit_sources(use_cuda=False, include_legacy_torch_ops="-DTORCH_OP" in extra_cflags),
+        include_paths=stable_abi_include_paths(),
+        label="custom ops",
+        use_cuda=False,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+        import_error_is_success=True,
+    )
 
 
-def compile_custom_op_gpu(
+def compile_custom_op_gpu_legacy(
     name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
 ) -> None:
-    """Compile GPU version custom ops library using torch's cpp_extension.
-    :param name: The name of the extension to build. This MUST be the same as the name of the pybind11 module
-    :param build_directory: Optional path to use as build workspace
-    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
-    :param extra_cflags: Optional list of compiler flags to forward to the build
-    """
-    if torch.version.hip:
-        pass  # The macro USE_ROCM will be added by cpp_extension automaically
-    else:
-        extra_cflags.append("-DUSE_CUDA")
-        extra_cuda_cflags.append("-DUSE_CUDA")
-    try:
-        sources_list = [
-            str(path / "src/custom_op_library.cc"),
-            str(path / "src/custom_op_qdq.cc"),
-            str(path / "src/qdq/cuda/quantize_linear.cu"),
-            str(path / "src/custom_op_in.cc"),
-            str(path / "src/custom_op_bfp.cc"),
-            str(path / "src/custom_op_mx.cc"),
-            str(path / "src/custom_op_lstm.cc"),
-            str(path / "src/bfp/cuda/bfp.cc"),
-            str(path / "src/bfp/cuda/bfp_kernel.cu"),
-            str(path / "src/mx/cuda/mx.cc"),
-            str(path / "src/mx/cuda/mx_kernel.cu"),
-        ]
-        if "-DTORCH_OP" in extra_cflags:
-            sources_list.append(str(path / "src/torch_ops.cc"))
-        logger.info("Start compiling GPU version of custom ops library.")
-        load(
-            name=name,
-            sources=sources_list,
-            build_directory=build_directory,
-            extra_cuda_cflags=extra_cuda_cflags,
-            extra_cflags=extra_cflags,
-            extra_include_paths=[str(path / "include"), str(path / "src")],
-            verbose=False,
-        )
-        logger.info("GPU version of custom ops library compiled successfully.")
-    except Exception as e:
-        logger.warning(
-            "GPU version of custom ops library compilation failed:"
-            + str(e)
-            + ", the custom ops can only run on the CPU."
-        )
-        logger.warning("Please check if the GPU environment variables are set correctly.")
+    """JIT-compile the GPU ORT custom-ops library; includes pybind11 torch surface iff ``-DTORCH_OP``."""
+    jit_compile_nonabi_library(
+        name=name,
+        build_directory=build_directory,
+        sources=ort_lib_jit_sources(use_cuda=True, include_legacy_torch_ops="-DTORCH_OP" in extra_cflags),
+        include_paths=stable_abi_include_paths(),
+        label="custom ops",
+        use_cuda=True,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
 
 
-def get_platform_lib_name(device: str = "CPU") -> Any:
+@log_errors
+def compile_custom_op_cpu_torch_legacy(
+    name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
+) -> None:
+    """Build the CPU half of the test-only ``libcustom_ops_torch_legacy``: pybind11 + raw kernels, no ORT glue."""
+    jit_compile_nonabi_library(
+        name=name,
+        build_directory=build_directory,
+        sources=torch_legacy_jit_sources(use_cuda=False),
+        include_paths=stable_abi_include_paths(),
+        label="torch-legacy custom ops",
+        use_cuda=False,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+        import_error_is_success=True,
+    )
+
+
+def compile_custom_op_gpu_torch_legacy(
+    name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
+) -> None:
+    """Build the GPU half of the test-only ``libcustom_ops_torch_legacy``: CUDA kernels + pybind11, no ORT glue."""
+    jit_compile_nonabi_library(
+        name=name,
+        build_directory=build_directory,
+        sources=torch_legacy_jit_sources(use_cuda=True),
+        include_paths=stable_abi_include_paths(),
+        label="torch-legacy custom ops",
+        use_cuda=True,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+    )
+
+
+def get_platform_lib_name(device: str = "CPU", lib: str = ORT_LIBRARY_NAME) -> Any:
     """Get library names for different platforms.
     :param device: The target device for the build
+    :param lib: The base library name (``custom_ops`` or ``custom_ops_torch_legacy``)
     :return the file name and extension of the library
     """
     assert device in ["cpu", "CPU", "gpu", "GPU", "rocm", "ROCM", "cuda", "CUDA"], (
@@ -133,9 +144,9 @@ def get_platform_lib_name(device: str = "CPU") -> Any:
     )
 
     if device.lower() == "cpu":
-        lib_name = library_name
+        lib_name = lib
     else:
-        lib_name = library_name + "_gpu"
+        lib_name = lib + "_gpu"
 
     if platform.system().lower() == "windows":
         file_name = lib_name
@@ -147,21 +158,82 @@ def get_platform_lib_name(device: str = "CPU") -> Any:
     return file_name, ext_name
 
 
-def get_library_path(device: str = "CPU") -> str:
-    """Get the complete path based on the specified device.
-    :param device: The target device
-    :return the complete path of the library
-    """
-    dir_path = os.path.dirname(__file__)
-    lib_path = os.path.join(dir_path, folder_name)
+def get_library_path(device: str = "CPU", lib: str = ORT_LIBRARY_NAME) -> str:
+    """Path for ``session_options.register_custom_ops_library``.
 
-    file_name, ext_name = get_platform_lib_name(device)
+    torch >= 2.10 + default ``lib``: ``_C`` registers its ORT ops to the build's
+    accelerator EP, so on a GPU build ``_C`` can't bind in a CPU inference
+    session. ``device == "CPU"`` then resolves the CPU-EP companion (AOT
+    ``_C_cpu``, JIT ``libcustom_ops`` last-resort fallback); other cases use
+    ``_C`` (a CPU build's ``_C`` is already CPU-EP).
+    torch < 2.10: legacy ``libcustom_ops{,_gpu}``; ``device`` / ``lib`` pick the variant.
+    """
+    if torch_supports_stable_abi() and lib == ORT_LIBRARY_NAME:
+        if torch.cuda.is_available() and device.lower() == "cpu":
+            return _get_cpu_ort_lib_path()
+        return _get_stable_abi_custom_ops_path()
+
+    return _legacy_lib_path(device, lib)
+
+
+def _legacy_lib_path(device: str, lib: str) -> str:
+    lib_path = _get_build_directory(lib, False)
+    file_name, ext_name = get_platform_lib_name(device, lib=lib)
 
     abs_lib_path = os.path.join(lib_path, file_name + ext_name)
     if not os.path.exists(abs_lib_path):
         logger.warning(f"The custom ops library {abs_lib_path} does NOT exist.")
 
     return abs_lib_path
+
+
+def _get_cpu_ort_lib_path() -> str:
+    """CPU-EP ORT lib for torch >= 2.10 GPU builds.
+
+    Prefers the precompiled ``_C_cpu`` companion (shipped in wheels and built
+    in-place by editable installs); the JIT fallback covers a tree where
+    ``_C_cpu`` is absent, gated by ``QUARK_BUILD_DISABLE_JIT_FALLBACK`` so such a
+    build fails loudly instead of silently compiling at runtime.
+    """
+    precompiled = find_setuptools_extension(path, Path("quark", "onnx", "operators", "custom_ops"), stem="_C_cpu")
+    if precompiled is not None:
+        return str(precompiled)
+
+    raise_if_jit_fallback_disabled("ONNX custom_ops (CPU EP)")
+    _compile_cpu_ort_lib()
+    return _legacy_lib_path("CPU", ORT_LIBRARY_NAME)
+
+
+def _get_stable_abi_custom_ops_path() -> str:
+    """Return the stable-ABI ``_C`` path, preferring the precompiled setuptools build over the JIT cache.
+
+    Raises ``RuntimeError`` when neither exists -- ``_initialize_kernels`` runs
+    :func:`load_or_jit_stable_abi` at module import which already raises on
+    this state, so reaching the empty branch here means the artifact vanished
+    between init and lookup (or init was bypassed). Surfacing it at the source
+    is clearer than handing ``""`` to ORT and decoding its downstream error;
+    mirrors the torch-side ``hw_emulation`` loader's loud-failure contract.
+    """
+    precompiled = find_setuptools_extension(path, Path("quark", "onnx", "operators", "custom_ops"))
+    if precompiled is not None:
+        return str(precompiled)
+
+    jit_dir = _get_build_directory(ONNX_CUSTOM_OPS_JIT_BASENAME, verbose=False)
+    # JIT artifact name varies by torch internals; glob for any platform-suffixed file.
+    suffix = get_platform_lib_suffix()
+    for candidate in glob.iglob(os.path.join(jit_dir, f"{ONNX_CUSTOM_OPS_JIT_BASENAME}*{suffix}")):
+        return candidate
+
+    raise RuntimeError(
+        f"Stable-ABI ONNX custom ops library not found as a precompiled setuptools "
+        f"extension or in the JIT cache ({jit_dir}); ORT custom-op registration would fail. "
+        f"Reinstall quark or rebuild the stable-ABI extension."
+    )
+
+
+def get_legacy_torch_library_path(device: str = "CPU") -> str:
+    """Path of the test-only torch pybind11 lib; on torch < 2.10 the surface lives in :func:`get_library_path`."""
+    return get_library_path(device, lib=TORCH_LEGACY_LIBRARY_NAME)
 
 
 def handle_generated_files(build_dir: str, abs_lib_path: str, file_name: str, ext_name: str) -> None:
@@ -188,64 +260,27 @@ def handle_generated_files(build_dir: str, abs_lib_path: str, file_name: str, ex
                 logger.warning(f"Handling file error: {e}")
 
 
-def get_file_size_and_sha256(file_path: str) -> tuple[str, int]:
-    """
-    Compute the SHA256 hash and file size for a specified file.
-
-    :param file_path: The path to the file.
-    :return: A tuple containing the base64-url-safe-encoded SHA256 hash and
-        the file size in bytes.
-    """
-    size = os.path.getsize(file_path)
-    digest = hashlib.sha256(open(file_path, "rb").read()).digest()
-    sha256_b64url = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("utf-8")
-    return sha256_b64url, size
-
-
-def modify_record() -> None:
-    """
-    Add library files to the RECORD file if they are not already present.
-
-    This ensures that all relevant library files are properly tracked.
-    """
-
-    try:
-        dist_info_dir = glob.glob(os.path.join(site.getsitepackages()[0], "amd_quark*.dist-info"))[0]
-    except IndexError:
-        if len(site.getsitepackages()) > 1:
-            logger.warning(
-                f"No dist-info directory found for amd_quark*.dist-info in {site.getsitepackages()[0]}. Trying {site.getsitepackages()[1]}."
-            )
-            dist_info_dir = glob.glob(os.path.join(site.getsitepackages()[1], "amd_quark*.dist-info"))[0]
-        else:
-            raise
-
-    record_path = os.path.join(dist_info_dir, "RECORD")
-
-    with open(record_path, "r+") as record_file:
-        record_content = record_file.read()
-        library_dir = "quark/onnx/operators/custom_ops/lib"
-        library_files = ["libcustom_ops.so", "libcustom_ops_gpu.so", "custom_ops.dll", "custom_ops_gpu.dll"]
-
-        for library_file in library_files:
-            library_path = os.path.join(library_dir, library_file)
-            abs_library_path = os.path.join(site.getsitepackages()[0], library_path)
-            if os.path.exists(abs_library_path) and library_path not in record_content:
-                file_sha256, file_size = get_file_size_and_sha256(abs_library_path)
-                record_file.write(f"{library_path},sha256={file_sha256},{file_size}\n")
-
-
-def compile_library_core(device: str, extra_cuda_cflags: list[str], extra_cflags: list[str]) -> None:
-    """Core function for compiling custom ops library. Do nothing except printing a message if it exists.
-    :param device: Target device, "CPU" or "GPU"
-    :param extra_cuda_cflags: Optional list of compiler flags to forward to nvcc when building CUDA sources
-    :param extra_cflags: Optional list of compiler flags to forward to the build
-    """
-    abs_lib_path = get_library_path(device)
+def _load_or_compile(
+    device: str,
+    lib: str,
+    cpu_compile_fn: Callable[..., None],
+    gpu_compile_fn: Callable[..., None],
+    extra_cuda_cflags: list[str],
+    extra_cflags: list[str],
+) -> None:
+    """JIT-compile a custom ops library if missing, else load it from disk."""
+    # Resolve the legacy path directly, not via ``get_library_path``: on torch
+    # >= 2.10 GPU builds ``device == "CPU"`` would route back through
+    # ``_get_cpu_ort_lib_path`` -> ``_compile_cpu_ort_lib`` -> here and recurse.
+    abs_lib_path = _legacy_lib_path(device, lib)
 
     if os.path.exists(abs_lib_path):
-        logger.info(f"The {device} version of custom ops library already exists.")
-        logger.debug(f"Please reinstall Quark if the source code of {device} version custom ops library has updated.")
+        logger.info(f"The {device} version of {lib} library already exists at {abs_lib_path}.")
+        logger.debug(f"Please reinstall Quark if the source code of {device} version {lib} library has updated.")
+        try:
+            torch.ops.load_library(abs_lib_path)
+        except Exception as e:
+            logger.warning(f"Failed to load existing {device} {lib} library: {e}")
         return None
 
     build_directory, lib_name = os.path.split(abs_lib_path)
@@ -254,59 +289,194 @@ def compile_library_core(device: str, extra_cuda_cflags: list[str], extra_cflags
 
     file_name, ext_name = os.path.splitext(lib_name)
     if device.lower() == "cpu":
-        compile_custom_op_cpu(file_name, build_directory, extra_cuda_cflags, extra_cflags)
+        cpu_compile_fn(file_name, build_directory, extra_cuda_cflags, extra_cflags)
     else:
-        compile_custom_op_gpu(file_name, build_directory, extra_cuda_cflags, extra_cflags)
+        gpu_compile_fn(file_name, build_directory, extra_cuda_cflags, extra_cflags)
 
     handle_generated_files(build_directory, abs_lib_path, file_name, ext_name)
 
-    modify_record()
+
+def _jit_compile_stable_abi() -> bool:
+    """JIT-compile the stable-ABI ONNX custom-ops ``_C`` extension (torch >= 2.10 only).
+
+    The source list mirrors the precompiled ``_C`` build so the resulting ``.so``
+    exposes the same symbols and serves both torch op registrations and ORT
+    custom-op glue from a single artifact (see :func:`get_library_path`).
+
+    ORT headers are routed through ``extra_isolated_includes`` rather than
+    ``include_paths`` because torch's HIP path hipifies every header reachable
+    via ``extra_include_paths``, producing ``_hip.h`` ORT duplicates that break
+    TUs which transitively pull in both copies. ``pin_rocm_arch=False`` keeps
+    the pre-refactor JIT behaviour of leaving ``PYTORCH_ROCM_ARCH`` unpinned.
+    """
+    return jit_compile_stable_abi_library(
+        name=ONNX_CUSTOM_OPS_JIT_BASENAME,
+        sources=onnx_ops_sources(use_cuda=torch.cuda.is_available()),
+        include_paths=stable_abi_include_paths(),
+        extra_isolated_includes=ort_include_paths(),
+        label="custom ops",
+        extra_defines=[TORCH_TARGET_VERSION_DEFINE],
+        extra_windows_defines=[ORT_WINDOWS_DEFINE],
+        pin_rocm_arch=False,
+    )
 
 
-def compile_library() -> None:
-    """Main function for compiling custom ops library."""
+def _ort_lib_cflags() -> tuple[list[str], list[str]]:
+    """Cflags for the legacy ORT lib JIT: ORT include ``-I`` flags + defines.
+
+    ORT headers go through ``extra_cflags`` (not ``extra_include_paths``) on
+    purpose: torch.cpp_extension's HIP path hipifies every header it finds in
+    ``extra_include_paths``, which generates ``_hip.h`` siblings of ORT headers
+    and breaks builds where the same TU pulls in both the original and the
+    hipified copy. Routing via ``-I`` bypasses the hipify scan while keeping
+    the headers on the compiler's search path.
+    """
+    ort_cflags = [f"-I{p}" for p in ort_include_paths()]
+    extra_cflags: list[str] = [*ort_cflags]
+    if not torch_supports_stable_abi():
+        extra_cflags.append("-DTORCH_OP")
+    if platform.system().lower() == "windows":
+        extra_cflags.append(ORT_WINDOWS_DEFINE)
+
+    # Same ``-I`` set on the nvcc/hipcc command line so ``.cu``/``.hip`` TUs in
+    # the legacy GPU build can find ORT headers without resurrecting the
+    # hipify-scanned path above.
+    extra_cuda_cflags: list[str] = [*ort_cflags]
+    return extra_cuda_cflags, extra_cflags
+
+
+def _set_torch_cuda_arch_list() -> None:
+    capability = torch.cuda.get_device_capability(0)
+    arch_list = f"{capability[0]}.{capability[1]}" if capability else None
+    if arch_list and len(arch_list) > 0:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = arch_list
+
+
+def _compile_legacy_library() -> None:
+    """JIT-compile ``libcustom_ops{,_gpu}``; ORT-only on torch >= 2.10, ORT + pybind11 on older torch."""
+    extra_cuda_cflags, extra_cflags = _ort_lib_cflags()
+
+    _load_or_compile(
+        "CPU",
+        ORT_LIBRARY_NAME,
+        compile_custom_op_cpu_legacy,
+        compile_custom_op_gpu_legacy,
+        extra_cuda_cflags,
+        extra_cflags,
+    )
+
+    if torch.cuda.is_available():
+        _set_torch_cuda_arch_list()
+        _load_or_compile(
+            "GPU",
+            ORT_LIBRARY_NAME,
+            compile_custom_op_cpu_legacy,
+            compile_custom_op_gpu_legacy,
+            extra_cuda_cflags,
+            extra_cflags,
+        )
+
+
+def _compile_cpu_ort_companion(
+    name: str, build_directory: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
+) -> None:
+    jit_compile_nonabi_library(
+        name=name,
+        build_directory=build_directory,
+        sources=onnx_ort_cpu_sources(),
+        include_paths=stable_abi_include_paths(),
+        label="custom ops (CPU EP)",
+        use_cuda=False,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+        import_error_is_success=True,
+    )
+
+
+def _compile_cpu_ort_lib() -> None:
+    """JIT-build the torch-free CPU-EP ORT ``libcustom_ops.so`` (last-resort fallback).
+
+    Compiles the same sources as the AOT ``_C_cpu`` companion so the artifacts
+    can't drift. Legacy (not stable-ABI) JIT is deliberate: the ORT custom ops
+    are a pure ONNX Runtime C-API library, the source list omits ``torch_ops.cc``
+    so its ``STABLE_TORCH_LIBRARY`` can't double-register against ``_C``, and
+    ``jit_compile_stable_abi_library`` hardwires ``torch.cuda.is_available()`` and
+    so can't emit a CPU build on a GPU box.
+    """
+    extra_cuda_cflags, extra_cflags = _ort_lib_cflags()
+    _load_or_compile(
+        "CPU",
+        ORT_LIBRARY_NAME,
+        _compile_cpu_ort_companion,
+        _compile_cpu_ort_companion,
+        extra_cuda_cflags,
+        extra_cflags,
+    )
+
+
+def _compile_torch_legacy_library() -> None:
+    """JIT-compile the test-only ``libcustom_ops_torch_legacy{,_gpu}``; only invoked on torch >= 2.10."""
+    # ``-DTORCH_LEGACY_LIB`` selects the matching ``LIBRARY_FILE_NAME`` arm in
+    # ``src/legacy/torch_ops.cc`` so the pybind11 module name matches the .so.
+    extra_cflags = ["-DTORCH_OP", "-DTORCH_LEGACY_LIB"]
+    extra_cuda_cflags: list[str] = ["-DTORCH_LEGACY_LIB"]
+
+    _load_or_compile(
+        "CPU",
+        TORCH_LEGACY_LIBRARY_NAME,
+        compile_custom_op_cpu_torch_legacy,
+        compile_custom_op_gpu_torch_legacy,
+        extra_cuda_cflags,
+        extra_cflags,
+    )
+
+    if torch.cuda.is_available():
+        _set_torch_cuda_arch_list()
+        _load_or_compile(
+            "GPU",
+            TORCH_LEGACY_LIBRARY_NAME,
+            compile_custom_op_cpu_torch_legacy,
+            compile_custom_op_gpu_torch_legacy,
+            extra_cuda_cflags,
+            extra_cflags,
+        )
+
+
+def _initialize_kernels() -> None:
+    """Load/compile the custom-ops library.
+
+    torch >= 2.10: the stable-ABI ``_C`` artifact serves torch + ORT, so
+    ``_compile_legacy_library`` is skipped; a failure of *both* the precompiled
+    load and the JIT compile propagates from :func:`load_or_jit_stable_abi`
+    rather than silently leaving ORT registration to fail later with an empty
+    library path. torch < 2.10: JIT ``libcustom_ops{,_gpu}`` with inline
+    ``-DTORCH_OP`` pybind11. Test-only ``libcustom_ops_torch_legacy`` is
+    always deferred to the first test consumer.
+    """
     start_time = time.time()
 
     logging.basicConfig(level=logging.INFO, force=True)
     logger.info("Checking custom ops library ...")
 
-    extra_cflags = []
-    include_path_prefix = "-I" + str(path)
-    ort_include = "/include/onnxruntime-1.17.0/onnxruntime"
-    extra_cflags.append(include_path_prefix + "/include")
-    extra_cflags.append(include_path_prefix + "/src")
-    extra_cflags.append(include_path_prefix + ort_include)
-    extra_cflags.append(include_path_prefix + ort_include + "/core/session")
-    extra_cflags.append(include_path_prefix + "/include/gsl-4.0.0")
-    extra_cflags.append("-DTORCH_OP")
-    if platform.system().lower() == "windows":
-        extra_cflags.append("-DORT_DLL_IMPORT")
-
-    extra_cuda_cflags: list[str] = []
-    extra_cuda_cflags.append(include_path_prefix + ort_include)
-    extra_cuda_cflags.append(include_path_prefix + ort_include + "/core/session")
-    extra_cuda_cflags.append(include_path_prefix + "/include/gsl-4.0.0")
-
-    try:
-        compile_library_core("CPU", extra_cuda_cflags, extra_cflags)
-
-        if torch.cuda.is_available():
-            capability = torch.cuda.get_device_capability(0)
-            arch_list = f"{capability[0]}.{capability[1]}"
-            os.environ["TORCH_CUDA_ARCH_LIST"] = arch_list
-
-            compile_library_core("GPU", extra_cuda_cflags, extra_cflags)
-
-    except Exception as e:
-        logger.warning(f"Custom ops library compilation failed: {e}.")
-        traceback.print_exc()
-
-    logger.info("Checked custom ops library.")
+    if torch_supports_stable_abi():
+        # ``custom_ops_stable_abi`` is intentionally distinct from the legacy ORT
+        # lib's ``custom_ops`` stem so a downstream-dropped precompiled ``.so``
+        # can't be mistaken for the legacy artifact (separately JIT-owned).
+        load_or_jit_stable_abi(
+            base_dir=path,
+            package_subpath=Path("quark", "onnx", "operators", "custom_ops"),
+            library_name="custom_ops_stable_abi",
+            display_name="ONNX custom_ops",
+            jit_compile_fn=_jit_compile_stable_abi,
+        )
+        logger.info("PyTorch %s: deferring torch-legacy build to first test consumer.", torch.__version__)
+    else:
+        logger.info("PyTorch %s: skipping stable-ABI pass (requires >= 2.10).", torch.__version__)
+        _compile_legacy_library()
 
     end_time = time.time()
     execution_time = end_time - start_time
-    logger.debug(f"Total time for compilation: {execution_time:.4f} seconds.")
+    logger.debug(f"Total time for loading/compilation: {execution_time:.4f} seconds.")
 
 
-# compile the custom ops library
-compile_library()
+_initialize_kernels()

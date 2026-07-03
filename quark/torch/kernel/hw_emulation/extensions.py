@@ -1,89 +1,76 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+"""JIT loader / pre-compilation lookup for the torch ``hw_emulation`` extension.
+
+JIT/pre-compilation call-site contract: source lists and include paths are sourced
+exclusively from :mod:`quark.common.torch_cpp_build_specs.torch_ops` via the
+per-artifact ``*_sources(*, use_cuda)`` and ``*_include_paths()`` helpers.
+Inline ``Path(...) / "csrc/..."`` literals and ad-hoc compositions of section
+helpers are not allowed here; see
+:mod:`quark.common.torch_cpp_build_specs` for the full policy.
+
+Runtime preference is pre-compiled (wheel-built ``_C``) over JIT. The
+``QUARK_BUILD_DISABLE_JIT_FALLBACK=1`` env var promotes a missing pre-compiled
+artifact into a hard error so packaging regressions can't silently fall
+through to JIT in wheel-only environments. On stable-ABI-capable PyTorch
+(>= 2.10) a failure of *both* the precompiled load and the JIT compile is
+also a hard error (raised by
+:func:`quark.common.torch_cpp_ext.load_or_jit_stable_abi`, shared with the
+ONNX-side ``custom_ops`` loader): dropping to the legacy pybind11 build
+there would hide the regression behind a working-but-different code path.
+"""
 
 import os
 import time
-import traceback
 from pathlib import Path
-from types import TracebackType
 from typing import Any
 
 import torch
 from torch.utils.cpp_extension import _get_build_directory, load
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.torch_cpp_build_specs import TORCH_TARGET_VERSION_DEFINE
+from quark.common.torch_cpp_build_specs.torch_ops import (
+    legacy_hw_emulation_sources,
+    torch_include_paths,
+    torch_ops_sources,
+)
+from quark.common.torch_cpp_ext import (
+    jit_compile_stable_abi_library,
+    load_or_jit_stable_abi,
+    set_rocm_user_architecture,
+)
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.torch_utils import torch_supports_stable_abi
 
 logger = ScreenLogger(__name__)
 path = Path(__file__).parent
 
-
-class set_rocm_user_architecture:
-    """Fetches set of detected devices for local machine only, to prevent the processing of all HIP architectures."""
-
-    def __enter__(self) -> None:
-        """Assigns the detected gpu architectures to PYTORCH_ROCM_ARCH environment variable, to ensure kernel compilation for only the detected HIP architectures."""
-        if (torch.version.hip is not None) and (os.getenv("PYTORCH_ROCM_ARCH") is None):
-            num_devices = torch.cuda.device_count()
-            detected_architectures = set()
-            for device in range(num_devices):
-                device_properties = torch.cuda.get_device_properties(device)
-                if hasattr(device_properties, "gcnArchName"):
-                    user_arch = (device_properties.gcnArchName).split(":", 1)[0]
-                    detected_architectures.add(user_arch)
-            if detected_architectures:
-                os.environ["PYTORCH_ROCM_ARCH"] = ";".join(detected_architectures)
-
-    def __exit__(
-        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, exc_traceback: TracebackType | None
-    ) -> None:
-        """Unsets the PYTORCH_ROCM_ARCH environment variable to prevent future complications or issues."""
-        if exc_type is None:
-            if (torch.version.hip is not None) and (os.getenv("PYTORCH_ROCM_ARCH") is not None):
-                os.environ.pop("PYTORCH_ROCM_ARCH", None)
-        else:
-            print(f"Exception Occurred of type {exc_value}. Traceback:")
-            traceback.print_tb(exc_traceback)
+# Must match ``TORCH_LIBRARY(quark_hw_emulation, m)`` in the stable-ABI C++ sources.
+_TORCH_OPS_NAMESPACE = "quark_hw_emulation"
 
 
-def compile_kernel(
+def compile_kernel_legacy(
     kernel_name: str, compile_dir: str | None, extra_cuda_cflags: list[str], extra_cflags: list[str]
 ) -> Any:  # pragma: no cover
-    r"""
-    Performs kernel compilation from the source file and gets the kernel function.
-
-    Parameters:
-        kernel_name (str): Name of the kernel function in the source file.
-        compile_dir (Optional[str]): Path to kernel compilation directory, if one is not provided a directory will be generated.
-        extra_cuda_cflags (List[str]): Addtional flags/options passed to CUDA compiler (nvcc), default value is `None`.
-        extra_cflags (List[str]): Additional flags/options passed to the C/C++ compiler, default value is `None`.
-
-    Returns:
-        A compiled kernel function that can be called.
+    r"""JIT-build the legacy pybind11 hw_emulation module; returns the loaded
+    module, or ``None`` on compile failure.
     """
     try:
         verbose_flag = False
         compile_dir = "" if compile_dir is None else compile_dir
-        compile_dir = _get_build_directory(kernel_name, verbose_flag) if compile_dir == "" else compile_dir
+        compile_dir = (
+            _get_build_directory(kernel_name, verbose_flag) if compile_dir is None or compile_dir == "" else compile_dir
+        )
 
         if not os.path.exists(compile_dir):
             os.makedirs(compile_dir)
 
-        sources = [
-            str(path / "csrc/python_function_export.cpp"),
-            str(path / "csrc/mx/funcs.cpp"),
-            str(path / "csrc/tqt/tqt_op.cpp"),
-        ]
-        if torch.cuda.is_available():
-            sources.append(str(path / "csrc/fake_tensor_cuda_hip.cu"))
-            sources.append(str(path / "csrc/mx/funcs.cu"))
-            sources.append(str(path / "csrc/tqt/tqt.cu"))
-            sources.append(str(path / "csrc/tqt/cu_utils.cc"))
+        is_cuda = torch.cuda.is_available()
+        sources = legacy_hw_emulation_sources(use_cuda=is_cuda)
 
-            sources.append(str(path / "csrc/mxfp4/dequantize.cu"))
-            sources.append(str(path / "csrc/mxfp4/fake.cu"))
-
+        if is_cuda:
             extra_cflags.append("-DUSE_CUDA")
             extra_cuda_cflags.append("-DUSE_CUDA")
 
@@ -99,7 +86,7 @@ def compile_kernel(
                     )
 
             logger.info(
-                f"C++ kernel build directory: {compile_dir}. First-time compilation may take a few minutes...{build_arch}"
+                f"Legacy JIT build directory: {compile_dir}. First-time compilation may take a few minutes...{build_arch}"
             )
 
             return load(
@@ -108,34 +95,81 @@ def compile_kernel(
                 build_directory=compile_dir,
                 extra_cuda_cflags=extra_cuda_cflags,
                 extra_cflags=extra_cflags,
-                extra_include_paths=[str(path / "csrc")],
+                extra_include_paths=torch_include_paths(),
                 verbose=verbose_flag,
             )
     except Exception as e:
-        logger.exception("C++ kernel compile error\n" + str(e))  # TODO: actually raise here?
+        logger.exception("C++ kernel compile error (legacy JIT)\n" + str(e))
     return None
 
 
-logger.info("C++ kernel compilation check start.")
-is_cuda_runtime = torch.version.cuda
-is_gpu_mode = torch.cuda.is_available()
+compile_kernel = compile_kernel_legacy  # back-compat alias
 
-extra_cuda_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
-extra_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
-if is_gpu_mode:
-    if is_cuda_runtime:
-        extra_cuda_cflags.extend(["-O2", "--extended-lambda"])
-    else:
-        extra_cuda_cflags.extend(["-O2"])
 
-compile_dir = None
-kernel_name = "kernel_ext"
-is_python_module = True
+def _jit_compile_stable_abi() -> bool:
+    """Pin hw_emulation sources/defines for :func:`jit_compile_stable_abi_library`.
 
+    Torch-version gating is the caller's responsibility (passed as ``jit_compile_fn``
+    only when stable ABI is supported).
+    """
+    return jit_compile_stable_abi_library(
+        name="quark_hw_emulation_stable_abi",
+        sources=torch_ops_sources(use_cuda=torch.cuda.is_available()),
+        include_paths=torch_include_paths(),
+        label="hw_emulation",
+        extra_defines=[TORCH_TARGET_VERSION_DEFINE],
+    )
+
+
+def _compile_torch_legacy_library() -> Any:
+    """Build compiler flags and invoke the legacy JIT kernel compilation."""
+    is_cuda_runtime = torch.version.cuda
+    is_gpu_mode = torch.cuda.is_available()
+    extra_cuda_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
+    extra_cflags = ["-DIS_CUDA_RUNTIME=" + str(is_cuda_runtime)]
+    if is_gpu_mode:
+        if is_cuda_runtime:
+            extra_cuda_cflags.extend(["-O2", "--extended-lambda"])
+        else:
+            extra_cuda_cflags.extend(["-O2"])
+    return compile_kernel_legacy("kernel_ext", None, extra_cuda_cflags, extra_cflags)
+
+
+def _initialize_kernels() -> Any:
+    """Build and return the active ``hw_emulation`` kernel surface.
+
+    On torch >= 2.10 the stable-ABI path is authoritative: precompiled ``_C``
+    is preferred, JIT is the fallback, and a failure of *both* propagates from
+    :func:`load_or_jit_stable_abi` rather than dropping to legacy — the legacy
+    pybind11 surface would otherwise mask real packaging / compile regressions
+    on supported torch versions. Only torch < 2.10, where stable-ABI is
+    unavailable by construction, routes to the legacy build. Both paths expose
+    ops as ``kernel_ext.<op>(...)``, so a single object — not a per-path
+    dispatch table — is returned to the caller.
+    """
+    if torch_supports_stable_abi():
+        load_or_jit_stable_abi(
+            base_dir=path,
+            package_subpath=Path("quark", "torch", "kernel", "hw_emulation"),
+            library_name="hw_emulation",
+            display_name="hw_emulation",
+            jit_compile_fn=_jit_compile_stable_abi,
+        )
+        return getattr(torch.ops, _TORCH_OPS_NAMESPACE)
+
+    legacy = _compile_torch_legacy_library()
+    if legacy is None:
+        raise RuntimeError(
+            "Legacy hw_emulation kernel build failed and stable-ABI is unavailable on this PyTorch version"
+        )
+    return legacy
+
+
+logger.info("C++ kernel loading check start.")
 start_time = time.time()
-kernel_ext = compile_kernel(kernel_name, compile_dir, extra_cuda_cflags, extra_cflags)
+
+kernel_ext: Any = _initialize_kernels()
+
 end_time = time.time()
 execution_time = end_time - start_time
-logger.info(
-    f"C++ kernel compilation is already complete. Ending the C++ kernel compilation check. Total time: {execution_time:.4f} seconds"
-)
+logger.info(f"C++ kernel loading/compilation is complete. Total time: {execution_time:.4f} seconds")

@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from torch.fx import GraphModule
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.fx.base import GraphTransform
 from quark.torch.quantization.graph.torch_utils import is_dropout_node
 
@@ -13,7 +13,7 @@ logger = ScreenLogger(__name__)
 
 class ActivateDropoutNode(GraphTransform):
     def __init__(self) -> None:
-        super(ActivateDropoutNode, self).__init__()
+        super().__init__()
         # NOTE: dropout may different under different device(cpu, cuda, rocm)
 
     def apply(self, graph_model: GraphModule, activate: bool = True) -> GraphModule:

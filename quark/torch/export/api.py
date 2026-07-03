@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Exporting and Importing API for PyTorch."""
@@ -23,15 +23,18 @@ from tqdm import tqdm
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import QConfig
 
-from quark.shares.utils.import_utils import (
+from quark.common.utils.import_utils import (
     is_accelerate_available,
-    is_gguf_available_and_version_0_6_0,
+    is_diffusers_available,
+    is_gguf_available_and_minimum_version,
     is_safetensors_available,
     is_transformers_available,
+    is_transformers_version_higher_or_equal,
 )
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.rotation.rotation import RotationProcessor
 from quark.torch.export.config.config import JsonExporterConfig
+from quark.torch.export.constants import QUARK_AWQ_WEIGHT_CONVERSIONS, QUARK_WEIGHT_CONVERSIONS
 from quark.torch.export.json_export.builder.native_model_info_builder import NativeModelInfoBuilder
 from quark.torch.export.main_export.model_post_process import ModelPostProcessor
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser, get_layer_quant_config
@@ -48,21 +51,31 @@ from quark.torch.export.utils import (
     _untie_parameters,
 )
 from quark.torch.quantization.config.type import QuantizationMode
+from quark.torch.quantization.inverse_quantizer import is_prequantized_linear
 from quark.torch.quantization.model_transformation import (
     export_cache_state_dict_from_model,
     import_model_with_cache_from_safetensors,
 )
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
-from quark.torch.utils import QPARAMSLINEAR_OVERRIDES_STATE_DICT, setattr_recursive
+from quark.torch.utils import getattr_recursive, setattr_recursive
 
-if is_gguf_available_and_version_0_6_0():
+if is_gguf_available_and_minimum_version():
     from quark.torch.export.gguf_export.api import convert_exported_model_to_gguf
 if is_transformers_available():
     from transformers import PreTrainedModel
+    from transformers.modeling_utils import _get_tied_weight_keys
 if is_accelerate_available():
-    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate import dispatch_model
+    from accelerate.hooks import add_hook_to_module
+    from accelerate.utils import infer_auto_device_map
+if is_diffusers_available() or TYPE_CHECKING:
+    from diffusers import ModelMixin
 if is_safetensors_available():
     from safetensors.torch import save_file
+
+from quark.torch.utils.accelerate_helper import clone_align_devices_hook
+from quark.torch.utils.llm.device_mapping import create_auto_adjusted_device_map
+from quark.torch.utils.llm.model_preparation import create_model_skeleton, get_device_max_memory
 
 __all__ = [
     "export_safetensors",
@@ -119,7 +132,12 @@ class SafetensorsExporter(BaseExporter):
     """Base exporter for Safetensors format."""
 
     def __init__(
-        self, model: torch.nn.Module, output_dir: Path, custom_mode: str, weight_format: str, pack_method: str
+        self,
+        model: torch.nn.Module,
+        output_dir: Path,
+        custom_mode: str,
+        weight_format: str,
+        pack_method: str,
     ) -> None:
         super().__init__()
 
@@ -183,22 +201,21 @@ class SafetensorsExporter(BaseExporter):
             min_kv_scale=getattr(quant_config, "min_kv_scale", 0.0),
         )
 
-        if quant_config is not None:
-            # Prepare quantization configuration
-            quantization_config_dict = self._prepare_quantization_config(quant_config, temp_json_config)
-
-            # Update model config with quantization info
-            self.model.config.update({"quantization_config": quantization_config_dict})
-
-        # Process model for export
+        # Process model before building the config dict below, so preserve-prequantized
+        # mutations to `layer_quant_config` / `exclude` land in the saved config.json.
         processor = ModelPostProcessor(
             self.model,
             temp_json_config,
             custom_mode=self.custom_mode,
             output_quant=quant_config is not None and quant_config.global_quant_config.output_tensors is not None,
+            quantization_config=quant_config,
         )
         processor.merge_scale()
         processed_model = processor.get_processed_model()
+
+        if quant_config is not None:
+            quantization_config_dict = self._prepare_quantization_config(quant_config, temp_json_config)
+            self.model.config.update({"quantization_config": quantization_config_dict})
 
         # Export cache state dict if present
         cache_state_dict = {}
@@ -241,7 +258,15 @@ class SafetensorsExporter(BaseExporter):
 
         if self.weight_format == "real_quantized":
             # Useful only for Transformers models, see the comment below regarding the serialization keys.
-            processed_model._fix_state_dict_key_on_save = staticmethod(_fix_state_dict_key_on_save)
+            if is_transformers_version_higher_or_equal("4.99"):
+                # like weight_quantizer.0.scale, weight_quantizer.1.scale
+
+                if self.custom_mode == "awq":
+                    processed_model._weight_conversions = QUARK_AWQ_WEIGHT_CONVERSIONS
+                else:
+                    processed_model._weight_conversions = QUARK_WEIGHT_CONVERSIONS
+            else:
+                processed_model._fix_state_dict_key_on_save = staticmethod(_fix_state_dict_key_on_save)
 
         # Export using HF format
         export_hf_model(model=processed_model, export_dir=str(self.output_dir))
@@ -257,9 +282,6 @@ class SafetensorsExporter(BaseExporter):
         # Reset model config to original state
         self.model.config.__dict__.clear()
         self.model.config.__dict__.update(original_config)
-
-        # Reset model to original state
-        processor.reset_model()
 
         logger.info(f"Successfully exported model to Safetensors format in {self.custom_mode} mode: {self.output_dir}")
 
@@ -322,6 +344,32 @@ class CustomSafetensorsExporter(SafetensorsExporter):
         return quantization_config_dict
 
 
+class DiffusersSafetensorsExporter(BaseExporter):
+    """Exporter for diffusers ModelMixin models to safetensors format."""
+
+    def __init__(self, model: ModelMixin, output_dir: Path) -> None:
+        super().__init__()
+        self.model = model
+        self.output_dir = output_dir
+
+    def _validate(self) -> None:
+        if not is_diffusers_available() or not isinstance(self.model, ModelMixin):
+            raise NotImplementedError("DiffusersSafetensorsExporter only supports diffusers ModelMixin models.")
+
+    def _export_impl(self) -> None:
+        self.model.save_pretrained(self.output_dir)  # type: ignore[operator]
+        logger.info(f"Successfully exported diffusers model to {self.output_dir}")
+
+        quant_config = getattr(self.model, "quant_config", None)
+        if quant_config is not None:
+            config_path = self.output_dir / "config.json"
+            with open(config_path) as f:
+                config = json.load(f)
+            config["quantization_config"] = quant_config.to_dict()
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+
+
 class OnnxExporter(BaseExporter):
     """Exporter for ONNX format."""
 
@@ -357,7 +405,7 @@ class OnnxExporter(BaseExporter):
     def _validate(self) -> None:
         """Validate ONNX export parameters."""
         # Basic validation - ONNX export is generally more permissive
-        if not isinstance(self.input_args, (torch.Tensor, tuple)):
+        if not isinstance(self.input_args, torch.Tensor | tuple):
             raise ValueError("input_args must be a torch.Tensor or tuple")
 
     def _export_impl(self) -> None:
@@ -396,13 +444,13 @@ class OnnxExporter(BaseExporter):
             )
         except Exception as e:
             if not self.dynamo:
-                raise Exception(
+                raise RuntimeError(
                     f"The ONNX export failed during `torch.onnx.export` call. This could be due to an issue in the model definition not compatible with torch.jit.trace-based ONNX export, or other issues. Consider trying to export using `dynamo=True`, refer to `quark.torch.export.api.export_onnx` API documentation. Error: {e}"
-                )
+                ) from e
             else:
-                raise Exception(
+                raise RuntimeError(
                     f"The ONNX export failed during `torch.onnx.export` call. Consider trying to export using `dynamo=False`, refer to `quark.torch.export.api.export_onnx` API documentation. Error: {e}"
-                )
+                ) from e
 
         export_onnx_model_optimization(onnx_path)
 
@@ -523,7 +571,6 @@ def export_safetensors(
 
         * ``"reorder"``: reorder the real_quantized parameters layout for hardware.
         * ``"order"``: keep the original real_quantized parameters layout.
-
     :return: ``None``
 
     Example:
@@ -535,6 +582,12 @@ def export_safetensors(
             export_path = "./output_dir"
             export_safetensors(model, export_path, custom_mode="quark", weight_format="real_quantized", pack_method="reorder")
     """
+    # Diffusers models use a dedicated exporter that calls ModelMixin.save_pretrained directly.
+    if is_diffusers_available() and isinstance(model, ModelMixin):
+        exporter: BaseExporter = DiffusersSafetensorsExporter(model=model, output_dir=Path(output_dir))
+        exporter._export()
+        return
+
     # Get quant_config from the model
     if getattr(model, "quark_quantized", False) and getattr(model, "quant_config", None) is None:
         raise ValueError("Model must have a 'quant_config' attribute if it is quantized with quark.")
@@ -649,9 +702,9 @@ def export_gguf(
         Currently, only support asymetric int4 per_group weight-only quantization, and the group_size must be 32.
         Supported models include Llama2-7b, Llama2-13b, Llama2-70b, and Llama3-8b.
     """
-    if not is_gguf_available_and_version_0_6_0():
+    if not is_gguf_available_and_minimum_version():
         raise ImportError(
-            "The function `export_gguf` requires the package `gguf==0.6.0` to be installed, but it was not found. Please install `gguf==0.6.0`."
+            "The function `export_gguf` requires the package `gguf>=0.10.0` to be installed, but it was not found. Please install `gguf>=0.10.0`."
         )
 
     exporter = GgufExporter(
@@ -662,9 +715,6 @@ def export_gguf(
 
 class BaseImporter(ABC):
     """Base class for all model importers."""
-
-    def __init__(self) -> None:
-        pass
 
     @abstractmethod
     def _validate(self) -> None:
@@ -739,10 +789,15 @@ class SafetensorsImporter(BaseImporter):
 
             if has_non_persistent_buffers:
                 if not self.multi_device:
-                    raise ValueError(
-                        "Importing a model on meta device while it contains non-persistent buffers is not supported when multi_device=False. "
-                        "Please use multi_device=True or load the model on a real device first."
-                    )
+                    for name, module in self.model.named_modules():
+                        for buffer_name in module._non_persistent_buffers_set:
+                            # NOTE: How could a buffer be None here? Does this case really exist anywhere?
+                            buffer = getattr(module, buffer_name, None)
+                            if buffer is not None and buffer.device.type == "meta":
+                                raise ValueError(
+                                    "Importing a model containing non-persistent buffers on meta device is not supported. Consider initializing the model with `no_init_weights()` and `init_empty_weights()` context to initialize non-persistent buffers only."
+                                )
+
                 # Initialize non-persistent buffers from meta device (only when multi_device=True)
                 for name, module in self.model.named_modules():
                     if len(module._non_persistent_buffers_set) > 0:
@@ -767,15 +822,23 @@ class SafetensorsImporter(BaseImporter):
         # Build model with quantization support
         model = _build_quantized_model(self.model, model_config, checkpoint_weights)
 
-        # Handle parameter untying
-        if is_accelerate_available():
-            _untie_parameters(model, checkpoint_weights)
-
         # Save cache-related keys BEFORE any filtering or state_dict operations
         # (needed for real_quantized mode where these keys are not in model's state_dict)
         cache_state_dict = {
             k: v for k, v in checkpoint_weights.items() if ".output_scale" in k and ("k_proj" in k or "v_proj" in k)
         }
+
+        # e.g. fix .qweight -> .weight_quantizer.weight
+        # .weight_scale -> .weight_quantizer.scale
+        checkpoint_weights = _fix_loaded_weights_key_mismatch(
+            checkpoint_weights,
+            weight_format=model_config.weight_format,
+            custom_mode=model_config.quantization_config["quant_method"],
+        )
+
+        # Handle parameter untying
+        if is_accelerate_available():
+            _untie_parameters(model, checkpoint_weights)
 
         if cache_state_dict:
             logger.debug(
@@ -785,26 +848,29 @@ class SafetensorsImporter(BaseImporter):
         # Get current model state dict
         model_state_dict = model.state_dict()
 
-        # There is a mismatch between serialized checkpoints and `QParamsLinear` parameters/buffers keys.
-        # See context in #3665.
-        # TODO: Remove condition once we drop transformers<=4.56 support.
-        if not QPARAMSLINEAR_OVERRIDES_STATE_DICT:
-            checkpoint_weights = _fix_loaded_weights_key_mismatch(
-                checkpoint_weights,
-                weight_format=model_config.weight_format,
-                custom_mode=model_config.quantization_config["quant_method"],
-            )
-
         # In case we are loading the quantized weights into a model that is not on meta device,
         # we re-use the original device the weights were placed on, as `assign=True` is used later.
         # This is helpful e.g. in case the original model was dispatched to multiple
         # devices ahead of time with `accelerate`.
+        missing_keys = []
         for name, param in model_state_dict.items():
             if name not in checkpoint_weights:
-                raise ValueError(f"The loaded checkpoint misses the key {name} present in the model weights.")
+                missing_keys.append(name)
             else:
                 if param.device.type != "meta":
                     checkpoint_weights[name] = checkpoint_weights[name].to(param.device)
+
+        # NOTE: We may be loading a checkpoint with untied weights (e.g. embed_tokens.weight and lm_head.weight are not duplicated in the checkpoint). In this case, and only in this case, we authorize missing keys, handled later by `model.tie_weights()`.
+        if hasattr(model, "tie_weights"):
+            tied_weights_keys = _get_tied_weight_keys(model)
+            if len(set(missing_keys) - set(tied_weights_keys)) > 0:
+                raise ValueError(
+                    f"The loaded checkpoint misses the keys {missing_keys} present in the model weights (which is larger than the tied weights {tied_weights_keys}). Some weights are not initialized. Please open an issue or double check your model."
+                )
+        elif len(missing_keys) > 0:
+            raise ValueError(
+                f"The loaded checkpoint misses the weight keys {missing_keys} present in the model weights. Some weights are not initialized. Please open an issue or double check your model."
+            )
 
         # Handle multi-device loading if enabled
         if self.multi_device and is_accelerate_available():
@@ -812,6 +878,32 @@ class SafetensorsImporter(BaseImporter):
 
         # Load weights into model with strict=False to handle missing quantization parameters
         model.load_state_dict(checkpoint_weights, assign=True, strict=False)
+
+        if hasattr(model, "tie_weights"):
+            # Main goal here is to call `model.tie_weights()`, as tied weights may have not been loaded.
+            # NOTE: Quark somewhat "supports" quantizing `lm_head` nn.Linear. However, there is no proper handling of tied weights in this case (embed_tokens still serialized in bf16/fp16 - thus in practice untied).
+            # Essentially, we do not want `tie_weights()` to replace quantized weights (e.g. lm_head), that were previously loaded in `model.load_state_dict`, by their non-quantized counterpart (e.g. embed_tokens).
+            tied_weights_keys = _get_tied_weight_keys(model)
+            data_ptrs = {name: getattr_recursive(model, name).data_ptr() for name in tied_weights_keys}
+
+            model.tie_weights()
+
+            modified_parameters_names = [
+                name for name in tied_weights_keys if getattr_recursive(model, name).data_ptr() != data_ptrs[name]
+            ]
+
+            if len(set(missing_keys) - set(modified_parameters_names)) > 0:
+                raise ValueError(
+                    f"The loaded checkpoint misses the weight keys {missing_keys} present in the model weights, and weight tying did not initialize them properly (`model.tie_weights()` tied only {modified_parameters_names}. Please open an issue."
+                )
+
+            checkpoint_weights = {
+                key: checkpoint_weights[key] for key in modified_parameters_names if key in checkpoint_weights
+            }
+
+            for name in checkpoint_weights:
+                # We do not use `load_state_dict` here as we may have a size mismatch after tying weights.
+                setattr_recursive(model, name, torch.nn.Parameter(checkpoint_weights[name], requires_grad=False))
 
         # Convert model
         model = _convert_quantized_model(model, model_config)
@@ -826,19 +918,61 @@ class SafetensorsImporter(BaseImporter):
 
 
 def import_model_from_safetensors(
-    model: torch.nn.Module, model_dir: str, multi_device: bool = False
+    model: torch.nn.Module | None,
+    model_dir: str,
+    multi_device: bool = False,
+    trust_remote_code: bool = False,
+    attn_implementation: str = "eager",
+    device: str = "cuda",
+    multi_gpu: str | bool | None = False,
 ) -> torch.nn.Module:
     """
-    Imports a quantized model from the local directory ``model_dir`` into a non-quantized model ``model``.
+    Imports a quantized model from the local directory ``model_dir``.
 
-    :param torch.nn.Module model: The non-quantized model, that will be transformed in place to a quantized model using the ``"quantization_config"`` in the ``config.json`` file retrieved in the local directory ``model_dir``, and in which quantized weights will be loaded into.
+    When ``model`` (a non-quantized ``nn.Module``) is provided, quantized weights are loaded into it and returned as-is.
+
+    The option ``model=None`` is only supported for Transformers (https://github.com/huggingface/transformers) models, not arbitrary ``nn.Module``. In this case, a model skeleton is automatically created from the config
+    in ``model_dir`` on meta device (zero memory), quantized weights are loaded, and the
+    model is dispatched to the target device(s) before returning.
+
+    :param model: The model to load weights into, or ``None`` to create a skeleton automatically.
     :param str model_dir: Directory containing the model files (``config.json`` and ``model.safetensors``)
     :param bool multi_device: Whether to use multi-device loading using Accelerate library. Defaults to ``False``.
+    :param bool trust_remote_code: Whether to trust remote code for custom models. Only used when ``model`` is ``None``. Defaults to ``False``.
+    :param str attn_implementation: Attention implementation to use. Only used when ``model`` is ``None``. Defaults to ``"eager"``.
+    :param str device: Target device when not using multi-GPU. Only used when ``model`` is ``None``. Defaults to ``"cuda"``.
+    :param multi_gpu: Multi-GPU strategy. Only used when ``model`` is ``None``. Defaults to ``False``.
 
     :return: The model with loaded weights and proper quantization modules.
     """
     importer = SafetensorsImporter()
-    return importer._import(model=model, model_dir=model_dir, multi_device=multi_device)
+
+    # model is not None → load weights into existing model, return as-is.
+    if model is not None:
+        return importer._import(model=model, model_dir=model_dir, multi_device=multi_device)
+
+    # model is None → create skeleton, load weights, then dispatch to device below.
+    model = create_model_skeleton(
+        model_dir=model_dir,
+        trust_remote_code=trust_remote_code,
+        attn_implementation=attn_implementation,
+    )
+    model = importer._import(model=model, model_dir=model_dir, multi_device=multi_device)
+
+    if multi_gpu or multi_device:  # pragma: no cover
+        max_memory = get_device_max_memory() if multi_device else None
+        device_map = create_auto_adjusted_device_map(model.config, max_memory=max_memory)
+        if isinstance(device_map, str):
+            logger.warning(
+                "create_auto_adjusted_device_map returned '%s', falling back to infer_auto_device_map", device_map
+            )
+            device_map = infer_auto_device_map(model, max_memory=max_memory)
+        model = dispatch_model(model, device_map)
+    else:
+        model = model.to(device)
+
+    model.eval()
+    return model
 
 
 def save_params(
@@ -846,7 +980,7 @@ def save_params(
     model_type: str,
     args: tuple[Any, ...] | None = None,
     kwargs: dict[str, Any] | None = None,
-    export_dir: Path | str = tempfile.gettempdir(),
+    export_dir: Path | str = tempfile.gettempdir(),  # noqa: B008
     quant_mode: QuantizationMode = QuantizationMode.eager_mode,
     compressed: bool = False,
     reorder: bool = True,
@@ -888,7 +1022,7 @@ def save_params(
     logger.info("Start saving parameters of quantized model ...")
 
     for name, submodule in model.named_modules():
-        if isinstance(submodule, (ScaledFakeQuantize, NonScaledFakeQuantize)):
+        if isinstance(submodule, ScaledFakeQuantize | NonScaledFakeQuantize):
             if not submodule.frozen_params and not submodule.is_dynamic:
                 raise ValueError(
                     f"`model = ModelQuantizer.freeze(model)` needs to be called prior to running `save_params`, but found soft parameters in the model (in {name}). Please double check your code or open an issue."
@@ -952,17 +1086,22 @@ def _map_to_quark(model: nn.Module, quantization_config: QConfig, pack_method: s
             )
 
     for op_name, float_module in tqdm(named_modules.items()):
-        op_type = type(float_module)
-        layer_quantization_config = get_layer_quant_config(quantization_config, op_type, op_name)
+        # Check if this is a pre-quantized linear (e.g. FP8Linear, compressed linear layer from compressed-tensors library).
+        is_prequant = is_prequantized_linear(float_module)
 
-        if layer_quantization_config is not None and isinstance(float_module, nn.Linear):
+        # For pre-quantized linears, use nn.Linear type to get config; otherwise use actual type
+        config_type = nn.Linear if is_prequant else type(float_module)
+        layer_quantization_config = get_layer_quant_config(quantization_config, config_type, op_name)
+
+        # Handle both nn.Linear and pre-quantized linears in quantization list
+        if layer_quantization_config is not None and (isinstance(float_module, nn.Linear) or is_prequant):
             if op_name in layers_online_rotation:
                 qparams_linear_cls = QParamsLinearWithRotation
             else:
                 qparams_linear_cls = QParamsLinear
 
             qparams_linear = qparams_linear_cls.from_module(
-                float_module,
+                linear=float_module,
                 custom_mode=custom_mode,
                 pack_method=pack_method,
                 algo_config=quantization_config.algo_config,
@@ -972,16 +1111,7 @@ def _map_to_quark(model: nn.Module, quantization_config: QConfig, pack_method: s
             # for multi_device, hook can offer info.
             if hasattr(float_module, "_hf_hook"):
                 hook = float_module._hf_hook
-                quark_hook = AlignDevicesHook(
-                    execution_device=hook.execution_device,
-                    offload=hook.offload,
-                    io_same_device=hook.io_same_device,
-                    weights_map=hook.weights_map,
-                    offload_buffers=hook.offload_buffers,
-                    place_submodules=hook.place_submodules,
-                    skip_keys=hook.skip_keys,
-                    tied_params_map=hook.tied_params_map,
-                )
+                quark_hook = clone_align_devices_hook(hook)
                 add_hook_to_module(qparams_linear, quark_hook)
             setattr_recursive(model, op_name, qparams_linear)
             float_module.to("meta")
@@ -1003,7 +1133,7 @@ def _move_quantizer_to_dict(model: nn.Module) -> None:
 
     for module_name, float_module in tqdm(named_modules.items()):
         # If the current object have the quantizer specified as input names, update it to Nine and save to the dict.
-        if isinstance(float_module, (torch.nn.Linear, torch.nn.Module)):
+        if isinstance(float_module, torch.nn.Linear | torch.nn.Module):  # pragma: no cover
             if hasattr(float_module, dict_name):
                 qdict = {}
                 for quantizer_name in quantizer_names:

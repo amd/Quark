@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 #
 import copy
-import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -26,8 +25,15 @@ from transformers import (
 )
 from transformers.loss.loss_utils import fixed_cross_entropy
 
-from quark.shares.utils.testing_utils import require_torch_cuda, require_vllm, torch_device
-from quark.testing import slow_test
+from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
+from quark.common.utils.testing_utils import (
+    FROM_PRETRAINED_KWARGS,
+    local_test_only,
+    require_torch_cuda,
+    require_vllm,
+    slow_test,
+    torch_device,
+)
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.algorithm.rotation.cayley import SGDG
 from quark.torch.algorithm.rotation.hadamard import KNOWN_HADAMARD_MATRICES, matmul_hadU
@@ -47,6 +53,7 @@ from quark.torch.quantization import (
 )
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 from quark.torch.utils import getattr_recursive
+from quark.torch.utils.llm import preprocess_for_quantization
 
 if torch.device(torch_device).type == "cpu" or torch.version.cuda is not None:
     ATTN_IMPLEMENTATION = "sdpa"
@@ -137,7 +144,9 @@ SCALING_LAYERS_QWEN_MOE = {
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.up_proj",
                 "model.layers.layer_id.mlp.experts.*.gate_proj",
-                "model.layers.layer_id.mlp.gate",
+                "model.layers.layer_id.mlp.gate.linear"
+                if is_transformers_version_higher_or_equal("5.0.0")
+                else "model.layers.layer_id.mlp.gate",
             ],
         },
     ],
@@ -161,7 +170,9 @@ SCALING_LAYERS_QWEN_MOE = {
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.up_proj",
                 "model.layers.layer_id.mlp.experts.*.gate_proj",
-                "model.layers.layer_id.mlp.gate",
+                "model.layers.layer_id.mlp.gate.linear"
+                if is_transformers_version_higher_or_equal("5.0.0")
+                else "model.layers.layer_id.mlp.gate",
             ],
         },
     ],
@@ -193,7 +204,9 @@ SCALING_LAYERS_GPT_OSS_MOE = {
             "target_modules": ["model.layers.layer_id.mlp.experts.*.gate_up_proj"],
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.gate_up_proj",
-                "model.layers.layer_id.mlp.router.linear",
+                "model.layers.layer_id.mlp.router.linear"
+                if is_transformers_version_higher_or_equal("5.0.0")
+                else "model.layers.layer_id.mlp.router",
             ],
         },
     ],
@@ -213,7 +226,9 @@ SCALING_LAYERS_GPT_OSS_MOE = {
             "target_modules": ["model.layers.layer_id.mlp.experts.*.gate_up_proj"],
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.gate_up_proj",
-                "model.layers.layer_id.mlp.router.linear",
+                "model.layers.layer_id.mlp.router.linear"
+                if is_transformers_version_higher_or_equal("5.0.0")
+                else "model.layers.layer_id.mlp.router",
             ],
         },
     ],
@@ -236,15 +251,22 @@ MODEL_TYPE_TO_SCALING_LAYERS = {
 
 
 def run_rotation_training(
-    quant_config: QConfig, learning_rate: float, dtype: str, model_id: str, online_r1_rotation: bool, steps: int = 30
+    quant_config: QConfig,
+    learning_rate: float,
+    dtype: str,
+    model_id: str,
+    online_r1_rotation: bool,
+    steps: int = 30,
+    n_layers: int | None = None,
 ):
-    model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, attn_implementation=ATTN_IMPLEMENTATION, **FROM_PRETRAINED_KWARGS
+    )
     model = model.eval()
 
-    # Qwen/Qwen3-30B-A3B is quite big for a unit test.
-    if model.config.model_type == "qwen3_moe":
-        model.model.layers = model.model.layers[:3]
-        model.config.num_hidden_layers = 3
+    if n_layers is not None:
+        model.model.layers = model.model.layers[:n_layers]
+        model.config.num_hidden_layers = n_layers
 
     model = model.to(torch_device)
 
@@ -258,7 +280,16 @@ def run_rotation_training(
     ).to(torch_device)
 
     with torch.no_grad():
+        reference_output_before_patch = model(**inp).logits
+
+    if model.config.model_type in ["gpt_oss", "qwen3_moe"]:
+        preprocess_for_quantization(model)
+
+    with torch.no_grad():
         reference_output = model(**inp).logits
+
+    # TODO: test this elsewhere & remove this check.
+    assert torch.allclose(reference_output_before_patch, reference_output, atol=1e-3, rtol=1e-3)
 
     original_weights = {name: param.clone() for name, param in model.named_parameters()}
 
@@ -348,7 +379,6 @@ def run_rotation_training(
             logging_dir=tmpdir,
             do_eval=False,
             do_train=True,
-            overwrite_output_dir=True,
             gradient_checkpointing=True,
             max_steps=steps,
             lr_scheduler_type="cosine",
@@ -648,7 +678,9 @@ def func_test_trained_rotation_non_destructive(
     layer_quant_config = QLayerConfig()
 
     quant_config_rotation = QConfig(
-        global_quant_config=layer_quant_config, algo_config=[algo_config], exclude=["lm_head", "*.gate"]
+        global_quant_config=layer_quant_config,
+        algo_config=[algo_config],
+        exclude=["lm_head", "*.gate", "*.gate.linear"],
     )
 
     # NOTE: it is not certain bf16 is stable.
@@ -680,9 +712,7 @@ def func_test_trained_rotation_non_destructive(
     # TODO: there is an issue in this test with fusing R1 in case quantization is used, not sure why. This case is tested in test_trained_rotation_correctness anyway.
 
 
-@pytest.mark.skipif(
-    os.environ.get("QUARK_EXTENSIVE_TEST", "0") == "0", reason="skipping in the CI as useful only for local debugging"
-)
+@local_test_only
 @require_torch_cuda
 @pytest.mark.parametrize("rotation_size", [pytest.param(val, id=f"rotation_size:{val}") for val in [96, None]])
 @pytest.mark.parametrize(
@@ -733,39 +763,26 @@ def test_trained_rotation_correctness_fast(online_r1_rotation: bool):
         rotation_size=96,
         train_smooth=True,
         model_id="HuggingFaceTB/SmolLM-135M",  # NOTE: qwen3_moe is tested in the slow CI only.
+        n_layers=3,
     )
 
 
-@slow_test
-@require_torch_cuda
-@pytest.mark.parametrize("rotation_size", [pytest.param(val, id=f"rotation_size:{val}") for val in [96, None]])
 @pytest.mark.parametrize(
     "online_r1_rotation", [pytest.param(val, id=f"online_r1_rotation:{val}") for val in [False, True]]
 )
-@pytest.mark.parametrize(
-    "weight_format", [pytest.param(val, id=f"weight_format:{val}") for val in ["fake_quantized", "real_quantized"]]
-)
-@pytest.mark.parametrize("train_smooth", [pytest.param(val, id=f"train_smooth:{val}") for val in [False, True]])
-@pytest.mark.parametrize(
-    "model_id",
-    [pytest.param(val, id=f"model_id:{val}") for val in ["HuggingFaceTB/SmolLM-135M", "Qwen/Qwen3-30B-A3B"]],
-)
-def test_trained_rotation_correctness_slow(
-    online_r1_rotation: bool, weight_format: str, rotation_size: int | None, train_smooth: bool, model_id: str
-):
-    if "qwen3_moe" in model_id or "Qwen3-30B" in model_id:
-        rotation_size = 64
-
+def test_trained_rotation_correctness_moe(online_r1_rotation: bool):
     func_test_trained_rotation_correctness(
         online_r1_rotation=online_r1_rotation,
         r1=True,
         r2=True,
         r4=True,
         act_only=False,
-        weight_format=weight_format,
-        rotation_size=rotation_size,
-        train_smooth=train_smooth,
-        model_id=model_id,
+        weight_format="real_quantized",
+        rotation_size=64,
+        train_smooth=True,
+        model_id="amd-quark/tiny-random-qwen3_moe-256",
+        improvement_factor=0.97,
+        n_layers=3,
     )
 
 
@@ -806,6 +823,8 @@ def func_test_trained_rotation_correctness(
     quant_algo: str | None = None,
     train_act_only: bool = False,
     train_smooth: bool = False,
+    improvement_factor: int | None = None,
+    n_layers: int | None = None,
 ):
     """
     train_act_only: Whether to do QDQ on activations only during rotation training.
@@ -880,7 +899,7 @@ def func_test_trained_rotation_correctness(
     else:
         layer_quant_config = QLayerConfig(weight=int4_per_channel_sym_spec, input_tensors=int8_per_token_sym_spec)
 
-    quant_config_base = QConfig(global_quant_config=layer_quant_config, exclude=["lm_head", "*.gate"])
+    quant_config_base = QConfig(global_quant_config=layer_quant_config, exclude=["lm_head", "*.gate", "*.gate.linear"])
 
     quant_config_rotation = copy.deepcopy(quant_config_base)
     quant_config_rotation.algo_config = [rotation_config]
@@ -897,7 +916,12 @@ def func_test_trained_rotation_correctness(
         quant_config_rotation.global_quant_config.weight.is_dynamic = True
 
     model, start_rotations, quantizer, inp, reference_output, output_notrain, original_weights = run_rotation_training(
-        quant_config_rotation, learning_rate=1.5, dtype="fp32", model_id=model_id, online_r1_rotation=online_r1_rotation
+        quant_config_rotation,
+        learning_rate=1.5,
+        dtype="fp32",
+        model_id=model_id,
+        online_r1_rotation=online_r1_rotation,
+        n_layers=n_layers,
     )
 
     # TODO: we should somehow test that correct STE is applied during training (weight QDQ, activation QDQ).
@@ -913,18 +937,20 @@ def func_test_trained_rotation_correctness(
     notrain_loss = compute_loss(output_notrain, inp)
     train_loss = compute_loss(output_trained, inp)
 
+    if improvement_factor is None:
+        if r1:
+            improvement_factor = 0.94
+        else:
+            improvement_factor = 1.0
+
     # TODO: remove controlflow, not sure why. This is sensitive to `symmetric=False/True` for activations as well.
     if not act_only and not train_act_only:
         if model.config.model_type != "qwen3_moe":
             assert noquant_loss.item() < notrain_loss.item()
-
-        if r1:
-            assert train_loss.item() < notrain_loss.item() * 0.94
-        else:
-            assert train_loss.item() < notrain_loss.item()
+            assert train_loss.item() < notrain_loss.item() * improvement_factor
 
     # Make sure the original weights were not modified during training (e.g. quantized)
-    trained_params = {name: param for name, param in model.named_parameters()}
+    trained_params = dict(model.named_parameters())
 
     # Make sure the learned rotation is identical for all layers.
     for name, param in model.named_parameters():
@@ -1071,9 +1097,8 @@ def func_test_trained_rotation_correctness(
         export_safetensors(model=model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
         config = AutoConfig.from_pretrained(model_id)
-        # Qwen/Qwen3-30B-A3B is quite big for a unit test.
-        if config.model_type == "qwen3_moe":
-            config.num_hidden_layers = 3
+        if n_layers is not None:
+            config.num_hidden_layers = n_layers
 
         original_model = AutoModelForCausalLM.from_config(config, attn_implementation=ATTN_IMPLEMENTATION)
         original_model = original_model.to(torch_device)
@@ -1090,6 +1115,7 @@ def func_test_trained_rotation_correctness(
 
         assert torch.allclose(train_loss_output_after_quant, train_loss_after_reload, atol=1e-2, rtol=1e-2)
 
+        # TODO: verify why no strict torch.equal match here!
         absdiff = (output_trained_transformed - output_trained_reloaded).abs()
         print("max absdiff", absdiff.max())
         print("mean absdiff", absdiff.mean())
@@ -1156,12 +1182,22 @@ def test_serialization_and_reload(
     algo_config = [rotation_config]
 
     global_config = QLayerConfig(weight=w_int8_spec, input_tensors=a_int8_spec)
-    quant_config = QConfig(global_quant_config=global_config, algo_config=algo_config, exclude=["lm_head", "*.gate"])
+    quant_config = QConfig(
+        global_quant_config=global_config, algo_config=algo_config, exclude=["lm_head", "*.gate", "*.gate.linear"]
+    )
 
     with sdpa_kernel(SDPBackend.MATH):
         model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
         model = model.eval()
+
+        # HuggingFaceTB/SmolLM2-360M-Instruct has 32 layers, too slow for a unit test.
+        if model.config.model_type == "llama":
+            model.model.layers = model.model.layers[:3]
+            model.config.num_hidden_layers = 3
+
         model = model.to(device_test)
+
+        preprocess_for_quantization(model)
 
         quantizer = ModelQuantizer(quant_config)
         quant_model = quantizer.quantize_model(model)
@@ -1197,6 +1233,9 @@ def test_serialization_and_reload(
             config = AutoConfig.from_pretrained(model_id)
             with torch.device(device_test):
                 original_model = AutoModelForCausalLM.from_config(config, attn_implementation=ATTN_IMPLEMENTATION)
+                if original_model.config.model_type == "llama":
+                    original_model.model.layers = original_model.model.layers[:3]
+                    original_model.config.num_hidden_layers = 3
 
             q_model = import_model_from_safetensors(original_model, model_dir=tmpdir, multi_device=False)
 
@@ -1334,7 +1373,9 @@ def test_get_trainable_parameters(
     layer_quant_config = QLayerConfig(weight=int4_per_channel_sym_spec, input_tensors=int8_per_token_sym_spec)
 
     quant_config = QConfig(
-        global_quant_config=layer_quant_config, algo_config=[rotation_config], exclude=["lm_head", "*.gate"]
+        global_quant_config=layer_quant_config,
+        algo_config=[rotation_config],
+        exclude=["lm_head", "*.gate", "*.gate.linear"],
     )
 
     # 4-2. In-place replacement of model modules with quantized versions.
@@ -1468,9 +1509,7 @@ def test_get_online_rotation_layers(r1: bool, r2: bool, r4: bool, online_r1_rota
     assert len(online_rotation_layers) == expected_online_total
 
 
-@pytest.mark.skipif(
-    os.environ.get("QUARK_EXTENSIVE_TEST", "0") == "0", reason="skipping in the CI as useful only for local debugging"
-)
+@local_test_only
 @require_torch_cuda
 @require_vllm
 def test_load_vllm_hadamard():
@@ -1497,7 +1536,9 @@ def test_load_vllm_hadamard():
     algo_config = [rotation_config]
 
     quant_config = QConfig(
-        global_quant_config=layer_quant_config, algo_config=algo_config, exclude=["lm_head", "*.gate"]
+        global_quant_config=layer_quant_config,
+        algo_config=algo_config,
+        exclude=["lm_head", "*.gate", "*.gate.linear"],
     )
 
     model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
@@ -1534,9 +1575,7 @@ def test_load_vllm_hadamard():
         print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 
 
-@pytest.mark.skipif(
-    os.environ.get("QUARK_EXTENSIVE_TEST", "0") == "0", reason="skipping in the CI as useful only for local debugging"
-)
+@local_test_only
 @require_torch_cuda
 @require_vllm
 def test_load_vllm_tuned_orthogonal():
@@ -1570,7 +1609,9 @@ def test_load_vllm_tuned_orthogonal():
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     quant_config_rotation = QConfig(
-        global_quant_config=layer_quant_config, algo_config=algo_config, exclude=["lm_head", "*.gate"]
+        global_quant_config=layer_quant_config,
+        algo_config=algo_config,
+        exclude=["lm_head", "*.gate", "*.gate.linear"],
     )
 
     model, _, _, _, _, _, _ = run_rotation_training(

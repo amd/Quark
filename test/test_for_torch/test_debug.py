@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from quark.shares.utils.testing_utils import use_temporary_directory
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
@@ -72,9 +72,9 @@ REFERENCE_FILES = [
 ]
 
 
-# QUARK_DEBUG_ACT_HIST environment variable can not be used here, as `SAVE_ACTIVATIONS_HISTOGRAM` is a constant in quark.
+# QUARK_DEBUG_ACT_HIST environment variable can not be used here, as `QUARK_DEBUG_ACT_HIST` is a constant in quark.
 @use_temporary_directory
-@patch("quark.torch.quantization.debug.SAVE_ACTIVATIONS_HISTOGRAM", True)
+@patch("quark.torch.quantization.debug.QUARK_DEBUG_ACT_HIST", True)
 def test_smoke_debug(tmpdir: str):
     global_quant_config = QLayerConfig(weight=UINT8_PER_TENSOR_ASYM_SPEC)
     config = QConfig(global_quant_config=global_quant_config)
@@ -84,11 +84,8 @@ def test_smoke_debug(tmpdir: str):
     model = MyModel()
     model = model.to(torch.float16)
 
-    os.environ["QUARK_DEBUG"] = tmpdir
-
-    _ = quantizer.quantize_model(model)
-
-    del os.environ["QUARK_DEBUG"]
+    with patch("quark.torch.quantization.api.QUARK_DEBUG", tmpdir):
+        _ = quantizer.quantize_model(model)
 
     dir_content = os.listdir(tmpdir)
     for filename in [
@@ -102,7 +99,7 @@ def test_smoke_debug(tmpdir: str):
 
 
 @use_temporary_directory
-@patch("quark.torch.quantization.debug.SAVE_ACTIVATIONS_HISTOGRAM", True)
+@patch("quark.torch.quantization.debug.QUARK_DEBUG_ACT_HIST", True)
 def test_smoke_debug_all(tmpdir: str):
     quant_spec = copy.deepcopy(UINT8_PER_TENSOR_ASYM_SPEC)
     quant_spec.is_dynamic = False
@@ -119,11 +116,45 @@ def test_smoke_debug_all(tmpdir: str):
     model = MyModel()
     model = model.to(torch.float16)
 
-    os.environ["QUARK_DEBUG"] = tmpdir
+    with patch("quark.torch.quantization.api.QUARK_DEBUG", tmpdir):
+        _ = quantizer.quantize_model(model, dataloader=dataloader)
 
-    _ = quantizer.quantize_model(model, dataloader=dataloader)
+    dir_content = os.listdir(tmpdir)
+    for filename in REFERENCE_FILES:
+        assert filename in dir_content
 
-    del os.environ["QUARK_DEBUG"]
+
+@use_temporary_directory
+@patch("quark.torch.quantization.debug.QUARK_DEBUG_ACT_HIST", True)
+def test_smoke_debug_with_input_pickle(tmpdir: str):
+    """Test debug flow when QUARK_DEBUG_INPUT_PICKLE provides a custom input tensor instead of using the dataloader."""
+    quant_spec = copy.deepcopy(UINT8_PER_TENSOR_ASYM_SPEC)
+    quant_spec.is_dynamic = False
+
+    # Save a 2D test input as a pickle file for QUARK_DEBUG_INPUT_PICKLE.
+    # Must be 2D+ because debug histograms compute mean(dim=-2).
+    test_input = torch.rand(2, 10, dtype=torch.float16)
+    pickle_path = os.path.join(tmpdir, "test_input.pkl")
+    torch.save(test_input, pickle_path)
+
+    # Dataloader is still needed for calibration; the pickle only affects debug statistics collection.
+    dataloader = DataLoader([torch.rand(10, dtype=torch.float16), torch.rand(10, dtype=torch.float16)])
+
+    global_quant_config = QLayerConfig(
+        weight=quant_spec, input_tensors=quant_spec, bias=quant_spec, output_tensors=quant_spec
+    )
+    config = QConfig(global_quant_config=global_quant_config)
+
+    quantizer = ModelQuantizer(config)
+
+    model = MyModel()
+    model = model.to(torch.float16)
+
+    with (
+        patch("quark.torch.quantization.api.QUARK_DEBUG", tmpdir),
+        patch("quark.torch.quantization.debug.QUARK_DEBUG_INPUT_PICKLE", pickle_path),
+    ):
+        _ = quantizer.quantize_model(model, dataloader=dataloader)
 
     dir_content = os.listdir(tmpdir)
     for filename in REFERENCE_FILES:

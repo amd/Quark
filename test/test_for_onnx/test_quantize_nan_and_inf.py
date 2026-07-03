@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data_1 = np.array(
     [[np.nan, 0.96671784, 0.260476, 0.8972365, 0.37674972], [0.33622175, 0.45137647, 0.8402551, 0.12310214, 0.5430262]]
@@ -58,7 +58,7 @@ class DataReader(CalibrationDataReader):
 
 class CnnModel(nn.Module):
     def __init__(self):
-        super(CnnModel, self).__init__()
+        super().__init__()
         self.mul = nn.Linear(5, 10)
 
     def forward(self, x):

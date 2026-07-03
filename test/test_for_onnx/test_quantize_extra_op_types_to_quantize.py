@@ -12,9 +12,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG, S8S8_AAWS_CONFIG, XINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -78,7 +78,7 @@ class DataReader(CalibrationDataReader):
 
 class Extra_Types_To_Quantize_Model(nn.Module):
     def __init__(self):
-        super(Extra_Types_To_Quantize_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1)
         self.conv_transpose = nn.ConvTranspose2d(3, 3, kernel_size=3, stride=1, padding=0)
         self.gemm = nn.Linear(27, 6)

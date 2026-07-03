@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.optimization.utils import _copy_node_meta_info
 from quark.torch.quantization.graph.torch_utils import is_silu_node
 

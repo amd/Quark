@@ -1,9 +1,12 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+from collections.abc import Mapping
+
 from quark.torch.quantization.config.config import (
+    AlgoConfig,
     AutoSmoothQuantConfig,
     AWQConfig,
     GPTAQConfig,
@@ -1387,54 +1390,29 @@ ROTATION_MAP = {
 }
 
 
-def get_algo_config(
-    algo_type: str, model_type: str
-) -> (
-    AWQConfig
-    | GPTQConfig
-    | GPTAQConfig
-    | SmoothQuantConfig
-    | AutoSmoothQuantConfig
-    | QronosConfig
-    | RotationConfig
-    | None
-):
-    algo_type = algo_type.lower()
+ALGORITHM_CONFIG_MAPS: dict[str, Mapping[str, AlgoConfig]] = {
+    "awq": AWQ_MAP,
+    "gptq": GPTQ_MAP,
+    "gptaq": GPTAQ_MAP,
+    "qronos": QRONOS_MAP,
+    "smoothquant": SQ_MAP,
+    "autosmoothquant": AUTOSMOOTHQUANT_MAP,
+    "rotation": ROTATION_MAP,
+}
 
-    if algo_type == "awq":
-        if model_type not in AWQ_MAP:
-            return None
-        return AWQ_MAP[model_type]
 
-    elif algo_type == "gptq":
-        if model_type not in GPTQ_MAP:
-            return None
-        return GPTQ_MAP[model_type]
+def get_supported_algorithm_types() -> list[str]:
+    """Return the supported algorithm type names."""
+    return list(ALGORITHM_CONFIG_MAPS.keys())
 
-    elif algo_type == "gptaq":
-        if model_type not in GPTAQ_MAP:
-            return None
-        return GPTAQ_MAP[model_type]
 
-    elif algo_type == "qronos":
-        if model_type not in QRONOS_MAP:
-            return None
-        return QRONOS_MAP[model_type]
-
-    elif algo_type == "smoothquant":
-        if model_type not in SQ_MAP:
-            return None
-        return SQ_MAP[model_type]
-
-    elif algo_type == "autosmoothquant":
-        if model_type not in AUTOSMOOTHQUANT_MAP:
-            return None
-        return AUTOSMOOTHQUANT_MAP[model_type]
-    elif algo_type == "rotation":
-        if model_type not in ROTATION_MAP:
-            return None
-        return ROTATION_MAP[model_type]
-    else:
+def get_algo_config(algo_type: str, model_type: str) -> AlgoConfig | None:
+    normalized_algorithm_type = algo_type.lower()
+    if normalized_algorithm_type not in ALGORITHM_CONFIG_MAPS:
+        supported_algorithm_types = ", ".join(get_supported_algorithm_types())
         raise ValueError(
-            f"Unsupported algorithm type: {algo_type}. Supported types: awq, gptq, smoothquant, autosmoothquant, rotation"
+            f"Unsupported algorithm type: {normalized_algorithm_type}. Supported types: {supported_algorithm_types}"
         )
+
+    algorithm_config_map = ALGORITHM_CONFIG_MAPS[normalized_algorithm_type]
+    return algorithm_config_map.get(model_type)

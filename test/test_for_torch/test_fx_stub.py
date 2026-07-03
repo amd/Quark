@@ -11,8 +11,9 @@ import torch
 import torch.nn as nn
 from torch.fx import GraphModule
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer
 
 # from quark.torch.quantization.graph.export.onnx import *
@@ -151,7 +152,7 @@ def test_torch_quant_stub(tmpdir: str):
     out_fp32 = float_model.eval()(example_inputs[0])
     # session 1
     # =========================
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     _exclude_quant_node = mark_exclude_nodes(graph_model)
     out_opt_fx_graph = graph_model(example_inputs[0])
     assert torch.allclose(out_fp32, out_opt_fx_graph)
@@ -162,7 +163,7 @@ def test_torch_quant_stub(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)

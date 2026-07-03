@@ -1,12 +1,13 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark FX model Quantization API for PyTorch."""
 
 import types
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.fx
@@ -15,7 +16,7 @@ from onnxruntime.quantization.onnx_model import ONNXModel
 from torch.fx import GraphModule
 from torch.utils.data import DataLoader
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 # export to onnx
 from quark.torch import export_onnx
@@ -78,12 +79,12 @@ class FxGraphQuantizer(ModelQuantizer):
         return get_fx_model(model, args, kwargs, dynamic_shapes)
 
     # Step 2 precheck
-    def _pre_check_before_quant(self, model: GraphModule) -> bool:
+    def _pre_check_before_quant(self, model: GraphModule) -> None:
         """
-        TODO check whether the GraphModule satisfied enquirements
+        TODO check whether the GraphModule satisfied requirements
         All check should be packaged here
         """
-        return pre_quant_model_and_config_checks(model, self.config)
+        pre_quant_model_and_config_checks(model, self.config)
 
     # Step 3 pre_quant_optimize
     def _pre_quant_optimize(self, model: GraphModule, hw_constrain: bool = True) -> GraphModule:
@@ -145,8 +146,7 @@ class FxGraphQuantizer(ModelQuantizer):
         fx_graph_model = self._prepare_fx_model(model, args, kwargs, dynamic_shapes)
 
         # Step 2 precheck
-        if not self._pre_check_before_quant(fx_graph_model):
-            raise Exception("model pre quant check failed")
+        self._pre_check_before_quant(fx_graph_model)
 
         # Step 3 pre_quant_optimize
         model = self._pre_quant_optimize(fx_graph_model, hw_constrain=True)

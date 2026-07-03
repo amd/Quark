@@ -13,9 +13,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG, XINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
     [
@@ -246,7 +246,7 @@ class DataReader(CalibrationDataReader):
 
 class Convert_Bn_To_Conv_Model(nn.Module):
     def __init__(self):
-        super(Convert_Bn_To_Conv_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 2, kernel_size=3, stride=1, padding=0)
         self.bn1 = nn.BatchNorm2d(2)
         self.conv_transpose1 = nn.ConvTranspose2d(1, 1, kernel_size=3, stride=1, padding=0)
@@ -266,7 +266,7 @@ class Convert_Bn_To_Conv_Model(nn.Module):
 
 class Convert_Clip_To_Relu_Model(nn.Module):
     def __init__(self):
-        super(Convert_Clip_To_Relu_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 2, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
@@ -277,7 +277,7 @@ class Convert_Clip_To_Relu_Model(nn.Module):
 
 class Convert_Reduce_Mean_To_Global_Avg_Pool_Model(nn.Module):
     def __init__(self):
-        super(Convert_Reduce_Mean_To_Global_Avg_Pool_Model, self).__init__()
+        super().__init__()
 
     def forward(self, x):
         x = torch.mean(x, dim=(2, 3), keepdim=True)
@@ -286,7 +286,7 @@ class Convert_Reduce_Mean_To_Global_Avg_Pool_Model(nn.Module):
 
 class Fold_Batch_Norm_After_Concat_Model(nn.Module):
     def __init__(self):
-        super(Fold_Batch_Norm_After_Concat_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 6, kernel_size=3, stride=1, padding=0)
         self.bn = nn.BatchNorm2d(6)
 
@@ -329,7 +329,7 @@ class Fold_Batch_Norm_After_Concat_Model(nn.Module):
 
 class ConvBN_ConvTransposeBN_GemmBN_Model(nn.Module):
     def __init__(self):
-        super(ConvBN_ConvTransposeBN_GemmBN_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1)
         self.conv_transpose = nn.ConvTranspose2d(3, 3, kernel_size=3, stride=1, padding=0)
         self.gemm = nn.Linear(108, 6)
@@ -350,7 +350,7 @@ class ConvBN_ConvTransposeBN_GemmBN_Model(nn.Module):
 
 class Split_Large_Kernel_Pool_Model(nn.Module):
     def __init__(self):
-        super(Split_Large_Kernel_Pool_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
@@ -362,7 +362,7 @@ class Split_Large_Kernel_Pool_Model(nn.Module):
 
 class Convert_Split_To_Slice_Model(nn.Module):
     def __init__(self):
-        super(Convert_Split_To_Slice_Model, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 2, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
@@ -374,7 +374,7 @@ class Convert_Split_To_Slice_Model(nn.Module):
 
 class PatchEmbedding(nn.Module):
     def __init__(self, in_channels, patch_size, emb_size):
-        super(PatchEmbedding, self).__init__()
+        super().__init__()
         self.patch_size = patch_size
         self.projection = nn.Conv2d(in_channels, emb_size, kernel_size=patch_size, stride=patch_size)
 
@@ -387,7 +387,7 @@ class PatchEmbedding(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, emb_size, num_heads, mlp_dim, dropout=0.1):
-        super(TransformerBlock, self).__init__()
+        super().__init__()
         self.norm1 = nn.LayerNorm(emb_size)
         self.attn = nn.MultiheadAttention(emb_size, num_heads, dropout=dropout)
         self.norm2 = nn.LayerNorm(emb_size)
@@ -403,7 +403,7 @@ class TransformerBlock(nn.Module):
 
 class Fuse_Layer_Norm_Model(nn.Module):
     def __init__(self, img_size=4, patch_size=2, in_channels=3, emb_size=64, num_heads=4, mlp_dim=128, num_classes=10):
-        super(Fuse_Layer_Norm_Model, self).__init__()
+        super().__init__()
         self.patch_embedding = PatchEmbedding(in_channels, patch_size, emb_size)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, emb_size))
         self.pos_embedding = nn.Parameter(torch.zeros(1, (img_size // patch_size) ** 2 + 1, emb_size))
@@ -423,7 +423,7 @@ class Fuse_Layer_Norm_Model(nn.Module):
 
 class Fuse_Gelu_Model(nn.Module):
     def __init__(self):
-        super(Fuse_Gelu_Model, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(1, 1)
         self.gelu = nn.GELU()
 

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Config verificiation helper functions for Brevitas quantizer."""
@@ -7,7 +7,7 @@
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.extensions.brevitas.config as brevitas_config
 import quark.torch.quantization.config.type as quark_config_type
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 

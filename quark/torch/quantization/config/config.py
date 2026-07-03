@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for PyTorch"""
@@ -16,9 +16,9 @@ import torch.nn as nn
 if TYPE_CHECKING:
     from quark.torch.quantization.config.template import LLMTemplate
 
-from quark.shares.config import BaseAlgoConfig, BaseConfigImpl, BaseQConfig, BaseQLayerConfig, BaseQTensorConfig
-from quark.shares.utils.doc import add_start_docstring
-from quark.shares.utils.log import ScreenLogger
+from quark.common.config import BaseAlgoConfig, BaseConfigImpl, BaseQConfig, BaseQLayerConfig, BaseQTensorConfig
+from quark.common.utils.doc import add_start_docstring
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.type import (
     ALL_DATA_TYPES,
     DeviceType,
@@ -70,7 +70,14 @@ PER_TENSOR_OBSERVER_METHOD_MAP: dict[str, type[ObserverBase]] = {
     "percentile": PerTensorPercentileObserver,
 }
 
-SCALE_TYPE_MAP = {"float": ScaleType.float, "power_of_2": ScaleType.pof2}
+SCALE_TYPE_MAP = {
+    "float32": ScaleType.float32,
+    "float16": ScaleType.float16,
+    "bfloat16": ScaleType.bfloat16,
+    "float": ScaleType.float,
+    "power_of_2": ScaleType.pof2,
+    "float8_e5m3": ScaleType.float8_e5m3,
+}
 
 ROUND_METHOD_MAP = {"round": RoundType.round, "floor": RoundType.floor, "half_even": RoundType.half_even}
 
@@ -79,9 +86,11 @@ ZERO_POINT_TYPE_MAP = {"int32": ZeroPointType.int32, "float32": ZeroPointType.fl
 
 def get_per_tensor_observer(observer_method: str | None = None) -> type[ObserverBase] | None:
     if observer_method:
-        assert observer_method in PER_TENSOR_OBSERVER_METHOD_MAP, (
-            f"Invalid observer method. Valid observer methods are {list(PER_TENSOR_OBSERVER_METHOD_MAP.keys())}"
-        )
+        if observer_method not in PER_TENSOR_OBSERVER_METHOD_MAP:
+            raise ValueError(
+                f"Invalid observer_method '{observer_method}'. "
+                f"Valid options: {list(PER_TENSOR_OBSERVER_METHOD_MAP.keys())}"
+            )
         observer_cls = PER_TENSOR_OBSERVER_METHOD_MAP[observer_method]
     else:
         observer_cls = None
@@ -90,7 +99,8 @@ def get_per_tensor_observer(observer_method: str | None = None) -> type[Observer
 
 def get_scale_type(scale_type: str | None = None) -> ScaleType | None:
     if scale_type:
-        assert scale_type in SCALE_TYPE_MAP, f"Invalid scale type. Valid scale types are {list(SCALE_TYPE_MAP.keys())}"
+        if scale_type not in SCALE_TYPE_MAP:
+            raise ValueError(f"Invalid scale_type '{scale_type}'. Valid options: {list(SCALE_TYPE_MAP.keys())}")
         ret = SCALE_TYPE_MAP[scale_type]
     else:
         ret = None
@@ -99,9 +109,8 @@ def get_scale_type(scale_type: str | None = None) -> ScaleType | None:
 
 def get_round_method(round_method: str | None = None) -> RoundType | None:
     if round_method:
-        assert round_method in ROUND_METHOD_MAP, (
-            f"Invalid round method. Valid round methods are {list(ROUND_METHOD_MAP.keys())}"
-        )
+        if round_method not in ROUND_METHOD_MAP:
+            raise ValueError(f"Invalid round_method '{round_method}'. Valid options: {list(ROUND_METHOD_MAP.keys())}")
         ret = ROUND_METHOD_MAP[round_method]
     else:
         ret = None
@@ -110,9 +119,10 @@ def get_round_method(round_method: str | None = None) -> RoundType | None:
 
 def get_zero_point_type(zero_point_type: str | None = None) -> ZeroPointType | None:
     if zero_point_type:
-        assert zero_point_type in ZERO_POINT_TYPE_MAP, (
-            f"Invalid zero point type, Valid zero point type method are {list(ZERO_POINT_TYPE_MAP.keys())}"
-        )
+        if zero_point_type not in ZERO_POINT_TYPE_MAP:
+            raise ValueError(
+                f"Invalid zero_point_type '{zero_point_type}'. Valid options: {list(ZERO_POINT_TYPE_MAP.keys())}"
+            )
         ret = ZERO_POINT_TYPE_MAP[zero_point_type]
     else:
         ret = None
@@ -135,6 +145,18 @@ class QConfig(BaseConfigImpl, BaseQConfig):
     :param List[str] exclude: A list of layer names to be excluded from quantization, enabling selective quantization of the model. Default is ``[]``.
     :param Optional[AlgoConfig] algo_config: Optional configuration for the quantization algorithm, such as GPTQ, AWQ and Qronos. After this process, the datatype/fake_datatype of weights will be changed with quantization scales. Default is ``None``.
     :param QuantizationMode quant_mode: The quantization mode to be used (``eager_mode`` or ``fx_graph_mode``). Default is ``QuantizationMode.eager_mode``.
+    :param bool sync_moe_expert_input_amax: Whether to synchronize the post-calibration
+        input amax across experts of the same projection name within each MoE layer.
+        When enabled, Quark updates the observer ranges first and then recomputes the
+        quantizer qparams from those synced ranges. Helpers such as ``LLMTemplate``
+        may enable this flag by default for schemes that require MoE expert input
+        synchronization, such as ``nvfp4``. Default is ``False``.
+    :param bool keep_prequantized_layers: Export behavior for pre-quantized layers
+        excluded from Quark quantization. ``True`` (default) preserves the source
+        quantized bytes via :py:class:`QParamsLinear`; ``False`` exports them as
+        dequantized bf16 ``nn.Linear``. Also gates pre-quantized routing at the start
+        of quantization. The ``False`` path retains the legacy dequantize-on-export
+        behavior and can be removed if it proves unnecessary.
     """
 
     # Note: `global_quant_config`, `exclude`, `algo_config`, `log_severity_level`, `version` are inherited from `BaseQConfig`
@@ -158,11 +180,25 @@ class QConfig(BaseConfigImpl, BaseQConfig):
     # When False (default), legacy pre-RoPE behaviour applies (module-level K/V output quantizers).
     kv_cache_post_rope: bool = False
 
+    # Groups of layer name suffixes that should share the global-scale quantizer.
+    # Each inner list represents a group of parallel layer suffixes
+    # (e.g. ``["q_proj", "k_proj", "v_proj"]``).
+    # The system recursively finds sibling layers ending with these suffixes and
+    # shares observers among them so they produce a single unified scale.
+    shared_scale_groups: list[list[str]] = field(default_factory=list)
+
     # A quantization specifications of nn.functional.softmax output.
     softmax_quant_spec: QTensorConfig | None = None
 
     # The quantization mode to be used (eager_mode or fx_graph_mode)
     quant_mode: QuantizationMode = QuantizationMode.eager_mode
+
+    # Synchronize post-calibration input amax across MoE experts that share the
+    # same projection name inside a single MoE layer. This is configured
+    # explicitly or by helpers such as `LLMTemplate` for specific schemes.
+    sync_moe_expert_input_amax: bool = False
+
+    keep_prequantized_layers: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         config_dict: dict[str, Any] = {
@@ -299,7 +335,7 @@ class QConfig(BaseConfigImpl, BaseQConfig):
         layer_config: dict[str, str] | None = None,
         layer_type_config: dict[type[nn.Module], str] | None = None,
         exclude_layers: list[str] | None = None,
-    ) -> Config:
+    ) -> QConfig:
         return template.get_config(
             scheme=scheme,
             algorithm=algorithm,
@@ -312,13 +348,18 @@ class QConfig(BaseConfigImpl, BaseQConfig):
         )
 
     def __post_init__(self) -> None:
-        if self.__class__ is Config:
-            logger.warning(
-                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QConfig instead."
-            )
+        # When uses want to exclude *.gate, they actually want to all the sublayers of the gate layer.
+        # So exlude = ["*.gate"] can be expanded as ["*.gate", "*.gate.*"]
+        new_exclude = []
+        for item in self.exclude:
+            if not item.endswith(".*"):
+                logger.warning(f"Expanding exclude pattern {[item]} to {[item, item + '.*']}")
+                new_exclude.append(item + ".*")
+            new_exclude.append(item)
+        self.exclude = new_exclude
         if self.algo_config is not None:
             for algo_config in self.algo_config:
-                if algo_config.name in ["rotation", "quarot"]:
+                if algo_config.name == "rotation":
                     algo_config_cls_name = algo_config.__class__.__name__
                     if len(self.kv_cache_quant_config) > 0 and not algo_config.r3:  # type: ignore
                         logger.warning(
@@ -363,10 +404,6 @@ class QLayerConfig(BaseQLayerConfig):
     target_device: DeviceType | None = None
 
     def __post_init__(self) -> None:
-        if self.__class__ is QuantizationConfig:
-            logger.warning(
-                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QLayerConfig instead."
-            )
         for tensor_name, quantization_spec in [
             ("input_tensors", self.input_tensors),
             ("output_tensors", self.output_tensors),
@@ -374,7 +411,11 @@ class QLayerConfig(BaseQLayerConfig):
             if quantization_spec is not None:
                 if isinstance(quantization_spec, QTensorConfig):
                     quantization_spec = [quantization_spec]
-                assert isinstance(quantization_spec, list), "quantization_spec must a list"
+                if not isinstance(quantization_spec, list):
+                    raise TypeError(
+                        f"quantization_spec for '{tensor_name}' must be a QTensorConfig or list of QTensorConfig, "
+                        f"got {type(quantization_spec).__name__}."
+                    )
                 for quant_spec in quantization_spec:
                     if quant_spec.qscheme == QSchemeType.per_group and not quant_spec.is_dynamic:
                         raise ValueError(
@@ -409,7 +450,11 @@ class QLayerConfig(BaseQLayerConfig):
                 return None
             elif isinstance(config, list):
                 specs = [QTensorConfig.from_dict(c) for c in config]
-                assert all(spec is not None for spec in specs), "all quantization specs must be valid (not None)"
+                if not all(spec is not None for spec in specs):
+                    raise ValueError(
+                        "All quantization specs in the config must be valid (not None). "
+                        "Check that the config dict contains valid QTensorConfig data."
+                    )
                 # After verification, all items are guaranteed to be QTensorConfig
                 return specs  # type: ignore[return-value]
             else:
@@ -1075,6 +1120,34 @@ class FP8E4M3PerTensorSpec(DataTypeSpec):
 @dataclass
 @add_start_docstring(
     DATA_TYPE_SPEC_DOCSTRING.format(
+        "FP8E5M3 per tensor quantization",
+        "FP8E5M3PerTensorSpec",
+        r"""
+        observer_method="min_max",
+        is_dynamic=False
+    """,
+    )
+)
+class FP8E5M3PerTensorSpec(DataTypeSpec):
+    observer_method: str | None = "min_max"
+    scale_type: str | None = None
+    is_dynamic: bool | None = False
+
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
+            dtype=Dtype.fp8_e5m3,
+            observer_cls=get_per_tensor_observer(self.observer_method),
+            symmetric=True,
+            scale_type=get_scale_type(self.scale_type),
+            round_method=RoundType.half_even,
+            qscheme=QSchemeType.per_tensor,
+            is_dynamic=self.is_dynamic,
+        )
+
+
+@dataclass
+@add_start_docstring(
+    DATA_TYPE_SPEC_DOCSTRING.format(
         "FP8E4M3 per channel quantization", "FP8E4M3PerChannelSpec", "is_dynamic=False, ch_axis=0"
     )
 )
@@ -1243,15 +1316,53 @@ class FP4PerGroupSpec(DataTypeSpec):
     scale_format: str | None = "float32"
     scale_calculation_mode: str | None = None
     is_dynamic: bool | None = True
+    scale_type: str | None = "float"
 
     def to_quantization_spec(self) -> QTensorConfig:
         return QTensorConfig(
             dtype=Dtype.fp4,
             observer_cls=PerBlockMXObserver,
             symmetric=None,
-            scale_type=ScaleType.float,
+            scale_type=get_scale_type(self.scale_type),
             scale_format=self.scale_format,
             scale_calculation_mode=self.scale_calculation_mode,
+            round_method=RoundType.half_even,
+            qscheme=QSchemeType.per_group,
+            ch_axis=self.ch_axis,
+            is_dynamic=self.is_dynamic,
+            group_size=self.group_size,
+        )
+
+
+@dataclass
+@add_start_docstring(
+    DATA_TYPE_SPEC_DOCSTRING.format(
+        "amdfp4 per group quantization with E5M3 scale format",
+        "AmdFP4Spec",
+        r"""
+        ch_axis=-1,
+        group_size=16,
+        is_dynamic=True
+    """,
+    )
+)
+class AmdFP4Spec(DataTypeSpec):
+    ch_axis: int
+    group_size: int
+    is_dynamic: bool = True
+
+    def __post_init__(self) -> None:
+        if self.group_size not in [16, 32]:
+            raise ValueError(f"amdfp4 group_size must be 16 or 32, got group_size={self.group_size}.")
+
+    def to_quantization_spec(self) -> QTensorConfig:
+        return QTensorConfig(
+            dtype=Dtype.fp4,
+            observer_cls=PerBlockMXObserver,
+            symmetric=None,
+            scale_type=ScaleType.float8_e5m3,
+            scale_format="e5m3",
+            scale_calculation_mode=None,
             round_method=RoundType.half_even,
             qscheme=QSchemeType.per_group,
             ch_axis=self.ch_axis,
@@ -1635,6 +1746,13 @@ class QTensorConfig(BaseQTensorConfig):
 
     is_scale_quant: bool = False
 
+    # Whether to use the dedicated memory-efficient buffer-reuse observer implementation
+    # when observer_cls is PerBlockMXObserver.
+    enable_buffer_reuse: bool = False
+
+    # Upper bound (in flattened block elements) for applying buffer-reuse path.
+    max_input_numel: int = 4 * 1024 * 1024
+
     def __post_init__(self) -> None:
         """
         When the user init a QTensorConfig, we need to check whether the config is valid.
@@ -1647,11 +1765,6 @@ class QTensorConfig(BaseQTensorConfig):
             Once user config a Config like above that contains any conflict, we need to \
                 throw an exception and tell the user what the conflict is.
         """
-        if self.__class__ is QuantizationSpec:
-            logger.warning(
-                f"quark.torch.config.config.{self.__class__.__name__} is deprecated and will be removed in a future release. Please use quark.torch.config.config.QTensorConfig instead."
-            )
-
         # NOTE: for developers, every time a new dtype is added, please add the corresponding check for the new dtype.
 
         if self.dtype in ONLY_DTYPE_CHANGE and self.observer_cls != PlaceholderObserver:
@@ -1779,13 +1892,23 @@ class QTensorConfig(BaseQTensorConfig):
         #    2. fake_quantize_fp8_e4m3: qscheme, axis (if channel/group), group_size
         #    3. fake_quantize_fp8_e5m2: qscheme, axis (if channel/group), group_size
         #    4. fake_quantize_fp4_fp6:  qscheme, axis (if channel/group), group_size, quant_dtype(channel/group)
-        assert self.observer_cls is not None, "Supplied QTensorConfig's observer_cls is None"
-        assert self.qscheme is not None, "Supplied QTensorConfig's qscheme is None"
+        if self.observer_cls is None:
+            raise ValueError(
+                "QTensorConfig requires observer_cls to be specified. "
+                "Please provide an observer class (e.g., PerTensorMinMaxObserver)."
+            )
+        if self.qscheme is None:
+            raise ValueError(
+                "QTensorConfig requires qscheme to be specified. "
+                "Please provide a QSchemeType (e.g., QSchemeType.per_tensor)."
+            )
 
         if self.qscheme == QSchemeType.per_tensor:
-            assert self.observer_cls in PER_TENSOR_OBSERVERS, (
-                f"You select Tensor wise quant, the observer_cls you select is {self.observer_cls} not support tesnor wise quant."
-            )
+            if self.observer_cls not in PER_TENSOR_OBSERVERS:
+                raise ValueError(
+                    f"Observer {self.observer_cls} does not support per-tensor quantization. "
+                    f"Supported observers: {PER_TENSOR_OBSERVERS}"
+                )
 
         elif self.qscheme == QSchemeType.per_channel:
             if self.observer_cls not in PER_CHANNEL_OBSERVERS:
@@ -1809,15 +1932,28 @@ class QTensorConfig(BaseQTensorConfig):
                 raise ValueError(
                     f"Got group_size={self.group_size} in QTensorConfig initialization with qscheme={self.qscheme}. A correct positive integer value is required for per-group quantization."
                 )
+        elif self.qscheme == QSchemeType.per_block:
+            if not (
+                isinstance(self.block_size, tuple | list)
+                and len(self.block_size) == 2
+                and all(isinstance(x, int) for x in self.block_size)
+            ):
+                raise ValueError(
+                    f"Got block_size={self.block_size} in QTensorConfig initialization with qscheme={self.qscheme}. A correct tuple or list of two positive integers is required for per-block quantization."
+                )
         else:  # NOTE for developer
-            raise ModuleNotFoundError(
+            raise ValueError(
                 f"Please decide {self.observer_cls.__name__} belongs to which kind of quant (tensor/channel/group)."
             )
 
     def set_group_size(self, group_size: int) -> None:
-        assert isinstance(group_size, int) and (group_size > 0 or group_size == -1), (
-            "Group size must be a positive integer or -1 (which means group size equals to dimension size)."
-        )
+        if not isinstance(group_size, int):
+            raise TypeError(f"group_size must be an integer, got {type(group_size).__name__}.")
+        if not (group_size > 0 or group_size == -1):
+            raise ValueError(
+                "group_size must be a positive integer or -1 "
+                f"(which means group size equals to dimension size), got {group_size}."
+            )
         self.group_size = group_size
 
     def to_dict(self) -> dict[str, Any]:
@@ -1828,6 +1964,7 @@ class QTensorConfig(BaseQTensorConfig):
             "qscheme": self.qscheme.name if self.qscheme is not None else None,
             "ch_axis": self.ch_axis,
             "group_size": self.group_size,
+            "block_size": self.block_size,
             "symmetric": self.symmetric,
             "round_method": self.round_method.name if self.round_method is not None else None,
             "scale_type": self.scale_type.name if self.scale_type is not None else None,
@@ -1836,6 +1973,8 @@ class QTensorConfig(BaseQTensorConfig):
             "mx_element_dtype": self.mx_element_dtype.name if self.mx_element_dtype is not None else None,
             "observer_cls": self.observer_cls.__name__ if self.observer_cls is not None else None,
             "is_scale_quant": self.is_scale_quant,
+            "enable_buffer_reuse": self.enable_buffer_reuse,
+            "max_input_numel": self.max_input_numel,
         }
 
     @classmethod
@@ -1878,6 +2017,7 @@ class QTensorConfig(BaseQTensorConfig):
         ch_axis = config_dict["ch_axis"] if "ch_axis" in config_dict else config_dict["axis"]
 
         group_size = config_dict["group_size"]
+        block_size = config_dict.get("block_size")
         symmetric = config_dict["symmetric"]
 
         if "observer_cls" in config_dict:
@@ -1893,6 +2033,8 @@ class QTensorConfig(BaseQTensorConfig):
             observer_cls = PlaceholderObserver
 
         is_scale_quant = config_dict.get("is_scale_quant", False)
+        enable_buffer_reuse = config_dict.get("enable_buffer_reuse", False)
+        max_input_numel = config_dict.get("max_input_numel", 4 * 1024 * 1024)
 
         return cls(
             dtype=dtype,
@@ -1900,6 +2042,7 @@ class QTensorConfig(BaseQTensorConfig):
             qscheme=qscheme,
             ch_axis=ch_axis,
             group_size=group_size,
+            block_size=block_size,
             symmetric=symmetric,
             round_method=round_method,
             scale_type=scale_type,
@@ -1908,6 +2051,8 @@ class QTensorConfig(BaseQTensorConfig):
             mx_element_dtype=mx_element_dtype,
             observer_cls=observer_cls,  # type: ignore[arg-type]
             is_scale_quant=is_scale_quant,
+            enable_buffer_reuse=enable_buffer_reuse,
+            max_input_numel=max_input_numel,
         )
 
     def is_ocp_mxfp4(self) -> bool:
@@ -1965,6 +2110,33 @@ def load_quant_algo_config_from_file(file_path: str) -> AlgoConfig:
     return _load_quant_algo_config_from_dict(algo_config_info)
 
 
+def _migrate_deprecated_rotation_fields(config_dict: dict[str, Any]) -> None:
+    """Migrate deprecated rotation config fields for backward compatibility.
+
+    Handles two deprecated patterns:
+    1. ``random`` field -> ``random_r1`` and ``random_r2``
+    2. ``quarot`` name -> ``rotation`` with r1-r4 all True
+    """
+    if "random" in config_dict:
+        logger.warning(
+            "Config field 'random' is removed. Use 'random_r1' and 'random_r2' instead. "
+            "Auto-converting for backward compatibility."
+        )
+        random_val = config_dict.pop("random")
+        config_dict.setdefault("random_r1", random_val)
+        config_dict.setdefault("random_r2", random_val)
+
+    if config_dict.get("name") == "quarot":
+        logger.warning(
+            "Config name 'quarot' is deprecated. Use 'rotation' with r1=True, r2=True, "
+            "r3=True, r4=True instead. Auto-converting for backward compatibility."
+        )
+        for key in ("r1", "r2", "r3", "r4"):
+            config_dict.setdefault(key, True)
+        config_dict.pop("optimized_rotation_path", None)
+        config_dict["name"] = "rotation"
+
+
 def _load_pre_optimization_config_from_dict(pre_optimization_config_dict: dict[str, Any]) -> PreQuantOptConfig:
     """
     Load pre-optimization configuration from a dictionary.
@@ -1979,10 +2151,11 @@ def _load_pre_optimization_config_from_dict(pre_optimization_config_dict: dict[s
     pre_optimization_config_dict.pop("num_attention_heads", None)
     pre_optimization_config_dict.pop("num_key_value_heads", None)
 
+    # Handle deprecated rotation fields (random, quarot)
+    _migrate_deprecated_rotation_fields(pre_optimization_config_dict)
+
     if pre_optimization_config_dict["name"] == "rotation":
         return cast(PreQuantOptConfig, RotationConfig.from_dict(pre_optimization_config_dict))
-    elif pre_optimization_config_dict["name"] == "quarot":
-        return cast(PreQuantOptConfig, QuaRotConfig.from_dict(pre_optimization_config_dict))
     elif pre_optimization_config_dict["name"] == "smooth":
         return cast(PreQuantOptConfig, SmoothQuantConfig.from_dict(pre_optimization_config_dict))
     else:
@@ -2003,10 +2176,11 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
     algo_config_dict.pop("num_attention_heads", None)
     algo_config_dict.pop("num_key_value_heads", None)
 
+    # Handle deprecated rotation fields (random, quarot)
+    _migrate_deprecated_rotation_fields(algo_config_dict)
+
     if algo_config_dict["name"] == "rotation":
         return cast(AlgoConfig, RotationConfig.from_dict(algo_config_dict))
-    elif algo_config_dict["name"] == "quarot":
-        return cast(AlgoConfig, QuaRotConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "smooth":
         return cast(AlgoConfig, SmoothQuantConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "awq":
@@ -2019,6 +2193,8 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
         return cast(AlgoConfig, AutoSmoothQuantConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "qronos":  # pragma: no cover
         return cast(AlgoConfig, QronosConfig.from_dict(algo_config_dict))
+    elif algo_config_dict["name"] == "svdquant":
+        return cast(AlgoConfig, SVDQuantConfig.from_dict(algo_config_dict))
     else:
         raise ValueError(f"Unknown algorithm name {algo_config_dict['name']}")
 
@@ -2091,7 +2267,6 @@ class RotationConfig(AlgoConfig):
     :param bool r3: Whether to apply ``R3`` rotation. It is only useful when using KV cache quantization. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param bool r4: Whether to apply ``R4`` rotation. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. Defaults to ``True``.
     :param Optional[int] rotation_size: The size of rotations to apply on activations/weights. By default, the activation last dimension (e.g. ``hidden_size``), or weight input/output channel dimension is used as rotation size. In case the parameter ``rotation_size`` is specified, smaller rotations of size ``(rotation_size, rotation_size)`` are applied per-block. Defaults to ``None``.
-    :param Optional[bool] random: Deprecated. Use ``random_r1`` and ``random_r2`` instead. Defaults to ``None``.
     :param bool random_r1: A boolean flag indicating whether ``R1`` should be a random Hadamard matrix. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``.
     :param bool random_r2: A boolean flag indicating whether ``R2`` should be a random Hadamard matrix. See `SpinQuant paper <https://arxiv.org/abs/2405.16406>`__ for details. This can be useful for data augmentation purposes where random rotations may be required. Default is ``False``. ``random_r1`` and ``random_r2`` are only relevant if we are using Hadamard rotations for ``R1`` and ``R2``.
     :param List[Dict[str, str]] scaling_layers: Specific settings for scaling layers, specifying the layer names where ``R1`` rotations must be applied if chosen, or where smoothing scales must be trained, if ``train_smooth=True``. It is a dictionary with keys ``"first_layer"``, ``"middle_layers"`` and ``"last_layer"``, which are dictionaries specifying:
@@ -2231,7 +2406,6 @@ class RotationConfig(AlgoConfig):
     r3: bool = False
     r4: bool = False
     rotation_size: int | None = None
-    random: bool | None = None  # TODO: deprecated, remove in 0.12
     random_r1: bool = False
     random_r2: bool = False
     backbone: str = "model"
@@ -2247,13 +2421,6 @@ class RotationConfig(AlgoConfig):
     smooth_positions: list[str] | None = None
 
     def __post_init__(self) -> None:
-        if self.random is not None:
-            logger.warning(
-                f"quark.torch.config.config.RotationConfig argument `random` is deprecated and will be removed in v0.12, please use `random_r1` and `random_r2` instead. Got `random={self.random}`. Setting `random_r1={self.random}` and `random_r2={self.random}`."
-            )
-            self.random_r1 = self.random
-            self.random_r2 = self.random
-
         if (self.random_r1 or self.random_r2) and self.rotation_size is not None:
             raise NotImplementedError(
                 f"random_r1=True or random_r2=True along with a custom rotation_size={self.rotation_size} is not supported at the moment in RotationConfig. Please open an issue."
@@ -2305,44 +2472,6 @@ class RotationConfig(AlgoConfig):
 class OnlineRotationConfig(BaseConfigImpl):
     shared_parallel: bool
     online_rotation_layers: list[str] | None = None
-
-
-@dataclass
-class QuaRotConfig(AlgoConfig):
-    # TODO: deprecated, remove in 0.12 release.
-
-    scaling_layers: dict[str, list[dict[str, Any]]]
-    name: str = "quarot"
-    r1: bool = True
-    r2: bool = True
-    r3: bool = True
-    r4: bool = True
-    rotation_size: int | None = None
-    random_r1: bool = False
-    random_r2: bool = False
-    optimized_rotation_path: str | None = None
-    backbone: str = "model"
-    model_decoder_layers: str = "model.layers"
-    v_proj: str = "self_attn.v_proj"
-    o_proj: str = "self_attn.o_proj"
-    self_attn: str = "self_attn"
-    mlp: str = "mlp"
-
-    def __post_init__(self) -> None:
-        if self.__class__ is QuaRotConfig:
-            logger.warning(
-                "quark.torch.config.config.QuaRotConfig is deprecated and will be removed in AMD Quark v0.12. Please use `quark.torch.quantization.config.config.RotationConfig` instead."
-            )
-
-        if (self.random_r1 or self.random_r2) and self.rotation_size is not None:
-            raise NotImplementedError(
-                f"random_r1=True or random_r2=True along with a custom rotation_size={self.rotation_size} is not supported at the moment in QuaRotConfig. Please open an issue."
-            )
-
-        if self.optimized_rotation_path is not None and self.rotation_size is not None:
-            raise NotImplementedError(
-                f"Using a preset optimized_rotation_path={self.optimized_rotation_path} along with a custom rotation_size={self.rotation_size} is not supported. Please open an issue."
-            )
 
 
 @dataclass
@@ -2593,16 +2722,39 @@ class QronosConfig(AlgoConfig):
             raise ValueError(f"Number of blocks must be positive, got {self.block_size}.")
 
 
-@dataclass(eq=True)
-class QuantizationSpec(QTensorConfig):
-    pass
+@dataclass
+class SVDQuantConfig(AlgoConfig):
+    """Configuration for SVDQuant (SVD-based low-rank error correction).
 
+    When ``search_alpha`` is True (the default), the smoothing migration
+    strength *alpha* is searched independently for each layer to minimise
+    post-SVD layer output MSE on calibration data, matching the original
+    SVDQuant paper.  Set to False to use a fixed global ``smooth_alpha``.
 
-@dataclass(eq=True)
-class QuantizationConfig(QLayerConfig):
-    pass
+    When ``use_gptq`` is True, residual weights are quantised via GPTQ
+    (Hessian-based column-wise optimisation) instead of RTN.
+    """
 
-
-@dataclass(eq=True)
-class Config(QConfig):
-    pass
+    name: str = "svdquant"
+    svd_rank: int = 32
+    smooth_alpha: float = 0.5
+    search_alpha: bool = True
+    alpha_candidates: list[float] | None = None
+    alpha_search_max_samples: int = 8
+    exclude_patterns: list[str] = field(
+        default_factory=lambda: [
+            "time_embedding",
+            "add_time_proj",
+            "conv_in",
+            "conv_out",
+            "time_proj",
+        ]
+    )
+    min_layer_size: int = 256
+    use_gptq: bool = False
+    gptq_n_bits: int = 4
+    gptq_symmetric: bool = True
+    gptq_group_size: int = -1
+    gptq_blocksize: int = 128
+    gptq_percdamp: float = 0.01
+    gptq_actorder: bool = False

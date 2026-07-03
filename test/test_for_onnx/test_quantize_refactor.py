@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import delete_directory_content, use_temporary_directory
 from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig, UInt8Spec
-from quark.shares.utils.testing_utils import delete_directory_content, use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -80,7 +80,7 @@ class DataReader(CalibrationDataReader):
 
 class SimpleConvModel(nn.Module):
     def __init__(self):
-        super(SimpleConvModel, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, stride=1, padding=1)
         self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(1, 1)

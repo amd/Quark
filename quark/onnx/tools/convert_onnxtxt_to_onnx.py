@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Tools for converting onnxtxt format to onnx."""
@@ -27,7 +27,8 @@ def run_main() -> None:
         )
         exit()
 
-    onnxtxt_str = open(FLAGS.input_model, "rb").read()
+    with open(FLAGS.input_model, "rb") as f:
+        onnxtxt_str = f.read()
     onnx_model = onnx.ModelProto()
     text_format.Parse(onnxtxt_str, onnx_model)
     onnx.save_model(onnx_model, FLAGS.output_model)

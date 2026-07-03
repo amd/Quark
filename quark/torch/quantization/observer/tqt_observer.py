@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
@@ -73,8 +73,8 @@ class TQTObserver(UniformScalingObserver):
         pdf = hist / np.sum(hist)
         cdf = np.cumsum(pdf)
         n = pow(2, bitwidth.item() - 1)
-        threshold: list[Any] = []
-        d: list[Any] = []
+        threshold: np.ndarray[Any, np.dtype[Any]] = np.array([], dtype=x.dtype)
+        d: np.ndarray[Any, np.dtype[Any]] = np.array([], dtype=np.float32)
         if n + 1 > len(bin_edges) - 1:
             return bin_edges[(-1)]
         else:
@@ -94,7 +94,7 @@ class TQTObserver(UniformScalingObserver):
                 q = np.copy(p)
                 q[:i] = q_interp
                 d_tmp = calculate_kl_j(cdf[np.nonzero(cdf)], q[np.nonzero(cdf)])
-                d = np.concatenate((d, [d_tmp]))
+                d = np.concatenate((d, np.array([d_tmp], dtype=np.float32)))
 
             return threshold[np.argmin(d)]
 

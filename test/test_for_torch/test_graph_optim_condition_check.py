@@ -13,7 +13,8 @@ import torch.nn as nn
 from torch.jit import Final
 from torch.nn import functional as F
 
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 
 # -------- init config -----
@@ -58,7 +59,7 @@ class CondConv2d(nn.Module):
         bias=False,
         num_experts=4,
     ):
-        super(CondConv2d, self).__init__()
+        super().__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -150,7 +151,7 @@ def test_graph_conv_weight_replace_condition():
     example_inputs = (torch.ones(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
 
     _ = prepare_quant_model(graph_model, quant_config)
     print("Finish test: test_graph_conv_weight_replace_condition")
@@ -370,7 +371,7 @@ def test_graph_scalar_convert_insert_quantizer_condition():
     float_model = TinyAttentionModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(
         graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)]
@@ -419,7 +420,7 @@ def test_graph_skip_fold_conv_bn_condition():
     example_inputs = (torch.rand(1, 3, 14, 14).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(
         graph_model, [torch.rand(1, 3, 14, 14).to(torch_device) for _ in range(3)]
@@ -460,7 +461,7 @@ def test_graph_reshape_param_change():
     example_inputs = (torch.rand(4, 3, 112, 112).to(torch_device),)
     # prepare the torch.fx.GraphModule
     float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(
         graph_model, [torch.rand(4, 3, 112, 112).to(torch_device) for _ in range(3)]

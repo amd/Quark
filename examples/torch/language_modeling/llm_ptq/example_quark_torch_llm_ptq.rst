@@ -386,6 +386,23 @@ You can run the following Python scripts in the current path. Here we use Llama 
    - To avoid memory limitations, GPU users can add the `--multi_gpu` argument when running the model on multiple GPUs.
    - CPU users should add the `--device cpu` argument.
 
+Multi-GPU Loading of Very Large MoE Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For very large MoE models (e.g., GLM-5, Qwen3.5-MoE, Kimi-K2.5, DeepSeek-V3) placed across multiple GPUs, Quark automatically throttles the Hugging Face parallel safetensors loader to a single worker. This avoids contention on the HIP/CUDA caching allocator on GPU 0, which would otherwise surface as ``HSA_STATUS_ERROR_OUT_OF_RESOURCES`` (ROCm) or a hang during ``caching_allocator_warmup``.
+
+The throttle engages only when the model is placed on multiple GPUs (``--multi_gpu`` or ``--multi_device``) **and** exceeds an internal size threshold (~30 000 quantized ``nn.Linear`` modules). Single-GPU runs and smaller models are unaffected. To override the worker count, set the ``QUARK_HF_LOADER_WORKERS`` environment variable:
+
+.. code-block:: bash
+
+   export QUARK_HF_LOADER_WORKERS=4   # any positive integer
+
+On Linux, also ensure ``vm.max_map_count`` is at least ``1048576`` (``4194304`` recommended). Quark prints a warning when the value is too low. Raise it with:
+
+.. code-block:: bash
+
+   sudo sysctl -w vm.max_map_count=4194304
+
 Recipe 1: Evaluation of Llama Float16 Model without Quantization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -522,7 +539,7 @@ This mode supports **weight-only quantization** and **dynamic activation quantiz
    python3 quantize_quark.py --model_dir [model checkpoint folder] \
                              --output_dir [output folder] \
                              --quant_scheme mxfp4 \
-                             --exclude_layers "*self_attn*" "*mlp.gate" "*lm_head" \
+                             --exclude_layers "*self_attn*" "*mlp.gate" "*mlp.gate.linear" "*lm_head" \
                              --file2file_quantization \
                              --skip_evaluation
 
@@ -633,7 +650,14 @@ Follow these steps:
 End to end tutorials
 --------------------
 
-In addition to the snippets above, you can refer to end-to-end tutorials in the :doc:`Tutorials <../../tutorials_pytorch>` section.
+In addition to the snippets above, you can refer to end-to-end tutorials:
+
+.. toctree::
+   :caption: More examples
+   :maxdepth: 1
+
+   FP4 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp4>
+   FP8 Post Training Quantization (PTQ) for LLM models <../tutorials/torch/example_fp8>
 
 Tutorial: Generating AWQ Configuration Automatically (Experimental)
 -------------------------------------------------------------------

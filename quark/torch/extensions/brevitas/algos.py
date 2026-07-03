@@ -1,8 +1,17 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-"""Pre-quantization optimization and post quantization algorithms for Brevitas API."""
+"""Pre-quantization optimization and post quantization algorithms for Brevitas API.
+
+Brevitas Version Compatibility Notes:
+    This module supports multiple versions of Brevitas with API compatibility checks:
+    - Brevitas < 0.12.0: Uses gpfq_mode with 'p', 'use_gpfa2q', and 'accumulator_bit_width' parameters
+    - Brevitas >= 0.12.0: Uses simplified gpfq_mode API without these parameters
+
+    The GPFQ and GPFA2Q classes automatically detect the installed Brevitas version
+    and use the appropriate API signature at runtime.
+"""
 
 from dataclasses import dataclass
 
@@ -11,7 +20,7 @@ import torch.utils
 import torch.utils.data
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -134,17 +143,41 @@ class GPFQ(AlgoConfig):
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
 
-        with (
-            torch.no_grad(),
-            brevitas.graph.gpfq.gpfq_mode(
+        # Check brevitas version to determine which API to use
+        import inspect
+
+        gpfq_mode_sig = inspect.signature(brevitas.graph.gpfq.gpfq_mode)
+
+        # Brevitas >= 0.12.0 removed p, use_gpfa2q, and accumulator_bit_width parameters
+        if "p" in gpfq_mode_sig.parameters:
+            # Old API (brevitas < 0.12.0)
+            gpfq_context = brevitas.graph.gpfq.gpfq_mode(
                 model,
                 p=self.percentage_of_processed_inputs,
                 use_quant_activations=True,
                 act_order=self.act_order,
                 use_gpfa2q=False,
                 accumulator_bit_width=None,
-            ) as gpfq,
-        ):
+            )
+        else:
+            # New API (brevitas >= 0.12.0)
+            # Initialize weight quantizers with a forward pass
+            logger.info("Initializing weight quantizers with forward pass (required for Brevitas >= 0.12.0)")
+            with torch.no_grad():
+                # Run a single forward pass to initialize weight quantizers
+                for images, target in calib_loader:
+                    images = images.to(device)
+                    images = images.to(dtype)
+                    model(images)
+                    break  # Only need one batch to initialize
+
+            gpfq_context = brevitas.graph.gpfq.gpfq_mode(
+                model,
+                use_quant_activations=True,
+                act_order=self.act_order,
+            )
+
+        with torch.no_grad(), gpfq_context as gpfq:
             gpfq_model = gpfq.model
             for i in tqdm(range(gpfq.num_layers)):
                 for i, (images, target) in enumerate(calib_loader):
@@ -178,17 +211,47 @@ class GPFA2Q(AlgoConfig):
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
 
-        with (
-            torch.no_grad(),
-            brevitas.graph.gpfq.gpfq_mode(
+        # Check brevitas version to determine which API to use
+        import inspect
+
+        gpfq_mode_sig = inspect.signature(brevitas.graph.gpfq.gpfq_mode)
+
+        # Brevitas >= 0.12.0 removed p, use_gpfa2q, and accumulator_bit_width parameters
+        if "p" in gpfq_mode_sig.parameters:
+            # Old API (brevitas < 0.12.0)
+            gpfq_context = brevitas.graph.gpfq.gpfq_mode(
                 model,
                 p=self.percentage_of_processed_inputs,
                 use_quant_activations=True,
                 act_order=self.act_order,
                 use_gpfa2q=True,
                 accumulator_bit_width=self.accumulator_bit_width,
-            ) as gpfq,
-        ):
+            )
+        else:
+            # New API (brevitas >= 0.12.0)
+            # Note: GPFA2Q is not directly supported in brevitas >= 0.12.0
+            # Fall back to standard GPFQ
+            logger.warning(
+                "GPFA2Q is not directly supported in brevitas >= 0.12.0. "
+                "Falling back to standard GPFQ. The 'accumulator_bit_width' parameter will be ignored."
+            )
+            # Initialize weight quantizers with a forward pass
+            logger.info("Initializing weight quantizers with forward pass (required for Brevitas >= 0.12.0)")
+            with torch.no_grad():
+                # Run a single forward pass to initialize weight quantizers
+                for images, target in calib_loader:
+                    images = images.to(device)
+                    images = images.to(dtype)
+                    model(images)
+                    break  # Only need one batch to initialize
+
+            gpfq_context = brevitas.graph.gpfq.gpfq_mode(
+                model,
+                use_quant_activations=True,
+                act_order=self.act_order,
+            )
+
+        with torch.no_grad(), gpfq_context as gpfq:
             gpfq_model = gpfq.model
             for i in tqdm(range(gpfq.num_layers)):
                 for i, (images, target) in enumerate(calib_loader):
@@ -217,6 +280,17 @@ class GPTQ(AlgoConfig):
         model.eval()
         dtype = next(model.parameters()).dtype
         device = next(model.parameters()).device
+
+        # Initialize weight quantizers with a forward pass (required for Brevitas >= 0.12.0)
+        logger.info("Initializing weight quantizers with forward pass (required for Brevitas >= 0.12.0)")
+        with torch.no_grad():
+            # Run a single forward pass to initialize weight quantizers
+            for images, target in calib_loader:
+                images = images.to(device)
+                images = images.to(dtype)
+                model(images)
+                break  # Only need one batch to initialize
+
         with (
             torch.no_grad(),
             brevitas.graph.gptq.gptq_mode(model, act_order=self.act_order, use_quant_activations=False) as gptq,

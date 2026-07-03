@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -77,66 +77,78 @@ adaquant_algo = AdaQuantConfig(
     num_iterations=3000,
 )
 
-XINT8_QCONFIG = QConfig(global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()))
+XINT8_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    extra_options={"ForceQuantizeNoInputCheck": True},
+)
 
 XINT8_ADAROUND_QCONFIG = QConfig(
-    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()), algo_config=[adaround_algo]
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    algo_config=[adaround_algo],
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 XINT8_ADAQUANT_QCONFIG = QConfig(
-    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()), algo_config=[adaquant_algo]
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    algo_config=[adaquant_algo],
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 A8W8_QCONFIG = QConfig(
     global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
+    extra_options={"ForceQuantizeNoInputCheck": True, "AlignSlice": False, "FoldRelu": True, "AlignConcat": True},
 )
 
 A8W8_ADAROUND_QCONFIG = QConfig(
     global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
     algo_config=[adaround_algo],
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
+    extra_options={"ForceQuantizeNoInputCheck": True, "AlignSlice": False, "FoldRelu": True, "AlignConcat": True},
 )
 
 A8W8_ADAQUANT_QCONFIG = QConfig(
     global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
     algo_config=[adaquant_algo],
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
+    extra_options={"ForceQuantizeNoInputCheck": True, "AlignSlice": False, "FoldRelu": True, "AlignConcat": True},
 )
 
 A16W8_QCONFIG = QConfig(
     QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
-    AlignEltwiseQuantType=True,
+    extra_options={
+        "ForceQuantizeNoInputCheck": True,
+        "AlignSlice": False,
+        "FoldRelu": True,
+        "AlignConcat": True,
+        "AlignEltwiseQuantType": True,
+    },
 )
 
 A16W8_ADAROUND_QCONFIG = QConfig(
     QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
     algo_config=[adaround_algo],
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
-    AlignEltwiseQuantType=True,
+    extra_options={
+        "ForceQuantizeNoInputCheck": True,
+        "AlignSlice": False,
+        "FoldRelu": True,
+        "AlignConcat": True,
+        "AlignEltwiseQuantType": True,
+    },
 )
 
 A16W8_ADAQUANT_QCONFIG = QConfig(
     QLayerConfig(activation=Int16Spec(), weight=Int8Spec()),
     algo_config=[adaquant_algo],
-    AlignSlice=False,
-    FoldRelu=True,
-    AlignConcat=True,
-    AlignEltwiseQuantType=True,
+    extra_options={
+        "ForceQuantizeNoInputCheck": True,
+        "AlignSlice": False,
+        "FoldRelu": True,
+        "AlignConcat": True,
+        "AlignEltwiseQuantType": True,
+    },
 )
 
-BF16_QCONFIG = QConfig(QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()))
+BF16_QCONFIG = QConfig(
+    QLayerConfig(activation=BFloat16Spec(), weight=BFloat16Spec()), extra_options={"ForceQuantizeNoInputCheck": True}
+)
 
 BFP16_QCONFIG = QConfig(QLayerConfig(activation=BFP16Spec(), weight=BFP16Spec()))
 
@@ -149,7 +161,7 @@ XINT8_CONFIG = QuantizationConfig(
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
     enable_npu_cnn=True,
-    extra_options={"ActivationSymmetric": True},
+    extra_options={"ActivationSymmetric": True, "ForceQuantizeNoInputCheck": True},
 )
 
 XINT8_WEIGHTSONLY_ADAROUND_CONFIG = QuantizationConfig(
@@ -167,7 +179,11 @@ XINT8_ADAROUND_CONFIG = QuantizationConfig(
     weight_type=QuantType.QInt8,
     enable_npu_cnn=True,
     include_fast_ft=True,
-    extra_options={"ActivationSymmetric": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={
+        "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
+        "FastFinetune": DEFAULT_ADAROUND_PARAMS,
+    },
 )
 
 XINT8_ADAQUANT_CONFIG = QuantizationConfig(
@@ -176,7 +192,11 @@ XINT8_ADAQUANT_CONFIG = QuantizationConfig(
     weight_type=QuantType.QInt8,
     enable_npu_cnn=True,
     include_fast_ft=True,
-    extra_options={"ActivationSymmetric": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={
+        "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
+        "FastFinetune": DEFAULT_ADAQUANT_PARAMS,
+    },
 )
 
 VINT8_CONFIG = QuantizationConfig(
@@ -199,6 +219,8 @@ VINT8_CONFIG = QuantizationConfig(
         "RemoveQDQConvRelu": False,
         "RemoveQDQConvLeakyRelu": False,
         "Int32Bias": False,
+        "DedicatedQDQPair": True,
+        "QuantizeAllOpTypes": True,
     },
 )
 
@@ -207,7 +229,7 @@ S8S8_AAWS_CONFIG = QuantizationConfig(
     quant_format=QuantFormat.QDQ,
     activation_type=QuantType.QInt8,
     weight_type=QuantType.QInt8,
-    extra_options={"Percentile": 99.9999},
+    extra_options={"Percentile": 99.9999, "ForceQuantizeNoInputCheck": True},
 )
 
 S8S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
@@ -216,7 +238,7 @@ S8S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
     activation_type=QuantType.QInt8,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"Percentile": 99.9999, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={"Percentile": 99.9999, "ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
 )
 
 S8S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
@@ -225,7 +247,7 @@ S8S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
     activation_type=QuantType.QInt8,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"Percentile": 99.9999, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={"Percentile": 99.9999, "ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
 )
 
 U8S8_AAWS_CONFIG = QuantizationConfig(
@@ -233,6 +255,7 @@ U8S8_AAWS_CONFIG = QuantizationConfig(
     quant_format=QuantFormat.QDQ,
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 U8S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
@@ -241,7 +264,7 @@ U8S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={"ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
 )
 
 U8S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
@@ -250,7 +273,7 @@ U8S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={"ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
 )
 
 U8U8_AAWA_CONFIG = QuantizationConfig(
@@ -258,7 +281,7 @@ U8U8_AAWA_CONFIG = QuantizationConfig(
     quant_format=QuantFormat.QDQ,
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QUInt8,
-    extra_options={"ActivationSymmetric": False, "WeightSymmetric": False},
+    extra_options={"ActivationSymmetric": False, "ForceQuantizeNoInputCheck": True, "WeightSymmetric": False},
 )
 
 S16S8_ASWS_CONFIG = QuantizationConfig(
@@ -266,7 +289,7 @@ S16S8_ASWS_CONFIG = QuantizationConfig(
     quant_format=ExtendedQuantFormat.QDQ,
     activation_type=ExtendedQuantType.QInt16,
     weight_type=QuantType.QInt8,
-    extra_options={"ActivationSymmetric": True},
+    extra_options={"ActivationSymmetric": True, "ForceQuantizeNoInputCheck": True},
 )
 
 S16S8_ASWS_ADAROUND_CONFIG = QuantizationConfig(
@@ -275,7 +298,11 @@ S16S8_ASWS_ADAROUND_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QInt16,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"ActivationSymmetric": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={
+        "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
+        "FastFinetune": DEFAULT_ADAROUND_PARAMS,
+    },
 )
 
 S16S8_ASWS_ADAQUANT_CONFIG = QuantizationConfig(
@@ -284,7 +311,11 @@ S16S8_ASWS_ADAQUANT_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QInt16,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"ActivationSymmetric": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={
+        "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
+        "FastFinetune": DEFAULT_ADAQUANT_PARAMS,
+    },
 )
 
 A8W8_CONFIG = QuantizationConfig(
@@ -292,7 +323,13 @@ A8W8_CONFIG = QuantizationConfig(
     quant_format=ExtendedQuantFormat.QDQ,
     activation_type=QuantType.QInt8,
     weight_type=QuantType.QInt8,
-    extra_options={"ActivationSymmetric": True, "AlignSlice": False, "FoldRelu": True, "AlignConcat": True},
+    extra_options={
+        "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
+        "AlignSlice": False,
+        "FoldRelu": True,
+        "AlignConcat": True,
+    },
 )
 
 A8W8_ADAROUND_CONFIG = QuantizationConfig(
@@ -303,6 +340,7 @@ A8W8_ADAROUND_CONFIG = QuantizationConfig(
     include_fast_ft=True,
     extra_options={
         "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
         "AlignSlice": False,
         "FoldRelu": True,
         "AlignConcat": True,
@@ -318,6 +356,7 @@ A8W8_ADAQUANT_CONFIG = QuantizationConfig(
     include_fast_ft=True,
     extra_options={
         "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
         "AlignSlice": False,
         "FoldRelu": True,
         "AlignConcat": True,
@@ -332,6 +371,7 @@ A16W8_CONFIG = QuantizationConfig(
     weight_type=QuantType.QInt8,
     extra_options={
         "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
         "AlignSlice": False,
         "FoldRelu": True,
         "AlignConcat": True,
@@ -347,6 +387,7 @@ A16W8_ADAROUND_CONFIG = QuantizationConfig(
     include_fast_ft=True,
     extra_options={
         "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
         "AlignSlice": False,
         "FoldRelu": True,
         "AlignConcat": True,
@@ -363,6 +404,7 @@ A16W8_ADAQUANT_CONFIG = QuantizationConfig(
     include_fast_ft=True,
     extra_options={
         "ActivationSymmetric": True,
+        "ForceQuantizeNoInputCheck": True,
         "AlignSlice": False,
         "FoldRelu": True,
         "AlignConcat": True,
@@ -376,6 +418,7 @@ U16S8_AAWS_CONFIG = QuantizationConfig(
     quant_format=ExtendedQuantFormat.QDQ,
     activation_type=ExtendedQuantType.QUInt16,
     weight_type=QuantType.QInt8,
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 U16S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
@@ -384,7 +427,7 @@ U16S8_AAWS_ADAROUND_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QUInt16,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={"ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
 )
 
 U16S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
@@ -393,7 +436,7 @@ U16S8_AAWS_ADAQUANT_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QUInt16,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={"ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
 )
 
 FP16_CONFIG = QuantizationConfig(
@@ -401,6 +444,7 @@ FP16_CONFIG = QuantizationConfig(
     quant_format=ExtendedQuantFormat.QDQ,
     activation_type=ExtendedQuantType.QFloat16,
     weight_type=ExtendedQuantType.QFloat16,
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 FP16_ADAQUANT_CONFIG = QuantizationConfig(
@@ -409,7 +453,7 @@ FP16_ADAQUANT_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QFloat16,
     weight_type=ExtendedQuantType.QFloat16,
     include_fast_ft=True,
-    extra_options={"FastFinetune": DEFAULT_ADAQUANT_PARAMS},
+    extra_options={"ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAQUANT_PARAMS},
 )
 
 BF16_CONFIG = QuantizationConfig(
@@ -663,6 +707,7 @@ S16S16_MIXED_S8S8_CONFIG = QuantizationConfig(
         "Percentile": 99.9999,
         "Int32Bias": False,
         "Int16Bias": False,
+        "ForceQuantizeNoInputCheck": True,
         "AutoMixprecision": {
             "ActTargetQuantType": QuantType.QInt8,
             "WeightTargetQuantType": QuantType.QInt8,
@@ -794,6 +839,7 @@ INT8_CNN_DEFAULT_CONFIG = QuantizationConfig(
     quant_format=QuantFormat.QDQ,
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 INT16_CNN_DEFAULT_CONFIG = QuantizationConfig(
@@ -801,6 +847,7 @@ INT16_CNN_DEFAULT_CONFIG = QuantizationConfig(
     quant_format=ExtendedQuantFormat.QDQ,
     activation_type=ExtendedQuantType.QUInt16,
     weight_type=ExtendedQuantType.QInt16,
+    extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
 INT8_TRANSFORMER_DEFAULT_CONFIG = QuantizationConfig(
@@ -827,7 +874,7 @@ INT8_CNN_ACCURATE_CONFIG = QuantizationConfig(
     activation_type=QuantType.QUInt8,
     weight_type=QuantType.QInt8,
     include_fast_ft=True,
-    extra_options={"Percentile": 99.9999, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={"Percentile": 99.9999, "ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
 )
 
 INT16_CNN_ACCURATE_CONFIG = QuantizationConfig(
@@ -836,7 +883,7 @@ INT16_CNN_ACCURATE_CONFIG = QuantizationConfig(
     activation_type=ExtendedQuantType.QUInt16,
     weight_type=ExtendedQuantType.QInt16,
     include_fast_ft=True,
-    extra_options={"Percentile": 99.9999, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
+    extra_options={"Percentile": 99.9999, "ForceQuantizeNoInputCheck": True, "FastFinetune": DEFAULT_ADAROUND_PARAMS},
 )
 
 INT8_TRANSFORMER_ACCURATE_CONFIG = QuantizationConfig(
@@ -865,6 +912,7 @@ MATMUL_NBITS_CONFIG = QuantizationConfig(
         "MatMulNBitsParams": {"GroupSize": 128, "Symmetric": True, "Bits": 4, "AccuracyLevel": 1},
     }
 )
+
 DefaultConfigMapping = {
     # configs for pro
     "UINT8_DYNAMIC_QUANT": UINT8_DYNAMIC_QUANT_CONFIG,

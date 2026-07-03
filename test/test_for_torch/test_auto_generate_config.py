@@ -11,9 +11,8 @@ import re
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device
-from quark.testing import skip_if_no_gpu
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import skip_if_no_gpu, torch_device
 from quark.torch.algorithm.utils.auto_config import EasyGraph
 
 logger = ScreenLogger(__name__)

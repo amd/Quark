@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -13,12 +13,13 @@ import torch.nn as nn
 from torch.distributed._tensor import DTensor, Replicate, distribute_tensor  # type: ignore[attr-defined]
 from tqdm import tqdm
 
-from quark.shares.utils.import_utils import is_accelerate_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_accelerate_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.rotation.rotation import RotationProcessor
 from quark.torch.algorithm.rotation.rotation_utils import InputRotationWrapperHadamard, InputRotationWrapperOrthogonal
 from quark.torch.export.constants import (
     AWQ_LOAD_MAP,
+    AWQ_SAVE_MAP,
     LOAD_MAP,
     LOAD_MAP_MULTI,
     MISMATCHING_PARAMETERS_NAMES,
@@ -27,13 +28,26 @@ from quark.torch.export.constants import (
 )
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser, get_layer_quant_config
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
-from quark.torch.export.nn.modules.realquantizer import get_real_quantizer
-from quark.torch.quantization.config.config import QConfig
+from quark.torch.export.nn.modules.realquantizer import SequentialRealQuantizer, get_real_quantizer
+from quark.torch.export.prequantized_config_converter import convert_prequantized_module_to_quark_config
+from quark.torch.quantization.config.config import QConfig, QTensorConfig
 from quark.torch.quantization.config.type import QSchemeType
+from quark.torch.quantization.inverse_quantizer import (
+    dequantize_prequantized_to_linear,
+    find_prequantized_linears,
+    is_prequantized_linear,
+)
 from quark.torch.quantization.model_transformation import prepare_for_attention_quant
 from quark.torch.quantization.nn.modules import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, NonScaledFakeQuantize, ScaledFakeQuantize
-from quark.torch.utils import TPDeviceManager, e4m3fn_to_e4m3fnuz, getattr_recursive, setattr_recursive
+from quark.torch.utils import (
+    QPARAMSLINEAR_OVERRIDES_STATE_DICT,
+    TPDeviceManager,
+    e4m3fn_to_e4m3fnuz,
+    getattr_recursive,
+    setattr_recursive,
+)
+from quark.torch.utils.llm import preprocess_for_quantization
 
 if is_accelerate_available():
     from accelerate.utils.modeling import find_tied_parameters, get_state_dict_from_offload, named_module_tensors
@@ -52,6 +66,8 @@ __all__ = [
     "_fix_loaded_weights_key_mismatch",
     "_fix_state_dict_key_on_save",
     "get_state_dict_for_export",
+    "apply_export_state_dict_mappings",
+    "fix_loaded_state_dict_mismatch",
 ]
 
 
@@ -173,6 +189,64 @@ def find_patterns_groups(patterns: list[list[str]] | None, layer_names: list[str
     return pattern_groups
 
 
+def _quant_tensor_configs_match(a: QTensorConfig | None, b: QTensorConfig | None) -> bool:
+    """Return True if two QTensorConfig instances describe the same quantization
+    scheme. Used to decide whether a pre-quantized source's native format
+    matches the saved layer config — i.e. whether PreserveBuilder can copy bits
+    directly, or the module must be dequantized so ImportBuilder re-quantizes.
+    """
+    if a is None or b is None:
+        return a is b
+
+    def _norm_block(x: Any) -> Any:
+        return tuple(x) if isinstance(x, list | tuple) else x
+
+    return (
+        a.dtype == b.dtype
+        and a.qscheme == b.qscheme
+        and a.group_size == b.group_size
+        and _norm_block(a.block_size) == _norm_block(b.block_size)
+    )
+
+
+def _route_prequantized_layers(
+    model: nn.Module, quantization_config: QConfig, model_dtype: torch.dtype | None
+) -> tuple[int, int]:
+    """Route each pre-quantized linear to the right reload strategy.
+
+    - Not in saved quant config → dequantize to nn.Linear.
+    - In saved config but config does NOT match source's native format
+      (e.g. base FP8 layer re-quantized to mxfp4) → dequantize so the
+      downstream ``_map_to_quark`` re-quantizes from float weights.
+    - In saved config and config matches source's native format
+      → leave as-is; PreserveBuilder will copy the bits directly.
+
+    Returns ``(converted_count, preserved_count)``.
+    """
+    converted = 0
+    preserved = 0
+    for name, module in tqdm(find_prequantized_linears(model), desc="Processing pre-quantized linears"):
+        layer_config = get_layer_quant_config(quantization_config, nn.Linear, name)
+        if layer_config is None:
+            dequant_linear = dequantize_prequantized_to_linear(module, dtype=model_dtype)
+            setattr_recursive(model, name, dequant_linear)
+            converted += 1
+            del module
+            torch.cuda.empty_cache()
+            continue
+
+        native_config = convert_prequantized_module_to_quark_config(module)
+        if native_config is None or not _quant_tensor_configs_match(native_config.weight, layer_config.weight):
+            dequant_linear = dequantize_prequantized_to_linear(module, dtype=model_dtype)
+            setattr_recursive(model, name, dequant_linear)
+            converted += 1
+            del module
+            torch.cuda.empty_cache()
+        else:
+            preserved += 1
+    return converted, preserved
+
+
 def _build_quantized_model(
     model: nn.Module, model_config: "PretrainedConfig", model_state_dict: dict[str, Any]
 ) -> nn.Module:
@@ -184,7 +258,10 @@ def _build_quantized_model(
         return model
 
     custom_mode = model_config.quantization_config["quant_method"]
-    assert custom_mode in ["fp8", "awq", "quark"], f"Unsupported quantization method: {custom_mode}"
+    if custom_mode not in ["fp8", "awq", "quark"]:
+        raise ValueError(
+            f"Unsupported quantization method: '{custom_mode}'. Supported methods: ['fp8', 'awq', 'quark']."
+        )
 
     is_kv_cache = False
     model_state_dict, is_kv_cache, kv_layers_name = preprocess_import_info(
@@ -222,6 +299,19 @@ def _build_quantized_model(
 
     logger.info("In-place OPs replacement start.")
 
+    # TODO: doing this here, frankly I don't like. We need in the future to have a proper better solution.
+    # reload=True: remove `gate_up_proj` in any case, and do not modify the router.
+    preprocess_for_quantization(model, reload=True)
+    model_dtype = getattr(getattr(model, "config", None), "torch_dtype", None)
+    prequant_converted_count, prequant_preserved_count = _route_prequantized_layers(
+        model, quantization_config, model_dtype
+    )
+
+    if prequant_converted_count > 0:
+        logger.info(f"Converted {prequant_converted_count} pre-quantized linears to nn.Linear (not preserved)")
+    if prequant_preserved_count > 0:
+        logger.info(f"Kept {prequant_preserved_count} pre-quantized linears for in-place preserve")
+
     # Replace modules with quantized versions
     if is_real_quantized_mode:
         # TODO: we should not have circular imports.
@@ -237,18 +327,32 @@ def _build_quantized_model(
         # Handle fake quantization mode
         named_modules = dict(model.named_modules(remove_duplicate=False))
         for name, float_module in tqdm(named_modules.items()):
-            layer_quantization_config = get_layer_quant_config(quantization_config, type(float_module), name)
-            if layer_quantization_config is not None and isinstance(float_module, nn.Linear):
+            # Check if this is a pre-quantized linear (e.g. FP8Linear, compressed linear layer from compressed-tensors library).
+            is_prequant = is_prequantized_linear(float_module)
+
+            # For pre-quantized linears, use nn.Linear type to get config; otherwise use actual type
+            config_type = nn.Linear if is_prequant else type(float_module)
+            layer_config = get_layer_quant_config(quantization_config, config_type, name)
+
+            # Skip if not in quantization list
+            if layer_config is None:
+                continue
+
+            # Handle nn.Linear and pre-quantized linear
+            if isinstance(float_module, nn.Linear):
                 # Initialize on proper device
                 if float_module.weight.device.type == "meta":
                     device = torch.device("cpu")
                 else:
                     device = float_module.weight.device
+                quant_module = QuantLinear.from_float(float_module, layer_config, device=device)
+            elif is_prequant:
+                quant_module = QuantLinear.from_prequantized(float_module, layer_config)
+            else:
+                continue
 
-                quant_module = QuantLinear.from_float(float_module, layer_quantization_config, device=device)
-                quant_module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
-
-                setattr_recursive(model, name, quant_module)
+            quant_module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
+            setattr_recursive(model, name, quant_module)
 
         # Enable observers and fake quantization for dynamic quantization
         for name, module in model.named_modules():
@@ -311,7 +415,10 @@ def _convert_quantized_model(model: nn.Module, model_config: "PretrainedConfig")
         return model
 
     custom_mode = model_config.quantization_config["quant_method"]
-    assert custom_mode in ["fp8", "awq", "quark"], f"Unsupported quantization method: {custom_mode}"
+    if custom_mode not in ["fp8", "awq", "quark"]:
+        raise ValueError(
+            f"Unsupported quantization method: '{custom_mode}'. Supported methods: ['fp8', 'awq', 'quark']."
+        )
 
     is_real_quantized_mode = model_config.weight_format != "fake_quantized"
     if custom_mode == "fp8" and is_real_quantized_mode and torch.version.hip is not None:
@@ -569,3 +676,55 @@ def _fix_state_dict_key_on_save(key: str) -> tuple[str, bool]:
         key = prefix + "." + tensor_name + "_" + qparam_type + suffix
 
     return key, True
+
+
+def apply_export_state_dict_mappings(module: Any, destination_local: dict[str, torch.Tensor], prefix: str) -> None:
+    """Apply shared key remapping and special export payload handling."""
+    if QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+        for key in list(destination_local.keys()):
+            new_key = _fix_state_dict_key_on_save(key)[0]
+            if key != new_key:
+                destination_local[new_key] = destination_local.pop(key)
+
+        if module._custom_mode == "awq":
+            for quark_name, awq_name in AWQ_SAVE_MAP.items():
+                for key in list(destination_local.keys()):
+                    if prefix + quark_name == key:
+                        destination_local[prefix + awq_name] = destination_local[key]
+                        del destination_local[key]
+
+    is_mx_export = (
+        module.weight_quantizer is not None
+        and not isinstance(module.weight_quantizer, SequentialRealQuantizer)
+        and module.weight_quantizer.qspec.dtype.value == "mx"
+    )
+    if is_mx_export:
+        assert module.weight_quantizer is not None
+        assert module.weight_quantizer.qspec.mx_element_dtype is not None, "mx_element_dtype should not be None"
+        mx_element_dtype = module.weight_quantizer.qspec.mx_element_dtype.value
+        reshape_shape = 17 if mx_element_dtype == "fp4" else 25
+        scale_weight_shape = list(module.weight.shape)
+        scale_weight = module.weight.reshape(-1, reshape_shape)
+        scale = scale_weight[:, :1].reshape(scale_weight_shape[0], -1).contiguous()
+        weight = scale_weight[:, 1:].reshape(scale_weight_shape[0], -1).contiguous()
+        destination_local[prefix + "weight"] = weight
+        destination_local[prefix + "weight_scale"] = scale.view(torch.uint8)
+
+
+def fix_loaded_state_dict_mismatch(module: Any, state_dict: dict[str, Any], prefix: str) -> dict[str, Any]:
+    """Apply shared key mismatch fixes before loading into a module."""
+    if QPARAMSLINEAR_OVERRIDES_STATE_DICT:
+        state_dict = _fix_loaded_weights_key_mismatch(
+            state_dict,
+            weight_format="real_quantized",
+            custom_mode=module._custom_mode,
+        )
+
+        if module._custom_mode == "awq":
+            for quark_name, awq_name in AWQ_LOAD_MAP.items():
+                if quark_name != awq_name:
+                    keys = [key for key in state_dict if (prefix + quark_name) == key]
+                    for key in keys:
+                        state_dict[prefix + awq_name] = state_dict[key]
+                        del state_dict[key]
+    return state_dict

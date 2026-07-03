@@ -3,9 +3,6 @@
 # SPDX-License-Identifier: MIT
 #
 
-import os
-
-os.environ["QUARK_ALGO_DEBUG"] = "1"
 import sys
 
 import pytest
@@ -13,8 +10,8 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, Llama4Config, Llama4ForConditionalGeneration
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import FROM_PRETRAINED_KWARGS, set_environment_variables, torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import (
     FP8E4M3PerTensorSpec,
@@ -28,6 +25,14 @@ from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.observer.observer import PlaceholderObserver
 
 logger = ScreenLogger(__name__)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _setup_env():
+    """Set environment variables for all MoE algorithm tests."""
+    with set_environment_variables(QUARK_ALGO_DEBUG="1"):
+        yield
+
 
 FLOAT16_SPEC = QTensorConfig(dtype=Dtype.float16, observer_cls=PlaceholderObserver)
 FLOAT16_CONFIG = QLayerConfig(input_tensors=FLOAT16_SPEC, weight=FLOAT16_SPEC)
@@ -58,7 +63,7 @@ def test_moe_gptq():
     dataloader = get_dataloader(config_path, torch_device)
 
     # original results
-    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True)
+    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True, **FROM_PRETRAINED_KWARGS)
     model = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.float16).to(torch_device).eval()
     logits_original = model(dataloader.dataset).logits
 
@@ -85,7 +90,7 @@ def test_moe_qronos():
     dataloader = get_dataloader(config_path, torch_device)
 
     # original results
-    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True)
+    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True, **FROM_PRETRAINED_KWARGS)
     model = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.float16).to(torch_device).eval()
     logits_original = model(dataloader.dataset).logits
 
@@ -111,7 +116,7 @@ def test_moe_awq():
     dataloader = get_dataloader(config_path, torch_device)
 
     # original results
-    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True)
+    config = AutoConfig.from_pretrained(config_path + "/config.json", trust_remote_code=True, **FROM_PRETRAINED_KWARGS)
     model = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.float16).to(torch_device).eval()
     logits_original = model(dataloader.dataset).logits
 
@@ -142,7 +147,9 @@ def test_moe_autosmoothquant(global_quant_config, model_config_name):
     dataloader = get_dataloader(config_path, torch_device)
 
     # original results
-    config = AutoConfig.from_pretrained(config_path + "/" + model_config_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(
+        config_path + "/" + model_config_name, trust_remote_code=True, **FROM_PRETRAINED_KWARGS
+    )
     model = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.float16).to(torch_device).eval()
     logits_original = model(dataloader.dataset).logits
 
@@ -169,7 +176,8 @@ def test_moe_smoothquant():
     dataloader = get_dataloader(config_path, torch_device)
 
     # model
-    config = Llama4Config.from_pretrained(config_path)
+    config = Llama4Config.from_pretrained(config_path, **FROM_PRETRAINED_KWARGS)
+
     model = Llama4ForConditionalGeneration(config).to(torch_device).to(torch.bfloat16).eval()
     # init parameters defined using torch.empty
     gate_up_proj_init = model.language_model.model.layers[0].feed_forward.experts.gate_up_proj
@@ -192,20 +200,3 @@ def test_moe_smoothquant():
     logits_smooth = model(dataloader.dataset).logits
     assert (logits_original - logits_smooth).abs().max().item() < 5e-3
     logger.info("MoE SmoothQuant is checked valid!")
-
-
-if __name__ == "__main__":
-    # test gptq
-    test_moe_gptq()
-
-    # test qronos
-    test_moe_qronos()
-
-    # test awq
-    test_moe_awq()
-
-    # test asq
-    test_moe_autosmoothquant()
-
-    # test sq
-    test_moe_smoothquant()

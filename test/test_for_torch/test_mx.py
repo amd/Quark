@@ -10,6 +10,7 @@ import pytest
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from torch_testing_utils import run_torch_op_variants  # type: ignore[import-not-found]
 
 from quark.torch import ModelQuantizer
 from quark.torch.export.nn.modules import realquantizer
@@ -313,7 +314,11 @@ per_block_to_quantize_mx = [
 @pytest.mark.parametrize("element_dtype, axis, block_size", per_block_to_quantize_mx)
 def test_per_block_to_fake_quantize_mx(element_dtype, axis, block_size):
     x_orig = create_4d_tensor_with_interesting_pattern()
-    fake_quantize_mx(x_orig, axis, block_size, mx_element_dtype=element_dtype, scale_calculation_mode="floor")
+    run_torch_op_variants(
+        lambda: fake_quantize_mx(
+            x_orig, axis, block_size, mx_element_dtype=element_dtype, scale_calculation_mode="floor"
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -2213,25 +2218,33 @@ quark_mx_dtype_lst = [Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e3m2, Dtype.fp6_
 @pytest.mark.parametrize("quark_mx_dtype", quark_mx_dtype_lst)
 def test_fake_quantize_mx(quark_mx_dtype):
     test_data = generate_test_case_input()
-    for _, test_tensor in test_data.items():
-        test_tensor = test_tensor.view(torch.float32)
-        block_size = 32
-        axis = 1
-        mx_element_dtype = quark_mx_dtype
-        _, _, emax = get_dtype_params(mx_element_dtype)
 
-        block_x = reshape_to_blocks(test_tensor, block_size, axis)
-        scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
-        scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+    def pipeline():
+        outs = []
+        for _, test_tensor in test_data.items():
+            test_tensor = test_tensor.view(torch.float32)
+            block_size = 32
+            axis = 1
+            mx_element_dtype = quark_mx_dtype
+            _, _, emax = get_dtype_params(mx_element_dtype)
 
-        fake_quantize_mx(
-            input_tensor=test_tensor.clone(),
-            scale=scale,
-            mx_element_dtype=mx_element_dtype,
-            axis=axis,
-            block_size=block_size,
-            scale_calculation_mode="floor",
-        )
+            block_x = reshape_to_blocks(test_tensor, block_size, axis)
+            scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
+            scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+
+            outs.append(
+                fake_quantize_mx(
+                    input_tensor=test_tensor.clone(),
+                    scale=scale,
+                    mx_element_dtype=mx_element_dtype,
+                    axis=axis,
+                    block_size=block_size,
+                    scale_calculation_mode="floor",
+                )
+            )
+        return outs
+
+    run_torch_op_variants(pipeline)
 
 
 quark_supported_elem_dtype = {
@@ -2263,14 +2276,17 @@ def test_compare_quark_ao_mx_repo(elem_dtype):
     scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
     scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
 
-    quark_output_tensor = fake_quantize_mx(
-        input_tensor=test_tensor.clone(),
-        scale=scale,
-        mx_element_dtype=mx_element_dtype,
-        axis=axis,
-        block_size=block_size,
-        scale_calculation_mode="floor",
-    )
+    def pipeline():
+        return fake_quantize_mx(
+            input_tensor=test_tensor.clone(),
+            scale=scale,
+            mx_element_dtype=mx_element_dtype,
+            axis=axis,
+            block_size=block_size,
+            scale_calculation_mode="floor",
+        )
+
+    quark_output_tensor = run_torch_op_variants(pipeline)
     torchao_result = result[elem_dtype]["torchao_result"]
     MX_result = result[elem_dtype]["MX_result"]
 

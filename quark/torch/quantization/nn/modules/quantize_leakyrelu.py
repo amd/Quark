@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
@@ -28,10 +28,12 @@ class QuantLeakyReLU(nn.LeakyReLU, QuantMixin):
         negative_slope: float = 0.01,
         inplace: bool = False,
         # args about quantization
-        quant_config: QLayerConfig = QLayerConfig(),
-        device: torch.device = torch.device("cpu"),
+        quant_config: QLayerConfig | None = None,
+        device: torch.device = torch.device("cpu"),  # noqa: B008
         **kwargs: Any,
     ) -> None:
+        if quant_config is None:
+            quant_config = QLayerConfig()
         super().__init__(negative_slope, inplace)
         self.negative_slope = 0.1015625  # if need more information, refer to NPU related hw team
         self.init_quantizer(quant_config, device, **kwargs)

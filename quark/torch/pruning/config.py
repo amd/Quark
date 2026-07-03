@@ -1,63 +1,33 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Pruning Config API for PyTorch"""
 
 from __future__ import annotations
 
-from abc import ABC
-from dataclasses import asdict, dataclass, field
-from typing import Any, TypeVar
+from dataclasses import dataclass, field
 
-T = TypeVar("T", bound="ConfigBase")
+from quark.common.config import BaseAlgoConfig, BaseConfigImpl
 
 
 @dataclass(eq=True)
-class ConfigBase(ABC):
-    name = ""
-
-    @classmethod
-    def from_dict(cls: type[T], data: dict[str, Any]) -> T:
-        return cls(**data)
-
-    def update_from_dict(self, data: dict[str, Any]) -> None:
-        for field_name in data:
-            setattr(self, field_name, data[field_name])
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(eq=True)
-class Config(ConfigBase):
+class PConfig(BaseConfigImpl):
     """
     A class that encapsulates comprehensive pruning configurations for a machine learning model, allowing for detailed and hierarchical control over pruning parameters across different model components.
 
-    :param Optional[AlgoConfig] algo_config: Optional configuration for the pruning algorithm, such as OSSCAR. After this process, the params will be reduced. Default is None.
+    :param Optional[BaseAlgoConfig] algo_config: Optional configuration for the pruning algorithm, such as OSSCAR. After this process, the params will be reduced. Default is None.
     """
 
     # Optional configuration for the pruning algorithm, such as OSSCAR
     # After this process, the datatype/fake_datatype of weights will be changed with pruning scales.
-    algo_config: AlgoConfig | None = None
+    algo_config: BaseAlgoConfig | None = None
 
-    blockwise_tuning_config: AlgoConfig | None = None
-
-    log_severity_level: None = None  # deprecated. TODO: remove.
+    blockwise_tuning_config: BaseAlgoConfig | None = None
 
 
 @dataclass
-class AlgoConfigBase(ConfigBase):
-    pass
-
-
-@dataclass
-class AlgoConfig(AlgoConfigBase):
-    pass
-
-
-@dataclass
-class OSSCARConfig(AlgoConfig):
+class OSSCARConfig(BaseAlgoConfig):
     name: str = "osscar"
     damp_percent: float = 0.01
     true_sequential: bool = True
@@ -70,7 +40,7 @@ class OSSCARConfig(AlgoConfig):
 
 
 @dataclass
-class LayerImportancePruneConfig(AlgoConfig):
+class LayerImportancePruneConfig(BaseAlgoConfig):
     """
     Configuration for layer importance depth wise prune algorithm (for LLM model).
 
@@ -89,15 +59,3 @@ class LayerImportancePruneConfig(AlgoConfig):
     layer_num_field: str = field(default_factory=str)
     model_decoder_layers: str = field(default_factory=str)
     layer_norm_field: str = field(default_factory=str)
-
-
-@dataclass
-class BlockwiseTuningConfig(AlgoConfig):
-    name: str = "blockwise_tuning"
-    epochs: int = 5
-    weight_lr: float = 0.0001
-    weight_decay: float = 0.0
-    min_lr_factor: float = 20.0
-    max_grad_norm: float = 0.3
-    model_decoder_layers: str = field(default_factory=str)
-    trainable_modules: list[str] = field(default_factory=list)

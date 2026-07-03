@@ -1,58 +1,17 @@
 //
-// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
 #pragma once
 
-#include <stdint.h>
-
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
+#include "bfloat_convert.h"
+
 namespace quark_onnx {
-
-typedef union value_convert {
-  uint32_t u;
-  int32_t i;
-  float f;
-} value_convert_t;
-
-static inline uint32_t f_to_u(float data) {
-  value_convert_t vc{};
-  vc.f = data;
-  return vc.u;
-}
-
-static inline float u_to_f(uint32_t data) {
-  value_convert_t vc{};
-  vc.u = data;
-  return vc.f;
-}
-static inline int32_t f_to_i(float data) {
-  value_convert_t vc{};
-  vc.f = data;
-  return vc.i;
-}
-
-static inline float i_to_f(int32_t data) {
-  value_convert_t vc{};
-  vc.i = data;
-  return vc.f;
-}
-
-inline float float2bfloat_cpu(const float x, std::string str = "false") {
-  uint32_t itmp = f_to_u(x);                // float32 bitwise to int32
-  if ((itmp & 0x00008000) == 0x00008000) {  // half even
-    if ((itmp & 0xFFFF) > 0x00008000 ||
-        (((itmp & 0xFFFF) == 0x00008000) && (itmp & 0x10000) == 0x10000)) {
-      itmp += 0x10000;
-    }
-  }
-  itmp &= 0xFFFF0000;
-  return u_to_f(itmp);  // int32 bitwise to float32
-}
 
 static inline int expo(float v) { return (f_to_i(v) >> 23) & 0xFF; }
 

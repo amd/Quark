@@ -2,7 +2,7 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from quark.testing.common_utils import TestCase, skip_if_no_gpu, slow_test, slow_test_if
+from quark.common.utils.testing_utils import TestCase, skip_if_no_gpu, slow_test, slow_test_if
 
 
 class TestTorch(TestCase):

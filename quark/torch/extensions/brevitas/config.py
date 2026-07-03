@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for Brevitas."""
@@ -11,6 +11,9 @@ from enum import Enum, auto
 
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.quantization.config.type as quark_config_type
+from quark.common.utils.log import ScreenLogger
+
+logger = ScreenLogger(__name__)
 
 
 class Backend(Enum):
@@ -64,8 +67,9 @@ class QuantizationConfig:
     bias: QTensorConfig | None = None
 
     def __post_init__(self) -> None:
-        print(
-            f"{self.__class__.__name__} is deprecated and will be removed in a future release. Please use QLayerConfig instead."
+        logger.warning(
+            "%s is deprecated and will be removed in a future release. Please use QLayerConfig instead.",
+            self.__class__.__name__,
         )
 
 
@@ -104,7 +108,7 @@ class QuantizationSpec:
     - `symmetric`: If true, the zero point is in the middle of the range of representable numbers, if false the quantized value will be mapped to between the minimum and maximum observed values. Asymmetric quantization is more expensive but may be better for ranges that aren't expected to be negative.
     - `scale_type`: Whether the scales use floating point or power of two values. Power of two allows lower bit widths and may be required by some embedded devices.
     - `quant_type`: The type of quantization we want: integer or floating point. If float, we also need to specify the exponent and mantissa bit widths.
-    - `param_type`: Method for determing scale and zero point.
+    - `param_type`: Method for determining scale and zero point.
     - `bit_width`: Level of precision we want the quantization to be.
     - `exponent_bit_width`: The level of precision we want for the exponent when using the float quant_type.
     - `mantissa_bit_width`: The level of precision we want for the mantissa when using the float quant_type.
@@ -121,8 +125,9 @@ class QuantizationSpec:
     mantissa_bit_width: int | None = None
 
     def __post_init__(self) -> None:
-        print(
-            f"{self.__class__.__name__} is deprecated and will be removed in a future release. Please use QTensorConfig instead."
+        logger.warning(
+            "%s is deprecated and will be removed in a future release. Please use QTensorConfig instead.",
+            self.__class__.__name__,
         )
 
 

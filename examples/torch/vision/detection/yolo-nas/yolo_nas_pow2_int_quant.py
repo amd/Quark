@@ -19,7 +19,8 @@ from torch.fx import GraphModule
 from torch.utils.data import DataLoader
 
 # from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer, export_onnx
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
@@ -146,7 +147,7 @@ def val_coco(model, dataset=None):
     return result
 
 
-def updadate_config(train_config):
+def update_config(train_config):
     train_config["warmup_initial_lr"] = 2e-7
     train_config["initial_lr"] = 2e-7
     train_config["cosine_final_lr_ratio"] = 0.01
@@ -162,7 +163,7 @@ def train_model(model):
     valid_dataloader = get_val_data_loader(percentage=0.1)
     train_dataloader = get_train_data_loader(args.train_data_percent)
     train_config = super_gradients.training.training_hyperparams.get("coco2017_yolo_nas_s")
-    updadate_config(train_config)
+    update_config(train_config)
     trainer = Trainer(experiment_name="yolo_nas_s", ckpt_root_dir="CHECKPOINT_DIR")
     trainer.train(
         model=model, training_params=train_config, train_loader=train_dataloader, valid_loader=valid_dataloader
@@ -172,7 +173,7 @@ def train_model(model):
 
 class ModifiedModel(torch.nn.Module):
     def __init__(self, original_model):
-        super(ModifiedModel, self).__init__()
+        super().__init__()
         self.original_model = original_model
 
     def forward(self, x):
@@ -200,7 +201,7 @@ def main():
     yolo_nas.prep_model_for_conversion(input_size=[1, 3, 640, 640])
 
     # Using PyTorch API to get the Fx-Graph trainable model
-    graph_model = torch.export.export_for_training(yolo_nas.eval(), (dummy_input,)).module()
+    graph_model = export_for_training(yolo_nas.eval(), (dummy_input,)).module()
 
     INT8_PER_TENSOR_SPEC = QTensorConfig(
         dtype=Dtype.int8,

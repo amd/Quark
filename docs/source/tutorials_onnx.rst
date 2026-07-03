@@ -8,9 +8,10 @@ This section contains step-by-step tutorials for using AMD Quark with ONNX model
    :caption: ONNX Tutorials
    :maxdepth: 1
 
-   tutorial_onnx_llm_toc
-   tutorial_onnx_vision_toc
+   tutorial_onnx_quick_start_toc
+   tutorial_onnx_ryzenai_specific_toc
    tutorial_onnx_accuracy_improvement_toc
    tutorial_onnx_auto_search_toc
-   tutorial_onnx_hardware_specific_toc
-   tutorial_onnx_other_toc
+   tutorial_onnx_custom_operators_toc
+   tutorial_onnx_crypto_mode_toc
+   tutorial_onnx_llm_toc

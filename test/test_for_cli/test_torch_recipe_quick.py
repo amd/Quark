@@ -4,15 +4,24 @@
 #
 
 import os
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["HIP_VISIBLE_DEVICES"] = "0"
-os.environ["TORCH_COMPILE_DISABLE"] = "1"
-os.environ["TORCHDYNAMO_DISABLE"] = "1"
-
 import tempfile
 
+import pytest
+
+from quark.common.utils.testing_utils import set_environment_variables
 from quark.experimental.cli.main import main
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _setup_env():
+    """Set environment variables for all torch recipe tests."""
+    with set_environment_variables(
+        CUDA_VISIBLE_DEVICES="0",
+        HIP_VISIBLE_DEVICES="0",
+        TORCH_COMPILE_DISABLE="1",
+        TORCHDYNAMO_DISABLE="1",
+    ):
+        yield
 
 
 def test_recipe_w_fp8_a_fp8_kv_fp8():

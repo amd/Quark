@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
@@ -30,10 +30,12 @@ class QuantEmbedding(nn.Embedding, QuantMixin):
         scale_grad_by_freq: bool = False,
         sparse: bool = False,
         _weight: torch.Tensor | None = None,
-        quant_config: QLayerConfig = QLayerConfig(),
-        device: torch.device = torch.device("cpu"),
+        quant_config: QLayerConfig | None = None,
+        device: torch.device = torch.device("cpu"),  # noqa: B008
         **kwargs: Any,
     ) -> None:
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         super().__init__(num_embeddings, embedding_dim)
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
@@ -94,10 +96,12 @@ class QuantEmbeddingBag(nn.EmbeddingBag, QuantMixin):
         _weight: torch.Tensor | None = None,
         include_last_offset: bool = False,
         padding_idx: int | None = None,
-        quant_config: QLayerConfig = QLayerConfig(),
-        device: torch.device = torch.device("cpu"),
+        quant_config: QLayerConfig | None = None,
+        device: torch.device = torch.device("cpu"),  # noqa: B008
         **kwargs: Any,
     ) -> None:
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         super().__init__(num_embeddings, embedding_dim)
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim

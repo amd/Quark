@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -35,9 +35,9 @@ def parse_args() -> Namespace:
 
 
 def convert(args: Namespace) -> None:
-    if args.format not in ("bf16", "vitisqdq", "with_cast", "simulate_bf16"):
+    if args.format not in ("bf16", "customqdq", "with_cast", "simulate_bf16"):
         raise ValueError(
-            f"The param {args.format} is invalid. Please set the param format as bf16 or vitisqdq or with_cast or simulate_bf16. The default value is with_cast."
+            f"The param {args.format} is invalid. Please set the param format as bf16 or customqdq or with_cast or simulate_bf16. The default value is with_cast."
         )
 
     if args.format == "bf16":

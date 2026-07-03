@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import torch
 from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.torch_utils import is_math_arithmetic_node
 
 logger = ScreenLogger(__name__)
@@ -27,7 +27,7 @@ def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModul
         In this case, we will skip convert if one operation's Tensor device diff with model.
         ref: torch/ao/quantization/quantizer/xnnpack_quantizer_utils.py: _convert_scalars_to_attrs
     """
-    model_device = [module for module in model.parameters()][0].device  # cpu/gpu
+    model_device = list(model.parameters())[0].device  # cpu/gpu
     for n in model.graph.nodes:
         if not is_math_arithmetic_node(n):
             continue
@@ -40,7 +40,7 @@ def convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModul
         tensor_device = [n.meta["val"].device for n in nodes]
         if len(set(tensor_device)) >= 2 or (len(tensor_device) >= 1 and tensor_device[0] != model_device):
             logger.warning(
-                f"In Node: {n.name}'s args, contaion multi/diff (with model) devices:{tensor_device}, skip convert to attrs"
+                f"In Node: {n.name}'s args, contain multi/diff (with model) devices:{tensor_device}, skip convert to attrs"
             )
             continue
 

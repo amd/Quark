@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 
 class DataReader(CalibrationDataReader):
@@ -35,7 +35,7 @@ class DataReader(CalibrationDataReader):
 
 class Model(nn.Module):
     def __init__(self):
-        super(Model, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(1, 1)
         self.gelu = nn.GELU()
 

@@ -18,7 +18,7 @@ from quark.torch.quantization.observer.observer import PerChannelMinMaxObserver
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=2):
-        super(SimpleCNN, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(in_features=4, out_features=num_classes)
 
     def forward(self, x):

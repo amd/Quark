@@ -1,8 +1,12 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from quark.torch.export.config.config import ExporterConfig, JsonExporterConfig, OnnxExporterConfig
 
-__all__ = ["ExporterConfig", "JsonExporterConfig", "OnnxExporterConfig"]
+__all__ = [
+    "ExporterConfig",
+    "JsonExporterConfig",
+    "OnnxExporterConfig",
+]

@@ -323,7 +323,7 @@ static void AddOrtCustomOpDomainToContainer(Ort::CustomOpDomain&& domain) {
   ort_custom_op_domain_container.push_back(std::move(domain));
 }
 
-OrtStatus* ORT_API_CALL
+QUARK_ORT_EXPORT OrtStatus* ORT_API_CALL
 RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api) {
   Ort::Global<void>::api_ = api->GetApi(ORT_API_VERSION);
 
@@ -378,7 +378,7 @@ RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api) {
   return result;
 }
 
-OrtStatus* ORT_API_CALL
+QUARK_ORT_EXPORT OrtStatus* ORT_API_CALL
 RegisterCustomOpsAltName(OrtSessionOptions* options, const OrtApiBase* api) {
   return RegisterCustomOps(options, api);
 }

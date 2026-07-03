@@ -43,7 +43,7 @@ mlp_dim = 16
 
 class CorrectDummyModel(nn.Module):
     def __init__(self, emb_size, mlp_dim):
-        super(CorrectDummyModel, self).__init__()
+        super().__init__()
         self.layer1 = nn.Linear(emb_size, mlp_dim)  # From definition, in_feat, out_feat. Weight, out_feat, in_feat
         self.layer2 = nn.Linear(mlp_dim, emb_size, bias=False)
         self.layer3 = nn.Linear(emb_size, mlp_dim, bias=False)
@@ -67,7 +67,7 @@ class CorrectDummyModel(nn.Module):
 
 class WholeDummyModel(nn.Module):
     def __init__(self, emb_size, mlp_dim):
-        super(WholeDummyModel, self).__init__()
+        super().__init__()
         self.layer1 = nn.Linear(emb_size, mlp_dim)  # From definition, in_feat, out_feat. Weight, out_feat, in_feat
         # self.norm1 = nn.LayerNorm(mlp_dim, bias=False)
         self.norm1 = nn.LayerNorm(mlp_dim, bias=True)

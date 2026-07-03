@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization API for Brevitas."""
@@ -35,7 +35,7 @@ from typing import Any
 
 from packaging.version import Version
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 

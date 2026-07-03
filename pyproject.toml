@@ -1,13 +1,14 @@
 [build-system]
+# Stock setuptools.build_meta. ``--no-build-isolation`` is the preferred install
+# path: it reuses the active env's torch directly (no per-build re-download).
+# Default isolation also works -- pip pulls torch via ``[build-system].requires``
+# below; set ``PIP_EXTRA_INDEX_URL`` to override PyPI's default torch index for
+# non-default accelerators (ROCm). ``QUARK_ACCELERATOR=cpu|cuda|rocm`` overrides
+# the auto-detected family (e.g. CPU wheel from GPU-torch env). See CONTRIBUTING.md.
 build-backend = "setuptools.build_meta"
 requires = [
   "setuptools >= 61.0",
-  # these are used by contrib/onnx_utils to generate protobuf files,
-  # see setup.py for the invocation
-  # version is arbitrarily set to 31.1 for an older protoc binary for wider
-  # runtime compatibility
-  "protobuf-protoc-bin==31.1",
-  "mypy-protobuf"
+  "torch>=2.2.0",
 ]
 
 [project]
@@ -18,9 +19,9 @@ classifiers = [
     'Intended Audience :: Education',
     'Intended Audience :: Science/Research',
     'Operating System :: OS Independent',
-    'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
     'Topic :: Scientific/Engineering :: Artificial Intelligence',
 ]
 description = "AMD Quark is a comprehensive cross-platform toolkit designed to simplify and enhance the quantization of deep learning models. Supporting both PyTorch and ONNX models, AMD Quark empowers developers to optimize their models for deployment on a wide range of hardware backends, achieving significant performance gains without compromising accuracy."
@@ -32,7 +33,11 @@ maintainers = [
 ]
 name = "amd-quark"
 readme = "README.md"
-requires-python = ">= 3.10"
+# Source of truth for supported Python versions. Read at build time by
+# ``setup.py::_load_requires_python_spec()`` to gate cp-wheel vs universal
+# fallback. Keep in sync with ``[project].classifiers`` below and the install
+# docs (``docs/source/install.rst``, ``CONTRIBUTING.md``).
+requires-python = ">=3.11,<3.14"
 
 [project.urls]
 documentation = "https://quark.docs.amd.com"
@@ -52,12 +57,23 @@ lint = [
   "types-PyYAML",
 ]
 
+profiling = [
+  "PyYAML",
+  "psutil",
+]
+
 [project.scripts]
 quark-cli = "quark.experimental.cli.main:main"
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
-version = { attr = 'quark.__version__' }
+# `[project].dynamic = ["version"]` declares version as dynamic; the value is
+# computed at build time by setup.py and passed via `setup(version=...)`. We
+# deliberately do NOT use `attr = 'quark.__version__'` here: setuptools >= 82
+# strictly PEP 440-validates that resolution path, and `setup.py` writes
+# `quark/version.py` mid-run, so the attr resolver hits the `quark/__init__.py`
+# fallback before it's overwritten and aborts metadata generation. Letting the
+# `setup.py` kwarg be the single source of truth sidesteps that race entirely.
 
 [tool.ruff]
 line-length = 120
@@ -83,43 +99,17 @@ select = [
 ignore = [
     "B006", # Do not use mutable data structures for argument defaults
     "B007", # loop variable not used in loop
-    "B008", # Do not perform function call in argument defaults
-    "B023", # Function definition does not bind loop variable
-    "B024", # abstract class has no abstract methods or properties
-    "B026", # Star-arg unpacking after a keyword argument is strongly discouraged
-    "B027", # empty method in an abstract base class, but has no abstract decorator
-    "B028", # No explicit `stacklevel` keyword argument found
-    "B904", # use raise ... from err or raise ... from None in except clauses
-    "C401", # Unnecessary generator (rewrite as a set comprehension)
-    "C402", # Unnecessary generator (rewrite as a dict comprehension)
-    "C403", # Unnecessary list comprehension (rewrite as a set comprehension)
     "C408", # Unnecessary `dict()` call (rewrite as a literal)
-    "C409", # Unnecessary list literal passed to `tuple()` (rewrite as a tuple literal)
-    "C416", # unnecessary comprehension
     "C419", # unnecessary list comprehension
     "C901", # function is too complex
     "E501",  # line too long
-    "E721", # Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
-    "E741", # Ambiguous variable name
     "G003", # + in logging statements
     "G004", # f-strings in logging statements
-    "SIM101", # Multiple `isinstance` calls, merge into a single call
     "SIM102", # use single if statement instead of nested
     "SIM103", # return the condition directly
-    "SIM105", # Use `contextlib.suppress(ValueError)` instead of `try`-`except`-`pass`
     "SIM108", # use ternary operator instead of if-else
-    "SIM110", # use any(...)
-    "SIM113", # Use `enumerate()` in `for` loop
-    "SIM115", # use a context manager for files
-    "SIM201", # Use !=
     "SIM210", # Remove unnecessary `True if ... else False`
-    "SIM211", # use not ... instead of False if ... else True
     "SIM401", # use .get() instead of if
-    "UP007", # Use `X | Y` for type annotations
-    "UP008", # use super()
-    "UP031", # use format specifiers instead of percent format
-    "UP035", # `typing.ContextManager` is deprecated
-    "UP038", # use | in isinstance calls
 ]
 # extend-select = ["ALL"]
 
@@ -159,9 +149,16 @@ module = [
 ]
 ignore_errors = true
 
-# From mypy.ini, TODO: this is temporary while the submodule persists. Tracked in #2791
+# vLLM is an optional dependency; these modules import it for quantization support
 [[tool.mypy.overrides]]
-module = ["quark.contrib.onnx_utils.*"]
+module = [
+  "quark.experimental.plugin.vllm_plugin",
+  "quark.experimental.plugin.fakequant_worker",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["quark.contrib.llm_eval.*"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
@@ -169,8 +166,10 @@ module = [
   "accelerate.*",
   "bokeh.*",
   "brevitas.*",
+  "compressed_tensors.*",
   "cv2",
   "datasets.*",
+  "diffusers.*",
   "evaluate.*",
   "gguf.*",
   "google.*",
@@ -200,7 +199,6 @@ module = [
   "quark.contrib.*",
   "quark.version.*",
   "rich.*",
-  "ryzenai_onnx_utils.*",
   "safetensors.*",
   "scipy.*",
   "sentencepiece.*",
@@ -209,7 +207,11 @@ module = [
   "timm.*",
   "torch.*",
   "transformers.*",
+  "trl",
+  "trl.*",
   "tqdm.*",
+  "vllm",
+  "vllm.*",
 ]
 ignore_missing_imports = true
 
@@ -219,8 +221,19 @@ module = "torch.*"
 follow_imports = "skip"
 
 [tool.coverage.paths]
+# Treat the quark package wherever it was measured as the in-repo quark/ tree so
+# coverage reports repo-relative paths that diff-cover can match against the PR
+# git diff -- even when tests run against a wheel install (the CI coverage legs
+# install the prebuilt/built wheel, not an editable checkout, so the package is
+# imported from site-packages). The first entry is canonical and must exist on
+# the reporting machine (the repo checkout); a remap is only applied when the
+# rewritten path exists there. '*/site-packages/...' is auto-promoted to
+# '**/site-packages/...' by coverage, so it matches the full absolute path.
+# Applied at `coverage combine` (torch/onnx/contrib/all legs) and at single-file
+# reporting (`coverage xml`) for the cli/ci legs. Pairs with relative_files below.
 source = [
-  "/scratch/**/Quark/Quark/",
+  "quark/",
+  "*/site-packages/quark/",
 ]
 
 [tool.coverage.run]
@@ -230,6 +243,20 @@ source = [
     "*/quark/onnx/tools/*",
     "*/quark/torch/kernel/mx/triton.py",
     "*/test/*",
+    # Residual in-source test scaffolds (run as __main__ scripts, not collected by pytest).
+    "*/quark/onnx/algorithm/finetuning/torch_utils_test.py",
+    "*/quark/onnx/algorithm/finetuning/create_torch/create_model_test.py",
+    "*/quark/onnx/optimizations/model_transformer_test.py",
+    # Legacy / inactive ONNX modules: no live call-sites in the supported
+    # quantization pipelines, so they sit at 0% coverage and drag the
+    # headline number down without representing a real testing gap. Re-add
+    # measurement here once any of these modules is wired back in.
+    "*/quark/onnx/optimizations/model_transformer.py",
+    "*/quark/onnx/optimizations/convert_transforms.py",
+    "*/quark/onnx/optimizations/transforms.py",
+    "*/quark/onnx/optimizations/convert_transforms_pipeline.py",
+    "*/quark/onnx/optimizations/transforms_pipeline.py",
+    "*/quark/onnx/postprocess/simulation/simulate_dpu_softmax.py",
   ]
   # concurrency = multiprocessing
 
@@ -258,7 +285,10 @@ exclude_also = [
   ]
 
 [tool.pytest.ini_options]
-pythonpath = [".", ".github/scripts", "test"]
+# Drop rootdir ("."): leaving it on the path would shadow the wheel-installed
+# copy of quark/ with the source tree, so AOT-precompiled kernels (PR #5501)
+# would never be exercised.
+pythonpath = [".github/scripts", "test"]
 addopts = [
   "--strict-markers",
   "--strict-config",

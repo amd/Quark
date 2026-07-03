@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,9 +7,9 @@
 import torch
 import torch.nn as nn
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.utils.utils import clear_memory, get_device_map, set_device_map
-from quark.torch.pruning.config import Config
+from quark.torch.pruning.config import PConfig
 from quark.torch.utils import getattr_recursive, setattr_recursive
 
 logger = ScreenLogger(__name__)
@@ -17,7 +17,7 @@ logger = ScreenLogger(__name__)
 
 def process_model_pruning(
     model: nn.Module,
-    config: Config,
+    config: PConfig,
     is_accelerate: bool | None,
 ) -> nn.Module:
     # Depth pruning do not need modification
@@ -103,7 +103,7 @@ def prune_layer(layer: nn.Module, zero_input_channels: torch.Tensor) -> nn.Modul
     return layer
 
 
-def model_pruning_on_cpu(model: nn.Module, config: Config) -> tuple[nn.Module, int]:
+def model_pruning_on_cpu(model: nn.Module, config: PConfig) -> tuple[nn.Module, int]:
     if (
         config.algo_config is not None
         and hasattr(config.algo_config, "mlp_pruning_modules")

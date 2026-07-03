@@ -5,12 +5,12 @@
 [![Documentation](https://img.shields.io/badge/Documentation-latest-brightgreen.svg?style=flat)](https://quark.docs.amd.com/latest/)
 [![version](https://img.shields.io/pypi/v/amd-quark?label=Release)](https://pypi.org/project/amd-quark/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![license](https://img.shields.io/badge/python-3.12-green)](https://www.python.org/)
+[![license](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/)
 
 [PyTorch Examples](https://quark.docs.amd.com/latest/pytorch/pytorch_examples.html) |
 [ONNX Examples](https://quark.docs.amd.com/latest/onnx/onnx_examples.html) |
 [Documentation](https://quark.docs.amd.com/) |
-[Release Notes](https://quark.docs.amd.com/latest/release_note.html)
+[Release Notes](https://quark.docs.amd.com/latest/release_notes.html)
 
 </div>
 
@@ -72,7 +72,14 @@ cd Quark
 git submodule sync
 git submodule update --init --recursive
 
-pip install .
+# Recommended: install torch first matching your accelerator
+# (https://pytorch.org/get-started/locally/), then:
+pip install --no-build-isolation .
+
+# Without --no-build-isolation, pip pulls torch from PyPI for the isolated
+# build env (defaults to CUDA on Linux); set PIP_EXTRA_INDEX_URL to override.
+# QUARK_ACCELERATOR=cpu|cuda|rocm forces a specific build type.
+# See CONTRIBUTING.md for details.
 ```
 
 ## Resources
@@ -95,6 +102,17 @@ The examples folder also contain integrations of other quantizers under [example
 
 * [Brevitas Integration](examples/torch/extensions/brevitas/example_quark_torch_brevitas.rst)
 * [Integration with AMD Pytorch-light (APL)](examples/torch/extensions/pytorch_light/example_quark_torch_pytorch_light.rst).
+
+## Agent Skills
+
+This repo ships a [Claude Code](https://claude.com/claude-code) skill system for Quark quantization workflows (PTQ planning, environment preflight, install, debug, export, and more).
+
+* Skill overview, layering rules, and full skill list: [`.claude/skills-impl/README.md`](.claude/skills-impl/README.md)
+* How to add or modify a skill: [`.claude/skills-impl/CONTRIBUTING.md`](.claude/skills-impl/CONTRIBUTING.md)
+* Architecture, contracts, and governance docs: [`docs/agent_skills/`](docs/agent_skills/README.md)
+* Example prompts: [`examples/agent_skills/prompts/`](examples/agent_skills/prompts/)
+
+User-facing skills are auto-discovered by Claude Code from `.claude/skills/` — launch `claude` from the repo root and ask things like "quantize Qwen3-8B to FP8" or "check my environment".
 
 ## Contributing
 

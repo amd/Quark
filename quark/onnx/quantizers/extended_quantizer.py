@@ -31,7 +31,8 @@ from onnxruntime.quantization.quant_utils import (
     ms_domain,
 )
 
-from quark.onnx.postprocess import align_quantize_info, simulate_transforms
+from quark.common.utils.log import ScreenLogger
+from quark.onnx.postprocess import align_quantize_info, refine_block_axis, simulate_transforms
 from quark.onnx.quantization.quant_utils import (
     BFP_OP_DEFAULT_ATTRS,
     COP_BFP_OP_NAME,
@@ -40,14 +41,15 @@ from quark.onnx.quantization.quant_utils import (
     COP_MX_OP_NAME,
     COP_QUANT_OP_NAME,
     MX_OP_DEFAULT_ATTRS,
+    ExtendedQuantType,
     __producer__,
     __version__,
     get_annotate_tensors,
     get_qdq_to_remove,
+    insert_quant_nodes_at_boundaries,
     modified_annotate_input,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger
 
 from .qdq_quantizer import BaseExtendedQDQQuantizer
 from .registry import CreateNPUCnnQDQQuantizer
@@ -96,6 +98,10 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
         )
 
         self.fold_relu = extra_options.get("FoldRelu", False) if extra_options is not None else False
+        self.enable_dual_quant_nodes = (
+            extra_options.get("EnableDualQuantNodePairs", False) if extra_options is not None else False
+        )
+        self.remove_fused_qdq = extra_options.get("RemoveFusedQDQ", False) if extra_options is not None else False
 
     def quantize_model(self) -> Any:
         annotate_tensors = get_annotate_tensors(self.model.model)
@@ -116,9 +122,19 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
         if self.quantize_bias and self.int32_bias and not self.weights_only:
             self._quantize_bias_tensors()
 
+        if self.enable_dual_quant_nodes:
+            self.model.model = insert_quant_nodes_at_boundaries(
+                self.model.model,
+                self.tensor_quant_overrides,
+                self.tensors_range,
+                reduce_range=self.reduce_range,
+                calibrate_method=self.calibrate_method,
+                extra_options=self.extra_options,
+            )
+
         self.remove_nodes()
         dq_nodes_to_remove, q_nodes_to_remove, input_node_mapping = get_qdq_to_remove(
-            self.model.model, annotate_tensors
+            self.model.model, annotate_tensors, remove_fused_qdq=self.remove_fused_qdq
         )
         pruned_model = copy.deepcopy(self.model)
         modified_annotate_input(pruned_model.model, input_node_mapping)
@@ -139,6 +155,7 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
             self._quantize_refine()
 
         self._convert_qdq_nodes()
+        self._refine_fn_nodes()
 
         self.model.clean_initializers()
 
@@ -189,7 +206,7 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
             if self.extra_options is not None and "MXAttributes" in self.extra_options:
                 fn_attrs.update(self.extra_options["MXAttributes"])
         else:
-            raise ValueError("Unknown type {fn_type} for BFP and MX quantization")
+            raise ValueError(f"Unknown type {fn_type} for BFP and MX quantization")
         return fn_name, fn_attrs
 
     def _create_fn_nodes(
@@ -449,7 +466,7 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
                             data_type=tensor_info.data_type,
                         )
                     else:
-                        raise ValueError("Do not support the conversion case of {tensor_name}.")
+                        raise ValueError(f"Do not support the conversion case of {tensor_name}.")
 
                 del self.tensors_to_quantize[tensor_name]
 
@@ -660,3 +677,15 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
 
         if converted_num > 0:
             logger.info(f"Converted {converted_num} custom QDQs to MS contributed QDQs")
+
+    def _refine_fn_nodes(self) -> None:
+        """
+        This function is used to refine the quantization nodes for BFP and MX.
+        """
+        target_quant_types = (ExtendedQuantType.QBFP, ExtendedQuantType.QMX)
+
+        refine_axis = False
+        if self.weight_quant_type in target_quant_types or self.activation_quant_type in target_quant_types:
+            refine_axis = True
+        if self.extra_options.get("RefineBlockAxis", refine_axis):
+            refine_block_axis(self.model.model)

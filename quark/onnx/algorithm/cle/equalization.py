@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
@@ -11,6 +11,7 @@ import onnx
 from numpy.typing import NDArray
 from onnx import ModelProto, NodeProto, TensorProto, numpy_helper
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.optimizations import Optimizer
 from quark.onnx.quantization.quant_utils import (
     get_model_node_output_node_name_dict,
@@ -21,7 +22,6 @@ from quark.onnx.quantization.quant_utils import (
     remove_initializers,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -154,7 +154,14 @@ def _cross_layer_equalize(
         if not supported_conv:
             return
         if tail_conv_group == 1:
-            tail_w_trans_data = tail_w_data.transpose(1, 0, 2, 3)
+            ndim = tail_w_data.ndim
+            if ndim == 4:
+                tail_w_trans_data = tail_w_data.transpose(1, 0, 2, 3)
+            elif ndim == 5:
+                # Conv3d weight [oc, ic, kD, kH, kW]
+                tail_w_trans_data = tail_w_data.transpose(1, 0, 2, 3, 4)
+            else:
+                return
             ic = tail_w_b[0].dims[1]
         tail_weights = tail_w_trans_data.reshape(ic, -1)
     elif tail_conv.op_type == "Gemm":
@@ -167,7 +174,9 @@ def _cross_layer_equalize(
     scale = _calc_scale(head_weights, tail_weights, balance_method, weight_threshold, calc_scale_use_threshold)
     # Scale head conv weights and bias
     if head_conv.op_type == "Conv":
-        head_w_data = head_w_data * scale.reshape(-1, 1, 1, 1)
+        # scale shape (oc,) -> (oc, 1, 1, ...) to match weight [oc, ic, k...]
+        scale_shape = (scale.size,) + (1,) * (head_w_data.ndim - 1)
+        head_w_data = head_w_data * scale.reshape(scale_shape)
     elif tail_conv.op_type == "Gemm":
         if tail_conv.attribute[1].name == "transB" and tail_conv.attribute[1].i == 0:
             head_w_data = head_w_data * scale.reshape(1, -1)
@@ -180,7 +189,7 @@ def _cross_layer_equalize(
         else:
             # Handle the case where head_b_data is None
             # You might want to set a default value or skip the operation
-            print("Warning: head_b_data is None, skipping scaling operation")
+            logger.warning("head_b_data is None, skipping scaling operation")
         if head_b_data is not None:
             head_b_initializer = numpy_helper.from_array(head_b_data, head_w_b[1].name)
         model.initializer.remove(head_w_b[1])
@@ -190,10 +199,16 @@ def _cross_layer_equalize(
     model.initializer.remove(head_w_b[0])
     model.initializer.append(head_w_initializer)
     model_weights_node_dict[head_w_b[0].name] = head_w_initializer
-    # Scale tail conv weights and bias
+    # Scale tail conv weights and bias (scale along oc, dim 0)
     if tail_conv.op_type == "Conv":
         if tail_conv_group == 1:
-            tail_w_data = tail_w_data * (1 / scale.reshape(1, -1, 1, 1))
+            ndim_tail = tail_w_data.ndim
+            if ndim_tail == 4:
+                tail_w_data = tail_w_data * (1 / scale.reshape(1, -1, 1, 1))
+            elif ndim_tail == 5:
+                tail_w_data = tail_w_data * (1 / scale.reshape(1, -1, 1, 1, 1))
+            else:
+                return
         else:
             tail_w_data = tail_w_data * (1 / scale.reshape(-1, 1, 1, 1))
     elif tail_conv.op_type == "Gemm":
@@ -397,6 +412,8 @@ class Equalization(Optimizer):
                     new_node_weight = get_weights_node_of_node(
                         node, model_node_output_node_name_dict, model_weight_name_dict
                     )
+                    if prev_node_weight is None or new_node_weight is None:
+                        continue
                     prev_node_data = numpy_helper.to_array(prev_node_weight[0])
                     new_node_data = numpy_helper.to_array(new_node_weight[0])
                     diff_tmp += float(np.mean(np.abs(np.float64(prev_node_data - new_node_data))))
@@ -459,7 +476,8 @@ class Equalization(Optimizer):
         for node in self.model.graph.node:
             if node.op_type == "Clip":
                 init_min_max = self.replace_one_clip_relu(node)
-                if node not in nodes_to_remove:
+                # Only remove Clip when it was actually replaced by Relu (min/max were initializers and 0/6).
+                if init_min_max and node not in nodes_to_remove:
                     nodes_to_remove.append(node)
                 for init in init_min_max:
 

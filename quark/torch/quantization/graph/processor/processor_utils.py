@@ -1,18 +1,17 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.fx
 from torch import ops  # type: ignore[attr-defined]
 from torch.fx import Node
 
-# from torch.fx.passes.utils.source_matcher_utils import (SourcePartition, get_source_partitions)
-# from torch.ao.quantization.fx.utils import get_new_attr_name_with_prefix
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig, QTensorConfig
 from quark.torch.quantization.graph.torch_utils import (
     QUANT_ADAPTIVEAVGPOOL2D,
@@ -236,41 +235,6 @@ def _mark_nodes_as_annotated(nodes: list[Node]) -> None:
             if "quantization_annotation" not in node.meta:
                 node.meta["quantization_annotation"] = QuantizationAnnotation()
             node.meta["quantization_annotation"]._annotated = True
-
-
-"""
-# will be deprecated later
-def _annotate_single_input_single_output(
-    source_partitions: Dict[Any, List[SourcePartition]],
-    quantization_config: Optional[QLayerConfig],
-    filter_fn: Optional[Callable[[Node], bool]] = None,
-) -> Optional[List[List[Node]]]:
-    partitions = list(itertools.chain(*source_partitions.values()))
-    annotated_partitions = []
-    for partition in partitions:
-        annotated_partitions.append(partition.nodes)
-        node = partition.output_nodes[0]
-        if _is_annotated([node]) or _is_skip_quant_node(node):
-            continue
-
-        input_act_qspec = get_input_act_qspec(quantization_config)
-        output_act_qspec = get_output_act_qspec(quantization_config)
-
-        input_qspec_map: Dict[Node, Optional[QTensorConfig]] = {}
-        input_act = node.args[0]
-        if isinstance(input_act, Node) and input_act_qspec:
-            if input_act.meta.get("quantization_annotation"):
-                qspec = input_act.meta.get("quantization_annotation").output_qspec
-                if qspec and qspec != input_act_qspec:
-                    input_act_qspec = qspec
-            assert input_act_qspec
-            input_qspec_map[input_act] = input_act_qspec
-
-        node.meta["quantization_annotation"] = QuantizationAnnotation(input_qspec_map=input_qspec_map,
-                                                                      output_qspec=output_act_qspec,
-                                                                      _annotated=True)
-    return annotated_partitions
-"""
 
 
 def _annotate_single_input_output_node(

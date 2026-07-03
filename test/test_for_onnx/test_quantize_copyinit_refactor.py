@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig, UInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -61,7 +61,7 @@ class DataReader(CalibrationDataReader):
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1)
@@ -163,7 +163,8 @@ def tensor_quantize_copybias(output_dir):
     output = infer_quantized_model(quantized_model_path)
 
     new_quant_config = QConfig(
-        QLayerConfig(activation=UInt8Spec(), weight=Int8Spec()), CopyBiasInit=["Conv", "ConvTranspose", "Gemm"]
+        QLayerConfig(activation=UInt8Spec(), weight=Int8Spec()),
+        CopyBiasInit=["Conv", "ConvTranspose", "Gemm"],
     )
     quantizer = prepare_quantizer(new_quant_config)
     output_model_path3 = Path(output_dir, "cp_biasinit.onnx").as_posix()

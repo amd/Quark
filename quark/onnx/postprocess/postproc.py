@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,6 +9,8 @@ import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.algorithm import apply_post_quant_algorithms
 from quark.onnx.calibration import CachedDataReader
 from quark.onnx.optimizations import optimize_model
@@ -19,8 +21,7 @@ from quark.onnx.tools.remove_bf16_cast import remove_bf16_cast
 from quark.onnx.tools.remove_qdq_between_ops import remove_qdq_between_ops
 from quark.onnx.tools.remove_qdq_mul_add import remove_qdq_mul_add
 from quark.onnx.tools.replace_bfloat16_qdq_cast import replace_bfloat16_qdq_cast
-from quark.onnx.utils.system_utils import Profiler
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.onnx.utils.model_utils import fill_all_tensors_value_info
 
 logger = ScreenLogger(__name__)
 
@@ -71,7 +72,15 @@ def apply_post_optimization_before_algo(
     quantize_fp16 = extra_options.get("QuantizeFP16", False)
     if extra_options.get("UseFP32Scale", quantize_fp16):
         if quantize_fp16:
-            quant_model = convert_fp16_scale_to_fp32(quant_model)
+            logger.warning(
+                "This function of converting float16 scale to float32 is deprecated, "
+                "use the tools/convert_fp16_to_fp32.py instead."
+            )
+            quant_model = convert_fp16_scale_to_fp32(
+                quant_model,
+                nodes_to_quantize if nodes_to_quantize else [],
+                nodes_to_exclude if nodes_to_exclude else [],
+            )
         else:
             logger.warning("The option of 'UseFP32Scale' is available only if 'QuantizeFP16' is enabled.")
 
@@ -192,6 +201,7 @@ def apply_post_quantization_algorithms(
 @log_errors
 def apply_post_optimization_after_algo(
     quant_model: onnx.ModelProto,
+    data_reader: CachedDataReader,
     nodes_to_quantize: list[str] = [],
     nodes_to_exclude: list[str] = [],
     op_types_to_quantize: list[str] | None = None,
@@ -202,6 +212,7 @@ def apply_post_optimization_after_algo(
     Note that these processes may affect accuracy and CANNOT be optimized through PTQ algorithms.
 
     :param onnx.ModelProto quant_model: The quantized model to be optimized.
+    :param CachedDataReader data_reader: Data reader.
     :param list[str] nodes_to_quantize: List of nodes names to quantize. When this list is not None only the nodes in this list.
     :param list[str] nodes_to_exclude: List of nodes names to exclude. The nodes in this list will be excluded from quantization when it is not None.
     :param Optional[List[str]] op_types_to_quantize: Specify the types of operators to quantize. It quantizes all supported operators by default.
@@ -247,11 +258,19 @@ def apply_post_optimization_after_algo(
             dedicate_dq_node=True,
         )
 
+    if extra_options.get("FillAllValueInfo", False):
+        try:
+            # Fill value info for all tensors because the compilers need it to
+            # infer all shapes
+            quant_model = fill_all_tensors_value_info(quant_model, data_reader)
+        except Exception as e:
+            logger.warning(f"Fail to fill value info for all tensors beacuse of {e}.")
+
     return quant_model
 
 
 @log_errors
-@Profiler(msg=[["post process(including finetuning)"]])
+@profile_scope(ProfileStep.POST_PROCESS)
 def apply_post_process(
     float_model: onnx.ModelProto,
     quant_model: onnx.ModelProto,
@@ -310,6 +329,7 @@ def apply_post_process(
 
     quant_model = apply_post_optimization_after_algo(
         quant_model,
+        data_reader,
         nodes_to_quantize,
         nodes_to_exclude,
         op_types_to_quantize,

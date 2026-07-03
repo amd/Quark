@@ -1,11 +1,15 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import os
 
 import torch
 from torch.distributed import device_mesh
+
+from quark.common.utils.log import ScreenLogger
+
+logger = ScreenLogger(__name__)
 
 """
 Reserved code
@@ -73,7 +77,7 @@ class TPDeviceManager:
                 TPDeviceManager._device = device
                 TPDeviceManager._tp_mesh = device_mesh.init_device_mesh("cuda", (num_gpus,), mesh_dim_names=("tp",))
             else:
-                print("tp envirement settings not found!")
+                logger.warning("tp environment settings not found!")
 
     @staticmethod
     def tp_cleanup() -> None:

@@ -7,9 +7,10 @@ import unittest
 
 import numpy as np
 import onnxruntime
+from onnx_testing_utils import prepare_model, prepare_model_vit
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import (
     Config,
     ExtendedQuantFormat,
@@ -20,7 +21,6 @@ from quark.onnx import (
     VitisQuantType,
 )
 from quark.onnx.quantization.config.custom_config import BF16_BFP16_CONFIG, BF16_MIXED_BFP16_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -99,6 +99,10 @@ BFPandMX_mp_output_tensor = np.array(
     ],
 ).astype(np.float32)
 
+BFPandMX_vit_output_tensor = np.array(
+    [[[[0.1171875, 0.6484375, -0.734375, -0.8046875, 0.21875, 0.453125, 0.125, 0.8671875, -0.078125, -0.734375]]]],
+).astype(np.float32)
+
 
 class DataReader(CalibrationDataReader):
     def __init__(self, input_tensor):
@@ -156,6 +160,18 @@ def prepare_BFPandMX_config():
         activation_type=ExtendedQuantType.QBFP,
         weight_type=ExtendedQuantType.QMX,
         extra_options={"AddQDQPairToWeight": False},
+    )
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_BFPandMX_refine_axis_config():
+    quant_config = QuantizationConfig(
+        calibrate_method=CalibrationMethod.MinMax,
+        quant_format=ExtendedQuantFormat.QDQ,
+        activation_type=ExtendedQuantType.QBFP,
+        weight_type=ExtendedQuantType.QMX,
+        extra_options={"RefineBlockAxis": True},
     )
 
     return Config(global_quant_config=quant_config)
@@ -229,6 +245,20 @@ def tensor_quantize(output_dir, quant_config):
     return output
 
 
+def tensor_quantize_vit(output_dir, quant_config):
+    """
+    Test the quantization of Vit model with BFP and MX quantization format.
+    The vit model has MatMul, Gemm and Softmax operations, so we can to verify
+    the refinement of the block axis for the BFP and MX quantization nodes.
+    """
+    input_model_path, output_model_path = prepare_model_vit(output_dir)
+    data_reader = prepare_data()
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    output = infer_quantized_model(quantized_model_path)
+    return output
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_elementwise_mix_precision(self, tmpdir: str):
@@ -256,6 +286,13 @@ class TestTensorQuantize(unittest.TestCase):
         quant_config = prepare_BFPandMX_config()
         output = tensor_quantize(tmpdir, quant_config)
         comp_equal = np.allclose(output, BFPandMX_mp_output_tensor, atol=1e-2)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_BFPandMX_mix_precision_vit(self, tmpdir: str):
+        quant_config = prepare_BFPandMX_refine_axis_config()
+        output = tensor_quantize_vit(tmpdir, quant_config)
+        comp_equal = np.allclose(output, BFPandMX_vit_output_tensor, atol=1e-2)
         self.assertEqual(np.all(comp_equal), True)
 
     @use_temporary_directory

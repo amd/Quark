@@ -1,26 +1,18 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-import copy
 import os
 import platform
 import subprocess
 import tempfile
-import time
-from contextlib import ContextDecorator
-from functools import wraps
-from typing import Any, Callable, Literal, TypeVar, cast
 
-from quark.onnx.utils.file_utils import save_quantized_info
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
 TMP_DIR: str | None = None
-
-_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def create_tmp_dir(prefix: str) -> tempfile.TemporaryDirectory[str]:
@@ -43,6 +35,9 @@ def create_tmp_dir(prefix: str) -> tempfile.TemporaryDirectory[str]:
             )
     if cache_dir is None:
         cache_dir = tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True)
+    from quark.common.profiler import GlobalProfiler
+
+    GlobalProfiler().start_cache_dir_monitoring(cache_dir.name)
     return cache_dir
 
 
@@ -88,58 +83,3 @@ def get_memory_usage() -> float:
         logger.warning(f"{system_platform} is not supported! Only Linux and Windows platform are supported now.")
 
     return memory_usage
-
-
-class Profiler(ContextDecorator):
-    """
-    A timing utility that can be used both as a decorator and a context manager.
-
-    Parameters
-    ----------
-    msg : List[List[str]]
-        A list of custom messages to log together with the execution time.
-        A deep copy is made internally to avoid modification across multiple uses.
-
-    Examples
-    --------
-    As a context manager:
-
-    >>> with Profiler(msg=[["Loading model", "Step A"]]):
-    ...     heavy_work()
-
-    As a decorator:
-
-    >>> @Profiler(msg=[["Function foo", "Profiling"]])
-    ... def foo():
-    ...     time.sleep(0.1)
-    """
-
-    def __init__(self, msg: list[list[str]] = [[]]) -> None:
-        self.msg: list[list[str]] = copy.deepcopy(msg) if msg is not None else [[]]
-
-    def __enter__(self) -> "Profiler":
-        self._start: float = time.perf_counter()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type | None,
-        exc_value: BaseException | None,
-        traceback: Any | None,
-    ) -> Literal[False]:
-        elapsed = time.perf_counter() - self._start
-
-        # Create a fresh message list every call to avoid mutation.
-        self.msg[-1].append(f"{elapsed:.2f}")
-        save_quantized_info(self.msg)
-
-        # return False → do not suppress exceptions
-        return False
-
-    def __call__(self, func: _F) -> _F:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            with self.__class__(self.msg):
-                return func(*args, **kwargs)
-
-        return cast(_F, wrapper)

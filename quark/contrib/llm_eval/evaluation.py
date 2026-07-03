@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -14,26 +14,49 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import evaluate  # type: ignore
-import nltk  # type: ignore
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from datasets import Dataset, load_dataset
-from lm_eval.evaluator import simple_evaluate
-from lm_eval.loggers import EvaluationTracker
-from lm_eval.models.huggingface import HFLM
-from lm_eval.tasks import TaskManager
-from lm_eval.utils import (
-    handle_non_serializable,
-    load_yaml_config,
-    make_table,
-    simple_parse_args_string,
-)
 from tqdm import tqdm
 from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer  # type: ignore[attr-defined]
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import UnavailableObject, is_package_lower_or_equal
+from quark.common.utils.log import ScreenLogger
+
+try:
+    import nltk  # type: ignore
+except ModuleNotFoundError:
+    nltk = UnavailableObject("nltk")
+
+
+try:  # pragma: no cover
+    from lm_eval.evaluator import simple_evaluate
+    from lm_eval.loggers import EvaluationTracker
+    from lm_eval.models.huggingface import HFLM
+    from lm_eval.tasks import TaskManager
+    from lm_eval.utils import (
+        handle_non_serializable,
+        make_table,
+        simple_parse_args_string,
+    )
+
+    if is_package_lower_or_equal("lm_eval", "0.4.11"):
+        from lm_eval.utils import load_yaml_config
+    else:
+        from lm_eval.tasks._yaml_loader import load_yaml as load_yaml_config
+
+except ModuleNotFoundError:
+    simple_evaluate = UnavailableObject("lm-eval")
+    EvaluationTracker = UnavailableObject("lm-eval")
+    HFLM = UnavailableObject("lm-eval")
+    TaskManager = UnavailableObject("lm-eval")
+    handle_non_serializable = UnavailableObject("lm-eval")
+    make_table = UnavailableObject("lm-eval")
+    simple_parse_args_string = UnavailableObject("lm-eval")
+    load_yaml_config = UnavailableObject("lm-eval")
+
 
 if TYPE_CHECKING:
     from lm_eval.api.model import T
@@ -51,7 +74,7 @@ def eval_model(
     output_dir: Path | str = "metrics_output_dir",
     multimodal: bool = False,
 ) -> None:
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(  # type: ignore
         args.model_dir,
         trust_remote_code=True,
@@ -77,7 +100,17 @@ def eval_model(
         )
     # eval model ppl
     elif args.use_ppl_eval_model:
-        ppl = ppl_eval(model, testenc, main_device)
+        if args.evaluation_dataset == "wikitext":
+            ppl = ppl_eval(model, testenc, main_device)
+        elif args.evaluation_dataset == "wikitext_gpt_oss_120b" or args.evaluation_dataset == "wikitext_gpt_oss_20b":
+            ppl = ppl_eval_with_synthetic_dataset(
+                tokenizer,
+                model,
+                main_device,
+                dataset=args.evaluation_dataset,
+            )
+        else:
+            raise ValueError(f"Unsupported evaluation_dataset: {args.evaluation_dataset}")
         print(f"\n[INFO] Perplexity: {ppl.item()}")
         metrics.append(["Perplexity", ppl.cpu().numpy()])
 
@@ -122,6 +155,25 @@ def eval_model(
                 writer.writerow(metric)
         print(f"[INFO] Saved evaluation_metrics to {evaluation_metrics_path}.")
 
+    save_json_path = os.getenv("QUARK_EVAL_SAVE_TO_JSON_PATH", None)
+    if save_json_path:
+        logger.info("Save experiment report to json format ...")
+        try:
+            from quark.contrib.llm_eval import experiment_report
+
+            # Generate the experiment report
+            report = experiment_report.generate_experiment_report(args, metrics)
+
+            # Save the report to a JSON file in the current working directory
+            with open(save_json_path, "w", encoding="utf-8") as f:
+                f.write(report.to_json(indent=2))
+
+                print(f"[INFO] Saved experiment report to {save_json_path}.")
+
+        except Exception as e:
+            # Catch any errors during report generation and log them
+            print(f"[ERROR] Failed to generate experiment report: {e}")
+
 
 @torch.no_grad()
 def ppl_eval(model: nn.Module, testenc: Any, dev: str, file_format: str = "hf_format") -> torch.Tensor:
@@ -136,12 +188,7 @@ def ppl_eval(model: nn.Module, testenc: Any, dev: str, file_format: str = "hf_fo
     nlls = []
 
     if file_format == "onnx_format":
-        try:
-            import onnxruntime_genai as og  # type: ignore
-        except ModuleNotFoundError:
-            raise ImportError(
-                "Quark depends on ONNX Runtime GenAI. Please install ONNX Runtime GenAI by following the instructions at: https://onnxruntime.ai/docs/genai/howto/install"
-            )
+        og = try_import_onnx_runtime_genai()  # type: ignore[no-untyped-call]
 
         params = og.GeneratorParams(model)
         params.try_graph_capture_with_max_batch_size(1)
@@ -170,6 +217,57 @@ def ppl_eval(model: nn.Module, testenc: Any, dev: str, file_format: str = "hf_fo
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen_for_eval))
 
+    return ppl
+
+
+def try_import_onnx_runtime_genai():  # type: ignore[no-untyped-def]
+    try:
+        import onnxruntime_genai as og  # type: ignore
+    except ModuleNotFoundError:
+        raise ImportError(
+            "Quark depends on ONNX Runtime GenAI. Please install ONNX Runtime GenAI by following the instructions at: https://onnxruntime.ai/docs/genai/howto/install"
+        ) from None
+
+    return og
+
+
+@torch.no_grad()
+def ppl_eval_with_synthetic_dataset(
+    tokenizer: AutoTokenizer,
+    model: nn.Module,
+    main_device: str,
+    dataset: str,
+    is_onnx_model: bool = False,
+) -> torch.Tensor:
+    # load synthesis dataset
+    synthetic_data = load_dataset(f"amd/{dataset}", split="test")
+
+    total_length = 0
+    nlls = []
+    for data in tqdm(synthetic_data):
+        text = data["full_sequence"]
+        generated_len = data["num_generated_tokens"]
+        batch = tokenizer(text, return_tensors="pt").input_ids.to(main_device)  # type: ignore
+        if is_onnx_model:
+            og = try_import_onnx_runtime_genai()  # type: ignore[no-untyped-call]
+            params = og.GeneratorParams(model)
+            search_options = {}
+            search_options["max_length"] = batch.shape[1]
+            params.set_search_options(**search_options)
+            generator = og.Generator(model, params)
+            generator.append_tokens(batch.cpu().numpy())
+            lm_logits = generator.get_output("logits")[0][-generated_len - 1 : -1]
+            shift_logits = torch.tensor(lm_logits).unsqueeze(0).to(main_device)
+        else:
+            lm_logits = model(batch)
+            shift_logits = lm_logits["logits"][:, -generated_len - 1 : -1, :].contiguous()
+        shift_labels = batch[:, -generated_len:]
+        loss_fct = torch.nn.CrossEntropyLoss()
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        neg_log_likelihood = loss.float() * generated_len
+        total_length += generated_len
+        nlls.append(neg_log_likelihood)
+    ppl = torch.exp(torch.stack(nlls).sum() / total_length)
     return ppl
 
 
@@ -821,7 +919,6 @@ def mlperf_rouge_infer(
 
     # Start inference
     BS = int(batch_size)
-    bidx = 0
     model.eval()
 
     input_tokens = []
@@ -865,7 +962,6 @@ def mlperf_rouge_infer(
         # Detokenizer
         output_msgs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
         output_texts += output_msgs
-        bidx += 1
 
     # Assemble the output
     output_df = df[: len(output_tokens)].copy()

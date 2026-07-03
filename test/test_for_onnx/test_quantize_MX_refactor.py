@@ -16,6 +16,7 @@ from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import (
     ModelQuantizer,
     QConfig,
@@ -24,7 +25,6 @@ from quark.onnx import (
 )
 from quark.onnx.quantization.config.spec import MXInt8Spec
 from quark.onnx.quantization.quant_utils import COP_DOMAIN, COP_MX_OP_NAME
-from quark.shares.utils.testing_utils import use_temporary_directory
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.utils import get_dtype_params, reshape_to_blocks
@@ -408,7 +408,7 @@ class DataReader(CalibrationDataReader):
 
 class SimpleConvModel(nn.Module):
     def __init__(self):
-        super(SimpleConvModel, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):

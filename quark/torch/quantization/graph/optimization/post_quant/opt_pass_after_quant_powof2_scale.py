@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from abc import abstractmethod
@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassBase
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
@@ -64,11 +64,11 @@ def _is_has_one_user_and_followed_quantizer(m: GraphModule, n: Node) -> bool:
 
 
 def _get_out_quantizer_node(
-    graph_module: GraphModule, node: Node, start_depth: int, threthold_depth: int = 2
+    graph_module: GraphModule, node: Node, start_depth: int, threshold_depth: int = 2
 ) -> Node | None:
-    if start_depth > threthold_depth:
+    if start_depth > threshold_depth:
         return None
-    if start_depth <= threthold_depth and is_quantizer_node(graph_module, node):
+    if start_depth <= threshold_depth and is_quantizer_node(graph_module, node):
         return node
     start_depth += 1
     if len(node.users) > 1:
@@ -77,7 +77,7 @@ def _get_out_quantizer_node(
     if len(node.users) == 0:
         return None
     next_user = next(iter(node.users))
-    return _get_out_quantizer_node(graph_module, next_user, start_depth, threthold_depth)
+    return _get_out_quantizer_node(graph_module, next_user, start_depth, threshold_depth)
 
 
 class ConvertClip2ReLUQOPass(OptPassBase):
@@ -550,7 +550,7 @@ class AdjustShiftCutQOPass(AdjustShiftBase):
             ):
                 logger.warning(
                     "AdjustShiftCut as input/weight/output quantizer scale is not single scale, \
-                                not appliable for NPU deploy, skip"
+                                not applicable for NPU deploy, skip"
                 )
                 continue
             # get pos
@@ -616,7 +616,7 @@ class AdjustShiftBiasQOPass(AdjustShiftBase):
             ):
                 logger.warning(
                     "AdjustShiftBiasQOPass as input/weight/output/bias quantizer scale is not single scale, \
-                                not appliable for NPU deploy, skip"
+                                not applicable for NPU deploy, skip"
                 )
                 continue
 
@@ -734,10 +734,7 @@ class AdjustShiftSwishQOPass(OptPassBase):
     def _followed_by_sigmoid(self, n: Node) -> bool:
         if len(n.users) > 2:
             return False
-        for each_user in n.users:
-            if is_hardsigmoid_node(each_user):
-                return True
-        return False
+        return any(is_hardsigmoid_node(each_user) for each_user in n.users)
 
     def _is_silu_block(self, g: GraphModule, n1: Node, n2: Node, mul_node: Node) -> bool:
         """

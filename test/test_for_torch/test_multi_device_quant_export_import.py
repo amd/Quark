@@ -10,10 +10,11 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import (
+from quark.common.utils.testing_utils import (
     PatchEverywhere,
     require_torch_higher_or_equal,
     retry_flaky_test,
+    skip_if_no_gpu,
     torch_device,
 )
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
@@ -78,7 +79,10 @@ def get_accelerate_cpu_model(model_name="facebook/opt-125m"):
     model = AutoModelForCausalLM.from_pretrained(
         model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
     )
-    print(model.hf_device_map)
+    # transformers 5.x (huggingface/transformers#43019) omits `hf_device_map`
+    # when `device_map="auto"` lands on a single device (e.g. CPU-only here);
+    # read it defensively so the helper still works in that case.
+    print(getattr(model, "hf_device_map", None))
     return model
 
 
@@ -95,7 +99,7 @@ def get_multi_device_model(model_name="facebook/opt-125m"):
     model = AutoModelForCausalLM.from_pretrained(
         model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
     )
-    print(model.hf_device_map)
+    print(getattr(model, "hf_device_map", None))
     return model
 
 
@@ -128,7 +132,7 @@ def quantize_model(
         model = AutoModelForCausalLM.from_pretrained(
             model_name, device_map="auto", torch_dtype="auto", max_memory=max_memory, trust_remote_code=True
         )
-        print(model.hf_device_map)
+        print(getattr(model, "hf_device_map", None))
 
     # Get dataloader, if multi_gpu, give the first layer's device
     calib_dataloader = get_dataloader(model_name, model.device)
@@ -381,6 +385,11 @@ def test_fp8_kv_cache_import(kv_cache_group: list[str], kv_cache_post_rope: bool
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620
+# Requires a GPU: the OOM hint is only raised when accelerate offloads to CPU
+# because GPU memory is insufficient. On CPU-only the model is single-device,
+# so transformers 5.x sets no `hf_device_map`, no offload occurs, and the
+# product correctly does not raise (there is no OOM to flag).
+@skip_if_no_gpu
 @require_torch_higher_or_equal("2.6")
 def test_OOM():
     model_id = "facebook/opt-125m"

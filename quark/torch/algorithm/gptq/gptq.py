@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 import math
-import os
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
@@ -20,13 +20,13 @@ from tqdm import tqdm
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import GPTQConfig
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.common import BaseHessianAlgorithm, BaseHessianProcessor
 from quark.torch.algorithm.utils.module import get_device
 from quark.torch.algorithm.utils.utils import clear_memory
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
-from quark.torch.utils import QUARK_DISABLE_CUDA_GRAPH
+from quark.torch.utils import QUARK_DISABLE_CUDA_GRAPH, QUARK_GPTQ_DEBUG
 
 logger = ScreenLogger(__name__)
 
@@ -38,6 +38,33 @@ META = torch.device("meta")
 
 DEFAULT_COLUMNS_PER_GRAPH = 2048
 FALLBACK_COLUMNS_PER_GRAPH = [1024, 512, 256, 128, 64]
+
+
+def _compute_hinv_cholesky_factor(H: torch.Tensor, damp: torch.Tensor) -> torch.Tensor:
+    diag = torch.arange(H.shape[0], device=H.device)
+    H[diag, diag] += damp
+
+    try:
+        H = torch.linalg.cholesky(H)
+    except torch.linalg.LinAlgError:
+        matrix_scale = float(torch.mean(torch.diag(H).abs()).item())
+        extra_damp = max(abs(float(damp.item())), matrix_scale * 1e-6, torch.finfo(H.dtype).eps)
+        eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+
+        for attempt in range(5):
+            try:
+                logger.warning(
+                    f"GPTQ Hessian is not positive-definite after standard damping; retrying Cholesky with extra diagonal regularization {extra_damp:.3e}."
+                )
+                H = torch.linalg.cholesky(H + extra_damp * eye)
+                break
+            except torch.linalg.LinAlgError:
+                if attempt == 4:
+                    raise
+                extra_damp *= 10
+
+    H = torch.cholesky_inverse(H)
+    return torch.linalg.cholesky(H, upper=True)
 
 
 def record_graphs(kwargs: dict[str, Any], columns: int, device: torch.device) -> list[torch.cuda.CUDAGraph]:
@@ -373,7 +400,7 @@ class GPTQ(BaseHessianAlgorithm):
 
     def add_batch_quantized(self, inp: torch.Tensor, out: torch.Tensor, name: str) -> None:
         assert self.H is not None
-        if os.environ.get("DEBUG"):
+        if QUARK_GPTQ_DEBUG:
             self.inp1 = inp
             self.out1 = out
         if len(inp.shape) == 2:
@@ -443,11 +470,7 @@ class GPTQ(BaseHessianAlgorithm):
         W, H, perm, invperm = self._apply_activation_order(W, H, actorder)
 
         damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.device)
-        H[diag, diag] += damp
-        H = torch.linalg.cholesky(H)
-        H = torch.cholesky_inverse(H)
-        H = torch.linalg.cholesky(H, upper=True)
+        H = _compute_hinv_cholesky_factor(H, damp)
 
         # TODO: H is not contiguous here as `torch.linalg.cholesky` produces non-contiguous outputs. We might want to fix this in the future, but GPTQ algo somehow yields very slightly different outputs/losses when using contiguous `Hinv` vs non-contiguous `Hinv`. This would need further investigation.
         Hinv = H

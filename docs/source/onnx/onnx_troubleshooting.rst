@@ -25,6 +25,15 @@ The process was automatically terminated during calibration due to an out-of-mem
 
 This issue is caused by insufficient memory. If you are using amd-quark version earlier than 0.11, please upgrade to version 0.11 or later. Starting from version 0.11, a parameter named ``CalibOptimizeMem`` was introduced. When the calibration method is MinMSE or LayerwisePercentile, setting this parameter to True can effectively alleviate memory-related issues. Alternatively, you may resolve this issue by using a machine with more available memory.
 
+**Issue 3**:
+
+The memory consumption is still very high after trying many parameters.
+
+**Solution**:
+
+Please check whether the ``get_next`` method in the data reader has a situation where memory usage is not released and continues to accumulate.
+
+
 Model inference Errors
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -99,7 +108,7 @@ How to improve a quantized model's accuracy from other perspectives?
 
 **Solution**:
 
-a. Experiment with the ``LayerwisePercentile`` calibration method if ``Percentile`` does not work well.
+a. Experiment with the ``LayerwisePercentile`` calibration method and try different ``PercentileCandidates`` = [90.0, 92.0, 94.0,  96.0, 98.0, 99.0, 99.9, 99.99, 99.999, 99.9999] (try default first [99.99, 99.999, 99.9999]) if ``Percentile`` does not work well.
 
 b. Try different calibration datasets. In particular, include more samples whose data distribution closely matches that of the test dataset.
 

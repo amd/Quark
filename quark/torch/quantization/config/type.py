@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,7 +7,7 @@ from enum import Enum, auto
 
 import torch
 
-from quark.shares.data_type import (
+from quark.common.data_type import (
     # ---------------
     BaseBFloat16,
     BaseBFP16,
@@ -18,6 +18,7 @@ from quark.shares.data_type import (
     BaseFP6_E3M2,
     BaseFP8_E4M3,
     BaseFP8_E5M2,
+    BaseFP8_E5M3,
     BaseInt2,
     BaseInt3,
     BaseInt4,
@@ -45,12 +46,14 @@ class QSchemeType(BaseQSchemeType):
     - `per_tensor`: Quantization is applied uniformly across the entire tensor.
     - `per_channel`: Quantization parameters differ across channels of the tensor.
     - `per_group`: Quantization parameters differ across defined groups of weight tensor elements.
+    - `per_block`: Quantization parameters differ across defined blocks of weight tensor elements.
 
     """
 
     per_tensor = "per_tensor"
     per_channel = "per_channel"
     per_group = "per_group"
+    per_block = "per_block"
 
 
 class ZeroPointType(BaseZeroPointType):
@@ -161,6 +164,12 @@ class FP8_E4M3(BaseFP8_E4M3):
     torch_packed_dtype = torch.float8_e4m3fn
 
 
+class FP8_E5M3(BaseFP8_E5M3):
+    """8-bit floating point with E5M3 format (unsigned)."""
+
+    torch_packed_dtype = torch.uint8
+
+
 class FP6_E3M2(BaseFP6_E3M2):
     """6-bit floating point with E3M2 format."""
 
@@ -206,6 +215,7 @@ SUPPORT_DATA_TYPE = [
     Float16,
     FP8_E5M2,
     FP8_E4M3,
+    FP8_E5M3,
     FP6_E3M2,
     FP6_E2M3,
     FP4,
@@ -254,6 +264,7 @@ class Dtype(BaseDtype):
     float16 = Float16.__name__.lower()
     fp8_e5m2 = FP8_E5M2.__name__.lower()
     fp8_e4m3 = FP8_E4M3.__name__.lower()
+    fp8_e5m3 = FP8_E5M3.__name__.lower()
     fp6_e3m2 = FP6_E3M2.__name__.lower()
     fp6_e2m3 = FP6_E2M3.__name__.lower()
     fp4 = FP4.__name__.lower()
@@ -284,8 +295,8 @@ class Dtype(BaseDtype):
                 if self.value == k.__name__.lower():
                     return k.bitwidth
             raise ValueError(f"Unknown bitwidth for dtype: {self.value}")
-        except KeyError:
-            raise ValueError(f"Unknown bitwidth for dtype: {self.value}")
+        except KeyError as e:
+            raise ValueError(f"Unknown bitwidth for dtype: {self.value}") from e
 
     def to_torch_packed_dtype(self) -> torch.dtype:  # pragma: no cover
         if self.value in UNSUPPORTED_TYPES:
@@ -300,8 +311,8 @@ class Dtype(BaseDtype):
                         return k.torch_packed_dtype
                     else:
                         f"Unknown Dtype: {self.value}, missing attribute torch_packed_dtype in '{k}'"
-            except KeyError:
-                raise ValueError(f"Unknown Dtype: {self.value}")
+            except KeyError as e:
+                raise ValueError(f"Unknown Dtype: {self.value}") from e
 
 
 TORCH_TO_DTYPE_MAP: dict[torch.dtype, Dtype] = {
@@ -330,6 +341,8 @@ class ScaleType(BaseScaleType):
     - `float32`: Scale values are float32 numbers.
     - `float16`: Scale values are float16 numbers.
     - `bfloat16`: Scale values are bfloat16 numbers.
+    - `float8_e5m3`: Scale values are 8-bit floating point with 5 exponent bits and 3 mantissa bits (no sign bit).
+    - `float8_e8m0fnu`: Scale values are 8-bit floating point with 8 exponent bits and 0 mantissa bits — i.e. positive power-of-2 values. Requires torch >= 2.5.
     """
 
     float = "float"
@@ -337,6 +350,8 @@ class ScaleType(BaseScaleType):
     float32 = "float32"
     float16 = "float16"
     bfloat16 = "bfloat16"
+    float8_e5m3 = "float8_e5m3"
+    float8_e8m0fnu = "float8_e8m0fnu"
 
     def to_torch_dtype(self) -> torch.dtype:
         if self.value == "float16":
@@ -345,6 +360,14 @@ class ScaleType(BaseScaleType):
             return torch.bfloat16
         elif self.value == "float32":
             return torch.float32
+        elif self.value == "float8_e5m3":
+            return torch.uint8
+        elif self.value == "float8_e8m0fnu":
+            if not hasattr(torch, "float8_e8m0fnu"):
+                raise RuntimeError(
+                    "ScaleType.float8_e8m0fnu requires torch >= 2.5 (torch.float8_e8m0fnu is not available in this torch build)."
+                )
+            return torch.float8_e8m0fnu
         else:
             raise ValueError(
                 "ScaleType.float and ScaleType.pof2 could be implemented with various torch dtype. The method `ScaleType.to_torch_dtype` should not be called with these values."

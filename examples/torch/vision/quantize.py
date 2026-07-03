@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets
 
 # from torch._export import capture_pre_autograd_graph
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer, export_onnx
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig, TQTSpec
 from quark.torch.quantization.config.type import (
@@ -55,7 +56,7 @@ parser.add_argument("--epochs", default=3, type=int, help="Training epochs.")
 parser.add_argument("--quantizer_lr", default=1e-5, type=float, help="Initial lr rate: quantizer param (For TQT).")
 parser.add_argument("--quantizer_lr_decay", default=0.5, type=float, help="Learning rate decay ratio of quantizer.")
 parser.add_argument("--weight_lr", default=1e-5, type=float, help="Initial learning rate of network weights.")
-parser.add_argument("--weight_lr_decay", default=0.94, type=int, help="Learning rate decay ratio of network weights.")
+parser.add_argument("--weight_lr_decay", default=0.94, type=float, help="Learning rate decay ratio of network weights.")
 parser.add_argument("--weight_decay", default=1e-4, type=float, help="Weight decay.")
 parser.add_argument("--train_batch_size", default=24, type=int, help="Batch size for training.")
 parser.add_argument("--val_batch_size", default=128, type=int, help="Batch size for validation.")
@@ -249,13 +250,13 @@ def save_checkpoint(state, is_best, directory):
     if directory and (not os.path.isdir(directory)):
         os.makedirs(directory)
     if not os.path.isdir(directory):
-        raise RuntimeError("Failed to create dir %r" % directory)
+        raise RuntimeError(f"Failed to create dir {directory!r}")
 
     filepath = os.path.join(directory, "model.pth")
     torch.save(state, filepath)
     if is_best:
         best_acc1 = state["best_acc1"].item()
-        best_filepath = os.path.join(directory, "model_best_%5.3f.pth" % best_acc1)
+        best_filepath = os.path.join(directory, f"model_best_{best_acc1:5.3f}.pth")
         shutil.copyfile(filepath, best_filepath)
         print(f"Saving best ckpt to {best_filepath}, acc1: {best_acc1}")
     return best_filepath if is_best else filepath
@@ -307,7 +308,7 @@ def quantizer_parameters(model):
 
 def non_quantizer_parameters(model):
     params = []
-    quantizer_parameters_ids = set([id(x) for x in quantizer_parameters(model)])
+    quantizer_parameters_ids = {id(x) for x in quantizer_parameters(model)}
     for param in model.parameters():
         if id(param) not in quantizer_parameters_ids:
             params.append(param)
@@ -429,7 +430,7 @@ def get_graph_module(float_model, example_inputs):
     """
     logger.info("Start to capture program...")
     try:
-        model = torch.export.export_for_training(float_model.eval(), example_inputs).module()
+        model = export_for_training(float_model.eval(), example_inputs).module()
         logger.info("Get graph module successfully.")
         return model
     except Exception as e:

@@ -1,10 +1,10 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization API for ONNX."""
 
-import logging
+import copy
 import os
 import warnings
 from pathlib import Path
@@ -12,8 +12,9 @@ from pathlib import Path
 import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.utils.log import ScreenLogger, log_errors
 
+from ..utils.print_utils import print_user_supplied_configuration
 from .config.algorithm import (
     AdaQuantConfig,
     AdaRoundConfig,
@@ -57,10 +58,9 @@ class ModelQuantizer:
             logger.warning("Config has been replaced by QConfig. The old API will be removed in the next release.")
             self.config = config.global_quant_config
 
-            if self.config.debug_mode:
-                ScreenLogger.set_shared_level(logging.DEBUG)
-            elif self.config.crypto_mode:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
+            # Do not call ScreenLogger.set_shared_level here: it mutates global log level for the
+            # entire process and is never restored, flooding CI with [QUARK-DEBUG] after any test
+            # that uses debug_mode. Use QUARK_LOG_LEVEL=debug when you need verbose Quark logs.
 
             if self.config.ignore_warnings:
                 warnings.simplefilter("ignore", ResourceWarning)
@@ -68,12 +68,7 @@ class ModelQuantizer:
         elif isinstance(config, QConfig):
             self.config = config  # type: ignore
 
-            if "DebugMode" in self.config.extra_options and self.config.extra_options["DebugMode"]:
-                ScreenLogger.set_shared_level(logging.DEBUG)
-            elif "CryptoMode" in self.config.extra_options and self.config.extra_options["CryptoMode"]:
-                ScreenLogger.set_shared_level(logging.CRITICAL)
-
-            if "IgnoreWarnings" in self.config.extra_options and self.config.extra_options["IgnoreWarnings"]:
+            if self.config.extra_options.get("IgnoreWarnings", True):
                 warnings.simplefilter("ignore", ResourceWarning)
                 warnings.simplefilter("ignore", UserWarning)
         else:
@@ -106,16 +101,22 @@ class ModelQuantizer:
             _check_q_config(self.config)
             algorithms = self.config.algo_config
 
-        if isinstance(model_input, (str, Path)) and not os.path.exists(model_input):
+        if isinstance(model_input, str | Path) and not os.path.exists(model_input):
             raise FileNotFoundError(f"Input model file {model_input} does not exist.")
 
         if not (isinstance(self.config, QuantizationConfig) and self.config.use_dynamic_quant):
             algorithms = _resolove_algo_conflict(algorithms)
+            # Snapshot the raw user input before algorithm configs mutate it, so the
+            # effective-config summary (QConfig path only) can show both "what the
+            # user passed" and "what quantize_static will actually run with".
+            user_extra_snapshot = copy.deepcopy(self.config.extra_options) if isinstance(self.config, QConfig) else None
             for algo in algorithms:
                 recursive_update(self.config.extra_options, algo._get_config(self.config.extra_options))
             if isinstance(self.config, QuantizationConfig):
-                if self.config.specific_tensor_precision:
-                    _map_mixed_precision_tensors(self.config.extra_options)
+                if self.config.specific_tensor_precision and "MixedPrecisionTensor" in self.config.extra_options:
+                    self.config.extra_options["TensorQuantOverrides"] = _map_mixed_precision_tensors(
+                        self.config.extra_options["MixedPrecisionTensor"]
+                    )
 
                 return quantize_static(
                     model_input=model_input,
@@ -155,10 +156,30 @@ class ModelQuantizer:
                     debug_mode=self.config.debug_mode,
                     crypto_mode=self.config.crypto_mode,
                     print_summary=self.config.print_summary,
+                    # Legacy Config / QuantizationConfig keeps main's flat-dump
+                    # summary; only QConfig opts into the categorized one below.
+                    _print_effective_summary=False,
                     extra_options=self.config.extra_options,
                 )
             if isinstance(self.config, QConfig):
                 mapping = _map_q_config(self.config, model_input)
+
+                # Pre-quantization: echo user input as supplied to quantize_static.
+                # Values shown here may still be normalized downstream (FP16 detect,
+                # TensorQuantOverrides upgrade, Int16Scale flip). The final
+                # effective extra_options is printed after run_static_quantization.
+                print_user_supplied_configuration(
+                    q_config_source=self.config,
+                    user_extra=user_extra_snapshot if user_extra_snapshot is not None else {},
+                    quant_format=mapping["quant_format"],
+                    activation_type=mapping["activation_type"].map_onnx_format,
+                    weight_type=mapping["weight_type"].map_onnx_format,
+                    calibrate_method=mapping["calibrate_method"],
+                    optimize_model=mapping["extra_options"]["OptimizeModel"],
+                    model_input=model_input,
+                    model_output=model_output,
+                    calibration_data_reader=calibration_data_reader,
+                )
 
                 return quantize_static(
                     model_input=model_input,
@@ -183,6 +204,8 @@ class ModelQuantizer:
                     debug_mode=mapping["extra_options"]["DebugMode"],
                     crypto_mode=mapping["extra_options"]["CryptoMode"],
                     print_summary=mapping["extra_options"]["PrintSummary"],
+                    _print_effective_summary=True,
+                    _user_extra_snapshot=user_extra_snapshot,
                     nodes_to_exclude=mapping["nodes_to_exclude"],
                     subgraphs_to_exclude=mapping["subgraphs_to_exclude"],
                     per_channel=mapping["per_channel"],

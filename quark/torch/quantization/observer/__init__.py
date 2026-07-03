@@ -1,12 +1,14 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from .lsq_observer import LSQObserver
 from .observer import (
     ObserverBase,
+    PerBlock2DMinMaxObserver,
     PerBlockBFPObserver,
+    PerBlockMXBufferReuseObserver,
     PerBlockMXDiffsObserver,
     PerBlockMXObserver,
     PerChannelMinMaxObserver,
@@ -38,7 +40,9 @@ __all__ = [
     "PerTensorHistogramObserverPro",
     "PerTensorPercentileObserver",
     "PerTensorMSEObserver",
+    "PerBlock2DMinMaxObserver",
     "PerBlockMXObserver",
+    "PerBlockMXBufferReuseObserver",
     "PerBlockMXDiffsObserver",
     "PerBlockBFPObserver",
     "PerGroupMinMaxObserver",
@@ -66,7 +70,14 @@ PER_TENSOR_OBSERVERS = {
     LSQObserver,
 }
 
-PER_GROUP_OBSERVERS = {PerBlockMXObserver, PerBlockMXDiffsObserver, PerBlockBFPObserver, PerGroupMinMaxObserver}
+PER_GROUP_OBSERVERS = {
+    PerBlockMXObserver,
+    PerBlockMXBufferReuseObserver,
+    PerBlockMXDiffsObserver,
+    PerBlockBFPObserver,
+    PerBlock2DMinMaxObserver,
+    PerGroupMinMaxObserver,
+}
 
 OBSERVER_CLASSES = (
     PLACEHOLDER_OBSERVERS

@@ -1,15 +1,16 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
+    get_node_original_module_name,
     is_all_nodes_save_parameters,
     replace_ops_module_name_suffix,
 )
@@ -30,13 +31,13 @@ def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
     count_replace_num = 0  # used for debug and trace
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
-    device = [module for module in m.parameters()][0].device  # cpu/gpu
+    device = list(m.parameters())[0].device  # cpu/gpu
     need_to_delete_node: list[Node] = []
     for n in m.graph.nodes:
         if not is_linear_node(n):
             continue
         linear_node = n
-
+        org_linear_name = get_node_original_module_name(linear_node)
         weight_node = linear_node.args[1]
         bias_node = linear_node.args[2] if len(linear_node.args) > 2 else None
 
@@ -83,6 +84,8 @@ def replace_linear_qtlinear(m: GraphModule) -> GraphModule:
             need_to_delete_node += to_delete_node
         with m.graph.inserting_after(input_activation_node):
             quant_linear_node = m.graph.create_node("call_module", quant_linear_name, (input_activation_node,), {})
+            assert not hasattr(quant_linear_node.meta, "org_module_name")
+            quant_linear_node.meta["org_module_name"] = org_linear_name
             # NOTE modify the node's meta info
             _copy_node_meta_info(org_node=linear_node, target_node=quant_linear_node)
             linear_node.replace_all_uses_with(quant_linear_node)

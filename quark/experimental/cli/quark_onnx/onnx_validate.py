@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,21 +12,27 @@ import numpy as np
 import onnxruntime
 import torch
 from datasets import load_dataset
-from optimum.onnxruntime import ORTModelForCausalLM
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from quark.common.utils.import_utils import UnavailableObject, is_optimum_available
 from quark.experimental.cli import base_cli
 from quark.onnx.operators.custom_ops import get_library_path
+
+if is_optimum_available():
+    from optimum.onnxruntime import ORTModelForCausalLM
+else:
+    ORTModelForCausalLM = UnavailableObject("optimum[onnxruntime]")
+
 
 from .helper_utils import AverageMeter, load_dataloader
 
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, block_size=512):
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         text = ""
         for i in testdata:
             text += i["text"]
@@ -52,7 +58,7 @@ def load_and_cache_examples(args, tokenizer):
 
 def evaluate_wikitext_onnx(args, model, tokenizer):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     test_data = ""
     for i in testdata:
         test_data += i["text"]
@@ -167,7 +173,7 @@ def llm_evaluation(args: Any, device: str, providers: list[str]):
         args.model_path, providers=providers, use_cache=False, use_io_binding=False, session_options=sess_options
     )
     result = evaluate_wikitext_onnx(args, model, tokenizer)
-    result = dict((k + f"_{global_step}", v) for k, v in result.items())
+    result = {k + f"_{global_step}": v for k, v in result.items()}  # pragma: no cover
     results.update(result)
 
     print(results)

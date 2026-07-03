@@ -32,7 +32,8 @@ from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d
 from quark.torch.quantization.config.config import QTensorConfig, QLayerConfig, QConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, RoundType, QuantizationMode
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.testing_utils import torch_device, use_temporary_directory
 
 INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
@@ -176,7 +177,7 @@ def test_annotation():
     model = TinyModel().eval().to(torch_device)
     example_inputs = (torch.rand(batch_shape).to(torch_device),)
     # [[x.name, x.meta.get("nn_module_stack", None)] for x in graph_model.graph.nodes]
-    graph_model = torch.export.export_for_training(model, example_inputs).module()
+    graph_model = export_for_training(model, example_inputs).module()
     # graph_model = processor._quant_optimize(graph_model)
     replace_conv2dbn_quantizedconv_module(graph_model)
     replace_linear_qtlinear(graph_model)
@@ -266,18 +267,18 @@ def test_annotation_element_arithmetic(tmpdir: str):
     float_model = TinyMathArithmeticModel().to(torch_device).eval()
     example_inputs = (torch.ones(1, 3, 20, 20).to(torch_device),)
     fp_out = float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     # ========== test quant pipeline===============
     emp_config = QLayerConfig()
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
             assert torch.allclose(fp_out, out_2)
-        assert len([x for x in quantized_model.graph.nodes]) in [61, 31]
+        assert len(list(quantized_model.graph.nodes)) in [61, 31]
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [32, 0]
         opt_graph_module = quantizer.freeze(quantized_model.eval())
         out_onnx_path = tmpdir + "/max_pool_annotate.onnx"
@@ -342,7 +343,7 @@ def test_annotation_without_grad_skip_quant():
     float_model = TinyPartQuantModel().to(torch_device).eval()
     example_inputs = (torch.ones(1, 3, 32, 32).to(torch_device),)
     out_1 = float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     out_2 = graph_model(example_inputs[0])
     assert torch.allclose(out_1, out_2)
     quantizer = ModelQuantizer(quant_config)
@@ -393,7 +394,7 @@ def test_avg_pooling_annotation(tmpdir: str):
     quant_inputs = {"x" + str(index): value for index, value in enumerate(example_inputs)}
 
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_avg_pool2d_node) == 2
     assert fx_contains_op_num(graph_model, is_adaptive_avg_pool2d_node) == 4
@@ -405,7 +406,7 @@ def test_avg_pooling_annotation(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [quant_inputs])
 
         _ = quantized_model.eval()(*example_inputs)
@@ -453,7 +454,7 @@ def test_max_pooling_annotation(tmpdir: str):
     quant_inputs = {"x" + str(index): value for index, value in enumerate(example_inputs)}
 
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_max_pool2d_node) == 2
     out1 = graph_model.eval()(*example_inputs)
@@ -464,7 +465,7 @@ def test_max_pooling_annotation(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [quant_inputs])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -502,7 +503,7 @@ def test_sum_annotation(tmpdir: str):
     example_inputs = (torch.rand(2, 3, 10, 10).to(torch_device),)
 
     fp_out = float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_sum_node) == 1
     out1 = graph_model.eval()(*example_inputs)
@@ -513,7 +514,7 @@ def test_sum_annotation(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -574,7 +575,7 @@ def test_hardtanh_annotation(tmpdir: str):
     example_inputs = (torch.rand(2, 3, 10, 10).to(torch_device),)
 
     fp_out = float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
@@ -584,7 +585,7 @@ def test_hardtanh_annotation(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -626,7 +627,7 @@ def test_pixel_shuffle_annotation(tmpdir: str):
     example_inputs = (torch.rand(2, 3, 10, 10).to(torch_device),)
 
     fp_out = float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, out1, strict=False)])
@@ -636,7 +637,7 @@ def test_pixel_shuffle_annotation(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:

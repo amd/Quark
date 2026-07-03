@@ -11,11 +11,15 @@ import warnings
 from pathlib import Path
 
 import torch
+from huggingface_hub import snapshot_download
 from transformers import AutoProcessor
 
+from quark.common.profiler import GlobalProfiler, ProfileStep
+from quark.common.utils.log import ScreenLogger
 from quark.torch import (
     LLMTemplate,
     ModelQuantizer,
+    RuntimeOptions,
     export_gguf,
     export_onnx,
     export_safetensors,
@@ -36,9 +40,14 @@ from quark.torch.utils.llm import (
     get_calib_dataloader,
     get_model,
     get_tokenizer,
-    prepare_for_moe_quant,
-    revert_model_patching,
+    preprocess_for_quantization,
 )
+
+logger = ScreenLogger(__name__)
+
+# set CUDA_VISIBLE_DEVICES for profiling
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # The code below demonstrates how to register custom model templates and
 # quantization schemes. If you need to add support for a new model architecture
@@ -74,6 +83,27 @@ from quark.torch.utils.llm import (
 # int8_wo_scheme = QLayerConfig(weight=Int8PerTensorSpec().to_quantization_spec())
 # LLMTemplate.register_scheme("int8_wo", config=int8_wo_scheme)
 # print(f"[INFO]: Registered quantization scheme 'int8_wo'")
+
+# --- DeepSeek V4 Template ---
+# Registers layer-name patterns for DeepSeek-V4 (e.g., DeepSeek-V4-Flash).
+# Use with --quant_scheme mxfp4 --file2file_quantization when quantizing
+# from an FP8 SGLang checkpoint; Quark's recovery path handles both the
+# standard DeepSeek-V3 "_scale_inv" and the V4 ".scale" sibling-scale format.
+deepseek_v4_template = LLMTemplate(
+    model_type="deepseek_v4",
+    kv_layers_name=["*wkv"],
+    q_layer_name=["*wq_a", "*wq_b"],
+    exclude_layers_name=[
+        "embed",
+        "head",
+        "*attn*",
+        "*ffn.gate*",
+        "hc_*",
+        "mtp.*",
+    ],
+)
+LLMTemplate.register_template(deepseek_v4_template)
+logger.info(f"Registered template '{deepseek_v4_template.model_type}'")
 
 
 def _get_hf_model_config(model_dir: str) -> dict:
@@ -120,67 +150,78 @@ def _build_quant_config(args: argparse.Namespace, model_config_type: str):
         exclude_layers=args.exclude_layers,
         algo_configs=algo_configs if algo_configs else None,
     )
+    quant_config.keep_prequantized_layers = not args.no_keep_prequantized_layers
     return quant_config
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.revision is not None:
+        if os.path.isdir(args.model_dir):
+            raise ValueError(
+                f"The argument --revision {args.revision} is not supported using a local directory: {args.model_dir}"
+            )
+        else:
+            args.model_dir = snapshot_download(args.model_dir, revision=args.revision)
+
+    # Initialize global profiler
+    profiler = GlobalProfiler(output_path=os.path.join(args.output_dir, "quark_profile.yaml"))
+
     # File-to-file quantization mode: bypass model loading, calibration and quantization,
     # directly quantize safetensors files shard-by-shard and export.
     if args.file2file_quantization:
         print("\n[INFO]: File-to-file quantization mode enabled.")
         hf_model_config = _get_hf_model_config(args.model_dir)
-        model_config_type = hf_model_config.get("model_type", hf_model_config.get("architectures", [None])[0])
+        architectures = hf_model_config.get("architectures", [])
+        model_config_type = hf_model_config.get("model_type", architectures[0] if architectures else None)
         quant_config = _build_quant_config(args, model_config_type)
 
         print("\n[INFO]: Quantizing safetensors shards directly (file-to-file) ...")
-        quantizer = ModelQuantizer(quant_config)
-        quantizer.direct_quantize_checkpoint(
-            pretrained_model_path=args.model_dir,
-            save_path=args.output_dir,
-        )
+
+        weight_converters = LLMTemplate.get(model_config_type).f2f_weight_converters
+        if weight_converters:
+            logger.info(f"Applying {len(weight_converters)} weight converter(s) for model type '{model_config_type}'")
+
+        with profiler.scope(ProfileStep.FILE_TO_FILE_QUANTIZATION):
+            quantizer = ModelQuantizer(quant_config)
+            quantizer.direct_quantize_checkpoint(
+                pretrained_model_path=args.model_dir,
+                save_path=args.output_dir,
+                weight_converters=weight_converters,
+            )
+
         print(f"[INFO]: File-to-file quantization output saved to {args.output_dir}")
         return
 
     # 1. Define original model
-    print("\n[INFO]: Loading model ...")
+    model = None
+    # Load the pretrained model for quantization or for reload later (the old way).
+    if not args.model_reload or args.import_model_dir:
+        print("\n[INFO]: Loading model ...")
 
-    # We currently use CPU memory to load large models because GPU memory is typically smaller.
-    # The model will be dispatched to different GPUs based on the total number of GPUs specified by torchrun --nproc-per-node.
-    # TODO:
-    # The current method results in high CPU memory consumption due to multiple copies of the same model.
-    # We plan to address this in the future by implementing a more efficient way to dispatch the model to devices.
-    if args.use_tp:
-        device = "cpu"
-    else:
-        device = args.device
+        # We currently use CPU memory to load large models because GPU memory is typically smaller.
+        # The model will be dispatched to different GPUs based on the total number of GPUs specified by torchrun --nproc-per-node.
+        # TODO:
+        # The current method results in high CPU memory consumption due to multiple copies of the same model.
+        # We plan to address this in the future by implementing a more efficient way to dispatch the model to devices.
+        if args.use_tp:
+            device = "cpu"
+        else:
+            device = args.device
 
-    model, model_dtype = get_model(
-        args.model_dir,
-        args.data_type,
-        device,
-        args.multi_gpu,
-        args.multi_device,
-        args.model_attn_implementation,
-        trust_remote_code=args.trust_remote_code,
-    )
-    prepare_for_moe_quant(model)
+        with profiler.scope(ProfileStep.MODEL_LOADING):
+            model, _ = get_model(
+                args.model_dir,
+                args.data_type,
+                device,
+                args.multi_gpu,
+                args.multi_device,
+                args.model_attn_implementation,
+                trust_remote_code=args.trust_remote_code,
+            )
 
-    # Check model compatibility with current Transformers version
-    print("\n[INFO]: Checking model compatibility ...")
-    check_compatibility_before_quantization(model, raise_on_error=False)
-
-    model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
-    tokenizer = get_tokenizer(
-        args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
-    )
-
-    multimodal = True if model_type in ["mllama", "llama4", "gemma3", "qwen3_vl_moe", "deepseek_vl_v2"] else False
-    if multimodal:
-        processor = AutoProcessor.from_pretrained(args.model_dir)
-        if args.model_export is not None:
-            export_dir = Path(args.output_dir)
-            export_dir.mkdir(parents=True, exist_ok=True)
-            processor.save_pretrained(args.output_dir)
+        # Check model compatibility with current Transformers version
+        print("\n[INFO]: Checking model compatibility ...")
+        check_compatibility_before_quantization(model, raise_on_error=False)
 
     if args.use_tp:
         TPDeviceManager.tp_mesh_init()
@@ -191,14 +232,43 @@ def main(args: argparse.Namespace) -> None:
         model = load_params(model, json_path=args.json_path, safetensors_path=args.safetensors_path)
         args.skip_quantization = True
     elif args.model_reload:
+        # Use import_model_dir if provided (separate quantized checkpoint), otherwise model_dir is the checkpoint itself.
+        reload_dir = args.import_model_dir or args.model_dir
         print("\nRestore quantized model from hf_format safetensors file ...")
-
-        # TODO: This should be moved to quark namespace.
-        # Revert model transformations that were useful only for quantization (Transformers-specific).
-        revert_model_patching(model)
-
-        model = import_model_from_safetensors(model, model_dir=args.import_model_dir, multi_device=args.multi_device)
+        model = import_model_from_safetensors(
+            model=model,
+            model_dir=reload_dir,
+            multi_device=args.multi_device,
+            trust_remote_code=args.trust_remote_code,
+            attn_implementation=args.model_attn_implementation,
+            device="cpu" if args.use_tp else args.device,
+            multi_gpu=args.multi_gpu,
+        )
         args.skip_quantization = True
+
+    architectures = getattr(model.config, "architectures", None) or []
+    model_type = (
+        model.config.model_type
+        if hasattr(model.config, "model_type")
+        else (architectures[0] if architectures else None)
+    )
+    tokenizer = get_tokenizer(
+        args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
+    )
+
+    # Detect multimodality from the model config's sub-modality keys instead of a
+    # hardcoded model_type whitelist — every HF VLM/ALM config exposes one of these
+    # (vision_config / audio_config / image_config / video_config).
+    multimodal = any(
+        getattr(model.config, k, None) is not None
+        for k in ("vision_config", "audio_config", "image_config", "video_config")
+    )
+    if multimodal:
+        processor = AutoProcessor.from_pretrained(args.model_dir)
+        if args.model_export is not None:
+            export_dir = Path(args.output_dir)
+            export_dir.mkdir(parents=True, exist_ok=True)
+            processor.save_pretrained(args.output_dir)
 
     if args.use_tp:
         if TPDeviceManager._tp_mesh is not None:
@@ -211,28 +281,38 @@ def main(args: argparse.Namespace) -> None:
             model.to(device)
         else:
             warnings.warn(
-                "Quark tensor parallelism is not initialized properly. Please check the torchrun settings.", UserWarning
+                "Quark tensor parallelism is not initialized properly. Please check the torchrun settings.",
+                UserWarning,
+                stacklevel=2,
             )
             return
 
     # 3. Define calibration dataloader(still need this step for weight only and dynamic quantization in Quark for current version.)
     print("\n[INFO]: Loading dataset ...")
+
     # When the model is small, accelerate will place it on the last device
     main_device = model.device if args.multi_gpu or args.multi_device else args.device
-    calib_dataloader = get_calib_dataloader(
-        dataset_name=args.dataset,
-        processor=processor if multimodal else None,
-        tokenizer=tokenizer,
-        batch_size=args.batch_size,
-        num_calib_data=args.num_calib_data,
-        seqlen=args.seq_len,
-        device=main_device,
-    )
+
+    with profiler.scope(ProfileStep.DATASET_LOADING):
+        calib_dataloader = get_calib_dataloader(
+            dataset_name=args.dataset,
+            processor=processor if multimodal else None,
+            tokenizer=tokenizer,
+            batch_size=args.batch_size,
+            num_calib_data=args.num_calib_data,
+            seqlen=args.seq_len,
+            device=main_device,
+        )
 
     # 4. Quantization
     if not args.skip_quantization:
+        preprocess_for_quantization(model)
+
+        architectures = getattr(model.config, "architectures", None) or []
         model_config_type = (
-            model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
+            model.config.model_type
+            if hasattr(model.config, "model_type")
+            else (architectures[0] if architectures else None)
         )
 
         quant_config = _build_quant_config(args, model_config_type)
@@ -244,6 +324,7 @@ def main(args: argparse.Namespace) -> None:
                 warnings.warn(
                     "--kv_cache_post_rope specified but quant_config has no 'kv_cache_post_rope' field; flag ignored.",
                     RuntimeWarning,
+                    stacklevel=2,
                 )
 
         # In-place replacement of model modules with quantized versions
@@ -253,11 +334,12 @@ def main(args: argparse.Namespace) -> None:
 
         # After quantization, freeze models - moving from soft weights that are quantized on the fly
         # to e.g. `QuantLinear.weight` actually holding the fake quantized weights.
-        model = quantizer.freeze(model)
-
-        # TODO: This should be moved to quark namespace.
-        # Optionally, revert model transformations that were useful only for quantization (Transformers-specific).
-        revert_model_patching(model)
+        runtime_options = None
+        if args.enable_native_inference:
+            runtime_options = RuntimeOptions(
+                native_linear_mode=args.native_linear_mode,
+            )
+        model = quantizer.freeze(model, runtime_options=runtime_options)
 
     if args.model_export is not None:
         if args.custom_mode != "quark" and args.export_weight_format == "fake_quantized":
@@ -266,7 +348,7 @@ def main(args: argparse.Namespace) -> None:
         # Export option 1: hugging-face safetensors format
         if "hf_format" in args.model_export:
             print("\n[INFO]: Exporting hugging face format safetensors...")
-            with torch.no_grad():
+            with profiler.scope(ProfileStep.EXPORT_HF_SAFETENSORS), torch.no_grad():
                 export_safetensors(
                     model=model,
                     output_dir=args.output_dir,
@@ -276,10 +358,11 @@ def main(args: argparse.Namespace) -> None:
                 )
                 if not multimodal:
                     tokenizer.save_pretrained(args.output_dir)
+
         # Export option 2: onnx
         if "onnx" in args.model_export:
             print("\n[INFO]: Exporting onnx graph...")
-            with torch.inference_mode():
+            with profiler.scope(ProfileStep.EXPORT_ONNX), torch.inference_mode():
                 batch_iter = iter(calib_dataloader)
                 input_args = next(batch_iter)
                 if "uint4" in args.quant_scheme or "int4" in args.quant_scheme:
@@ -290,10 +373,11 @@ def main(args: argparse.Namespace) -> None:
                 export_onnx(
                     model=model, output_dir=args.output_dir, input_args=input_args, uint4_int4_flag=uint4_int4_flag
                 )
+
         # Export option 3: gguf
         if "gguf" in args.model_export:
             print("\n[INFO]: Exporting gguf model...")
-            with torch.inference_mode():
+            with profiler.scope(ProfileStep.EXPORT_GGUF), torch.inference_mode():
                 export_gguf(model, output_dir=args.output_dir, model_type=model_type, tokenizer_path=args.model_dir)
 
     if args.torch_compile:
@@ -306,15 +390,17 @@ def main(args: argparse.Namespace) -> None:
 
     if not args.skip_evaluation:
         print("\n[INFO]: Evaluating ...")
-        args.use_ppl_eval_model = True
-        eval_model(
-            args,
-            model,
-            main_device,
-            save_metrics_to_csv=args.save_metrics_to_csv,
-            output_dir=args.metrics_output_dir,
-            multimodal=multimodal,
-        )
+
+        with profiler.scope(ProfileStep.MODEL_EVALUATION):
+            args.use_ppl_eval_model = True
+            eval_model(
+                args,
+                model,
+                main_device,
+                save_metrics_to_csv=args.save_metrics_to_csv,
+                output_dir=args.metrics_output_dir,
+                multimodal=multimodal,
+            )
 
     if args.use_tp:
         TPDeviceManager.tp_cleanup()
@@ -328,8 +414,22 @@ if __name__ == "__main__":
         help="Specify where the HuggingFace model is. This example support Llama, OPT models",
         required=True,
     )
+    parser.add_argument(
+        "--revision",
+        help="HuggingFace Hub revision (branch, tag, or commit) to download when --model_dir is a Hub model ID. "
+        "Triggers snapshot_download so all files come from the same revision.",
+        default=None,
+    )
     parser.add_argument("--device", help="Device for running the quantizer", default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--multi_gpu", action="store_true")
+    parser.add_argument(
+        "--multi_gpu",
+        nargs="?",
+        const="auto",
+        default=None,
+        choices=["auto", "balanced"],
+        help="Enable multi-GPU mode. 'auto': default accelerate device map. "
+        "'balanced': use auto-adjusted device map for better GPU memory balance.",
+    )
     parser.add_argument(
         "--model_attn_implementation",
         help="The attention implementation to use in the model",
@@ -434,10 +534,25 @@ if __name__ == "__main__":
         default=None,  # Default is None to allow model-specific layer exclusion
         help='List of layers to exclude from quantization. Default depends on model type. Usage: `--exclude_layers "*down_proj*" "*31.fc*" "*k_proj"`. To avoid excluding layers at all, simply use `--exclude_layers` without any argument.',
     )
+    parser.add_argument(
+        "--enable_native_inference",
+        action="store_true",
+        help="Enable native inference layer conversion during freeze().",
+    )
+    parser.add_argument(
+        "--native_linear_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "fp8_per_tensor"],
+        help="Native linear implementation mode used when native inference is enabled.",
+    )
 
     # Argument for reloading
     parser.add_argument("--model_reload", help="safetensors or pth model reload", action="store_true")
-    parser.add_argument("--import_model_dir", help="directory of hf or quark model")
+    parser.add_argument(
+        "--import_model_dir",
+        help="[Deprecated: use --model_dir instead] directory of hf or quark model, override model directory for reload, if not provided, --model_dir is used.",
+    )
     parser.add_argument("--params_load", help="Model parameters load", action="store_true")
     parser.add_argument("--json_path", help="Specify the path of saved json file")
     parser.add_argument("--safetensors_path", help="Specify the path of saved safetensors file")
@@ -469,6 +584,13 @@ if __name__ == "__main__":
         default="real_quantized",
         choices=["fake_quantized", "real_quantized"],
     )
+    parser.add_argument(
+        "--no_keep_prequantized_layers",
+        action="store_true",
+        help="Force dequantization of excluded pre-quantized layers to bf16/fp16 on export. "
+        "By default (flag omitted), such layers are preserved in their original quantized format "
+        "(converted to Quark format); unsupported formats fall back to dequantization with a warning.",
+    )
 
     # Argument for saving
     parser.add_argument("--params_save", help="Model parameters save", action="store_true")
@@ -480,6 +602,12 @@ if __name__ == "__main__":
 
     # Argument for evaluation
     parser.add_argument("--skip_evaluation", action="store_true")
+    parser.add_argument(
+        "--evaluation_dataset",
+        help="Dataset for evaluation",
+        default="wikitext",
+        choices=["wikitext", "wikitext_gpt_oss_120b", "wikitext_gpt_oss_20b"],
+    )
     parser.add_argument("--use_ppl_eval_model", action="store_true")
     parser.add_argument("--save_metrics_to_csv", action="store_true")
     parser.add_argument("--metrics_output_dir", default="metrics_output_dir", help="Output path of csv with metrics.")
@@ -557,6 +685,8 @@ if __name__ == "__main__":
     )
     parser.set_defaults(trust_remote_code=True)
     args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
 
     if args.layer_quant_scheme is not None:
         for layer_info in args.layer_quant_scheme:

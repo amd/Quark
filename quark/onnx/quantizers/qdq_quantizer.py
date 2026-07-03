@@ -50,6 +50,7 @@ if not is_version_below(onnxruntime, "1.19.0"):
 from onnxruntime.quantization.calibrate import TensorData
 from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
     COP_BFP_OP_NAME,
     COP_MX_OP_NAME,
@@ -67,7 +68,6 @@ from quark.onnx.quantization.quant_utils import (
     quantize_data,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger
 
 from .registry import CreateQDQQuantizer
 
@@ -585,6 +585,15 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             else extra_options["OpTypesToExcludeOutputQuantization"]
         )
 
+        # Specific node names to exclude qdq quantization for their outputs.
+        # This is for the case that some patterns need to exclude qdq quantization for their outputs.
+        self.nodes_to_exclude_output_quantization = (
+            []
+            if extra_options is None or "NodesToExcludeOutputQuantization" not in extra_options
+            else extra_options["NodesToExcludeOutputQuantization"]
+        )
+        self.exclude_tensor_names = self.get_exclude_output_tensor_names()
+
         # Some scenarios do not need the bias quantized. For example, in the case of Quantization Aware Training,
         # quantizing the bias is not needed. This is because in QAT, all model parameters are expected to be in
         # floating point format. To that end, we can use the FakeQuant operator for weights and activations that
@@ -658,6 +667,7 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             in (
                 QuantType.QInt8,
                 QuantType.QInt16,
+                ExtendedQuantType.QInt8,
                 ExtendedQuantType.QInt16,
                 ExtendedQuantType.QInt32,
                 ExtendedQuantType.QFloat16,
@@ -699,6 +709,18 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             self.int32_bias = False  # Cannot meet the requirement of bias_scale = input_scale * weight_scale
             logger.warning("Disabled Int32 Bias, because the quant type of activaion is BFP or MX")
 
+    def get_exclude_output_tensor_names(self) -> list[str]:
+        """
+        Get the output tensor names to exclude from quantization.
+        """
+        exclude_output_tensor_names: list[str] = []
+        for node in self.model.nodes():
+            if node.name in self.nodes_to_exclude_output_quantization:
+                for output in node.output:
+                    if output and output not in exclude_output_tensor_names:
+                        exclude_output_tensor_names.append(output)
+        return exclude_output_tensor_names
+
     def _is_tensor_quantizable(self, tensor_name: str) -> bool:
         """
         Check if tensor can be quantized
@@ -707,7 +729,9 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         if weight is not None:
             if weight.data_type in (onnx_proto.TensorProto.FLOAT, onnx_proto.TensorProto.FLOAT16):
                 return True
-        elif self.weights_only is True:
+        elif self.weights_only or tensor_name in self.exclude_tensor_names:
+            # For weights only, we do not quantize all the activation tensors.
+            # Also, we do not quantize the output tensors that are in the exclude list.
             return False
         elif tensor_name in self.value_infos:
             vi = self.value_infos[tensor_name]
@@ -963,7 +987,8 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 weight_data.flatten(),
                 qType,
                 quant_overrides.get("symmetric", self.is_weight_symmetric),
-                reduce_range=quant_overrides.get("reduce_range", self.reduce_range and reduce_range),
+                # reduce_range API is never called and kept False, so we just self.reduce_range to make it effective
+                reduce_range=quant_overrides.get("reduce_range", self.reduce_range),
                 min_real_range=self.min_real_range,
                 rmin_override=quant_overrides.get("rmin"),
                 rmax_override=quant_overrides.get("rmax"),

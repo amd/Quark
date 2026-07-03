@@ -17,13 +17,14 @@
 # limitations under the License.
 #
 import math
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import torch
 import torch.nn as nn
 from scipy.linalg import hadamard
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.rotation.hadamard import (
     _get_hadamard_K,
     get_hadamard_matrices,
@@ -82,7 +83,7 @@ def rotate_with_size(
 
         if x.shape[-1] % rotation_size != 0:
             raise ValueError(
-                f"The function rotate_with_size got the input x with x.shape[0]={x.shape[-1]} and rotation_matrix of shape {rotation_size}, which are incompatible."
+                f"The function rotate_with_size got the input x with x.shape[-1]={x.shape[-1]} and rotation_matrix of shape {rotation_size}, which are incompatible."
             )
 
     dtype = x.dtype
@@ -414,6 +415,8 @@ class HadamardTransform(nn.Module):
             else:
                 rotation_matrix = hadamard_K
 
+            # Ensure rotation matrix stays in float32 for numerical match.
+            rotation_matrix = rotation_matrix.to(torch.float32)
             rotation_matrix = rotation_matrix / math.sqrt(self.rotation_size)
         else:
             assert K is not None

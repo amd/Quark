@@ -47,11 +47,9 @@ class ImageDataReader:
         return next(self.enum_data, None)
 
     def get_item(self, idx):
-        if idx < self.datasize:
-            temp_data = self.nhwc_data_list[idx]
-        else:
-            pass
-        return {self.input_name: temp_data}
+        if 0 <= idx < self.datasize:
+            return {self.input_name: self.nhwc_data_list[idx]}
+        raise IndexError(f"Index {idx} out of range for dataset of size {self.datasize}")
 
     def __getitem__(self, idx):
         return {self.input_name: self.nhwc_data_list[idx]}

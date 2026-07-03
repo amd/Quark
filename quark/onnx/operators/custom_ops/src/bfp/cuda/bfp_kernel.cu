@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: MIT
 //
 
-#include "bfp/cuda/bfp_kernel.h"
-#include <stdio.h>
-#include <string>
-#include <algorithm>
 #include <cuda.h>
-#include <curand_kernel.h>
 #include <cuda_runtime.h>
+#include <curand_kernel.h>
+#include <stdio.h>
+
+#include <algorithm>
+#include <string>
+
+#include "bfp/cuda/bfp_kernel.h"
 
 // Get a unsinged value of the biased exponent.
 __device__ uint32_t GetExponent(float v) {
@@ -49,54 +51,55 @@ __device__ float StochsticRound(float v, int seed) {
 }
 
 __device__ float dpu_round(float x) {
-  return ((x < 0) && (x - std::floor(x) == 0.5))
-              ? std::ceil(x)
-              : std::round(x);
+  return ((x < 0) && (x - std::floor(x) == 0.5)) ? std::ceil(x) : std::round(x);
 }
 
 __device__ float py3_round(float x) {
   float x_floor = std::floor(x);
   float diff = x - x_floor;
-  if (diff > 0.5) return x_floor + 1;
-  else if (diff == 0.5) return (int)x_floor % 2 == 1 || (int)x_floor % 2 == -1 ? x_floor + 1 : x_floor;
-  else return x_floor;
+  if (diff > 0.5)
+    return x_floor + 1;
+  else if (diff == 0.5)
+    return (int)x_floor % 2 == 1 || (int)x_floor % 2 == -1 ? x_floor + 1
+                                                           : x_floor;
+  else
+    return x_floor;
 }
 
 namespace quark_onnx {
 
-  typedef union value_convert_gpu {
-    uint32_t u;
-    int32_t i;
-    float f;
-  } value_convert_gpu_t;
+typedef union value_convert_gpu {
+  uint32_t u;
+  int32_t i;
+  float f;
+} value_convert_gpu_t;
 
-   inline __device__ uint32_t f_to_u_gpu(float data) {
-    value_convert_gpu_t vc{};
-    vc.f = data;
-    return vc.u;
-  }
-
-   inline __device__ float u_to_f_gpu(uint32_t data) {
-    value_convert_gpu_t vc{};
-    vc.u = data;
-    return vc.f;
-  }
-
-  float __device__ float2bfloat_gpu(const float x) {
-    uint32_t itmp = f_to_u_gpu(x);           // float32 bitwise to int32
-    if ((itmp & 0x00008000) == 0x00008000) {  // half even
-      if ((itmp & 0xFFFF) > 0x00008000 ||
-          (((itmp & 0xFFFF) == 0x00008000) && (itmp & 0x10000) == 0x10000)) {
-        itmp += 0x10000;
-      }
-    }
-    itmp &= 0xFFFF0000;
-    return u_to_f_gpu(itmp);  // int32 bitwise to float32
-  }
+inline __device__ uint32_t f_to_u_gpu(float data) {
+  value_convert_gpu_t vc{};
+  vc.f = data;
+  return vc.u;
 }
 
-__global__ void BFloatCUDAKernel(float* input, int num_threads)
-{
+inline __device__ float u_to_f_gpu(uint32_t data) {
+  value_convert_gpu_t vc{};
+  vc.u = data;
+  return vc.f;
+}
+
+float __device__ float2bfloat_gpu(const float x) {
+  uint32_t itmp = f_to_u_gpu(x);            // float32 bitwise to int32
+  if ((itmp & 0x00008000) == 0x00008000) {  // half even
+    if ((itmp & 0xFFFF) > 0x00008000 ||
+        (((itmp & 0xFFFF) == 0x00008000) && (itmp & 0x10000) == 0x10000)) {
+      itmp += 0x10000;
+    }
+  }
+  itmp &= 0xFFFF0000;
+  return u_to_f_gpu(itmp);  // int32 bitwise to float32
+}
+}  // namespace quark_onnx
+
+__global__ void BFloatCUDAKernel(float* input, int num_threads) {
   int index = blockDim.x * blockIdx.x + threadIdx.x;
   if (index >= num_threads) {
     return;
@@ -104,13 +107,11 @@ __global__ void BFloatCUDAKernel(float* input, int num_threads)
   input[index] = quark_onnx::float2bfloat_gpu(input[index]);
 }
 
-__global__ void BFPCUDAKernel(const float* input,
-                                float* output,
-                                const int num_threads,
-                                const int axis_size,
-                                const int bit_width,
-                                const int block_size,
-                                const rounding_mode_enum rounding_mode) {
+__global__ void BFPCUDAKernel(
+  const float* input, float* output, const int num_threads, const int axis_size,
+  const int bit_width, const int block_size,
+  const rounding_mode_enum rounding_mode
+) {
   int index = blockDim.x * blockIdx.x + threadIdx.x;
   if (index >= num_threads) {
     return;
@@ -148,32 +149,30 @@ __global__ void BFPCUDAKernel(const float* input,
     } else {
       auto scaled_x = input[index] / scale;
       float rounded_scaled_x;
-      switch (rounding_mode)
-      {
-      case STD_ROUND:
-        rounded_scaled_x = std::round(scaled_x);
-        break;
-      case DPU_ROUND:
-        rounded_scaled_x = dpu_round(scaled_x);
-        break;
-      case PY3_ROUND:
-        rounded_scaled_x = py3_round(scaled_x);
-        break;
-      default:
-        break;
+      switch (rounding_mode) {
+        case STD_ROUND:
+          rounded_scaled_x = std::round(scaled_x);
+          break;
+        case DPU_ROUND:
+          rounded_scaled_x = dpu_round(scaled_x);
+          break;
+        case PY3_ROUND:
+          rounded_scaled_x = py3_round(scaled_x);
+          break;
+        default:
+          break;
       }
-      output[index] = std::max(-max_v, std::min(rounded_scaled_x * scale, max_v));
+      output[index] =
+        std::max(-max_v, std::min(rounded_scaled_x * scale, max_v));
     }
   }
 }
 
-__global__ void BFPCUDAKernelCompiler(const float* input,
-                                float* output,
-                                const int num_threads,
-                                const int axis_size,
-                                const int bit_width,
-                                const int block_size,
-                                const rounding_mode_enum rounding_mode) {
+__global__ void BFPCUDAKernelCompiler(
+  const float* input, float* output, const int num_threads, const int axis_size,
+  const int bit_width, const int block_size,
+  const rounding_mode_enum rounding_mode
+) {
   int index = blockDim.x * blockIdx.x + threadIdx.x;
   if (index >= num_threads) {
     return;
@@ -211,19 +210,18 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
     } else {
       auto scaled_x = input[index] / scale;
       float x;
-      switch (rounding_mode)
-      {
-      case STD_ROUND:
-        x = std::round(scaled_x);
-        break;
-      case DPU_ROUND:
-        x = dpu_round(scaled_x);
-        break;
-      case PY3_ROUND:
-        x = py3_round(scaled_x);
-        break;
-      default:
-        break;
+      switch (rounding_mode) {
+        case STD_ROUND:
+          x = std::round(scaled_x);
+          break;
+        case DPU_ROUND:
+          x = dpu_round(scaled_x);
+          break;
+        case PY3_ROUND:
+          x = py3_round(scaled_x);
+          break;
+        default:
+          break;
       }
       if (x >= 128 || x < -128) {
         shared_exp += 1;
@@ -241,61 +239,54 @@ __global__ void BFPCUDAKernelCompiler(const float* input,
     uint32_t exp = GetExponent(input[index]);
     if (exp == 0xff) {
       output[index] = input[index];
-    }
-    else {
+    } else {
       float x;
-      switch (rounding_mode)
-      {
-      case STD_ROUND:
-        x = std::round(input[index] / scale) * scale;
-        break;
-      case DPU_ROUND:
-        x = dpu_round(input[index] / scale) * scale;
-        break;
-      case PY3_ROUND:
-        x = py3_round(input[index] / scale) * scale;
-        break;
-      default:
-        break;
+      switch (rounding_mode) {
+        case STD_ROUND:
+          x = std::round(input[index] / scale) * scale;
+          break;
+        case DPU_ROUND:
+          x = dpu_round(input[index] / scale) * scale;
+          break;
+        case PY3_ROUND:
+          x = py3_round(input[index] / scale) * scale;
+          break;
+        default:
+          break;
       }
       // Clamp(x, min_v, max_v)
       output[index] = std::max(min_v, min(x, max_v));
     }
   }
 }
-void LaunchBFloatCUDAKernel(float* input, int n){
+void LaunchBFloatCUDAKernel(float* input, int n) {
   int threads_per_block = 256;
-  int blocks = static_cast<int>(std::ceil(static_cast<float>(n) / threads_per_block));
+  int blocks =
+    static_cast<int>(std::ceil(static_cast<float>(n) / threads_per_block));
   cudaDeviceSynchronize();
   BFloatCUDAKernel<<<blocks, threads_per_block>>>(input, n);
   cudaDeviceSynchronize();
 }
 void LaunchBFPCUDAKernel(
-    const float* input,
-    float* output,
-    const int n,
-    const int axis_size,
-    const int bit_width,
-    const int block_size,
-    const int rounding_mode,
-    int use_compiler_version_cpu_kernel) {
-
+  const float* input, float* output, const int n, const int axis_size,
+  const int bit_width, const int block_size, const int rounding_mode,
+  int use_compiler_version_cpu_kernel
+) {
   const int threads = n / block_size;
 
   int threads_per_block = 256;
   int blocks = static_cast<int>(
-      std::ceil(static_cast<float>(threads) / threads_per_block));
+    std::ceil(static_cast<float>(threads) / threads_per_block)
+  );
   cudaDeviceSynchronize();
   if (use_compiler_version_cpu_kernel == 0) {
     BFPCUDAKernel<<<blocks, threads_per_block>>>(
-      input, output, threads,
-      axis_size, bit_width, block_size,
+      input, output, threads, axis_size, bit_width, block_size,
       (rounding_mode_enum)rounding_mode
     );
   } else {
     BFPCUDAKernelCompiler<<<blocks, threads_per_block>>>(
-      input, output, threads,
-      axis_size, bit_width, block_size,
+      input, output, threads, axis_size, bit_width, block_size,
       (rounding_mode_enum)rounding_mode
     );
   }
@@ -306,15 +297,11 @@ void LaunchBFPCUDAKernel(
 // 1. +-INF are converted to NaNs
 // 2. All subnormal numbers are flushed to zeros.
 // 3. When the shared exponent is 2^w - 1, all k values in a block are NaNs
-__global__ void BFPPrimeCUDAKernel(const float* input,
-                                   float* output,
-                                   const int num_threads,
-                                   const int axis_size,
-                                   const int bit_width,
-                                   const int block_size,
-                                   const int sub_block_size,
-                                   const int sub_block_shift_bits,
-                                   const int rounding_mode) {
+__global__ void BFPPrimeCUDAKernel(
+  const float* input, float* output, const int num_threads, const int axis_size,
+  const int bit_width, const int block_size, const int sub_block_size,
+  const int sub_block_shift_bits, const int rounding_mode
+) {
   int index = blockDim.x * blockIdx.x + threadIdx.x;
   if (index >= num_threads) {
     return;
@@ -323,7 +310,6 @@ __global__ void BFPPrimeCUDAKernel(const float* input,
   const int axis_blocks = axis_size / block_size;
   const int block_index = index % axis_blocks;
   const int axis_index = index / axis_blocks;
-
 
   // Mantissa bits of float32.
   const uint32_t m_float = 23;
@@ -335,8 +321,8 @@ __global__ void BFPPrimeCUDAKernel(const float* input,
   uint32_t shared_exp = GetMaxExponent(input + offset, block_size);
 
   for (int i = 0; i < block_size / sub_block_size; i++) {
-    uint32_t max_sub_exp = GetMaxExponent(
-        input + offset + i * sub_block_size, sub_block_size);
+    uint32_t max_sub_exp =
+      GetMaxExponent(input + offset + i * sub_block_size, sub_block_size);
 
     // Sub-block shift is the difference between the shared exponent and
     // the maximum exponent in the sub-block, upper bounded by 2^d - 1.
@@ -360,10 +346,12 @@ __global__ void BFPPrimeCUDAKernel(const float* input,
         // Add leading 1.
         mantissa = (input_x & 0x7fffff) | (1 << m_float);
       }
-      // Right shift mantissa by the exponent difference + the mantissa bitwidth difference
+      // Right shift mantissa by the exponent difference + the mantissa bitwidth
+      // difference
       uint32_t num_bits_shifting = shared_exp - shift - exp + m_float - m_bfp;
       if (num_bits_shifting >= 32) {
-        // Shift a number of bits equal or greater than the bit width is undefined behavior.
+        // Shift a number of bits equal or greater than the bit width is
+        // undefined behavior.
         num_bits_shifting = 31;
       }
       mantissa >>= num_bits_shifting;
@@ -394,41 +382,33 @@ __global__ void BFPPrimeCUDAKernel(const float* input,
         output[idx] = __uint_as_float(0x7fffffff);
       } else {
         // v = (−1)^s * 2^(E - bias) * 2^(-D) * 2^(1-m) * M
-        output[idx] = sign * std::pow(2.0,
-            static_cast<int>(shared_exp - exp_bias - shift + 1 - m_bfp)) * mantissa;
+        output[idx] =
+          sign *
+          std::pow(
+            2.0, static_cast<int>(shared_exp - exp_bias - shift + 1 - m_bfp)
+          ) *
+          mantissa;
       }
     }
   }
 }
 
 void LaunchBFPPrimeCUDAKernel(
-    const float* input,
-    float* output,
-    const int n,
-    const int axis_size,
-    const int bit_width,
-    const int block_size,
-    const int sub_block_size,
-    const int sub_block_shift_bits,
-    const int rounding_mode) {
-
+  const float* input, float* output, const int n, const int axis_size,
+  const int bit_width, const int block_size, const int sub_block_size,
+  const int sub_block_shift_bits, const int rounding_mode
+) {
   const int threads = n / block_size;
 
   int threads_per_block = 256;
   int blocks = static_cast<int>(
-      std::ceil(static_cast<float>(threads) / threads_per_block));
+    std::ceil(static_cast<float>(threads) / threads_per_block)
+  );
 
   cudaDeviceSynchronize();
   BFPPrimeCUDAKernel<<<blocks, threads_per_block>>>(
-    input,
-    output,
-    threads,
-    axis_size,
-    bit_width,
-    block_size,
-    sub_block_size,
-    sub_block_shift_bits,
-    rounding_mode
+    input, output, threads, axis_size, bit_width, block_size, sub_block_size,
+    sub_block_shift_bits, rounding_mode
   );
   cudaDeviceSynchronize();
 }

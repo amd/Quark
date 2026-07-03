@@ -13,9 +13,9 @@ import torch.nn as nn
 from onnx import TensorProto, helper, numpy_helper
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig, UInt8Spec
 from quark.onnx.quantization.quant_utils import convert_fp16_scale_to_fp32
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 fp16_input_tensor = np.array(
     [
@@ -69,7 +69,7 @@ class DataReader(CalibrationDataReader):
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
@@ -98,6 +98,7 @@ def prepare_cast_model(output_dir):
         inputs=["input"],
         outputs=["cast_output"],
         to=TensorProto.FLOAT16,
+        name="cast",
     )
 
     const_tensor = numpy_helper.from_array(np.array([1.0], dtype=np.float16), name="const")
@@ -106,6 +107,7 @@ def prepare_cast_model(output_dir):
         "Add",
         inputs=["cast_output", "const"],
         outputs=["output"],
+        name="add",
     )
 
     input_tensor = helper.make_tensor_value_info("input", TensorProto.FLOAT16, [1])
@@ -131,13 +133,16 @@ def prepare_constant_of_shape_model(output_dir):
         inputs=["input_shape"],
         outputs=["output"],
         value=helper.make_tensor("value", TensorProto.FLOAT16, [1], [1.0]),
+        name="constant_of_shape",
     )
 
     output_tensor = helper.make_tensor_value_info("output", TensorProto.FLOAT16, [1, 3, 2, 2])
 
     graph = helper.make_graph([constant_of_shape_node], "ConstantOfShapeGraph", [input_shape_tensor], [output_tensor])
 
-    model = helper.make_model(graph, producer_name="onnx-example", ir_version=10)
+    model = helper.make_model(
+        graph, producer_name="onnx-example", ir_version=10, opset_imports=[helper.make_opsetid("", 17)]
+    )
 
     onnx.save(model, onnx_model_path)
     return onnx_model_path
@@ -172,6 +177,9 @@ def prepare_config():
         ExtraOpTypesToQuantize=["Cast"],
         QuantizeFP16=True,
         UseFP32Scale=True,
+        # To make sure the Cast and ConstantOfShape nodes are not optimized away
+        OptimizeModel=False,
+        SimplifyModel=False,
     )
     return quant_config
 
@@ -179,6 +187,14 @@ def prepare_config():
 def prepare_no_fp16_flag_config():
     quant_config = QConfig(
         global_config=QLayerConfig(activation=UInt8Spec(), weight=Int8Spec()), ExtraOpTypesToQuantize=["Cast"]
+    )
+    return quant_config
+
+
+def prepare_exclude_add_node_config():
+    quant_config = QConfig(
+        global_config=QLayerConfig(activation=UInt8Spec(), weight=Int8Spec()),
+        exclude=[(["/global_avg_pool/GlobalAveragePool"], ["/fc/Gemm"])],
     )
     return quant_config
 
@@ -229,6 +245,15 @@ def tensor_quantize_no_fp16_flag(input_model_path, output_model_path, input_tens
     return output
 
 
+def tensor_quantize_exclude_add_node(input_model_path, output_model_path, input_tensor):
+    data_reader = prepare_data(input_tensor)
+    quant_config = prepare_exclude_add_node_config()
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    output = infer_quantized_model(quantized_model_path, input_tensor)
+    return output
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fp16(self, tmpdir: str):
@@ -245,6 +270,13 @@ class TestTensorQuantize(unittest.TestCase):
         self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
+    def test_quantize_fp16_cast_with_exclude_add_node(self, tmpdir: str):
+        input_model_path, output_model_path = prepare_model(tmpdir)
+        output = tensor_quantize_exclude_add_node(input_model_path, output_model_path, fp16_input_tensor)
+        comp_equal = np.allclose(output, fp16_golden_output, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
     def test_quantize_fp16_cast(self, tmpdir: str):
         input_model_path, output_model_path = prepare_cast_model(tmpdir)
         output = tensor_quantize(input_model_path, output_model_path, fp16_input_cast_tensor)
@@ -254,7 +286,8 @@ class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fp16_constant_of_shape_node(self, tmpdir: str):
         model_path = prepare_constant_of_shape_model(tmpdir)
-        convert_fp16_scale_to_fp32(model_path)
+        converted_model = convert_fp16_scale_to_fp32(model_path)
+        ort.InferenceSession(converted_model.SerializeToString())
 
 
 if __name__ == "__main__":

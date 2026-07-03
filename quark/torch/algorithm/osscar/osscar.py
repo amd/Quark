@@ -1,12 +1,13 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -15,7 +16,7 @@ from tqdm import tqdm
 
 if TYPE_CHECKING:
     from quark.torch.pruning.config import OSSCARConfig
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, get_named_linears, move_to_device
@@ -238,7 +239,7 @@ class OsscarProcessor(BaseAlgoProcessor):
     def apply(self) -> None:
         cache_examples_on_gpu = True
         num_batches = len(self.inps)
-        layer_inputs = [inp for inp in self.inps]
+        layer_inputs = list(self.inps)  # pragma: no cover
         layer_outputs: list[torch.Tensor] = []
         forward_pass_use_cache = self.model.config.use_cache
         self.model.config.use_cache = False

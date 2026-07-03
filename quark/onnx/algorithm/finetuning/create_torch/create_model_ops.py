@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,7 +11,7 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.utils.log import ScreenLogger, log_errors
 
 from .create_model_utils import (
     ActivationMapping,
@@ -39,10 +39,7 @@ def param_is_symmetric(params: list[Any]) -> bool:
     """
     assert len(params) // 2 == len(params) / 2, "Non even number of parameters."
     idx = len(params) // 2
-    for i in range(0, idx):
-        if params[i] != params[idx + i]:
-            return False
-    return True
+    return all(params[i] == params[idx + i] for i in range(0, idx))
 
 
 def extract_padding_params(params: list[Any]) -> Any:

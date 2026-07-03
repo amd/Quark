@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -8,7 +8,7 @@ import torch
 from torch.fx import Node
 from torch.nn import Parameter
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.processor.processor_utils import _is_skip_quant_node
 from quark.torch.quantization.graph.torch_utils import _CLE_ALG_TARGET_MODULE, is_call_module_node, is_relu_act_node
 from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import QuantizedConvBatchNorm2d

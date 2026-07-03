@@ -3,6 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 
+import importlib
+import os
+import tempfile
+from unittest.mock import MagicMock, patch
+
 import torch
 import torch.nn as nn
 
@@ -11,7 +16,7 @@ from quark.torch.algorithm.awq.scale import apply_scale
 
 class SimpleNN(nn.Module):
     def __init__(self, input_size, output_size):
-        super(SimpleNN, self).__init__()
+        super().__init__()
         self.gelu = nn.GELU()
         self.fc1 = nn.Linear(input_size, output_size)
         self.fc2 = nn.Linear(2 * output_size, 2 * output_size)
@@ -42,3 +47,53 @@ def test_apply_scale_for_fc_fc():
     weight_old.mul_(scale.to(model.fc2.weight.device).view(1, -1))
     apply_scale(model, scales_list, num_attention_heads=2, num_key_value_heads=1)
     assert torch.equal(model.fc2.weight.data, weight_old)
+
+
+def test_awq_save_activation_scales():
+    """Test that AwqProcessor.apply() saves activation scales when QUARK_SAVE_ACTIVATION_SCALES is enabled."""
+    from quark.torch.algorithm.awq.awq import AwqProcessor
+
+    # Bypass __init__ and set only the attributes needed by apply()
+    processor = object.__new__(AwqProcessor)
+    processor.using_accelerate = False
+    processor.modules = []  # empty so the AWQ loop doesn't execute
+    processor.model = MagicMock()
+    processor.model.config._attn_implementation = "eager"
+    processor.recover_attn_implementation = "eager"
+    processor.global_scales_list = [("layer.0", ("fc1",), torch.ones(10))]
+
+    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+        scales_file = f.name
+
+    try:
+        with (
+            patch("quark.torch.algorithm.awq.awq.QUARK_SAVE_ACTIVATION_SCALES", True),
+            patch("quark.torch.algorithm.awq.awq.QUARK_ACTIVATION_SCALES_FILENAME", scales_file),
+        ):
+            processor.apply()
+
+        # Verify the scales were saved correctly
+        loaded = torch.load(scales_file, weights_only=False)
+        assert len(loaded) == 1
+        assert loaded[0][0] == "layer.0"
+        assert loaded[0][1] == ("fc1",)
+        assert torch.equal(loaded[0][2], torch.ones(10))
+    finally:
+        os.unlink(scales_file)
+
+
+def test_awq_memory_optimization_constant():
+    """Test that QUARK_AWQ_MEMORY_OPTIMIZATION constant is correctly read from the environment."""
+    import quark.torch.utils.constants as constants_module
+
+    # Verify default (env var not set) is False
+    assert constants_module.QUARK_AWQ_MEMORY_OPTIMIZATION is False
+
+    # Reload with env var set to verify the constant and its log message are exercised
+    with patch.dict(os.environ, {"QUARK_AWQ_MEMORY_OPTIMIZATION": "1"}):
+        importlib.reload(constants_module)
+        assert constants_module.QUARK_AWQ_MEMORY_OPTIMIZATION is True
+
+    # Restore original state
+    importlib.reload(constants_module)
+    assert constants_module.QUARK_AWQ_MEMORY_OPTIMIZATION is False

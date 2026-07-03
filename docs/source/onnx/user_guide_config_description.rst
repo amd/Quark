@@ -99,7 +99,8 @@ Besides the default configurations in AMD Quark for ONNX, you can also customize
    :caption: Customized Configurations
    :maxdepth: 1
 
-   Calibration datasets <config/calibration_datasets>
+   Quantization Configuration Serialization and Deserialization <config/quantization_configuration_serialization_and_deserialization>
+   Calibration Datasets <config/calibration_datasets>
    Quantization Strategies <config/quantization_strategies>
    Quantization Schemes <config/quantization_schemes>
    Quantization Configuration <config/quantization_configuration>

@@ -3,46 +3,64 @@
 Quark's ``contrib`` Area
 ========================
 
-Welcome to the AMD Quark ``contrib`` area! This guide outlines the terms of use for users and the policies for contributing code that is shipped with Quark but is not officially supported by the Quark Core Team. All contributions to this area are maintained and supported by their original authors.
+Welcome to the AMD Quark ``contrib`` area! We're excited to have you explore this collection of community-authored extensions. This guide outlines the terms of use for users and the policies for contributing code that is shipped with Quark but is not officially supported by the Quark Core Team. All contributions to this area are maintained and supported by their original authors, fostering a collaborative ecosystem that extends Quark's capabilities beyond the core library.
 
 .. _users_contrib_area:
 
 For Users: Understanding the ``contrib`` Area
 ---------------------------------------------
 
-The ``contrib`` area is a valuable collection of community-authored extensions to Quark. While these components are included in the AMD Quark library for convenience, it is critical to understand their relationship with the Quark Core Team and your responsibility as a user:
+The ``contrib`` area is a valuable collection of community-authored extensions to Quark that expand functionality beyond the core library. While these components are included in the AMD Quark library for your convenience, it is important to understand their relationship with the Quark Core Team and your responsibilities as a user:
 
-* **No Official Support:** Components within the ``contrib`` area are **not officially supported** by the Quark Core Team. This means we cannot provide direct assistance, bug fixes, or guarantees for these modules.
+* **No Official Support:** Components within the ``contrib`` area are **not officially supported** by the Quark Core Team. While we facilitate their inclusion in the repository and provide infrastructure support, we cannot provide direct assistance, bug fixes, or guarantees for these modules. For support, please contact the original author.
 
-* **Use at Your Own Risk:** You **use these contributions at your own risk**. While we encourage high-quality submissions, the Quark Core Team does not guarantee the stability, security, or future compatibility of ``contrib`` code.
+* **Use at Your Own Risk:** You **use these contributions at your own risk**. While we evaluate all contributions for quality, stability, and alignment with the project's direction before merging, the Quark Core Team does not guarantee the ongoing stability, security, or future compatibility of ``contrib`` code. The original author is responsible for maintaining their contribution.
 
-* **Support from the Author:** If you encounter issues, have questions, or require support, please contact the **original author** of the contribution. The author's name and contact information (typically a GitHub profile or link) should be available in the module's documentation.
+* **Support from the Author:** If you encounter issues, have questions, or require support, please contact the **original author** of the contribution. The author's name and contact information (typically a GitHub profile or link) will be available in the module's ``README.md`` file and documentation.
 
-By using ``contrib`` code, you agree that the Quark Core Team is not responsible for any issues that may arise from its use.
+By using ``contrib`` code, you acknowledge that the Quark Core Team is not responsible for any issues that may arise from its use, and that support is provided by the original author on a best-effort basis.
 
 .. _contributors_contrib_area:
 
 For Contributors: How to Contribute
 -----------------------------------
 
+We appreciate your interest in contributing to the Quark ``contrib`` area! Your contributions help expand the capabilities of Quark and benefit the entire community. To ensure a smooth and successful contribution process, please familiarize yourself with the following principles and guidelines.
+
 .. _contribution_principles:
 
 Contribution Principles
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-By contributing to the ``contrib`` area, you agree to the following responsibilities:
+By contributing to the ``contrib`` area, you agree to the following responsibilities and expectations:
 
-* **Quark Release Schedule:** Quark's release schedule is determined by the Core Team and is not subject to change based on the readiness or release requirements of ``contrib`` contributions.
-* **Legal Responsibility:** All code, including in the ``contrib`` area, must pass a legal review. You are responsible for resolving any legal issues identified by our Legal department before your code can be merged.
-* **Code Standards & Maintenance:** Your code must comply with Quark's established code formatting, style, and quality standards. You are the sole maintainer of your contribution, responsible for its long-term health and compatibility with new Quark releases.
-* **Full Author Support:** The original author is responsible for all aspects of their contribution's lifecycle, including:
-    * Performing code reviews for any proposed changes to your contribution.
-    * Fixing bugs and refactoring code as needed.
-    * Responding to user and customer support requests.
-    * Resolving CI (Continuous Integration) failures related to your code.
-    * Ensuring the code meets all required unit test and code coverage policies.
-* **Licensing:** Your contribution must be licensed under the MIT license, consistent with the main Quark project.
-* **Documentation:** All code must be fully documented using Quark's specified policy and tooling. Your module must include comprehensive usage instructions and API documentation.
+* **Quality & Alignment:** While the quality bar for the ``contrib`` area is lower than for the core library, **merging is not unconditional**. All pull requests are evaluated for stability, user experience (UX), and alignment with Quark's overall direction. Contributions that do not meet these criteria or introduce unnecessary complexity may not be accepted. Additionally, **hardware-specific code is not permitted** in the Quark repository. This includes, but is not limited to, ONNX Runtime operators, NPU kernels, and other hardware-dependent implementations. Quark is a model optimization library, and only contributions that are tightly related to model optimization belong in this repository.
+
+* **Contributor Responsibilities:** As a contributor, you are responsible for:
+
+    * **Providing comprehensive documentation** that enables users to understand and use your contribution effectively.
+    * **Writing thorough tests** that validate your contribution's functionality and maintain code quality.
+    * **Timely addressing issues** reported by the Quark Core Team, users, or identified through automated testing and security scans.
+    * **Maintaining compatibility** with new Quark releases and updating your contribution as needed.
+    * **Performing code reviews** for any proposed changes to your contribution.
+    * **Responding to user and customer support requests** in a timely manner.
+
+* **Maintenance & Removal:** The Quark Core Team absorbs the overhead for CI/CD infrastructure, security scans, and legal approvals to facilitate your contribution. However, **we rely on you to actively maintain your code**. Failure to maintain a contribution, address feedback from the Quark team, or resolve critical issues in a timely manner **may result in its removal from the repository**. Specifically:
+
+    * **Release Branch Removal:** If a release is in progress and you fail to address any test failures, documentation issues, bugs, or other feedback from the Quark Core Team, **your contribution will be removed from the release branch**.
+    * **Main Branch Removal:** If issues persist and you continue to not address the required changes, **your contribution will also be removed from the main branch**.
+
+  We will make reasonable efforts to communicate with you before taking such action, but unmaintained code poses risks to the overall project and may need to be removed to protect the integrity of the Quark ecosystem.
+
+* **Release Schedules:** Quark's official release schedule is determined by the Core Team and **is not subject to change based on the readiness or release requirements of** ``contrib`` **contributions**. If you have a time-sensitive customer need that cannot wait for the next official release, please follow the process for `Creating a Quark Private Drop for Customers` in our Wiki. Users can reach out to the Quark team to discuss how to use our **private drop mechanism** to create a non-official development version. This approach unblocks immediate customer needs while we collaborate to streamline the contribution for inclusion in the next stable release.
+
+* **Legal Responsibility:** All code, including contributions to the ``contrib`` area, must pass a legal review conducted by AMD's Legal department. You are responsible for ensuring your code complies with all applicable licenses and resolving any legal issues identified during the review process before your code can be merged.
+
+* **Code Standards:** Your code must comply with Quark's established code formatting, style, and quality standards as outlined in the main ``CONTRIBUTING.md`` file. This includes passing all linting checks, type checking, and adhering to the project's coding conventions.
+
+* **Licensing:** Your contribution must be licensed under the MIT license, consistent with the main Quark project. By submitting a contribution, you affirm that you have the right to license the code under these terms.
+
+* **CI/CD Integration:** You are responsible for resolving any Continuous Integration (CI) failures related to your code. The Quark Core Team provides the infrastructure, but you must ensure your contribution passes all required checks and tests.
 
 .. _how_to_contribute_steps:
 
@@ -76,7 +94,7 @@ Each ``contrib`` component is expected to include its own dedicated tests to ens
 
 * **Test Location:** All unit tests for your contribution must reside in a ``tests`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/tests/``.
 
-* **Test Quality:** As per the general ``CONTRIBUTING.md`` guidelines and test's README.md (aka ``tests/README.md``)_, your unit tests must be fast, small, and strive to cover most, if not all, of the source code maintained by your contribution.
+* **Test Quality:** Your unit tests must be fast, small, and achieve the **minimum code coverage threshold required by Quark**. Failure to meet the coverage threshold **will block your contribution from being merged**. Please refer to the general ``CONTRIBUTING.md`` guidelines and test's ``README.md`` (aka ``tests/README.md``) for the specific coverage requirements and other testing policies.
 
 * **CI/CD Integration:** To integrate your tests into Quark's continuous integration/continuous deployment (CI/CD) workflows and scripts, you **must consult with a DevOps engineer** from the Quark Core Team. They will assist in updating the infrastructure to properly run your tests.
 
@@ -89,7 +107,7 @@ Comprehensive documentation is vital for the usability and maintainability of yo
 
 * **Documentation Location:** All documentation for your contribution must be placed in a ``docs`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/docs/``.
 
-* **Format and Content:** Documentation must be written in **ReStructuredText** format. It should include a good conceptual introduction, clear examples, relevant diagrams, and any other information necessary to make the component easy to use, understand, and maintain for other developers.
+* **Format and Content:** Documentation must be written in **ReStructuredText** format. It should include a clear conceptual introduction, practical examples, relevant diagrams or visualizations where appropriate, and any other information necessary to make the component easy to use, understand, and maintain for other developers. High-quality documentation is essential for user adoption and long-term maintainability.
 
 * **CI/CD Integration:** To integrate your documentation into Quark's build and deployment infrastructure, you **may consult with a DevOps engineer** from the Quark Core Team. They will assist in updating the necessary CI/CD workflows or scripts, if needed. Typically, it is needed to update the ``docs/source/index.rst`` file to add an entry point for your new contribution's documentation. This entry should be placed right below the ``intro_contrib.rst`` page, similar to this example:
 
@@ -105,4 +123,123 @@ Comprehensive documentation is vital for the usability and maintainability of yo
 
 * Write and test rendering of the documentation as per the general ``CONTRIBUTING.md`` guidelines.
 
-Thank you for your commitment to expanding the Quark ecosystem.
+Running CI/CD for Your Contribution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When contributing to the ``contrib`` area, you may need to set up CI/CD workflows to test your contribution. This section outlines the requirements and process for integrating CI/CD workflows for your contribution.
+
+GitHub Actions Runners
+""""""""""""""""""""""
+
+**When Runners Are Required:**
+
+Partners contributing to Quark **must provide GitHub Actions Runners** (servers) to run CI/CD workloads in the following scenarios:
+
+* **GPU/Special Hardware Requirements:** Any workflow that requires GPU access or other special hardware (e.g., CUDA, ROCm, specialized accelerators).
+* **Long-Running Workflows:** Any workflow that takes more than a few minutes to execute on a standard CPU server.
+
+**Requesting Runners:**
+
+To set up new GitHub Actions runners for your contribution:
+
+1. **Contact Quark DevOps:** Reach out to the Quark DevOps team to request the installation of new runners for your contribution.
+2. **Runner Labels:** New runners should use labels prefixed with ``contrib-<component_name>-`` to clearly distinguish them from core Quark runners. For example, if your component is named ``my-component``, your runner labels might be:
+   * ``contrib-my-component-cpu``
+   * ``contrib-my-component-cuda``
+   * ``contrib-my-component-rocm``
+
+This labeling convention ensures clear separation between core Quark infrastructure and contribution-specific infrastructure.
+
+Creating Workflows
+"""""""""""""""""""
+
+**Workflow File Naming:**
+
+All workflows for contributions must be created in the ``.github/workflows`` folder and must use the following naming convention:
+
+* **Prefix:** ``contrib__<component_name>__``
+* **Format:** ``contrib__<component_name>__<workflow_description>.yml``
+
+For example, if your component is named ``my-component`` and you're creating a test workflow, the file should be named:
+``contrib__my-component__test.yml``
+
+This naming convention makes it immediately clear that the workflow belongs to a specific contribution and distinguishes it from core Quark workflows.
+
+**Workflow Approval:**
+
+**All new workflow files must be approved by Quark DevOps** before they can be merged into the repository. When submitting a pull request that includes new workflow files:
+
+1. **Notify DevOps:** Explicitly mention in your pull request that you are adding new CI/CD workflows.
+2. **Provide Details:** Include information about:
+   * What the workflow does
+   * What runners/labels it requires
+   * Expected execution time
+   * Any special hardware or software requirements
+3. **Wait for Approval:** Do not merge the pull request until Quark DevOps has reviewed and approved the workflow configuration.
+
+**Example Workflow Structure:**
+
+Here's an example of how a contribution workflow might be structured:
+
+.. code-block:: yaml
+
+    name: contrib__my-component__test
+
+    on:
+      pull_request:
+        paths:
+          - 'quark/contrib/my-component/**'
+      push:
+        branches: [main]
+        paths:
+          - 'quark/contrib/my-component/**'
+
+    jobs:
+      test:
+        runs-on: contrib-my-component-cpu
+        steps:
+          - uses: actions/checkout@v4
+          # ... your test steps here
+
+Creating Reusable Actions
+"""""""""""""""""""""""""
+
+**Action Directory:**
+
+All reusable GitHub Actions for contributions must be stored in the ``.github/actions`` folder. Each reusable action should be placed in its own sub-directory within this folder.
+
+**Action Naming:**
+
+Reusable actions should follow a similar naming convention to workflows:
+
+* **Prefix:** ``contrib__<component_name>__``
+* **Format:** ``contrib__<component_name>__<action_description>``
+
+For example, if your component is named ``my-component`` and you're creating a setup action, the directory should be named:
+``.github/actions/contrib__my-component__setup``
+
+**Action Approval:**
+
+**The same approval policy applies to reusable actions as workflows.** All new reusable action directories and files must be approved by Quark DevOps before they can be merged into the repository. When submitting a pull request that includes new reusable actions:
+
+1. **Notify DevOps:** Explicitly mention in your pull request that you are adding new reusable actions.
+2. **Provide Details:** Include information about:
+   * What the action does
+   * Which workflows use the action
+   * Any dependencies or requirements
+   * Expected behavior and outputs
+3. **Wait for Approval:** Do not merge the pull request until Quark DevOps has reviewed and approved the action configuration.
+
+**Best Practices:**
+
+* Keep workflows focused and efficient. Avoid unnecessary steps that increase execution time.
+* Use appropriate runner labels to ensure your workflows run on the correct hardware.
+* Document any special requirements or setup steps needed for your workflows.
+* Ensure workflows fail fast and provide clear error messages for debugging.
+
+Conclusion
+----------
+
+Thank you for your interest in contributing to the Quark ``contrib`` area! Your contributions play a vital role in expanding Quark's capabilities and serving the diverse needs of our community. We look forward to collaborating with you to build high-quality, well-maintained extensions that benefit all Quark users.
+
+If you have any questions about the contribution process or need assistance, please don't hesitate to reach out to the Quark Core Team through GitHub issues or our community channels. We're here to help you succeed!

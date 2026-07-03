@@ -16,6 +16,7 @@ from onnx import helper
 from onnx.onnx_ml_pb2 import TensorProto
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import (
     CalibrationMethod,
     Config,
@@ -26,13 +27,20 @@ from quark.onnx import (
     get_library_path,
 )
 from quark.onnx.quantization.quant_utils import COP_DOMAIN, COP_MX_OP_NAME
-from quark.shares.utils.testing_utils import use_temporary_directory
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_mx
 from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.utils import get_dtype_params, reshape_to_blocks
 
 
-def create_custom_op(element_dtype: str, output_dir: str) -> None:
+def create_custom_op(element_dtype: str, output_dir: str, use_fp16: bool = False) -> None:
+    """Create an ONNX model with a single MX custom op and save it to output_dir.
+
+    Args:
+        element_dtype: MX element data type (e.g. "fp8_e4m3", "int8", "fp4_e2m1").
+        output_dir: Directory to save the generated ONNX model.
+        use_fp16: If True, use float16 input/output tensors; otherwise use float32.
+    """
+    tensor_type = TensorProto.FLOAT16 if use_fp16 else TensorProto.FLOAT
     graph_def = helper.make_graph(
         nodes=[
             helper.make_node(
@@ -48,8 +56,8 @@ def create_custom_op(element_dtype: str, output_dir: str) -> None:
             )
         ],
         name="test-model",
-        inputs=[helper.make_tensor_value_info("input", TensorProto.FLOAT, shape=None)],
-        outputs=[helper.make_tensor_value_info("out", TensorProto.FLOAT, shape=None)],
+        inputs=[helper.make_tensor_value_info("input", tensor_type, shape=None)],
+        outputs=[helper.make_tensor_value_info("out", tensor_type, shape=None)],
     )
     model_def = helper.make_model(
         graph_def,
@@ -235,6 +243,105 @@ def load_test_case_result():
     return result
 
 
+def compare_fixed_data_fp16(output_dir: str, elem_dtype: str, device_type: str = "CPU") -> None:
+    """Compare MX quantization results between Quark torch and ONNX custom op using fixed data with fp16 I/O.
+
+    Args:
+        output_dir: Directory containing the ONNX model.
+        elem_dtype: MX element data type key (e.g. "fp8_e4m3").
+        device_type: Execution provider device type ("CPU", "CUDA", or "ROCM").
+    """
+    result = load_test_case_result()
+    test_tensor = result["input"]
+
+    block_size, axis = 32, 1
+    mx_element_dtype = quark_supported_elem_dtype[elem_dtype]
+    _, _, emax = get_dtype_params(mx_element_dtype)
+    block_x = reshape_to_blocks(test_tensor, block_size, axis)
+    scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
+    scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+
+    quark_output_tensor = fake_quantize_mx(
+        input_tensor=test_tensor.clone(),
+        scale=scale,
+        mx_element_dtype=mx_element_dtype,
+        axis=axis,
+        block_size=block_size,
+        scale_calculation_mode="floor",
+    )
+
+    so = onnxruntime.SessionOptions()
+    so.register_custom_ops_library(get_library_path(device_type))
+    onnx_model_path = Path(output_dir, "test.onnx").as_posix()
+    ort_session = onnxruntime.InferenceSession(onnx_model_path, so, providers=[device_type + "ExecutionProvider"])
+    ort_inputs = {"input": test_tensor.numpy().astype(np.float16)}
+
+    start_time = time.perf_counter() * 1000
+    onnx_output_fp16 = ort_session.run(None, ort_inputs)[0]
+    end_time = time.perf_counter() * 1000
+
+    onnx_output_tensor = torch.from_numpy(onnx_output_fp16.astype(np.float32))
+
+    max_diff = torch.max(abs(quark_output_tensor - onnx_output_tensor))
+    assert max_diff <= 1.0, (
+        f"The {elem_dtype} FP16 quantization result has a difference {max_diff} between quark torch and onnx"
+    )
+
+    print(
+        f"Verified {elem_dtype} on {device_type} for MX fixneuron FP16 with fixed data, "
+        f"the difference is {max_diff} and it costs {end_time - start_time:.2f}ms"
+    )
+
+
+def compare_random_data_fp16(output_dir: str, elem_dtype: str, device_type: str = "CPU") -> None:
+    """Compare MX quantization results between Quark torch and ONNX custom op using random data with fp16 I/O.
+
+    Args:
+        output_dir: Directory containing the ONNX model.
+        elem_dtype: MX element data type key (e.g. "fp8_e4m3").
+        device_type: Execution provider device type ("CPU", "CUDA", or "ROCM").
+    """
+    onnx_model_path = Path(output_dir, "test.onnx").as_posix()
+    test_tensor = torch.randn(1, 32, 8, 8)
+
+    block_size, axis = 32, 1
+    mx_element_dtype = quark_supported_elem_dtype[elem_dtype]
+    _, _, emax = get_dtype_params(mx_element_dtype)
+    block_x = reshape_to_blocks(test_tensor, block_size, axis)
+    scale, _ = torch.max(torch.abs(block_x), dim=axis + 1, keepdim=True)
+    scale = torch.pow(2, torch.floor(torch.log2(scale)) - emax)
+
+    quark_output_tensor = fake_quantize_mx(
+        input_tensor=test_tensor.clone(),
+        scale=scale,
+        mx_element_dtype=mx_element_dtype,
+        axis=axis,
+        block_size=block_size,
+        scale_calculation_mode="floor",
+    )
+
+    so = onnxruntime.SessionOptions()
+    so.register_custom_ops_library(get_library_path(device_type))
+    ort_session = onnxruntime.InferenceSession(onnx_model_path, so, providers=[device_type + "ExecutionProvider"])
+    ort_inputs = {"input": test_tensor.numpy().astype(np.float16)}
+
+    start_time = time.perf_counter() * 1000
+    onnx_output_fp16 = ort_session.run(None, ort_inputs)[0]
+    end_time = time.perf_counter() * 1000
+
+    onnx_output_tensor = torch.from_numpy(onnx_output_fp16.astype(np.float32))
+
+    max_diff = torch.max(abs(quark_output_tensor - onnx_output_tensor))
+    assert max_diff <= 1.0, (
+        f"The {elem_dtype} FP16 quantization result has a difference {max_diff} between quark torch and onnx"
+    )
+
+    print(
+        f"Verified {elem_dtype} on {device_type} for MX fixneuron FP16 with random data, "
+        f"the difference is {max_diff} and it costs {end_time - start_time:.2f}ms"
+    )
+
+
 def compare_fixed_data(output_dir: str, elem_dtype: str, device_type: str = "CPU") -> None:
     result = load_test_case_result()
     test_tensor = result["input"]
@@ -349,6 +456,34 @@ def verify_mx_fixneuron(output_dir: str) -> None:
             compare_random_data(output_dir, key, "CUDA")
 
 
+def verify_mx_fixneuron_fp16(output_dir: str) -> None:
+    """Verify MX custom op with fp16 input/output for all supported element dtypes.
+
+    Args:
+        output_dir: Directory to save and load the generated ONNX models.
+    """
+    for key in quark_supported_elem_dtype:
+        if key == "fp4":
+            create_custom_op("fp4_e2m1", output_dir, use_fp16=True)
+        else:
+            create_custom_op(key, output_dir, use_fp16=True)
+
+        if key == "int8":
+            continue
+
+        compare_fixed_data_fp16(output_dir, key)
+        if "ROCMExecutionProvider" in onnxruntime.get_available_providers():
+            compare_fixed_data_fp16(output_dir, key, "ROCM")
+        elif "CUDAExecutionProvider" in onnxruntime.get_available_providers():
+            compare_fixed_data_fp16(output_dir, key, "CUDA")
+
+        compare_random_data_fp16(output_dir, key)
+        if "ROCMExecutionProvider" in onnxruntime.get_available_providers():
+            compare_random_data_fp16(output_dir, key, "ROCM")
+        elif "CUDAExecutionProvider" in onnxruntime.get_available_providers():
+            compare_random_data_fp16(output_dir, key, "CUDA")
+
+
 # ==========================================================================
 
 input_tensor = np.array(
@@ -376,7 +511,7 @@ input_tensor = np.array(
     ]
 ).astype(np.float32)
 
-output_tensor = np.array(
+output_tensor_conv = np.array(
     [
         [
             [
@@ -388,6 +523,9 @@ output_tensor = np.array(
         ]
     ]
 ).astype(np.float32)
+
+
+output_tensor_matmul = np.array([0.21484375]).astype(np.float32)
 
 
 class DataReader(CalibrationDataReader):
@@ -410,7 +548,7 @@ class DataReader(CalibrationDataReader):
 
 class SimpleConvModel(nn.Module):
     def __init__(self):
-        super(SimpleConvModel, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
@@ -418,7 +556,22 @@ class SimpleConvModel(nn.Module):
         return x
 
 
-def prepare_model(output_dir):
+class SimpleMatMulModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(4, 4))
+        self.fc = nn.Linear(4, 1)
+
+    def forward(self, x):
+        matmul_with_weight = torch.matmul(x[:, 0], self.weight)
+        matmul_without_weight = torch.matmul(x[:, 1], x[:, 2])
+        combined_output = matmul_with_weight + matmul_without_weight
+        output = self.fc(combined_output)
+        output = output.sum()
+        return output
+
+
+def prepare_conv_model(output_dir):
     torch.manual_seed(42)
     model = SimpleConvModel()
 
@@ -429,6 +582,28 @@ def prepare_model(output_dir):
     torch.onnx.export(
         model,
         dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=17,
+        dynamo=False,
+    )
+
+    print(f"Model has been saved to {onnx_model_path}")
+    return onnx_model_path, onnx_quantized_model_path
+
+
+def prepare_matmul_model(output_dir):
+    torch.manual_seed(42)
+    model = SimpleMatMulModel()
+
+    dummy_input_x = torch.randn(1, 3, 4, 4)
+
+    onnx_model_path = Path(output_dir, "simple_matmul_model.onnx").as_posix()
+    onnx_quantized_model_path = Path(output_dir, "simple_matmul_model_quantized.onnx").as_posix()
+    torch.onnx.export(
+        model,
+        dummy_input_x,
         onnx_model_path,
         input_names=["input"],
         output_names=["output"],
@@ -504,10 +679,20 @@ def infer_quantized_model(quantized_model_path, device="CPU"):
     return output
 
 
-def tensor_quantize(output_dir):
-    input_model_path, output_model_path = prepare_model(output_dir)
+def tensor_quantize_conv_model(output_dir):
+    input_model_path, output_model_path = prepare_conv_model(output_dir)
     data_reader = prepare_data()
     quant_config = prepare_config("fp4_e2m1")
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    output = infer_quantized_model(quantized_model_path)
+    return output
+
+
+def tensor_quantize_matmul_model(output_dir):
+    input_model_path, output_model_path = prepare_matmul_model(output_dir)
+    data_reader = prepare_data()
+    quant_config = prepare_config("int8")
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -517,10 +702,23 @@ def tensor_quantize(output_dir):
 class TestTensorQuantize(unittest.TestCase):
     # By default, we test the MXINT8 quantization running on CPU
     @use_temporary_directory
-    def test_quantize_MX(self, tmpdir: str):
-        output = tensor_quantize(tmpdir)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
+    def test_quantize_conv_model(self, tmpdir: str):
+        output = tensor_quantize_conv_model(tmpdir)
+        comp_equal = np.allclose(output, output_tensor_conv, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_matmul_model(self, tmpdir: str):
+        output = tensor_quantize_matmul_model(tmpdir)
+        comp_equal = np.allclose(output, output_tensor_matmul, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+
+class TestMXFixNeuronFP16(unittest.TestCase):
+    @use_temporary_directory
+    def test_mx_fixneuron_fp16(self, tmpdir: str):
+        """Test MX custom op with float16 input/output for all supported element dtypes."""
+        verify_mx_fixneuron_fp16(output_dir=tmpdir)
 
 
 if __name__ == "__main__":
@@ -528,6 +726,9 @@ if __name__ == "__main__":
     # its output is consistent with torch API
     with tempfile.TemporaryDirectory() as tmpdir:
         verify_mx_fixneuron(output_dir=tmpdir)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        verify_mx_fixneuron_fp16(output_dir=tmpdir)
 
     # Verify the quantized model
     unittest.main()

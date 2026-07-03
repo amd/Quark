@@ -4,7 +4,7 @@
 #
 import torch
 
-from quark.testing.common_utils import TestCase, skip_if_no_gpu
+from quark.common.utils.testing_utils import TestCase, skip_if_no_gpu
 
 
 class TestCudaInfoFromTorch(TestCase):

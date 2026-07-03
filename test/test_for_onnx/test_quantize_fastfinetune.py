@@ -10,8 +10,13 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 import torch
+from onnx_testing_utils import run_onnx_op_variants
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import (
+    assert_outputs_equivalent,
+    use_temporary_directory,
+)
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.algorithm.finetuning.create_torch.base_fn_quantizers import BFPQuantizer, MXQuantizer
 from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
@@ -28,7 +33,6 @@ from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
 from quark.onnx.algorithm.finetuning.create_torch.quant_base_ops import QuantizationModule, create_fn_quantizer
 from quark.onnx.quantization.config.custom_config import U8U8_AAWA_CONFIG
 from quark.onnx.quantization.quant_utils import COP_BFP_OP_NAME, COP_MX_OP_NAME
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -85,7 +89,7 @@ output_tensor = np.array(
 # In order to cover all the op types we supported, we create a customized model here
 class CustomModel(torch.nn.Module):
     def __init__(self, in_channels=3, out_channels=4, kernel_size=3, matmul_dim=4, layernorm_dim=4):
-        super(CustomModel, self).__init__()
+        super().__init__()
 
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=kernel_size // 2)
         self.matmul_weight = torch.nn.Parameter(torch.randn(matmul_dim, matmul_dim))
@@ -207,24 +211,18 @@ def tensor_quantize(output_dir, MemOptLevel: int = 0):
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fastfinetune0(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=0)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=0))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     @use_temporary_directory
     def test_quantize_fastfinetune1(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=1)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=1))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     @use_temporary_directory
     def test_quantize_fastfinetune2(self, tmpdir: str):
-        output = tensor_quantize(tmpdir, MemOptLevel=2)
-        # comp_equal = (output == output_tensor)
-        comp_equal = np.allclose(output, output_tensor, atol=1e-1)
-        self.assertEqual(np.all(comp_equal), True)
+        out = run_onnx_op_variants(lambda: tensor_quantize(tmpdir, MemOptLevel=2))
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
     def test_quantize_intfunc(self):
         int_quant_dequant_func = INTQuantDequantFunction.apply

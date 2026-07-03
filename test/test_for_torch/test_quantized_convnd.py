@@ -15,7 +15,8 @@ from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, 
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConvTranspose2d
 from quark.torch import ModelQuantizer
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.testing_utils import torch_device
 
 INT8_PER_TENSOR_SPEC = QTensorConfig(
     dtype=Dtype.int8,
@@ -131,7 +132,7 @@ def test_transpose_model_quant():
     # fx model quant without quant
     float_model = SimpleCNNWithTransposeConv().to(torch_device).eval()
     float_out = float_model(example_inputs)
-    graph_model = torch.export.export_for_training(float_model, (example_inputs,)).module()
+    graph_model = export_for_training(float_model, (example_inputs,)).module()
     fx_quant_conf = QConfig(global_quant_config=quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(fx_quant_conf)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])
@@ -149,7 +150,7 @@ def test_transpose_model_quant():
         input_tensors=INT8_PER_TENSOR_SPEC,
     )
     float_model = SimpleCNNWithTransposeConv().to(torch_device).eval()
-    graph_model = torch.export.export_for_training(float_model, (example_inputs,)).module()
+    graph_model = export_for_training(float_model, (example_inputs,)).module()
     fx_quant_conf = QConfig(global_quant_config=int8_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(fx_quant_conf)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs for _ in range(2)])

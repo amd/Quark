@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # pylint: disable=g-explicit-length-test
@@ -16,13 +16,20 @@ import onnx
 import onnxruntime
 from google.protobuf import text_format
 from onnx import ModelProto, NodeProto, TensorProto, TensorShapeProto, ValueInfoProto
+from onnxruntime.quantization.calibrate import CalibrationDataReader
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import add_infer_metadata
 
+from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.operators.custom_ops import get_library_path
-from quark.onnx.quantization.quant_utils import DEQUANT_OP_TYPES, QUANT_OP_TYPES, load_model_with_shape_infer
+from quark.onnx.quantization.quant_utils import (
+    DEQUANT_OP_TYPES,
+    FN_OP_TYPES,
+    QUANT_OP_TYPES,
+    load_model_with_shape_infer,
+)
 from quark.onnx.utils.system_utils import create_tmp_dir
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -379,7 +386,14 @@ class ONNXQuantizedModel:
         self.out_name_to_node = self.onnx_model.output_name_to_node()
 
     def _find_node_input_qdq(self, node: NodeProto, tensor_name: str) -> tuple[NodeProto | None, NodeProto | None]:
-        """Find qdq nodes on input tensor, dq always exits but q may be folded"""
+        """
+        Find qdq nodes on input tensor. Note that dq always exists, but q sometimes is folded.
+
+        :param onnx.NodeProto node: The target node.
+        :param str tensor_name: Name of the tensor, which should be one of the target node's inputs.
+
+        :return: The DQ and Q nodes quantizing the tensor.
+        """
         if tensor_name not in self.out_name_to_node:
             logger.debug(f"input {tensor_name} of {node.name} came from initializer")
             return None, None
@@ -400,7 +414,14 @@ class ONNXQuantizedModel:
         return dq_candidate, q_candidate  # Note that DQ came first
 
     def _find_node_output_qdq(self, node: NodeProto, tensor_name: str) -> tuple[NodeProto | None, NodeProto | None]:
-        """Find qdq nodes on output tensor"""
+        """
+        Find qdq nodes on output tensor.
+
+        :param onnx.NodeProto node: The target node.
+        :param str tensor_name: Name of the tensor, which should be one of the target node's outputs.
+
+        :return: The DQ and Q nodes quantizing the tensor.
+        """
         if tensor_name not in self.in_name_to_nodes:
             logger.debug(f"output {tensor_name} of {node.name} was a isolate node")
             return None, None
@@ -424,8 +445,13 @@ class ONNXQuantizedModel:
         return q_candidate, dq_candidate  # Note that Q came first
 
     def find_target_op_type_qdqs(self, target_op_type: list[str]) -> dict[str, Any]:
-        """Get the qdqs on all inputs and outputs of the target node,
+        """
+        Get the qdqs on all inputs and outputs of the target node,
         which is the first node with a target op type.
+
+        :param list[str] target_op_type: The target op types.
+
+        :return: The extracted structure containing input and output QDQs.
         """
         node_struct: dict[str, Any] = {"node": None, "input_qdqs": [], "output_qdqs": []}
 
@@ -450,7 +476,13 @@ class ONNXQuantizedModel:
         return node_struct
 
     def find_target_node_qdqs(self, target_node: NodeProto) -> dict[str, Any]:
-        """Get the qdqs on all inputs and outputs of the target node."""
+        """
+        Get the qdqs on all inputs and outputs of the target node.
+
+        :param NodeProto target_node: The target node.
+
+        :return: The extracted structure containing input and output QDQs.
+        """
         node_struct: dict[str, Any] = {
             "node": None,
             "input_qdqs": [],
@@ -458,7 +490,7 @@ class ONNXQuantizedModel:
         }
 
         for node in self.model.graph.node:
-            if node == target_node:
+            if node is target_node:
                 node_struct["node"] = node
 
                 input_qdqs = []  # This contains weight/bias qdqs
@@ -466,14 +498,73 @@ class ONNXQuantizedModel:
                     dq, q = self._find_node_input_qdq(node, tensor_name)
                     input_qdqs.append((dq, q))
                 node_struct["input_qdqs"] = input_qdqs
-                temp_input_dqs = [item[0] for item in input_qdqs]
-                if None in temp_input_dqs:
-                    break
 
                 output_qdqs = []
                 for tensor_name in node.output:
                     q, dq = self._find_node_output_qdq(node, tensor_name)
                     output_qdqs.append((dq, q))
+                node_struct["output_qdqs"] = output_qdqs
+
+                break  # Got the target node and break
+
+        return node_struct
+
+    def _find_node_input_fn(self, node: NodeProto, tensor_name: str) -> NodeProto | None:
+        """
+        Find the quantization node on the input tensor.
+
+        :param onnx.NodeProto node: The target node.
+        :param str tensor_name: Name of the tensor, which should be one of the target node's inputs.
+
+        :return: The node that is quantizing the tensor.
+        """
+        if tensor_name in self.out_name_to_node and self.out_name_to_node[tensor_name].op_type in FN_OP_TYPES:
+            return self.out_name_to_node[tensor_name]
+
+        return None
+
+    def _find_node_output_fn(self, node: NodeProto, tensor_name: str) -> NodeProto | None:
+        """
+        Find the quantization node on the output tensor.
+
+        :param onnx.NodeProto node: The target node.
+        :param str tensor_name: Name of the tensor, which should be one of the target node's outputs.
+
+        :return: The node that is quantizing the tensor.
+        """
+        if tensor_name in self.in_name_to_nodes and self.in_name_to_nodes[tensor_name][0].op_type in FN_OP_TYPES:
+            return self.in_name_to_nodes[tensor_name][0]
+
+        return None
+
+    def find_target_node_fns(self, target_node: NodeProto) -> dict[str, Any]:
+        """
+        Get the qdqs on all inputs and outputs of the target node.
+
+        :param NodeProto target_node: The target node.
+
+        :return: The extracted structure containing input and output quantization nodes.
+        """
+        node_struct: dict[str, Any] = {
+            "node": None,
+            "input_qdqs": [],
+            "output_qdqs": [],
+        }
+
+        for node in self.model.graph.node:
+            if node is target_node:
+                node_struct["node"] = node
+
+                input_qdqs = []  # This contains weight/bias qdqs
+                for tensor_name in node.input:
+                    fn = self._find_node_input_fn(node, tensor_name)
+                    input_qdqs.append((fn,))  # Be consistent with QDQ
+                node_struct["input_qdqs"] = input_qdqs
+
+                output_qdqs = []
+                for tensor_name in node.output:
+                    fn = self._find_node_output_fn(node, tensor_name)
+                    output_qdqs.append((fn,))  # Single output may have dedicate quant nodes
                 node_struct["output_qdqs"] = output_qdqs
 
                 break  # Got the target node and break
@@ -509,7 +600,7 @@ def run_onnx_model(model_input: str | Path | onnx.ModelProto, data_reader: Any) 
     except Exception as e:
         raise ValueError(
             f"Fail to run inference. Exception: {e}. Please check the input model and the 'calibration_data_reader'."
-        )
+        ) from e
 
 
 @log_errors
@@ -523,7 +614,7 @@ def check_onnx_model(model_input: str | Path | onnx.ModelProto) -> None:
         logger.info("The input ONNX model can create InferenceSession successfully")
 
     except Exception as e:
-        raise ValueError(f"Fail to create InferenceSession. Exception: {e}. Please check the model.")
+        raise ValueError(f"Fail to create InferenceSession. Exception: {e}. Please check the model.") from e
 
 
 def encrypt_data(unencrypted_data: bytes, iv: bytes, key: bytes) -> Any:
@@ -610,8 +701,8 @@ def onnx_load_model_with_decryption(path: str | Path, secret_key: bytes) -> Mode
     if encrypted_data[:16] != secret_key[:16]:  # Was not encrypted
         try:
             return onnx.load(path)
-        except Exception:
-            raise ValueError("Failed to load an unknown model file {path}")
+        except Exception as e:  # pragma: no cover
+            raise ValueError(f"Failed to load an unknown model file {path}") from e
 
     assert isinstance(secret_key, bytes)
     decrypted_data = decrypt_data(encrypted_data, secret_key[:16], secret_key[16:])
@@ -621,6 +712,7 @@ def onnx_load_model_with_decryption(path: str | Path, secret_key: bytes) -> Mode
     return model
 
 
+@profile_scope(ProfileStep.MODEL_CACHING)
 def cache_onnx_model_and_infer_shapes(
     input_model: str | Path | ModelProto,
     path: str | Path,
@@ -721,9 +813,9 @@ def create_infer_session_for_onnx_model(
                 model, sess_options=sess_options, providers=providers, provider_options=provider_options, **kwargs
             )
         except onnxruntime.capi.onnxruntime_pybind11_state.RuntimeException as e:
-            raise RuntimeError(f"Failed to create inference session, likely cannot allocate memory: {e}")
+            raise RuntimeError(f"Failed to create inference session, likely cannot allocate memory: {e}") from e
         except Exception as e:
-            raise RuntimeError(f"Failed to create inference session, due to an unexpected error: {e}")
+            raise RuntimeError(f"Failed to create inference session, due to an unexpected error: {e}") from e
 
     if isinstance(model_input, onnx.ModelProto) and (
         use_external_data_format or model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
@@ -739,7 +831,202 @@ def create_infer_session_for_onnx_model(
     return session
 
 
+def collect_tensor_shapes_from_feed(
+    model: onnx.ModelProto,
+    feed_dict: dict[str, np.ndarray[Any, Any]],
+) -> dict[str, tuple[int, tuple[int, ...]]]:
+    """Collect shape and dtype for every non-input intermediate tensor in *model*.
+
+    The model is mutated in-place during the call (intermediate tensors are
+    temporarily appended as graph outputs) and restored before returning.
+
+    :param model: ONNX model whose intermediate tensor shapes should be inferred.
+        The graph is mutated in-place and restored after the ORT run.
+    :param feed_dict: One sample dict mapping graph input names to numpy arrays.
+    :return: Mapping ``tensor_name -> (onnx_elem_type_int, shape_tuple)``.
+        Returns an empty dict if the ORT session cannot be created or run.
+    """
+    graph_input_names: set[str] = {inp.name for inp in model.graph.input} | {
+        init.name for init in model.graph.initializer
+    }
+
+    # Collect unique non-empty intermediate tensor names: all node outputs plus
+    # node inputs (to catch any tensor consumed but not produced by a graph node),
+    # excluding graph inputs and initializers.
+    seen: set[str] = set()
+    output_list: list[str] = []
+    for node in model.graph.node:
+        for name in node.output:
+            if name and name not in graph_input_names and name not in seen:
+                seen.add(name)
+                output_list.append(name)
+        for name in node.input:
+            if name and name not in graph_input_names and name not in seen:
+                seen.add(name)
+                output_list.append(name)
+
+    if not output_list:
+        return {}
+
+    # Append tensors as temporary graph outputs (in-place; restored below).
+    original_output_len = len(model.graph.output)
+    for name in output_list:
+        model.graph.output.append(onnx.ValueInfoProto(name=name))
+
+    result_map: dict[str, tuple[int, tuple[int, ...]]] = {}
+    try:
+        session = create_infer_session_for_onnx_model(model)
+        results: list[np.ndarray[Any, Any]] = session.run(output_list, feed_dict)
+        for name, arr in zip(output_list, results, strict=True):
+            if arr is None:
+                continue
+            try:
+                elem_type: int = onnx.helper.np_dtype_to_tensor_dtype(arr.dtype)
+            except Exception:
+                continue
+            result_map[name] = (elem_type, tuple(int(d) for d in arr.shape))
+    except Exception as e:
+        logger.warning(
+            f"collect_tensor_shapes_from_feed: ORT inference failed, value_info will not be populated. Reason: {e}"
+        )
+    finally:
+        # Always restore the model to its original output list.
+        del model.graph.output[original_output_len:]
+
+    return result_map
+
+
+def fill_all_tensors_value_info(
+    model: onnx.ModelProto,
+    data_reader: "CalibrationDataReader | None",
+) -> onnx.ModelProto:
+    """Populate and synchronise ``value_info`` entries for every intermediate tensor.
+
+    Runs one ORT inference pass with a single sample from *data_reader* and
+    records the concrete shape and dtype of every intermediate tensor.
+
+    - Tensors in ``graph.input``, ``graph.output``, or ``graph.initializer``
+      are skipped (they carry type information separately).
+    - Tensors already present in ``graph.value_info`` are checked for
+      consistency with the observed shape and dtype.  If inconsistent, a
+      warning is logged and the entry is updated to match ORT's observation.
+    - Tensors missing from ``graph.value_info`` have a new entry added.
+
+    :param onnx.ModelProto model: The model to be updated in-place.
+    :param data_reader: Data reader with a ``get_next()`` method that returns a
+        ``dict[str, np.ndarray]`` sample.  If ``None`` or ``get_next()`` returns
+        ``None``, a warning is logged and the model is returned unchanged.
+
+    :return: The model with updated ``graph.value_info``.
+    """
+    if data_reader is None:
+        logger.warning("fill_all_tensors_value_info: data_reader is None; skipping value_info population.")
+        return model
+
+    # Reset then fetch exactly one sample.
+    if hasattr(data_reader, "reset_iter"):
+        data_reader.reset_iter()
+    feed_dict = data_reader.get_next()
+    if hasattr(data_reader, "reset_iter"):
+        data_reader.reset_iter()
+
+    if feed_dict is None:
+        logger.warning("fill_all_tensors_value_info: data_reader returned no sample; skipping value_info population.")
+        return model
+
+    # Tensors whose type is already described outside graph.value_info.
+    skip_names: set[str] = (
+        {inp.name for inp in model.graph.input}
+        | {out.name for out in model.graph.output}
+        | {init.name for init in model.graph.initializer}
+    )
+
+    # Run ORT to collect concrete shapes and dtypes.
+    shape_map = collect_tensor_shapes_from_feed(model, feed_dict)
+
+    if not shape_map:
+        logger.warning(
+            "fill_all_tensors_value_info: ORT inference returned no tensor shapes; value_info will not be populated."
+        )
+        return model
+
+    # Fix dynamic dims on graph inputs using the feed_dict arrays directly.
+    for inp in model.graph.input:
+        if inp.name in feed_dict:
+            arr = feed_dict[inp.name]
+            tt = inp.type.tensor_type
+            if tt.HasField("shape") and any(d.HasField("dim_param") for d in tt.shape.dim):
+                for i, d in enumerate(tt.shape.dim):
+                    if d.HasField("dim_param"):
+                        d.ClearField("dim_param")
+                        d.dim_value = int(arr.shape[i])
+
+    # Fix dynamic dims on graph outputs using shapes already collected in shape_map.
+    for out in model.graph.output:
+        tt = out.type.tensor_type
+        if tt.HasField("shape") and any(d.HasField("dim_param") for d in tt.shape.dim):
+            if out.name in shape_map:
+                _, shape_tuple = shape_map[out.name]
+                for i, d in enumerate(tt.shape.dim):
+                    if d.HasField("dim_param"):
+                        d.ClearField("dim_param")
+                        d.dim_value = int(shape_tuple[i])
+
+    # Build a mutable lookup of existing value_info entries.
+    existing_vi_map: dict[str, onnx.ValueInfoProto] = {vi.name: vi for vi in model.graph.value_info}
+
+    new_entries: list[onnx.ValueInfoProto] = []
+    updated = 0
+    for tensor_name, (elem_type, shape_tuple) in shape_map.items():
+        if tensor_name in skip_names:
+            continue
+        try:
+            new_vi = onnx.helper.make_tensor_value_info(tensor_name, elem_type, list(shape_tuple))
+        except Exception as e:
+            logger.warning(f"fill_all_tensors_value_info: could not create value_info for '{tensor_name}': {e}")
+            continue
+
+        if tensor_name in existing_vi_map:
+            old_vi = existing_vi_map[tensor_name]
+            old_tt = old_vi.type.tensor_type
+            new_tt = new_vi.type.tensor_type
+            # Check dtype and shape consistency against new_tt.
+            # Any dim_param (symbolic/dynamic axis) in the existing entry is treated as a
+            # mismatch: we always replace it with the concrete value observed by ORT.
+            if old_tt.HasField("shape") and new_tt.HasField("shape"):
+                has_dynamic = any(d.HasField("dim_param") for d in old_tt.shape.dim)
+                old_shape = tuple(d.dim_value if not d.HasField("dim_param") else None for d in old_tt.shape.dim)
+                new_shape = tuple(d.dim_value for d in new_tt.shape.dim)
+                shapes_match = (
+                    not has_dynamic
+                    and old_tt.elem_type == new_tt.elem_type
+                    and len(old_shape) == len(new_shape)
+                    and all(o == n for o, n in zip(old_shape, new_shape, strict=False))
+                )
+            else:
+                old_shape = None
+                new_shape = shape_tuple
+                shapes_match = False
+            if not shapes_match:
+                logger.warning(
+                    f"fill_all_tensors_value_info: inconsistent value_info for '{tensor_name}': "
+                    f"existing (dtype={old_tt.elem_type}, shape={old_shape}) != "
+                    f"observed (dtype={new_tt.elem_type}, shape={new_shape}). Updating."
+                )
+                old_vi.CopyFrom(new_vi)
+                updated += 1
+        else:
+            new_entries.append(new_vi)
+
+    if new_entries:
+        model.graph.value_info.extend(new_entries)
+    logger.info(f"Filled value info for {len(new_entries)} tensor(s), updated {updated} inconsistent tensor(s).")
+
+    return model
+
+
 def register_custom_ops_library(session_options: onnxruntime.SessionOptions, device: str = "CPU") -> None:
+    # ``_initialize_kernels`` runs at module import; a silent build failure surfaces here.
     try:
         session_options.register_custom_ops_library(get_library_path(device))
     except Exception as e:
@@ -779,3 +1066,40 @@ def sanitize_model_outputs(outputs: list[np.ndarray[Any, Any]]) -> None:
             "NaN values are replaced with 0.0, +Inf with the maximum finite value, and -Inf with the minimum finite value. "
             "This may affect quantization accuracy. Please verify the input model and the 'calibration_data_reader'."
         )
+
+
+def check_shared_initializers(onnx_model: onnx.ModelProto) -> bool:
+    """
+    Check whether the ONNX model contains shared initializers.
+
+    :param onnx_model: the ONNX ModelProto to be analyzed
+    :return: True if shared initializers exist, otherwise False
+    """
+
+    exist_shared_initializers: bool = False
+    all_initializer_names = [item.name for item in onnx_model.graph.initializer]
+    ini_used_static: dict[str, Any] = {}
+
+    for i in range(len(onnx_model.graph.node)):
+        inputs_name = onnx_model.graph.node[i].input
+        for input_name in inputs_name:
+            if input_name in all_initializer_names:
+                if input_name in ini_used_static:
+                    ini_used_static[input_name] += 1
+                    exist_shared_initializers = True
+                    break
+                else:
+                    ini_used_static[input_name] = 1
+
+    if exist_shared_initializers:
+        logger.warning(
+            "Shared initializers detected in the model. "
+            "Some initializers are referenced by multiple nodes, which may "
+            "cause failures or incorrect results in quantization or optimization "
+            "passes (e.g., Cross-Layer Equalization). "
+            "It is recommended to duplicate these initializers so each node "
+            "has its own copy (e.g., enable 'CopySharedInit' [] in extra_options)."
+            "For more details, see: https://quark.docs.amd.com/latest/onnx/appendix_full_quant_config_features.html"
+        )
+
+    return exist_shared_initializers

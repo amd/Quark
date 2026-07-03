@@ -1,13 +1,14 @@
 evaluate
 joblib
 ninja
-numpy<=2.1.3
+numpy>=2.0
 onnx>=1.16.0,<=1.19.0
 onnxscript
 onnxslim>=0.1.84
 pandas
 plotly
-protobuf
+protobuf>=7.35.0
+psutil
 pydantic
 rich
 scipy

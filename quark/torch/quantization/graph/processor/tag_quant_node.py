@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.export.onnx_export import register_custom_ops
 from quark.torch.quantization.graph.ops import DeQuantStub, QuantStub
 

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -8,14 +8,14 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any
 
-from quark.shares.utils.import_utils import (
+from quark.common.utils.import_utils import (
     is_datasets_available,
     is_pil_available,
     is_requests_available,
     is_torch_available,
     is_transformers_available,
 )
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 if is_requests_available():
@@ -71,7 +71,7 @@ def get_pileval(
 def get_wikitext2(
     tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, device: str | None, seed: int = 0
 ) -> DataLoader[torch.Tensor]:
-    traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    traindata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
     trainenc = tokenizer("\n\n".join(traindata["text"]), return_tensors="pt")
     trainenc = trainenc.to(device)
 
@@ -102,8 +102,8 @@ def get_calib_dataloader_for_benchmark(
     if dataset_name == "pileval_for_awq_benchmark":
         samples = get_pileval(tokenizer, num_calib_data, seqlen, device, seed=42)
         if batch_size != len(samples):
-            print(
-                f"[INFO-Warning] For AWQ benchmark, batch_size should be {len(samples)}. Changing batch_size to {len(samples)}."
+            logger.warning(
+                f"For AWQ benchmark, batch_size should be {len(samples)}. Changing batch_size to {len(samples)}."
             )
             batch_size = len(samples)
     elif dataset_name == "wikitext_for_gptq_benchmark":
@@ -130,11 +130,11 @@ def get_calib_dataloader_to_tensor(
     if dataset_name == "pileval":
         dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
         text_data = dataset["text"][:num_calib_data]
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train")
+    elif dataset_name in ("cnn_dailymail", "abisee/cnn_dailymail"):
+        dataset = load_dataset("abisee/cnn_dailymail", name="3.0.0", split="train")
         text_data = dataset["article"][:num_calib_data]
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    elif dataset_name in ("wikitext", "Salesforce/wikitext"):
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
         text_data = dataset["text"][:num_calib_data]
     else:
         raise NotImplementedError
@@ -178,17 +178,17 @@ def get_calib_dataloader_to_dict(
     if dataset_name == "pileval":
         dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
         prompt_col_name = "text"
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train")
+    elif dataset_name in ("cnn_dailymail", "abisee/cnn_dailymail"):
+        dataset = load_dataset("abisee/cnn_dailymail", name="3.0.0", split="train")
         prompt_col_name = "article"
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    elif dataset_name in ("wikitext", "Salesforce/wikitext"):
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
         prompt_col_name = "text"
     else:
         raise NotImplementedError
 
     dataset = dataset.select(
-        indices=[i for i in range(min(len(dataset), num_calib_data))],
+        indices=list(range(min(len(dataset), num_calib_data))),
         keep_in_memory=True,
     )
     tokenized_datasets = dataset.map(
@@ -255,7 +255,7 @@ def get_ultrachat(
 def get_calib_dataloader(
     dataset_name: str, processor: AutoProcessor | None = None, **kwargs: Any
 ) -> DataLoader[torch.Tensor] | DataLoader[list[dict[str, torch.Tensor]]] | DataLoader[dict[str, torch.Tensor]]:
-    if dataset_name in ["pileval", "cnn_dailymail", "wikitext"]:
+    if dataset_name in ["pileval", "cnn_dailymail", "abisee/cnn_dailymail", "wikitext", "Salesforce/wikitext"]:
         return get_calib_dataloader_to_tensor(dataset_name, **kwargs)
     elif dataset_name in ["pileval_for_awq_benchmark", "wikitext_for_gptq_benchmark"]:
         return get_calib_dataloader_for_benchmark(dataset_name, **kwargs)
@@ -292,7 +292,7 @@ def get_trainer_dataset(
     seqlen: int = 1024,
 ) -> dict[str, Any]:
     def tokenize_add_label(sample: Any) -> dict[str, Any]:
-        if path in ["wikitext"]:
+        if path in ["wikitext", "Salesforce/wikitext"]:
             input_text = sample["text"]
 
         elif path in ["shibing624/AdvertiseGen"]:
@@ -307,23 +307,25 @@ def get_trainer_dataset(
         }
         return sample
 
-    if path in ["wikitext"]:
-        train_dataset = load_dataset(path=path, name="wikitext-2-raw-v1", split=subset, trust_remote_code=True)
+    if path in ["wikitext", "Salesforce/wikitext"]:
+        train_dataset = load_dataset(
+            path="Salesforce/wikitext", name="wikitext-2-raw-v1", split=subset, trust_remote_code=True
+        )
     elif path in ["shibing624/AdvertiseGen"]:
         train_dataset = load_dataset(path=path, split=subset, trust_remote_code=True)
 
     # Using wikitext as default eval_dataset
-    eval_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", trust_remote_code=True)
+    eval_dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", trust_remote_code=True)
 
     if max_train_samples:
         max_train_samples = min(len(train_dataset), max_train_samples)
         train_dataset = train_dataset.select(range(max_train_samples))
-        print(f"select {max_train_samples} from training data to build train dataset ...")
+        logger.info(f"select {max_train_samples} from training data to build train dataset ...")
 
     if max_eval_samples:
         max_eval_samples = min(len(eval_dataset), max_eval_samples)
         eval_dataset = eval_dataset.select(range(max_eval_samples))
-        print(f"select {max_eval_samples} from test data to build eval dataset ...")
+        logger.info(f"select {max_eval_samples} from test data to build eval dataset ...")
 
     train_dataset = train_dataset.map(tokenize_add_label, remove_columns=list(train_dataset.features))
     train_dataset = ConcatDataset(train_dataset, seqlen)  # type: ignore[no-untyped-call]
@@ -334,8 +336,8 @@ def get_trainer_dataset(
 
 
 def get_dataset(path: str, subset: str, tokenizer: Any, seqlen: int) -> TensorDataset:
-    if path in ["wikitext"]:
-        text = load_dataset(path=path, name="wikitext-2-raw-v1", split=subset)
+    if path in ["wikitext", "Salesforce/wikitext"]:
+        text = load_dataset(path="Salesforce/wikitext", name="wikitext-2-raw-v1", split=subset)
         strtext = "\n\n".join(text["text"])
     elif path in ["shibing624/AdvertiseGen"]:
         text = load_dataset(path=path, split=subset)

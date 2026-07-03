@@ -30,9 +30,9 @@ Use the convert_fp32_to_fp16 tool to convert a float32 model to a float16 model 
 Convert a Float32 Model to a BFloat16 Model
 -------------------------------------------
 
-Because of the increasing demands for BFloat16 deployment, a conversion tool is necessary to convert a Float32 model to a BFloat16 model. Four BFloat16 implementation formats are provided: **vitisqdq**, **with_cast**, **simulate_bf16**, and **bf16**.
+Because of the increasing demands for BFloat16 deployment, a conversion tool is necessary to convert a Float32 model to a BFloat16 model. Four BFloat16 implementation formats are provided: **customqdq**, **with_cast**, **simulate_bf16**, and **bf16**.
 
-- **vitisqdq**: Implements BFloat16 conversion by inserting VitisQDQ of BFloat16.
+- **customqdq**: Implements BFloat16 conversion by inserting Customized QDQ of BFloat16.
 - **with_cast**: Implements BFloat16 conversion by inserting Cast operations to convert from Float32 to BFloat16.
 - **simulate_bf16**: Implements BFloat16 conversion by storing all BFloat16 weights in float format.
 - **bf16**: Implements BFloat16 conversion by directly converting the Float32 model to BFloat16, with only the input and output remaining as float.
@@ -54,9 +54,9 @@ If the input model is larger than 2GB, please use this command instead.
 Convert a Float16 Model to a BFloat16 Model
 -------------------------------------------
 
-Because of increasing demands for BFloat16 deployment, a conversion tool is necessary to convert a Float16 model to a BFloat16 model. Four BFloat16 implementation formats are provided: **vitisqdq**, **with_cast**, **simulate_bf16**, and **bf16**.
+Because of increasing demands for BFloat16 deployment, a conversion tool is necessary to convert a Float16 model to a BFloat16 model. Four BFloat16 implementation formats are provided: **customqdq**, **with_cast**, **simulate_bf16**, and **bf16**.
 
-- **vitisqdq**: Implements BFloat16 conversion by inserting VitisQDQ of BFloat16.
+- **customqdq**: Implements BFloat16 conversion by inserting Customized QDQ of BFloat16.
 - **with_cast**: Implements BFloat16 conversion by inserting Cast operations to convert from Float16 to BFloat16.
 - **simulate_bf16**: Implements BFloat16 conversion by storing all BFloat16 weights in float format.
 - **bf16**: Implements BFloat16 conversion by directly converting the Float16 model to BFloat16, with only the input and output remaining as Float16.

@@ -38,6 +38,10 @@ void Buffer::release() {
 #endif
 }
 
+int64_t HandleNegativeBlockAxis(int64_t axis, int64_t tensor_rank) {
+  return axis < 0 ? axis + tensor_rank : axis;
+}
+
 BFPFixNeuronKernel::BFPFixNeuronKernel(
   const OrtApi& ort_api, const OrtKernelInfo* k_info, std::string bfp_method,
   int64_t axis, int64_t bit_width, int64_t block_size, int64_t rounding_mode,
@@ -96,17 +100,113 @@ Ort::Value BFPFixNeuronKernel::do_bfp(Ort::Value& input) {
   return output;
 }
 
+Ort::Value BFPFixNeuronKernel::cast_to_fp32(
+  OrtKernelContext* context, Ort::Value& input
+) {
+  if (!op_cast_to_fp32_init_) {
+    int64_t to = static_cast<int64_t>(ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+    Ort::OpAttr attr =
+      Ort::OpAttr("to", &to, 1, OrtOpAttrType::ORT_OP_ATTR_INT);
+    op_cast_to_fp32_ = Ort::Op::Create(
+      info_copy_, "Cast", "", 13, nullptr, nullptr, 0, &attr, 1, 1, 1
+    );
+    op_cast_to_fp32_init_ = true;
+  }
+
+  std::vector<int64_t> dimensions =
+    input.GetTensorTypeAndShapeInfo().GetShape();
+  size_t element_count = input.GetTensorTypeAndShapeInfo().GetElementCount();
+  Buffer b(element_count * sizeof(float));
+  tmp_buffers_.push_back(b);
+
+  auto output = Ort::Value::CreateTensor<float>(
+    input.GetTensorMemoryInfo(), (float*)b.get_data_ptr(), element_count,
+    dimensions.data(), dimensions.size()
+  );
+
+  const OrtValue* inputs[1] = {input};
+  OrtValue* outputs[1] = {output};
+  op_cast_to_fp32_.Invoke(context, inputs, 1, outputs, 1);
+#ifdef USE_CUDA
+  cudaDeviceSynchronize();
+#endif
+  return output;
+}
+
+Ort::Value BFPFixNeuronKernel::cast_to_fp16(
+  OrtKernelContext* context, Ort::Value& input
+) {
+  if (!op_cast_to_fp16_init_) {
+    int64_t to = static_cast<int64_t>(ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16);
+    Ort::OpAttr attr =
+      Ort::OpAttr("to", &to, 1, OrtOpAttrType::ORT_OP_ATTR_INT);
+    op_cast_to_fp16_ = Ort::Op::Create(
+      info_copy_, "Cast", "", 13, nullptr, nullptr, 0, &attr, 1, 1, 1
+    );
+    op_cast_to_fp16_init_ = true;
+  }
+
+  std::vector<int64_t> dimensions =
+    input.GetTensorTypeAndShapeInfo().GetShape();
+  size_t element_count = input.GetTensorTypeAndShapeInfo().GetElementCount();
+  Buffer b(element_count * 2);
+  tmp_buffers_.push_back(b);
+
+  auto output = Ort::Value::CreateTensor(
+    input.GetTensorMemoryInfo(), b.get_data_ptr(), element_count * 2,
+    dimensions.data(), dimensions.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
+  );
+
+  const OrtValue* inputs[1] = {input};
+  OrtValue* outputs[1] = {output};
+  op_cast_to_fp16_.Invoke(context, inputs, 1, outputs, 1);
+#ifdef USE_CUDA
+  cudaDeviceSynchronize();
+#endif
+  return output;
+}
+
 void BFPFixNeuronKernel::Compute(OrtKernelContext* context) {
   Ort::KernelContext ctx(context);
   auto input_value = ctx.GetInput(0);
   std::vector<int64_t> dimensions =
     input_value.GetTensorTypeAndShapeInfo().GetShape();
-  auto input_tensor = Ort::Value::CreateTensor<float>(
-    input_value.GetTensorMemoryInfo(),
-    const_cast<float*>(input_value.GetTensorData<float>()),
-    input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
-    dimensions.data(), dimensions.size()
-  );
+
+  auto input_dtype = input_value.GetTensorTypeAndShapeInfo().GetElementType();
+  is_fp16_input_ = (input_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16);
+
+  Ort::Value fp32_input{nullptr};
+  if (is_fp16_input_) {
+    size_t elem_count =
+      input_value.GetTensorTypeAndShapeInfo().GetElementCount();
+    auto fp16_tensor = Ort::Value::CreateTensor(
+      input_value.GetTensorMemoryInfo(),
+      const_cast<void*>(
+        static_cast<const void*>(input_value.GetTensorRawData())
+      ),
+      elem_count * 2, dimensions.data(), dimensions.size(),
+      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
+    );
+    fp32_input = cast_to_fp32(context, fp16_tensor);
+  }
+
+  auto input_tensor = [&]() -> Ort::Value {
+    if (is_fp16_input_) {
+      return Ort::Value::CreateTensor<float>(
+        fp32_input.GetTensorMemoryInfo(),
+        const_cast<float*>(fp32_input.GetTensorData<float>()),
+        fp32_input.GetTensorTypeAndShapeInfo().GetElementCount(),
+        dimensions.data(), dimensions.size()
+      );
+    } else {
+      return Ort::Value::CreateTensor<float>(
+        input_value.GetTensorMemoryInfo(),
+        const_cast<float*>(input_value.GetTensorData<float>()),
+        input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
+        dimensions.data(), dimensions.size()
+      );
+    }
+  }();
 
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
@@ -118,41 +218,76 @@ void BFPFixNeuronKernel::Compute(OrtKernelContext* context) {
 
   Ort::Value ret{nullptr};
   if (input_tensor.GetTensorTypeAndShapeInfo().GetElementCount() == 1) {
-    ret = Ort::Value::CreateTensor<float>(
-      input_value.GetTensorMemoryInfo(),
-      const_cast<float*>(input_value.GetTensorData<float>()),
-      input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
-      dimensions.data(), dimensions.size()
-    );
+    if (is_fp16_input_) {
+      ret = Ort::Value::CreateTensor<float>(
+        fp32_input.GetTensorMemoryInfo(),
+        const_cast<float*>(fp32_input.GetTensorData<float>()),
+        fp32_input.GetTensorTypeAndShapeInfo().GetElementCount(),
+        dimensions.data(), dimensions.size()
+      );
+    } else {
+      ret = Ort::Value::CreateTensor<float>(
+        input_value.GetTensorMemoryInfo(),
+        const_cast<float*>(input_value.GetTensorData<float>()),
+        input_value.GetTensorTypeAndShapeInfo().GetElementCount(),
+        dimensions.data(), dimensions.size()
+      );
+    }
   } else if (dimensions.size() == 1) {
     auto padded_tensor = pad(context, input_tensor, block_size_);
     auto bfp_tensor = do_bfp(padded_tensor);
     ret = slice(context, bfp_tensor, dimensions[0]);
   } else {
+    int64_t tensor_rank = static_cast<int64_t>(dimensions.size());
+    if ((axis_ >= -tensor_rank && axis_ <= tensor_rank - 1) == false)
+      ORT_CXX_API_THROW(
+        "The axis of BFP should be in the valid range.",
+        OrtErrorCode::ORT_INVALID_GRAPH
+      );
+    const int64_t axis_no_neg = HandleNegativeBlockAxis(axis_, tensor_rank);
+
     auto transposed_tensor =
-      transpose(context, input_tensor, axis_, dimensions.size() - 1);
+      transpose(context, input_tensor, axis_no_neg, dimensions.size() - 1);
     auto padded_tensor = pad(context, transposed_tensor, block_size_);
     auto bfp_tensor = do_bfp(padded_tensor);
-    auto sliced_tensor = slice(context, bfp_tensor, dimensions[axis_]);
-    ret = transpose(context, sliced_tensor, axis_, dimensions.size() - 1);
+    auto sliced_tensor = slice(context, bfp_tensor, dimensions[axis_no_neg]);
+    ret = transpose(context, sliced_tensor, axis_no_neg, dimensions.size() - 1);
   }
 #ifdef USE_CUDA
   cudaDeviceSynchronize();
 #endif
-  auto output = ctx.GetOutput(0, ret.GetTensorTypeAndShapeInfo().GetShape());
 
+  if (is_fp16_input_) {
+    auto fp16_ret = cast_to_fp16(context, ret);
+    auto output =
+      ctx.GetOutput(0, fp16_ret.GetTensorTypeAndShapeInfo().GetShape());
 #ifdef USE_CUDA
-  cudaMemcpy(
-    output.GetTensorMutableRawData(), ret.GetTensorMutableRawData(),
-    output.GetTensorTypeAndShapeInfo().GetElementCount() * 4,
-    cudaMemcpyKind::cudaMemcpyDeviceToDevice
-  );
+    cudaMemcpy(
+      output.GetTensorMutableRawData(), fp16_ret.GetTensorMutableRawData(),
+      output.GetTensorTypeAndShapeInfo().GetElementCount() * 2,
+      cudaMemcpyKind::cudaMemcpyDeviceToDevice
+    );
 #else
-  memcpy(
-    output.GetTensorMutableRawData(), ret.GetTensorMutableRawData(),
-    output.GetTensorTypeAndShapeInfo().GetElementCount() * 4
-  );
+    memcpy(
+      output.GetTensorMutableRawData(), fp16_ret.GetTensorMutableRawData(),
+      output.GetTensorTypeAndShapeInfo().GetElementCount() * 2
+    );
 #endif
+  } else {
+    auto output = ctx.GetOutput(0, ret.GetTensorTypeAndShapeInfo().GetShape());
+#ifdef USE_CUDA
+    cudaMemcpy(
+      output.GetTensorMutableRawData(), ret.GetTensorMutableRawData(),
+      output.GetTensorTypeAndShapeInfo().GetElementCount() * 4,
+      cudaMemcpyKind::cudaMemcpyDeviceToDevice
+    );
+#else
+    memcpy(
+      output.GetTensorMutableRawData(), ret.GetTensorMutableRawData(),
+      output.GetTensorTypeAndShapeInfo().GetElementCount() * 4
+    );
+#endif
+  }
 
   for (Buffer b : tmp_buffers_) {
     b.release();
@@ -168,10 +303,6 @@ void BFPFixNeuronKernel::create_pad_op() {
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
   };
-  std::string mode_str = "constant";
-  auto mode =
-    Ort::OpAttr("mode", mode_str.c_str(), 1, OrtOpAttrType::ORT_OP_ATTR_STRING);
-  Ort::OpAttr attrs[1] = {std::move(mode)};
 #ifdef USE_CUDA
   int64_t opset = 13;  // Op of this opset have a CUDA implementation
 #else
@@ -180,7 +311,7 @@ void BFPFixNeuronKernel::create_pad_op() {
 
   op_pad_ = Ort::Op::Create(
     info_copy_, "Pad", "", opset, add_type_constraint_names,
-    add_type_constraint_values, 3, attrs, 1, 3, 1
+    add_type_constraint_values, 3, nullptr, 0, 3, 1
   );
   op_pad_init_ = true;
 }

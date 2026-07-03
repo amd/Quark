@@ -18,8 +18,8 @@ from datasets import Dataset
 from transformers import TrainerCallback, TrainingArguments, default_data_collator
 from transformers.integrations.integration_utils import TensorBoardCallback
 
+from quark.common.utils.log import ScreenLogger
 from quark.contrib.llm_eval import eval_model, ppl_eval
-from quark.shares.utils.log import ScreenLogger
 from quark.torch import LLMTemplate, ModelQuantizer, export_safetensors
 from quark.torch.algorithm.rotation.cayley import SGDG
 from quark.torch.algorithm.rotation.rotation import RotationLinear, RotationProcessor
@@ -30,8 +30,7 @@ from quark.torch.utils.llm import (
     get_model,
     get_tokenizer,
     get_wikitext2,
-    prepare_for_moe_quant,
-    revert_model_patching,
+    preprocess_for_quantization,
 )
 
 logger = ScreenLogger(__name__)
@@ -155,7 +154,7 @@ def main(args: argparse.Namespace) -> None:
     else:
         original_model = None
 
-    prepare_for_moe_quant(model)
+    preprocess_for_quantization(model)
 
     model_type = model.config.model_type
 
@@ -191,7 +190,7 @@ def main(args: argparse.Namespace) -> None:
 
     DATASET_TO_PARAMS = {
         "pileval": {"path": "mit-han-lab/pile-val-backup", "split": "validation"},
-        "wikitext": {"path": "wikitext", "name": "wikitext-2-raw-v1", "split": "train"},
+        "wikitext": {"path": "Salesforce/wikitext", "name": "wikitext-2-raw-v1", "split": "train"},
     }
 
     dataset = datasets.load_dataset(**DATASET_TO_PARAMS[args.training_dataset])
@@ -210,7 +209,7 @@ def main(args: argparse.Namespace) -> None:
 
     eval_dataset = eval_dataset.map(f)
 
-    wikitext_data = datasets.load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    wikitext_data = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     wikitext_data = tokenizer("\n\n".join(wikitext_data["text"]), return_tensors="pt")
 
     template = LLMTemplate.get(model_type)
@@ -440,10 +439,6 @@ def main(args: argparse.Namespace) -> None:
         model.quant_config.algo_config = algo_config
 
     model = quantizer.freeze(model)
-
-    # TODO: This should be moved to quark namespace.
-    # Optionally, revert model transformations that were useful only for quantization (Transformers-specific).
-    revert_model_patching(model)
 
     # Export the model.
     if args.model_export is not None:

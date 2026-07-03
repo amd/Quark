@@ -1,11 +1,14 @@
 #!/bin/bash
-set -e
-set -x
 
 #
 # Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+
+set -e
+THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${THIS_DIR}/../tools/ci/utils.sh"
+configure_ci_verbose
 
 run_code_coverage=${1,,:-false}
 
@@ -18,6 +21,9 @@ CONTRIB_TESTS_FOLDER=""
 for subfolder in ${THIS_DIR}/../quark/contrib/*/; do
     if [[ -d "$subfolder" && -d "$subfolder/test" ]]; then
         CONTRIB_TESTS_FOLDER+="$(realpath $subfolder/test) "
+    fi
+    if [[ -d "$subfolder" && -d "$subfolder/tests" ]]; then
+        CONTRIB_TESTS_FOLDER+="$(realpath $subfolder/tests) "
     fi
 done
 

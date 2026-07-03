@@ -13,7 +13,8 @@ import torch.nn as nn
 from torch.fx import GraphModule
 
 import quark.torch.kernel  # noqa
-from quark.shares.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer, export_onnx
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
@@ -85,7 +86,7 @@ class BasicBlock(nn.Module):
     def __init__(
         self, inplanes, planes, stride=1, downsample=None, groups=1, base_width=64, dilation=1, norm_layer=None
     ):
-        super(BasicBlock, self).__init__()
+        super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         if groups != 1 or base_width != 64:
@@ -127,7 +128,7 @@ class Bottleneck(nn.Module):
     def __init__(
         self, inplanes, planes, stride=1, downsample=None, groups=1, base_width=64, dilation=1, norm_layer=None
     ):
-        super(Bottleneck, self).__init__()
+        super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.0)) * groups
@@ -177,7 +178,7 @@ class ResNet(nn.Module):
         replace_stride_with_dilation=None,
         norm_layer=None,
     ):
-        super(ResNet, self).__init__()
+        super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -206,7 +207,7 @@ class ResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            elif isinstance(m, nn.BatchNorm2d | nn.GroupNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -301,7 +302,7 @@ def test_replace_convbn_to_qt_convnb():
 
     batch_shape = [4, 3, 112, 112]
     example_inputs = (torch.ones(batch_shape).to(torch_device),)
-    graph_model = torch.export.export_for_training(model, example_inputs).module()
+    graph_model = export_for_training(model, example_inputs).module()
     org_fp32_out = model(example_inputs[0])
     org_fx_out = graph_model(example_inputs[0])
     assert torch.allclose(org_fp32_out, org_fx_out, atol=1e-05), "fp32 model diff with fp32 fx model"
@@ -326,7 +327,7 @@ def test_quant_res18_and_export(tmpdir: str):
     # prepard float model and graph model
     model = resnet18(pretrained=None).to(torch_device).eval()
     example_inputs = (torch.rand(16, 3, 224, 224).to(torch_device),)
-    graph_model = torch.export.export_for_training(model, example_inputs).module()
+    graph_model = export_for_training(model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
 
     prepared_model = quantizer._prepare_model(graph_model)
@@ -365,7 +366,7 @@ def test_quant_res18_and_export(tmpdir: str):
             frozen_model,
             model_type="test_model",
             args=example_inputs,
-            export_dir="./",
+            export_dir=tmpdir,
             quant_mode=QuantizationMode.fx_graph_mode,
         )
         # exported_model = torch.export.export(frozen_model, example_inputs)
@@ -394,7 +395,7 @@ def test_crossequalization():
     example_inputs = (torch.rand(5, 3, 112, 112).to(torch_device),)
     org_fp_32_out = model(example_inputs[0])
 
-    graph_model = torch.export.export_for_training(model, example_inputs).module()
+    graph_model = export_for_training(model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     org_fx_model_out = graph_model(example_inputs[0])
 
@@ -460,7 +461,7 @@ def test_transposebn_2_quantConvTransposeBatchNorm2d_strategy(tmpdir: str):
     example_inputs = (torch.ones(1, 3, 28, 28).to(torch_device),)
     out1 = float_model(*example_inputs)
     # ========== test using hardware constrain ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     opt_graph = replace_transposeconv2dbn_quantconv_module(graph_model)
     for module in opt_graph.modules():
         if isinstance(module, QuantConvTransposeBatchNorm2d):
@@ -473,14 +474,14 @@ def test_transposebn_2_quantConvTransposeBatchNorm2d_strategy(tmpdir: str):
     gb_empt_quant_config = QLayerConfig()
     empt_quant_config = QConfig(global_quant_config=gb_empt_quant_config, quant_mode=QuantizationMode.fx_graph_mode)
     quantizer = ModelQuantizer(empt_quant_config)
-    graph_model = torch.export.export_for_training(float_model.eval(), example_inputs).module()
+    graph_model = export_for_training(float_model.eval(), example_inputs).module()
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
     out4 = quantized_model.eval()(*example_inputs)
     assert torch.allclose(out1, out4, atol=1e-4)
 
     # ========small network quantization no quant config=====
     quantizer = ModelQuantizer(quant_config)
-    graph_model = torch.export.export_for_training(float_model.eval(), example_inputs).module()
+    graph_model = export_for_training(float_model.eval(), example_inputs).module()
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
     assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 24, (
         "The total quantizer in this model should be 24"

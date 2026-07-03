@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import quark.torch.kernel  # noqa
@@ -9,7 +9,12 @@ from abc import ABC, abstractmethod
 import math
 import torch
 import torch.nn as nn
-from quark.torch.quantization.observer.observer import ObserverBase, PlaceholderObserver
+from quark.torch.quantization.observer.observer import (
+    ObserverBase,
+    PerBlockMXBufferReuseObserver,
+    PerBlockMXObserver,
+    PlaceholderObserver,
+)
 from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
@@ -17,14 +22,22 @@ from quark.torch.quantization.config.type import Dtype, QSchemeType, ZeroPointTy
 from quark.torch.quantization.utils import calculate_qmin_qmax, get_num_bits
 from quark.torch.quantization.constants import (
     INT_QUANT_DTYPES,
-    ALL_QUANT_DTYPES,
+    SCALED_QUANT_DTYPES,
     USING_NON_SCALED_QUANT,
 )
 from quark.torch.utils import assert_no_nan
-from quark.torch.utils import QUARK_DISABLE_COMPILE, QUARK_COUNT_OBSERVED_SAMPLES
+from quark.torch.utils import (
+    QUARK_COUNT_OBSERVED_SAMPLES,
+    QUARK_DISABLE_COMPILE,
+    QUARK_ENABLE_BUFFER_REUSE,
+    QUARK_LOG_BUFFER_STATS,
+)
 from packaging.version import Version
-from quark.shares.utils.import_utils import TORCH_HIGHER_OR_EQUAL_2_5
+from quark.common.utils.import_utils import TORCH_HIGHER_OR_EQUAL_2_5
+from quark.common.utils.log import ScreenLogger
 from quark.torch.kernel import mxfp4_dynamic_fake_quantize  # type: ignore
+
+_logger = ScreenLogger(__name__)
 
 # See: https://github.com/pytorch/pytorch/pull/141542
 # TODO: Remove once we drop torch<=2.5 support.
@@ -58,6 +71,172 @@ else:
     PYTORCH_DYNAMO_RECOMPILE_MESSAGE = None  # type: ignore[assignment]
 
 
+class BufferReusePool:
+    """Reusable tensor buffer pool with per-device statistics."""
+
+    def __init__(self, max_buffer_numel: int = 4 * 1024 * 1024) -> None:
+        self.max_buffer_numel = max_buffer_numel
+        # Per-device pool, keyed by ``(buffer_name, dtype, rank)``. Keeping rank in the
+        # key avoids cross-rank collisions (e.g. a 1-D ``scale`` and a 2-D MX block
+        # ``scale`` of the same dtype map to different slots).
+        self._device_buffer_pools: dict[str, dict[tuple[str, torch.dtype, int], torch.Tensor]] = {}
+        self._buffer_stats: dict[str, dict[str, int]] = {}
+
+    @staticmethod
+    def _canonicalize_device(device: torch.device | str) -> torch.device:
+        """Resolve an indexless CUDA device to its concrete index.
+
+        ``torch.device("cuda")`` and ``torch.device("cuda:0")`` compare unequal even though
+        they refer to the same physical device. PyTorch resolves the index lazily at
+        allocation time, so a tensor created with ``device="cuda"`` ends up on
+        ``cuda:<current>``. Without this normalization, ``can_reuse`` would short-circuit to
+        False whenever a caller passes the indexless form (e.g. ``torch_device`` from the
+        test harness when CUDA is available).
+        """
+        d = torch.device(device) if not isinstance(device, torch.device) else device
+        if d.type == "cuda" and d.index is None:
+            return torch.device(f"cuda:{torch.cuda.current_device()}")
+        return d
+
+    def can_reuse(self, value: torch.Tensor, target_device: torch.device) -> bool:
+        """Check if a tensor buffer can be reused.
+
+        Args:
+            value: The tensor to check for buffer reuse eligibility.
+            target_device: The target device where the tensor should reside.
+
+        Returns:
+            True if the tensor can be reused (i.e., its size is within the buffer limit
+            and it is on the target device), False otherwise.
+
+        """
+        if value.numel() > self.max_buffer_numel:
+            return False
+        return self._canonicalize_device(value.device) == self._canonicalize_device(target_device)
+
+    def _init_device_state(self, target_device: torch.device) -> None:
+        """Initialize device-specific state for buffer pooling and statistics.
+
+        This method ensures that the necessary data structures (buffer pools and statistics)
+        are initialized for the given device. If they already exist, no action is taken.
+
+        Parameters:
+            target_device (torch.device): The device for which to initialize state.
+        """
+        device_str = str(target_device)
+        if device_str not in self._device_buffer_pools:
+            self._device_buffer_pools[device_str] = {}
+        if device_str not in self._buffer_stats:
+            self._buffer_stats[device_str] = {"reuse_count": 0, "total_bytes": 0, "call_count": 0}
+
+    def record_call(self, target_device: torch.device) -> None:
+        """
+        Record a buffer usage call for the specified device.
+
+        Args:
+            target_device: The torch device for which to record the call.
+        """
+        self._init_device_state(target_device)
+        device_str = str(target_device)
+        self._buffer_stats[device_str]["call_count"] += 1
+
+    def get_buffer_stats(self, target_device: torch.device) -> dict[str, int]:
+        """
+        Retrieve buffer statistics for a specific device.
+
+        Parameters:
+        - target_device: The device for which to retrieve buffer statistics
+
+        Returns:
+        A dictionary containing buffer statistics with the following keys:
+        - 'reuse_count': Number of times buffers were reused
+        - 'total_bytes': Total memory allocated for buffers in bytes
+        - 'call_count': Total number of calls to the buffer pool
+        """
+        self._init_device_state(target_device)
+        return self._buffer_stats[str(target_device)]
+
+    def _get_or_allocate_buffer(
+        self, target_device: torch.device, shape: tuple[int, ...], dtype: torch.dtype, buffer_name: str, numel: int
+    ) -> torch.Tensor:
+        """Get or allocate a per-device reusable buffer for a given shape.
+
+        The pool keeps a **single** buffer per ``(buffer_name, dtype, rank)`` slot per
+        device, replacing the previous linear scan over heterogeneous buffers:
+
+        * If the slot's existing buffer already covers ``shape`` along every dim, the
+          request is satisfied with a sliced view (counted as a reuse).
+        * Otherwise the slot is reallocated to the element-wise maximum of its current
+          shape and the requested shape, so subsequent calls keep reusing the slot
+          regardless of which axis grew (counted as a fresh allocation).
+
+        This is O(1) per call and bounds the pool size to the number of distinct
+        ``(name, dtype, rank)`` triples per device, while still allowing slice-based
+        reuse across heterogeneous shapes.
+        """
+        self._init_device_state(target_device)
+        device_str = str(target_device)
+        rank = len(shape)
+
+        if numel > self.max_buffer_numel:
+            _logger.warning(
+                f"Buffer reuse fallback for oversize tensor {shape} ({numel} elements > {self.max_buffer_numel})."
+            )
+            return torch.empty(shape, device=target_device, dtype=dtype)
+
+        buffer_pool = self._device_buffer_pools[device_str]
+        key = (buffer_name, dtype, rank)
+        existing = buffer_pool.get(key)
+        slices = tuple(slice(0, s) for s in shape)
+
+        if existing is not None and all(existing.shape[i] >= shape[i] for i in range(rank)):
+            self._buffer_stats[device_str]["reuse_count"] += 1
+            return existing[slices]
+
+        # Need to allocate (slot empty) or grow (request exceeds slot in some dim).
+        if existing is None:
+            new_shape: tuple[int, ...] = tuple(shape)
+        else:
+            new_shape = tuple(max(existing.shape[i], shape[i]) for i in range(rank))
+
+        new_numel = 1
+        for s in new_shape:
+            new_numel *= s
+        if new_numel > self.max_buffer_numel:
+            # Growing the slot would exceed the pool cap; serve this request from a
+            # transient allocation and leave the slot's existing buffer untouched.
+            _logger.warning(
+                f"Buffer reuse slot {key} would grow to {new_shape} "
+                f"({new_numel} elements > {self.max_buffer_numel}); using non-pooled allocation."
+            )
+            return torch.empty(shape, device=target_device, dtype=dtype)
+
+        new_buffer = torch.empty(new_shape, device=target_device, dtype=dtype)
+        if existing is not None:
+            self._buffer_stats[device_str]["total_bytes"] -= existing.numel() * existing.element_size()
+        buffer_pool[key] = new_buffer
+        self._buffer_stats[device_str]["total_bytes"] += new_numel * new_buffer.element_size()
+        return new_buffer[slices]
+
+    def _print_buffer_stats(self, target_device: torch.device) -> None:
+        stats = self.get_buffer_stats(target_device)
+        reuse_rate = stats["reuse_count"] / stats["call_count"] * 100.0
+        total_mb = stats["total_bytes"] / (1024 * 1024)
+        _logger.info(
+            f"[FakeQuantize Buffer Stats - {target_device}] Calls: {stats['call_count']}, "
+            f"Buffer Reuses: {stats['reuse_count']} ({reuse_rate:.1f}%), "
+            f"Total Buffer Memory: {total_mb:.2f} MiB"
+        )
+
+    def maybe_log_stats(self, target_device: torch.device, log_every_calls: int = 100) -> None:
+        if not QUARK_LOG_BUFFER_STATS:
+            return
+        stats = self.get_buffer_stats(target_device)
+        if stats["call_count"] == 0 or stats["call_count"] % log_every_calls != 0:
+            return
+        self._print_buffer_stats(target_device)
+
+
 class FakeQuantizeBase(ABC, nn.Module):
     r"""Base fake quantize module.
 
@@ -74,6 +253,7 @@ class FakeQuantizeBase(ABC, nn.Module):
     fake_quant_enabled: bool
     observer_enabled: bool
     is_dynamic: bool | None = None
+    _buffer_pool: BufferReusePool = BufferReusePool()
 
     def __init__(self, quant_spec: QTensorConfig, device: torch.device | None = None) -> None:
         """Set fake_quant_enabled and observer_enabled."""
@@ -83,6 +263,7 @@ class FakeQuantizeBase(ABC, nn.Module):
         self.is_dynamic = quant_spec.is_dynamic
         self.fake_quant_enabled = True
         self.observer_enabled = True
+        self.enable_buffer_reuse = QUARK_ENABLE_BUFFER_REUSE
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -129,15 +310,28 @@ class FakeQuantizeBase(ABC, nn.Module):
         """
 
         buffer = getattr(self, buffer_name)
+        self._buffer_pool.record_call(input_tensor_device)
 
         if new_value is not None:
-            if buffer.shape != new_value.shape:
-                buffer.resize_(new_value.shape)
-            buffer = buffer.to(new_value.dtype)
-            buffer.copy_(new_value)
+            if self.enable_buffer_reuse and self._buffer_pool.can_reuse(new_value, input_tensor_device):
+                buffer = self._buffer_pool._get_or_allocate_buffer(
+                    input_tensor_device,
+                    tuple(new_value.shape),
+                    new_value.dtype,
+                    buffer_name,
+                    numel=new_value.numel(),
+                )
+                buffer.copy_(new_value)
+            else:
+                if buffer.shape != new_value.shape:
+                    buffer.resize_(new_value.shape)
+                buffer = buffer.to(new_value.dtype)
+                buffer.copy_(new_value)
 
         buffer = buffer.to(input_tensor_device)
         setattr(self, buffer_name, buffer)
+        if QUARK_LOG_BUFFER_STATS:
+            self._buffer_pool.maybe_log_stats(input_tensor_device)
 
     # TODO: remove kwargs.
     @staticmethod
@@ -201,7 +395,14 @@ class ScaledFakeQuantize(FakeQuantizeBase):
     @staticmethod
     def create_observer(quant_spec: QTensorConfig, device: torch.device | None = None) -> ObserverBase:
         if quant_spec.observer_cls is not None:
-            return quant_spec.observer_cls(quant_spec, device)
+            observer_cls = quant_spec.observer_cls
+            # The buffer-reuse observer can be opted into per-spec (consistent with
+            # ``DynamicScaledQuantizer.create_observer``) or globally via the env var.
+            if observer_cls is PerBlockMXObserver and (
+                QUARK_ENABLE_BUFFER_REUSE or getattr(quant_spec, "enable_buffer_reuse", False)
+            ):
+                observer_cls = PerBlockMXBufferReuseObserver
+            return observer_cls(quant_spec, device)
         else:
             return PlaceholderObserver(quant_spec)
 
@@ -243,22 +444,19 @@ class ScaledFakeQuantize(FakeQuantizeBase):
             else:
                 fake_quantize = quark.torch.kernel.scaled_fake_quantize_compiled  # type: ignore[attr-defined]
 
-                # Bypass a PyTorch bug: https://github.com/pytorch/pytorch/issues/165051
-                # This is fine to do as ScaledFakeQuantize backward is a straight-through estimator.
-                if isinstance(X, torch.nn.Parameter):
-                    X = X.data
-
             if self.zero_point_type == ZeroPointType.float32:
                 zero_point_dtype = torch.float32
             else:
                 zero_point_dtype = torch.int32
+
+            zero_point = zero_point.to(zero_point_dtype) if zero_point is not None else None
 
             try:
                 X = fake_quantize(
                     self.dtype.value,
                     X,
                     scale,
-                    zero_point.to(zero_point_dtype),
+                    zero_point,
                     self.ch_axis,
                     self.group_size,
                     self.quant_min,
@@ -267,8 +465,8 @@ class ScaledFakeQuantize(FakeQuantizeBase):
                     self.qscheme_str_name,
                     mx_element_dtype_value,
                 )
-            except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:
-                raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE + f" Error: {e}")
+            except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
+                raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
 
         return X
 
@@ -289,8 +487,9 @@ class StaticScaledFakeQuantize(ScaledFakeQuantize):
         if sequential:
             self.is_dynamic = quant_spec.is_dynamic
 
-        is_scale_quant = quant_spec.is_scale_quant and quant_spec.qscheme == QSchemeType.per_tensor
-        self.persistent = not self.is_dynamic or is_scale_quant
+        # Dynamic quantizers should compute qparams from current tensors and must
+        # not persist/export scale or zero-point buffers.
+        self.persistent = not self.is_dynamic
 
         self.observer = self.create_observer(quant_spec, device)
 
@@ -361,6 +560,9 @@ class StaticScaledFakeQuantize(ScaledFakeQuantize):
         # We cannot currently register scalar values as buffers, so need to manually
         # specify serialization here.
         super()._save_to_state_dict(destination, prefix, keep_vars)  # type: ignore
+        if not self.persistent:
+            return
+
         if self.dtype in [
             Dtype.int4,
             Dtype.uint4,
@@ -418,7 +620,7 @@ class StaticScaledFakeQuantize(ScaledFakeQuantize):
 
     def to_frozen_module(self, frozen_params: bool) -> nn.Module:
         frozen_fake_quantize_model = FrozenScaledFakeQuantize(self.dtype, self.quant_spec)
-        if self.dtype in ALL_QUANT_DTYPES:
+        if self.dtype in SCALED_QUANT_DTYPES:
             frozen_fake_quantize_model.register_buffer("scale", self.scale, persistent=self.persistent)
 
             persistent = self.persistent and self.dtype in INT_QUANT_DTYPES
@@ -435,6 +637,8 @@ class StaticScaledFakeQuantize(ScaledFakeQuantize):
         frozen_fake_quantize_model.zero_point_type = self.zero_point_type
         frozen_fake_quantize_model.is_scale_quant = self.is_scale_quant
         frozen_fake_quantize_model.quant_spec = self.quant_spec
+        if hasattr(self, "_quantized_block_scale"):
+            frozen_fake_quantize_model._quantized_block_scale = self._quantized_block_scale
         frozen_fake_quantize_model.frozen_params = frozen_params
         return frozen_fake_quantize_model
 
@@ -487,7 +691,8 @@ class DynamicScaledFakeQuantize(ScaledFakeQuantize):
 
         # TODO: do we really need the `.to(X.device)` here? Should we not expect
         # correct device in the first place?
-        X = self.fake_quantize_with_qparams(X, scale=scale.to(X.device), zero_point=zero_point.to(X.device))
+        zero_point = zero_point.to(X.device) if zero_point is not None else None
+        X = self.fake_quantize_with_qparams(X, scale=scale.to(X.device), zero_point=zero_point)
 
         return X
 
@@ -513,13 +718,11 @@ class FrozenScaledFakeQuantize(nn.Module):
     zero_point: torch.Tensor
 
     def __init__(self, dtype: Dtype, quant_spec: QTensorConfig) -> None:
-        super(FrozenScaledFakeQuantize, self).__init__()
+        super().__init__()
 
         self.zero_point_type: ZeroPointType | None = quant_spec.zero_point_type
 
-        persistent = (not quant_spec.is_dynamic) or (
-            quant_spec.is_scale_quant and quant_spec.qscheme == QSchemeType.per_tensor
-        )
+        persistent = not quant_spec.is_dynamic
         self.register_buffer("scale", torch.tensor([1.0], dtype=torch.float), persistent=persistent)
 
         persistent = persistent and quant_spec.dtype in INT_QUANT_DTYPES
@@ -584,8 +787,8 @@ class FrozenScaledFakeQuantize(nn.Module):
                 self.qscheme_str_name,
                 mx_element_dtype_value,
             )
-        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:
-            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE + f" Error: {e}")
+        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
+            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
 
         assert isinstance(X, torch.Tensor)
 
@@ -674,21 +877,33 @@ class SequentialQuantize(nn.Sequential):
         )
         self.frozen_params = quantizers[0].frozen_params  # type: ignore
 
-        # the is_dynamic configuration of all quantizers should be the same
-        assert all(quantizer.is_dynamic == quantizers[0].is_dynamic for quantizer in quantizers), (
-            "The is_dynamic configuration of all quantizers should be the same"
-        )
         assert all(not isinstance(quantizer, NonScaledFakeQuantize) for quantizer in quantizers), (
             "NonScaledFakeQuantize is not supported in SequentialQuantize currently"
         )
-        assert all(not isinstance(quantizer.observer, (TQTObserver, LSQObserver)) for quantizer in quantizers), (
+        assert all(not isinstance(quantizer.observer, TQTObserver | LSQObserver) for quantizer in quantizers), (
             "TQTObserver and LSQObserver are not supported in SequentialQuantize currently"
         )
-        assert all((not quantizer.zero_point_type == ZeroPointType.float32) for quantizer in quantizers), (
+        assert all((quantizer.zero_point_type != ZeroPointType.float32) for quantizer in quantizers), (
             "Float32 zero point is not supported in SequentialQuantize currently"
         )
 
-        self.is_dynamic = quantizers[0].is_dynamic
+        tensor_quantizers = [quantizer for quantizer in quantizers if quantizer.is_scale_quant is False]
+        assert len(tensor_quantizers) > 0, "SequentialQuantize must contain at least one tensor quantizer"
+        assert all(
+            tensor_quantizer.is_dynamic == tensor_quantizers[0].is_dynamic for tensor_quantizer in tensor_quantizers
+        ), "Tensor quantizers in SequentialQuantize must share the same is_dynamic configuration"
+
+        self.is_dynamic = tensor_quantizers[0].is_dynamic
+
+        # For FP8 scale quantizers following an amax-based quantizer, configure combined
+        # division to avoid intermediate rounding precision loss. See forward() for details.
+        for quantizer_index, quantizer in enumerate(quantizers):
+            if quantizer.is_scale_quant and quantizer_index > 0:
+                preceding_quantizer = quantizers[quantizer_index - 1]
+                is_fp8_scale = quantizer.quant_spec.dtype in (Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp8_e5m3)
+                if is_fp8_scale and hasattr(preceding_quantizer.observer, "amax"):
+                    _, element_format_max = calculate_qmin_qmax(preceding_quantizer.quant_spec.dtype)
+                    quantizer.observer.quant_max_first_level = float(element_format_max)
 
     def disable_fake_quant(self) -> None:
         for module in self:
@@ -709,12 +924,6 @@ class SequentialQuantize(nn.Sequential):
     @property
     def is_fake_quant_enabled(self) -> bool:
         return any(isinstance(module, FrozenScaledFakeQuantize) or module.is_fake_quant_enabled for module in self)
-
-    # store the config of the is_observer_enabled status of each module
-    def get_observer_enabled_config(self) -> list[bool | None]:
-        return [
-            module.is_observer_enabled if not isinstance(module, FrozenScaledFakeQuantize) else None for module in self
-        ]
 
     # store the config of the is_fake_quant_enabled status of each module
     def get_fake_quant_enabled_config(self) -> list[bool | None]:
@@ -748,7 +957,20 @@ class SequentialQuantize(nn.Sequential):
             for module_index, module in enumerate(self):
                 if module.is_scale_quant:
                     self._validate_scale_quantizer(module_index)
-                    module(self[module_index - 1].scale)
+                    preceding_quantizer = self[module_index - 1]
+                    is_fp8_scale = module.quant_spec.dtype in (Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp8_e5m3)
+                    if is_fp8_scale and hasattr(preceding_quantizer.observer, "amax"):
+                        # Combined division: in two-stage quantization, the global scale is
+                        # normally computed as two sequential divisions:
+                        #   scale = (amax / element_format_max) / scale_format_max
+                        # The intermediate result gets rounded, causing precision loss.
+                        # Instead, pass raw amax here. The observer's quant_max_first_level
+                        # (set in __init__) combines both divisors into a single division:
+                        #   scale = amax / (element_format_max * scale_format_max)
+                        module(preceding_quantizer.observer.amax)
+                    else:
+                        # Standard path: pass the computed scale from the preceding quantizer.
+                        module(preceding_quantizer.scale)
                 else:
                     quant_x = self._process_tensor_quantizer(
                         module_index, module, previous_tensor_quantizer, quant_x, X.dtype
@@ -853,8 +1075,8 @@ class SequentialQuantize(nn.Sequential):
                 scale_module.qscheme_str_name,
                 None,
             )
-        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:
-            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE + f" Error: {e}")
+        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
+            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
 
         assert isinstance(result, torch.Tensor)  # Runtime check to ensure correct type
         return result

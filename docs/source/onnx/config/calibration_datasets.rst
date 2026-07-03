@@ -55,7 +55,7 @@ Calibration Data Path for AMD Quark Quantizer
 ---------------------------------------------
 
 AMD Quark for ONNX supports specifying the path to calibration datasets, making it easy to load them for quantization. Currently, this feature only supports data in `.npy` format.
-For detailed guidance on creating calibration datasets in NPY format, see :doc:`Generating NPY Calibration Data<./user_guide_onnx_model_inference_save_input_npy>`.
+For detailed guidance on creating calibration datasets in NPY format, see :ref:`Caching Input as NPY <caching-input-as-npy>`.
 
 .. note::
     No preprocessing is applied to the calibration datasets after loading. Ensure that the calibration data is stored in the following format:

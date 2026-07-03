@@ -1,8 +1,9 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+import importlib
 import os
 import platform
 import sys
@@ -11,27 +12,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from quark.onnx.operators.custom_ops import get_library_path
-
-library_path = os.path.split(get_library_path())[0]
-if library_path not in sys.path:
-    sys.path.append(library_path)
-
-try:
-    if platform.system().lower() == "windows":
-        import custom_ops_gpu as custom_torch_ops_gpu  # type: ignore
-    else:
-        import libcustom_ops_gpu as custom_torch_ops_gpu  # type: ignore
-except Exception:
-    custom_torch_ops_gpu = None
-
-try:
-    if platform.system().lower() == "windows":
-        import custom_ops as custom_torch_ops  # type: ignore
-    else:
-        import libcustom_ops as custom_torch_ops  # type: ignore
-except Exception:
-    custom_torch_ops = None
+from quark.common.utils.torch_utils import torch_supports_stable_abi
+from quark.onnx.operators.custom_ops import get_legacy_torch_library_path, get_library_path
 
 
 class FakeCustomTorchOps:
@@ -67,11 +49,56 @@ class FakeCustomTorchOps:
         return tensor
 
 
-if custom_torch_ops_gpu is None:
-    custom_torch_ops_gpu = FakeCustomTorchOps
+def _load_legacy_ops(gpu: bool = False) -> Any:
+    """Import the legacy pybind11 custom-ops module, or ``None`` if unavailable.
 
-if custom_torch_ops is None:
-    custom_torch_ops = FakeCustomTorchOps
+    The artifact differs by torch version: on torch >= 2.10 it's the slim
+    test-only ``libcustom_ops_torch_legacy{_gpu}``; on older torch the
+    surface ships inside ``libcustom_ops{_gpu}``.
+    """
+    if torch_supports_stable_abi():
+        base = "custom_ops_torch_legacy"
+        library_dir = os.path.split(get_legacy_torch_library_path())[0]
+    else:
+        base = "custom_ops"
+        library_dir = os.path.split(get_library_path())[0]
+
+    if library_dir not in sys.path:
+        sys.path.append(library_dir)
+
+    suffix = "_gpu" if gpu else ""
+    if platform.system().lower() == "windows":
+        module_name = f"{base}{suffix}"
+    else:
+        module_name = f"lib{base}{suffix}"
+
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        return None
+
+
+def _resolve_ops() -> tuple[Any, Any]:
+    """Resolve ``(cpu_ops, gpu_ops)`` strictly by torch version.
+
+    No cross-tier fallback: if the version-appropriate backend isn't loaded,
+    both entries fall back to :class:`FakeCustomTorchOps` so a stable-ABI
+    failure can't silently route to the legacy pybind11 surface.
+    """
+    if torch_supports_stable_abi():
+        try:
+            _ = torch.ops.quark_custom_ops.mx
+            ops = torch.ops.quark_custom_ops
+            return ops, ops
+        except (AttributeError, RuntimeError):
+            return FakeCustomTorchOps, FakeCustomTorchOps
+
+    cpu_ops = _load_legacy_ops(gpu=False) or FakeCustomTorchOps
+    gpu_ops = _load_legacy_ops(gpu=True) or FakeCustomTorchOps
+    return cpu_ops, gpu_ops
+
+
+custom_torch_ops, custom_torch_ops_gpu = _resolve_ops()  # pragma: no cover
 
 
 class BFPQuantDequantFunction(torch.autograd.Function):  # type: ignore

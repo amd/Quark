@@ -1,13 +1,13 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
@@ -31,7 +31,7 @@ def replace_convtranspose2d_qtconvtranspose2d(m: GraphModule) -> GraphModule:
     count_replace_num = 0
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
-    device = [module for module in m.parameters()][0].device  # cpu/gpu
+    device = list(m.parameters())[0].device  # cpu/gpu
     need_to_delete_node: list[Node] = []
     for n in m.graph.nodes:
         if not is_convtranspose2d_node(n):

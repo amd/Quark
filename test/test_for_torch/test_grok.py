@@ -6,7 +6,7 @@
 import torch
 import torch.nn as nn
 
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import torch_device
 from quark.torch.algorithm.awq.scale import scale_ln_fcs
 from quark.torch.algorithm.utils.prepare import get_layers_for_scaling
 

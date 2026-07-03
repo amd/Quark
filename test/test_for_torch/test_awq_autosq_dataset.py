@@ -118,10 +118,6 @@ def quantize_model_pipeline(
     template = LLMTemplate.get(model.config.model_type)
     # Example: Use uint4_wo_128 scheme and awq algorithm for quantization
     quant_config = template.get_config(scheme=scheme, algorithm=[algorithm])
-    if algorithm == "autosmoothquant":
-        quant_config_awq = template.get_config(scheme=scheme, algorithm=["awq"])
-        quant_config.algo_config[0].scaling_layers = quant_config_awq.algo_config[0].scaling_layers
-        quant_config.algo_config[0].model_decoder_layers = quant_config_awq.algo_config[0].model_decoder_layers
     quantizer = ModelQuantizer(quant_config, multi_device=False)  # Assuming no multi-device quantization here
     quantized_model: PreTrainedModel = quantizer.quantize_model(model, calib_dataloader)
 
@@ -143,7 +139,7 @@ def ppl_eval(
     """
     Evaluates the perplexity (PPL) of the model on the wikitext-2 dataset.
     """
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt").input_ids.to(device)
 
     seqlen_for_eval = 2048
@@ -218,7 +214,7 @@ def run_quark_autosmoothquant_example(nsamples: int, batch_size: int) -> torch.T
     """
     Runs an end-to-end pipeline for Quark AutoSmoothQuant quantization example.
     """
-    model_id = "facebook/opt-125m"
+    model_id = "amd-quark/tiny-llama-fast-tokenizer"
     seq_len = 512
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[INFO] Starting quantization and evaluation for nsamples={nsamples}, batch_size={batch_size}")

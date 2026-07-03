@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -13,7 +13,6 @@ python fix_shapes.py --input_model_path $INPUT_MODEL_PATH --output_model_path $O
 
 """
 
-import copy
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import Any
@@ -22,9 +21,9 @@ import numpy as np
 import onnx
 from onnx import ModelProto, helper
 
-from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
+from quark.common.utils.log import ScreenLogger
+from quark.onnx.utils.model_utils import collect_tensor_shapes_from_feed, create_infer_session_for_onnx_model
 from quark.onnx.utils.system_utils import create_tmp_dir
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -115,24 +114,10 @@ def generate_random_data(model_input: str | Path | ModelProto) -> dict[str, np.n
 def infer_all_tensors_shape(
     model_input: str | Path | ModelProto, save_as_external_data: bool = False
 ) -> dict[str, tuple[int]]:
-    model = copy.deepcopy(model_input) if isinstance(model_input, ModelProto) else onnx.load(model_input)
-    output_list = []
-    for node in model.graph.node:
-        for tensor_name in node.input:
-            if tensor_name in model.graph.input:
-                continue
-            model.graph.output.extend([onnx.ValueInfoProto(name=tensor_name)])
-            output_list.append(tensor_name)
-
     input_data = generate_random_data(model_input)
-    ort_session = create_infer_session_for_onnx_model(model)
-    output = ort_session.run(output_list, input_data)
-
-    assert len(output_list) == len(output)
-    tensor_name_shape_dict = {}
-    for i in range(len(output_list)):
-        tensor_name_shape_dict[output_list[i]] = output[i].shape
-    return tensor_name_shape_dict
+    model = model_input if isinstance(model_input, ModelProto) else onnx.load(model_input)
+    shape_map = collect_tensor_shapes_from_feed(model, input_data)
+    return {name: info[1] for name, info in shape_map.items()}
 
 
 def save_all_tensors_shape(
@@ -183,6 +168,24 @@ def fix_shapes(args: Namespace) -> None:
         onnx.save(temp_model, tmp_model_path, save_as_external_data=args.save_as_external_data)
 
         tensor_name_shape_dict = infer_all_tensors_shape(tmp_model_path, args.save_as_external_data)
+        if not tensor_name_shape_dict:
+            # Distinguish a model with no intermediate tensors (legitimate empty result)
+            # from an ORT failure that silently returned no shapes.
+            tmp_model = onnx.load(tmp_model_path)
+            boundary = (
+                {inp.name for inp in tmp_model.graph.input}
+                | {out.name for out in tmp_model.graph.output}
+                | {init.name for init in tmp_model.graph.initializer}
+            )
+            has_intermediate = any(
+                name for node in tmp_model.graph.node for name in node.output if name and name not in boundary
+            )
+            if has_intermediate:
+                logger.warning(
+                    f"Shape inference returned no results for '{args.input_model_path}'. "
+                    "ORT inference may have failed; intermediate tensor shapes were not fixed."
+                )
+                return None
         model = save_all_tensors_shape(tmp_model_path, tensor_name_shape_dict)
         nms_node_names = find_nms(model)
         onnx.save(model, args.output_model_path, save_as_external_data=args.save_as_external_data)

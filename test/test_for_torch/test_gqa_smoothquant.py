@@ -9,13 +9,13 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device
 from quark.torch.algorithm.awq.scale import scale_fc_fc
 from quark.torch.algorithm.utils.utils import is_attention_module
 from quark.torch.quantization.config.config import (
     AWQConfig,
-    Config,
+    QConfig,
     QLayerConfig,
     QTensorConfig,
     SmoothQuantConfig,
@@ -53,7 +53,7 @@ num_key_value_heads = 4
 
 class SimpleLMAttention(nn.Module):
     def __init__(self):
-        super(SimpleLMAttention, self).__init__()
+        super().__init__()
         self.head_dim = hidden_size // num_attention_heads
         self.num_key_value_groups = num_attention_heads // num_key_value_heads
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
@@ -103,7 +103,7 @@ def test_gqa_smoothquant():
     output_original = model(input_tensor)
 
     # algorithm config
-    quant_config = Config(global_quant_config=FLOAT16_CONFIG)
+    quant_config = QConfig(global_quant_config=FLOAT16_CONFIG)
     quant_config = replace(quant_config, algo_config=[SmoothQuantConfig()])
     quant_config.algo_config[0].num_attention_heads = num_attention_heads
     quant_config.algo_config[0].num_key_value_heads = num_key_value_heads
@@ -141,7 +141,7 @@ def test_gqa_awq():
     output_original = model(input_tensor)
 
     # algorithm config
-    quant_config = Config(global_quant_config=FLOAT16_CONFIG)
+    quant_config = QConfig(global_quant_config=FLOAT16_CONFIG)
     quant_config = replace(quant_config, algo_config=[AWQConfig()])
     quant_config.algo_config[0].num_attention_heads = num_attention_heads
     quant_config.algo_config[0].num_key_value_heads = num_key_value_heads

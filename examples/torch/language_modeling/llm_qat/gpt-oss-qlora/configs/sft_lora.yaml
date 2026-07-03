@@ -1,0 +1,45 @@
+
+# config for Quark
+cache_dir: "PATH_DIR/huggingface_cache_data" # for cache dataset path
+calib_dataset: pileval
+metrics_output_dir: quant_exp_output
+skip_quantization: false
+skip_qlora_train: false
+device_map: auto
+quant_scheme: mxfp4
+evaluation_dataset: wikitext_gpt_oss_120b
+skip_evaluation: true
+custom_mode: quark
+export_weight_format: real_quantized
+pack_method: reorder
+model_export: hf_format
+export_path: export_lora_gpt_oss_false_reject
+import_model_dir: PATH_TO_SAVE_MODEL/export_lora_gpt_oss_false_reject
+
+# Model
+model_name_or_path: PATH_DIR/model/openai/gpt-oss-20b  # original gpt-oss model
+attn_implementation: eager
+trust_remote_code: true
+dtype: auto
+
+# Dataset
+dataset_name: YOUR_NAME/false_reject
+dataset_num_proc: 1
+
+# Hyperparameters
+learning_rate: 2.0e-4
+gradient_checkpointing: true
+num_train_epochs: 1.0
+logging_steps: 1
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+# max_steps: 5 # used for debug
+max_length: 4096
+warmup_ratio: 0.03
+lr_scheduler_type: cosine_with_min_lr
+lr_scheduler_kwargs:
+  min_lr_rate: 0.1
+output_dir: gpt-oss-20b-fine_tune
+report_to:
+- trackio
+seed: 42

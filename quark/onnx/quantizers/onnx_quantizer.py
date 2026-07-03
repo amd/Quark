@@ -31,6 +31,7 @@ from onnxruntime.quantization.quant_utils import (
 )
 from onnxruntime.quantization.registry import CreateOpQuantizer
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
     ONNX_BFP_QTYPES_LIST,
     ONNX_FP_QTYPES_LIST,
@@ -45,7 +46,6 @@ from quark.onnx.quantization.quant_utils import (
     quantize_data,
     save_and_reload_model_with_shape_infer,
 )
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -191,6 +191,8 @@ class ExtendedONNXQuantizer(OrtONNXQuantizer):  # type: ignore
             weight_qType
             in (
                 QuantType.QInt8,
+                QuantType.QInt16,
+                ExtendedQuantType.QInt8,
                 ExtendedQuantType.QInt16,
                 ExtendedQuantType.QInt32,
                 ExtendedQuantType.QFloat16,
@@ -249,6 +251,24 @@ class ExtendedONNXQuantizer(OrtONNXQuantizer):  # type: ignore
         self.generated_value_names = self.model.get_non_initializer_inputs()
         # to store specified scale and zeropoint instead of calculated value, tensor_name->(scale, zeropoint)
         self.used_scale_zp_map: dict[Any, Any] = {}
+
+    def check_opset_version(self) -> int:
+        """Check and return the opset version of the model.
+
+        This method provides compatibility with ONNX Runtime 1.23+ which removed
+        the check_opset_version method from BaseQuantizer.
+
+        :return: The opset version of the model.
+        """
+        try:
+            # Try the parent class method first (for ORT < 1.23)
+            return super().check_opset_version()
+        except AttributeError:
+            # For ORT >= 1.23, use the new API
+            from onnxruntime.quantization.quant_utils import get_opset_version
+
+            model_proto = self.model.model if hasattr(self.model, "model") else self.model
+            return get_opset_version(model_proto)
 
     def _get_quantization_params(
         self, param_name: str, use_scale: Any = None, use_zeropoint: Any = None, zero_point_type: Any = None

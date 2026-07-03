@@ -3,9 +3,8 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import require_torch_higher_or_equal, slow, torch_device
-from quark.testing.common_utils import skip_if_no_gpu
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import require_torch_higher_or_equal, skip_if_no_gpu, slow_test, torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import Uint4PerChannelSpec
 from quark.torch.quantization.config.config import (
@@ -108,7 +107,7 @@ def test_qronos_basic_correctness(dtype: str, qscheme: str, model_id: str):
         assert (logits_original - logits_rtn).abs().max().item() > (logits_original - logits_qronos).abs().max().item()
 
 
-@slow
+@slow_test
 @require_torch_higher_or_equal("2.6")
 @skip_if_no_gpu
 @pytest.mark.parametrize("dtype", ["uint4", "mxfp4"])

@@ -13,13 +13,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import (
+from quark.common.utils.testing_utils import (
     require_torch_higher_or_equal,
     require_torch_lower_or_equal,
+    skip_if_no_gpu,
+    slow_test,
     torch_device,
     use_temporary_directory,
 )
-from quark.testing import slow_test
 from quark.torch import ModelQuantizer, export_onnx, export_safetensors, load_params, save_params
 from quark.torch.quantization import (
     AutoSmoothQuantConfig,
@@ -775,3 +776,106 @@ def test_smoke_quarot():
     )
     quantize_model(quant_config, model_name="Qwen/Qwen1.5-0.5B")
     # quantize_model(quant_config, multi_gpu=True)# TODO: uncomment after ROCM support multi-GPU
+
+
+# =====================================================================
+# PPL comparison test for pre-quantized re-quantization pipeline
+# =====================================================================
+
+
+@torch.no_grad()
+def _compute_ppl(
+    model: nn.Module,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    max_samples: int = 32,
+    seqlen: int = 2048,
+) -> float:
+    """Compute wikitext-2 perplexity with limited samples for fast CI."""
+    from datasets import load_dataset
+
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
+    testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
+    input_ids = testenc.input_ids.to(device)
+    nsamples = min(input_ids.numel() // seqlen, max_samples)
+
+    nlls: list[torch.Tensor] = []
+    loss_fct = torch.nn.CrossEntropyLoss()
+    for i in range(nsamples):
+        batch = input_ids[:, i * seqlen : (i + 1) * seqlen]
+        logits = model(batch)["logits"]
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = batch[:, 1:]
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        nlls.append(loss.float() * seqlen)
+
+    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
+    return ppl.item()
+
+
+@skip_if_no_gpu
+@require_torch_higher_or_equal("2.6")
+@pytest.mark.parametrize(
+    "prequant_model_id, expected_layer_type",
+    [
+        ("Qwen/Qwen3-4B-FP8", "FP8Linear"),
+        ("RedHatAI/Qwen3-4B-quantized.w4a16", "compressed-tensors"),
+    ],
+    ids=["qwen3-4b-fp8", "qwen3-4b-w4a16"],
+)
+def test_smoke_prequantized_ppl_comparison(prequant_model_id: str, expected_layer_type: str):
+    """
+    PPL comparison for pre-quantized re-quantization pipeline.
+
+    Compares perplexity between:
+        1. Pre-quantized: original pre-quantized model
+        2. Re-quantized: pre-quantized model → Quark FP8 re-quantization
+
+    Asserts:
+        - Re-quantized PPL does not regress more than 5% vs pre-quantized model.
+    """
+    if expected_layer_type == "compressed-tensors":
+        pytest.importorskip("compressed_tensors", reason="compressed_tensors required for compressed-tensors tests")
+
+    FP8_QUANT_CONFIG = QConfig(
+        global_quant_config=DEFAULT_W_FP8_A_FP8_PER_TENSOR_CONFIG,
+        exclude=EXCLUDE_LAYERS,
+    )
+
+    with torch.inference_mode():
+        # --- Stage 1: Pre-quantized model PPL ---
+        prequant_model = AutoModelForCausalLM.from_pretrained(
+            prequant_model_id, torch_dtype="auto", trust_remote_code=True
+        )
+        prequant_model.eval().to(torch_device)
+        tokenizer = AutoTokenizer.from_pretrained(prequant_model_id, trust_remote_code=True)
+        calib_dataloader = DataLoader(
+            tokenizer("Hello, how are you?", return_tensors="pt")["input_ids"].to(torch_device)
+        )
+
+        ppl_prequant = _compute_ppl(prequant_model, tokenizer, torch_device)
+
+        # --- Stage 2: Re-quantized PPL (pre-quantized → Quark re-quantize) ---
+        quantizer = ModelQuantizer(FP8_QUANT_CONFIG)
+        requant_model = quantizer.quantize_model(prequant_model, calib_dataloader)
+        for batch in calib_dataloader:
+            requant_model(batch)
+        requant_model = quantizer.freeze(requant_model)
+
+        ppl_requant = _compute_ppl(requant_model, tokenizer, torch_device)
+
+        del requant_model, prequant_model
+        torch.cuda.empty_cache()
+
+    # --- Print comparison table ---
+    print("\n" + "=" * 78)
+    print(f"  {'Model':<50} {'Stage':<20} {'PPL':>6}")
+    print("-" * 78)
+    print(f"  {prequant_model_id:<50} {'Pre-quantized':<20} {ppl_prequant:>6.2f}")
+    print(f"  {'':<50} {'Re-quantized':<20} {ppl_requant:>6.2f}")
+    print("=" * 78)
+
+    # --- Assertions ---
+    assert ppl_requant <= ppl_prequant * 1.05, (
+        f"Re-quantized PPL ({ppl_requant:.2f}) regressed >5% vs pre-quantized ({ppl_prequant:.2f})"
+    )

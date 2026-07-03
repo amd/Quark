@@ -14,42 +14,83 @@ AMD accelerators like latest CPU, NPU and GPU devices support BF16 natively, ena
 BF16 quantization in AMD Quark for ONNX
 ---------------------------------------
 
-Here is a simple example of how to enable BF16 quantization.
+Below are examples of how to enable BF16 quantization.
 
-.. code:: python
+Convert to Cast Format
+~~~~~~~~~~~~~~~~~~~~~~
 
-   from quark.onnx import QConfig, QLayerConfig, BFloat16Spec, CalibMethod
+The bfloat16 conversion is implemented by inserting Cast operations to convert from float32/float16 to bfloat16. A pair of Cast nodes will be inserted between every two nodes. The first Cast converts float32/float16 to bfloat16, and the second Cast converts bfloat16 back to float32/float16.
 
-   input_tensors_spec = BFloat16Spec()
-   weight_spec = BFloat16Spec()
-   input_tensors_spec.set_calibration_method(CalibMethod.MinMax)
-   weight_spec.set_calibration_method(CalibMethod.MinMax)
+FP32->BF16
+^^^^^^^^^^
 
-   config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec), extra_options={"BF16QDQToCast": True})
+.. code-block:: bash
 
-   quantizer = ModelQuantizer(config)
+    python -m quark.onnx.tools.convert_fp32_to_bf16 --input $FLOAT_32_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format with_cast
 
-   quantizer.quantize_model(input_model_path, output_model_path, data_reader)
+FP16->BF16
+^^^^^^^^^^
 
-The BF16 quantization in the previous example inserts a custom Q/DQ pair for each tensor, which
-converts the model weights and input_tensors from FP32 to BF16 directly, just as most frameworks do.
+.. code-block:: bash
 
-In fact, BF16 has the same range as FP32, but with only 7 bits for the mantissa, it sacrifices
-precision. This means small differences between numbers can disappear, which can amplify
-numerical instability and cause overflow problems.
+    python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT_16_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format with_cast
 
-To address the overflow issue in BF16 quantization, you can apply calibration and re-scale
-weights and input_tensors to better align with dynamic range and utilize the dense numeric
-area near zero of BF16. To enable this, set ``WeightScaled`` or ``ActivationScaled``
-in extra options if you are seeing overflow issues.
+Convert Directly
+~~~~~~~~~~~~~~~~
 
-.. code:: python
+The float/float16 model is directly converted to bfloat16 and only the input and output are remained as float/float16. It only supports by onnxruntime-gpu.
 
-    input_tensors_spec = BFloat16Spec()
-    weight_spec = BFloat16Spec()
+FP32->BF16
+^^^^^^^^^^
 
-    config = QConfig(global_config=QLayerConfig(activation=activation_spec, weight=weight_spec),
-                     extra_options={"WeightScaled": True, "ActivationScaled": True},)
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp32_to_bf16 --input $FLOAT_32_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format bf16
+
+FP16->BF16
+^^^^^^^^^^
+
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT_16_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format bf16
+
+Convert to Float32 Format
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The bfloat16 conversion is implemented by that all bfloat16 weights are stored as float32 format.
+
+FP32->BF16
+^^^^^^^^^^
+
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp32_to_bf16 --input $FLOAT_32_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format simulate_bf16
+
+FP16->BF16
+^^^^^^^^^^
+
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT_16_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format simulate_bf16
+
+Convert to Customized QDQ
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The bfloat16 conversion is implemented by inserting customized QDQ of bfloat16.
+
+FP32->BF16
+^^^^^^^^^^
+
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp32_to_bf16 --input $FLOAT_32_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format customqdq
+
+FP16->BF16
+^^^^^^^^^^
+
+.. code-block:: bash
+
+    python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT_16_ONNX_MODEL_PATH --output $BFLOAT_16_ONNX_MODEL_PATH --format customqdq
 
 .. note::
     When inference with ONNXRuntime, you need to register the custom OPs so(Linux) or dll(Windows) file in the ORT session options.

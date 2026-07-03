@@ -9,7 +9,6 @@
 # --------------------------------------------------------------------------
 
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +22,16 @@ from onnxruntime.quantization.quant_utils import (
     save_and_reload_model_with_shape_infer,
 )
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration import (
     CachedDataReader,
     Int16Method,
     PowerOfTwoMethod,
     fake_calibration,
     get_data_reader,
-    load_tensors_range,
+    nearest_non_passthrough_ancestor_mapping,
     run_calibration,
-    save_tensors_range,
+    update_tensors_range_with_dependencies,
 )
 from quark.onnx.postprocess import apply_post_process
 from quark.onnx.preprocess import apply_pre_process
@@ -48,15 +48,20 @@ from quark.onnx.quantizers import (
     run_matmul_nbits_quantization,
     run_static_quantization,
 )
-from quark.onnx.utils.file_utils import save_quantized_info, update_crypto_mode
+from quark.onnx.utils.file_utils import (
+    save_and_restore_func,
+    update_crypto_mode,
+)
 from quark.onnx.utils.model_utils import (
     cache_onnx_model_and_infer_shapes,
     check_onnx_model,
+    check_shared_initializers,
     run_onnx_model,
     save_onnx_model_with_external_data,
     update_user_custom_op_lib_paths,
 )
 from quark.onnx.utils.print_utils import (
+    print_effective_quantization_summary,
     print_fp32_nodes,
     print_quantize_dynamic_info,
     print_quantize_static_info,
@@ -66,7 +71,7 @@ from quark.onnx.utils.system_utils import (
     create_tmp_dir,
     update_tmp_dir,
 )
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.version import __version__
 
 from .quant_utils import (
     ExtendedQuantFormat,
@@ -77,6 +82,7 @@ from .quant_utils import (
     check_model_quantizable,
     fp32_nodes,
     get_all_target_nodes,
+    get_all_tensor_names,
     get_eltwise_op,
     get_exclude_nodes,
     get_matmul_nodes_without_weights,
@@ -85,6 +91,104 @@ from .quant_utils import (
 )
 
 logger = ScreenLogger(__name__)
+
+
+def prune_stale_tensor_quant_overrides(
+    model: onnx.ModelProto,
+    extra_options: dict[str, Any],
+) -> list[str]:
+    """Drop ``TensorQuantOverrides`` entries whose tensor name is not present in ``model``.
+
+    Pruning keeps the override map consistent with the graph and avoids the
+    onnxruntime error
+    ``Tensor 'X' in TensorQuantOverrides is not present in the model``. Since
+    pre-process honors user-supplied override keys (the referenced tensors are
+    not folded away), a stale entry is almost always a typo in the override key.
+
+    :param model: the (post-pre-process) model to validate against.
+    :param extra_options: ``quantize_static`` extra_options dict; mutated in-place.
+    :return: list of tensor names that were dropped (empty if nothing to prune).
+    """
+    overrides = extra_options.get("TensorQuantOverrides")
+    if not overrides:
+        return []
+
+    valid_tensor_names = get_all_tensor_names(model)
+    stale = [name for name in list(overrides) if name not in valid_tensor_names]
+    if not stale:
+        return []
+
+    for name in stale:
+        del overrides[name]
+
+    sample = ", ".join(stale[:5]) + (" ..." if len(stale) > 5 else "")
+    logger.warning(
+        f"Dropped {len(stale)} TensorQuantOverrides entr{'y' if len(stale) == 1 else 'ies'} "
+        f"whose tensor(s) are not present in the model "
+        f"(likely a typo in the override key): [{sample}]."
+    )
+    return stale
+
+
+def apply_align_eltwise_quant_type(
+    model: onnx.ModelProto,
+    extra_options: dict[str, Any],
+    *,
+    enable_npu_cnn: bool,
+    enable_npu_transformer: bool,
+    enable_dpu: bool,
+    quant_format: Any,
+    activation_type: Any,
+) -> None:
+    """Inject ``activation_type`` overrides for eltwise op inputs when ``AlignEltwiseQuantType`` is set.
+
+    No-op when ``AlignEltwiseQuantType`` is not enabled. When enabled but the
+    surrounding configuration does not support it (any of ``enable_npu_cnn`` /
+    ``enable_npu_transformer`` / ``enable_dpu`` is True, or ``quant_format`` is
+    not ``ExtendedQuantFormat.QDQ``), emit a warning and return without
+    injecting anything.
+
+    Otherwise, for every eltwise input tensor in ``model``, set its
+    ``TensorQuantOverrides`` quant_type to ``activation_type`` (updating any
+    existing user-supplied override or inserting a new entry).
+
+    Must be called AFTER ``apply_pre_process`` so that ``get_eltwise_op``
+    reflects the final tensor names; otherwise tensors that get folded away
+    during pre-process would be injected as dangling override keys.
+
+    :param model: the (post-pre-process) model to walk for eltwise inputs.
+    :param extra_options: ``quantize_static`` extra_options dict; mutated in-place.
+    :param enable_npu_cnn: NPU CNN flag from ``quantize_static``.
+    :param enable_npu_transformer: NPU transformer flag from ``quantize_static``.
+    :param enable_dpu: DPU flag from ``quantize_static``.
+    :param quant_format: active ``QuantFormat`` / ``ExtendedQuantFormat``.
+    :param activation_type: activation quant_type to write into the overrides.
+    """
+    if not extra_options.get("AlignEltwiseQuantType"):
+        return
+
+    if enable_npu_cnn or enable_npu_transformer or enable_dpu or quant_format != ExtendedQuantFormat.QDQ:
+        logger.warning(
+            "The parameter AlignEltwiseQuantType only takes effect "
+            "when quant_format is ExtendedQuantFormat.QDQ and enable_npu_cnn is False "
+            "and enable_npu_transformer is False and enable_dpu is False."
+        )
+        return
+
+    if extra_options.get("TensorQuantOverrides") is None:
+        extra_options["TensorQuantOverrides"] = {}
+    eltwise_tensors = get_eltwise_op(model)
+    for tensor_name in eltwise_tensors:
+        if tensor_name in extra_options["TensorQuantOverrides"]:
+            for override in extra_options["TensorQuantOverrides"][tensor_name]:
+                override["quant_type"] = activation_type
+        else:
+            extra_options["TensorQuantOverrides"][tensor_name] = [{"quant_type": activation_type}]
+    logger.info(
+        "The parameter AlignEltwiseQuantType takes effect, "
+        "the weights of nodes will be quantized with the activation quant type "
+        "if the operation type is in [Mul, Div, Add, Sub, Min, Max]."
+    )
 
 
 @log_errors
@@ -123,6 +227,21 @@ def quantize_static(
     include_fast_ft: bool = False,
     include_auto_mp: bool = False,
     print_summary: bool = True,
+    # Private kwargs used by ModelQuantizer to feed print_effective_quantization_summary.
+    # Not part of the public quantize_static() contract; do not rely on them externally.
+    #   _print_effective_summary: True  -> categorized 11-section summary printed
+    #                                      after run_static_quantization (on both
+    #                                      success and failure), used by the
+    #                                      QConfig path.
+    #                             False -> flat legacy print_quantize_static_info
+    #                                      dump printed before calibration (legacy
+    #                                      Config / direct-call path, matches main).
+    #   _user_extra_snapshot:     deepcopy of extra_options taken before algorithm
+    #                             mutation, so the effective summary can show the
+    #                             original user input alongside the normalized
+    #                             effective values.
+    _print_effective_summary: bool = False,
+    _user_extra_snapshot: dict[str, Any] | None = None,
     extra_options: dict[str, Any] | None = {},
 ) -> onnx.ModelProto | None:
     """Qantize a given onnx model using static quantization. This api will return an onnx.ModelProto format quantized model
@@ -130,15 +249,6 @@ def quantize_static(
     """
 
     update_crypto_mode(crypto_mode)
-    e2e_quantize_start_time = time.perf_counter()
-    model_input_info = type(model_input) if isinstance(model_input, onnx.ModelProto) else model_input
-    save_quantized_info(
-        [
-            [f"{model_input_info} quantization quantization info", time.strftime("%Y-%m-%d %H:%M:%S")],
-            ["quantization stage", "time consumed(s)", "sub stage", "time consumed(s)"],
-        ],
-        write_mode="w",
-    )
 
     if nodes_to_quantize is None:
         nodes_to_quantize = []
@@ -158,7 +268,7 @@ def quantize_static(
     skip_pre_process_graph_optimization = extra_options.get("SkipPreprocess", False)
     pre_process_yaml_path = extra_options.get("PreprocessYAML")
     if pre_process_yaml_path is not None:
-        from quark.onnx_adapter import Engine, LoadConfigFromFileOrDict
+        from quark.shapeshifter import Engine, LoadConfigFromFileOrDict
 
         skip_pre_process_graph_optimization = True
 
@@ -233,42 +343,48 @@ def quantize_static(
         logger.warning("The 'enable_dpu' will be deprecated in future versions. Please use 'enable_npu_cnn' instead.")
         enable_npu_cnn = enable_dpu
 
-    print_quantize_static_info(
-        model_input,
-        model_output,
-        calibration_data_reader,
-        calibration_data_path,
-        quant_format,
-        input_nodes,
-        output_nodes,
-        op_types_to_quantize,
-        extra_op_types_to_quantize,
-        per_channel,
-        reduce_range,
-        activation_type,
-        weight_type,
-        nodes_to_quantize,
-        nodes_to_exclude,
-        subgraphs_to_exclude,
-        optimize_model,
-        use_external_data_format,
-        calibrate_method,
-        execution_providers,
-        enable_npu_cnn,
-        enable_npu_transformer,
-        specific_tensor_precision,
-        debug_mode,
-        crypto_mode,
-        convert_fp16_to_fp32,
-        convert_nchw_to_nhwc,
-        include_cle,
-        include_sq,
-        include_rotation,
-        include_fast_ft,
-        extra_options,
-    )
+    # Legacy summary (flat dump). Used by direct quantize_static callers and by
+    # the ModelQuantizer legacy Config / QuantizationConfig path. The QConfig
+    # path opts into the categorized effective-config summary instead (printed
+    # after normalization, just before run_static_quantization).
+    if not _print_effective_summary:
+        print_quantize_static_info(
+            model_input,
+            model_output,
+            calibration_data_reader,
+            calibration_data_path,
+            quant_format,
+            input_nodes,
+            output_nodes,
+            op_types_to_quantize,
+            extra_op_types_to_quantize,
+            per_channel,
+            reduce_range,
+            activation_type,
+            weight_type,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            subgraphs_to_exclude,
+            optimize_model,
+            use_external_data_format,
+            calibrate_method,
+            execution_providers,
+            enable_npu_cnn,
+            enable_npu_transformer,
+            specific_tensor_precision,
+            debug_mode,
+            crypto_mode,
+            convert_fp16_to_fp32,
+            convert_nchw_to_nhwc,
+            include_cle,
+            include_sq,
+            include_rotation,
+            include_fast_ft,
+            extra_options,
+        )
 
     check_onnx_model(float_model)
+    check_shared_initializers(float_model)
 
     fp32_nodes_dict = fp32_nodes(float_model)
 
@@ -305,34 +421,6 @@ def quantize_static(
                 float_model, model_output, save_as_external_data=use_external_data_format
             )
             return None
-
-    if extra_options.get("AlignEltwiseQuantType"):
-        if (
-            enable_npu_cnn is False
-            and enable_npu_transformer is False
-            and enable_dpu is False
-            and quant_format == ExtendedQuantFormat.QDQ
-        ):
-            if extra_options.get("TensorQuantOverrides") is None:
-                extra_options["TensorQuantOverrides"] = {}
-            eltwise_tensors = get_eltwise_op(float_model)
-            for tensor_name in eltwise_tensors:
-                if tensor_name in extra_options["TensorQuantOverrides"]:
-                    for override in extra_options["TensorQuantOverrides"][tensor_name]:
-                        override["quant_type"] = activation_type
-                else:
-                    extra_options["TensorQuantOverrides"][tensor_name] = [{"quant_type": activation_type}]
-            logger.info(
-                "The parameter AlignEltwiseQuantType takes effect, "
-                "the weights of nodes will be quantized with the activation quant type "
-                "if the operation type is in [Mul, Div, Add, Sub, Min, Max]."
-            )
-        else:
-            logger.warning(
-                "The parameter AlignEltwiseQuantType only takes effect "
-                "when quant_format is ExtendedQuantFormat.QDQ and enable_npu_cnn is False "
-                "and enable_npu_transformer is False and enable_dpu is False."
-            )
 
     if extra_options.get("TensorQuantOverrides") and quant_format is QuantFormat.QDQ:
         logger.warning(
@@ -392,7 +480,30 @@ def quantize_static(
         topo_model.model, cache_path, use_external_data_format, encrypt_algo, secret_key
     )
 
-    tensors_range_file = extra_options.get("TensorsRangeFile")
+    # Drop TensorQuantOverrides entries whose tensor names are not present in
+    # the (post-pre-process) graph. Almost always typos in user-supplied keys.
+    prune_stale_tensor_quant_overrides(float_model, extra_options)
+
+    # AlignEltwiseQuantType eltwise-input override injection. Run AFTER pre-process
+    # (and after prune) so that get_eltwise_op() sees the final tensor names;
+    # otherwise tensors folded away during pre-process (e.g., Shape->Gather
+    # feeding an Add) would be injected as dangling override keys.
+    apply_align_eltwise_quant_type(
+        float_model,
+        extra_options,
+        enable_npu_cnn=enable_npu_cnn,
+        enable_npu_transformer=enable_npu_transformer,
+        enable_dpu=enable_dpu,
+        quant_format=quant_format,
+        activation_type=activation_type,
+    )
+
+    save_and_restore = extra_options.get("SaveAndRestore")
+    if save_and_restore is None:
+        logger.warning(
+            'WARNING: "TensorsRangeFile" is deprecated and will be removed in a future release. Please use the "SaveAndRestore" API instead.'
+        )
+        save_and_restore = extra_options.get("TensorsRangeFile")
     skip_calibration = False
     if (
         extra_options.get("UseMatMulNBits", False)
@@ -400,8 +511,9 @@ def quantize_static(
             activation_type
             in [ExtendedQuantType.QBFloat16, ExtendedQuantType.QFloat16, ExtendedQuantType.QBFP, ExtendedQuantType.QMX]
             and not extra_options.get("ActivationScaled", False)
+            and not extra_options.get("TensorQuantOverrides", {})
         )
-        or (tensors_range_file is not None and os.path.exists(tensors_range_file) and (not crypto_mode))
+        or (save_and_restore is not None and os.path.exists(save_and_restore) and (not crypto_mode))
     ):
         skip_calibration = True
     else:
@@ -413,6 +525,19 @@ def quantize_static(
             return None
 
     if not skip_calibration:
+        calib_passthrough_op_types = extra_options.get("CalibPassthroughOpTypes", [])
+        op_types_to_pass_through = []
+        for item_op_type in op_types_to_quantize:
+            if item_op_type in calib_passthrough_op_types:
+                op_types_to_quantize.remove(item_op_type)
+                op_types_to_pass_through.append(item_op_type)
+        if calib_passthrough_op_types:
+            dependencies_dict, missing_types = nearest_non_passthrough_ancestor_mapping(
+                float_model, op_types_to_pass_through
+            )
+            if missing_types:
+                op_types_to_quantize += missing_types
+
         tensors_range = run_calibration(
             float_model,
             cached_data_reader,
@@ -425,11 +550,27 @@ def quantize_static(
         )
         cached_data_reader.reset_iter()
 
-        if tensors_range_file is not None and not crypto_mode:
-            save_tensors_range(tensors_range, tensors_range_file)
+        if calib_passthrough_op_types:
+            tensors_range = update_tensors_range_with_dependencies(tensors_range, dependencies_dict)
+
+        if save_and_restore is not None and not crypto_mode:
+            save_and_restore_func(
+                save_and_restore=save_and_restore,
+                command_type="save",
+                save_content=__version__,
+                stage_name="quark_version",
+            )
+            save_and_restore_func(
+                save_and_restore=save_and_restore,
+                command_type="save",
+                save_content=tensors_range,
+                stage_name="tensors_range",
+            )
     else:
-        if tensors_range_file is not None and not crypto_mode:
-            tensors_range = load_tensors_range(tensors_range_file)
+        if save_and_restore is not None and not crypto_mode:
+            tensors_range = save_and_restore_func(
+                save_and_restore=save_and_restore, command_type="restore", stage_name="tensors_range"
+            )
         else:
             tensors_range = fake_calibration(float_model)
 
@@ -443,22 +584,53 @@ def quantize_static(
             else:
                 calibrate_method = Int16Method.MinMax
 
-        quant_model = run_static_quantization(
-            float_model,
-            tensors_range,
-            per_channel,
-            reduce_range,
-            weight_type,
-            activation_type,
-            enable_npu_cnn,
-            enable_npu_transformer,
-            quant_format,
-            calibrate_method,
-            nodes_to_quantize,
-            nodes_to_exclude,
-            op_types_to_quantize,
-            extra_options,
-        )
+        # Run quantization wrapped in try/finally so the 11-category effective
+        # extra_options summary is printed on BOTH success and failure paths.
+        # The failure-path print is tagged with the exception class name so a
+        # summary from a failed run is not mistaken for a successful one. The
+        # printer reads extra_options/quant_format/calibrate_method by
+        # reference, so on failure it captures the state at the failure point.
+        _effective_print_exc: str | None = None
+        try:
+            quant_model = run_static_quantization(
+                float_model,
+                tensors_range,
+                per_channel,
+                reduce_range,
+                weight_type,
+                activation_type,
+                enable_npu_cnn,
+                enable_npu_transformer,
+                quant_format,
+                calibrate_method,
+                nodes_to_quantize,
+                nodes_to_exclude,
+                op_types_to_quantize,
+                extra_options,
+            )
+        except Exception as exc:
+            _effective_print_exc = type(exc).__name__
+            raise
+        finally:
+            # Print extra_options as-is. We deliberately do NOT mirror runtime
+            # default-resolution here: any such mirror is a second source of
+            # truth that drifts as soon as the real default changes. The
+            # summary shows what was passed in plus whatever the pipeline
+            # explicitly wrote back into extra_options (e.g. FP16 auto-detect
+            # at quantize.py:312-318, TensorQuantOverrides upgrade); unset
+            # keys are rendered from the schema's static defaults inside
+            # print_effective_quantization_summary.
+            if _print_effective_summary and not crypto_mode:
+                print_effective_quantization_summary(
+                    user_extra=_user_extra_snapshot if _user_extra_snapshot is not None else dict(extra_options),
+                    effective_extra=dict(extra_options),
+                    effective_quant_format=quant_format,
+                    effective_calibrate_method=calibrate_method,
+                    effective_enable_npu_cnn=enable_npu_cnn,
+                    effective_activation_type=activation_type,
+                    effective_weight_type=weight_type,
+                    exception_context=_effective_print_exc,
+                )
 
     float_model = topo_model.model
     quant_model = apply_post_process(
@@ -477,12 +649,6 @@ def quantize_static(
         extra_options=extra_options,
     )
     cached_data_reader.reset_iter()
-
-    e2e_quantized_end_time = time.perf_counter()
-    e2e_quantize_time_consumed = e2e_quantized_end_time - e2e_quantize_start_time
-    save_quantized_info([["e2e", e2e_quantize_time_consumed]], write_mode="a")
-    if not crypto_mode:
-        logger.info(f"Quark_latency_profiler: e2e quantization time consumed:{e2e_quantize_time_consumed:1f}")
 
     if print_summary and fp32_nodes_dict and not crypto_mode:
         shared_init_optypes = extra_options.get("CopySharedInit")

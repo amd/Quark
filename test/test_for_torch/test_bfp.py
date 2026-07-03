@@ -3007,7 +3007,7 @@ def fake_quantize_bfp(test_scene, is_dynamic: bool = True):
     return quark_output
 
 
-test_scenes = [k for k in generate_test_case_input()]
+test_scenes = list(generate_test_case_input())
 
 
 @pytest.mark.parametrize("test_scene", test_scenes)

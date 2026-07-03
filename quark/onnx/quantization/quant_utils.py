@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
@@ -10,7 +10,7 @@ import re
 import types
 from enum import Enum
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import numpy as np
 import onnx
@@ -19,7 +19,7 @@ from onnx import numpy_helper, shape_inference
 from onnx import onnx_pb as onnx_proto
 from onnx.onnx_ml_pb2 import GraphProto, ModelProto, NodeProto, TensorProto
 from onnx.reference import ReferenceEvaluator
-from onnxruntime.quantization.calibrate import CalibrationMethod
+from onnxruntime.quantization.calibrate import CalibrationMethod, TensorsData
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import (
     DEQUANT_OP_NAME,
@@ -27,8 +27,10 @@ from onnxruntime.quantization.quant_utils import (
     QuantType,
 )
 from onnxruntime.quantization.quant_utils import load_model_with_shape_infer as ort_load_model_with_shape_infer
+from onnxruntime.quantization.tensor_quant_overrides import TensorQuantOverridesHelper
 from packaging import version as pv
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration.methods import ExtendedCalibrationMethod, Int16Method, PowerOfTwoMethod
 from quark.onnx.operators.custom_ops import (
     _COP_BFP_OP_NAME,
@@ -41,7 +43,6 @@ from quark.onnx.operators.custom_ops import (
     _COP_VERSION,
 )
 from quark.onnx.utils.system_utils import create_tmp_dir
-from quark.shares.utils.log import ScreenLogger, log_errors
 from quark.version import __version__ as versions
 
 
@@ -228,8 +229,8 @@ class ExtendedQuantType(Enum):
     def from_string(t: str) -> Any:
         try:
             return ExtendedQuantType[t]
-        except KeyError:
-            raise ValueError()
+        except KeyError as e:  # pragma: no cover
+            raise ValueError() from e
 
     @property
     def tensor_type(self) -> Any:
@@ -276,8 +277,8 @@ class VitisQuantType(Enum):
     def from_string(t: str) -> Any:
         try:
             return VitisQuantType[t]
-        except KeyError:
-            raise ValueError()
+        except KeyError as e:  # pragma: no cover
+            raise ValueError() from e
 
 
 class ExtendedQuantFormat(Enum):
@@ -291,8 +292,8 @@ class ExtendedQuantFormat(Enum):
     def from_string(f: str) -> Any:
         try:
             return ExtendedQuantFormat[f]
-        except KeyError:
-            raise ValueError()
+        except KeyError as e:  # pragma: no cover
+            raise ValueError() from e
 
 
 # This is a deprecated class
@@ -309,21 +310,21 @@ class VitisQuantFormat(Enum):
     def from_string(f: str) -> Any:
         try:
             return VitisQuantFormat[f]
-        except KeyError:
-            raise ValueError()
+        except KeyError as e:  # pragma: no cover
+            raise ValueError() from e
 
 
-DType = Union[
-    np.dtype[np.int8],
-    np.dtype[np.uint8],
-    np.dtype[np.int16],
-    np.dtype[np.uint16],
-    np.dtype[np.int32],
-    np.dtype[np.uint32],
-    np.dtype[np.float16],
-    None,
-    Any,
-]
+DType = (
+    np.dtype[np.int8]
+    | np.dtype[np.uint8]
+    | np.dtype[np.int16]
+    | np.dtype[np.uint16]
+    | np.dtype[np.int32]
+    | np.dtype[np.uint32]
+    | np.dtype[np.float16]
+    | None
+    | Any
+)
 ONNX_TYPE_TO_NP_TYPE: dict[int, DType | None] = {
     onnx_proto.TensorProto.INT8: np.dtype("int8"),
     onnx_proto.TensorProto.UINT8: np.dtype("uint8"),
@@ -685,11 +686,38 @@ def is_node_needs_annotated(model: onnx.ModelProto, node: onnx.NodeProto) -> boo
     :return: the node needs annotated or not
     """
     if node.op_type == "Clip" and node.op_type in remove_qdq_op_type:
+        # Make sure whether the Clip node can be considered as ReLU or ReLU6
         if is_clip_with_min_max(model, node, 0, 6) or is_clip_with_min_max(model, node, 0, 1):
             return True
     elif node.op_type in remove_qdq_op_type:
         return True
     return False
+
+
+def get_all_tensor_names(model: onnx.ModelProto) -> set[str]:
+    """Return every tensor name referenced in ``model``'s main graph.
+
+    The returned set is the union of:
+
+    * initializer names
+    * all node inputs and outputs
+    * graph inputs and outputs
+
+    Useful for validating user-supplied tensor references (e.g. keys in
+    ``TensorQuantOverrides``) against the actual graph. Note: this does not
+    recurse into subgraphs (``If``/``Loop``/``Scan`` bodies); callers that need
+    that should walk the subgraphs themselves.
+
+    :param model: ONNX ModelProto to inspect.
+    :return: set of tensor names present in the model's main graph.
+    """
+    names: set[str] = {init.name for init in model.graph.initializer}
+    for node in model.graph.node:
+        names.update(node.input)
+        names.update(node.output)
+    names.update(vi.name for vi in model.graph.input)
+    names.update(vi.name for vi in model.graph.output)
+    return names
 
 
 def get_tensor_to_consumer(model: onnx.ModelProto) -> dict[str, list[onnx.NodeProto]]:
@@ -737,12 +765,13 @@ def get_annotate_tensors(model: onnx.ModelProto) -> list[str]:
 
 
 def get_qdq_to_remove(
-    model: onnx.ModelProto, annotate_tensors: list[str]
+    model: onnx.ModelProto, annotate_tensors: list[str], remove_fused_qdq: bool = False
 ) -> tuple[list[onnx.NodeProto], list[onnx.NodeProto], dict[str, str]]:
     """
     Return the names of nodes to be removed and a dictionary for converting input tensors
     :param model: model object
     :param annotate_tensors: the annotate tensors
+    :param remove_fused_qdq: whether to remove fused QDQ nodes, such as BFPQuantizeDequantize and MXQuantizeDequantize
     :return: dequantize & quantize nodes to remove and node mapping dict
     """
     q_nodes_to_remove = []
@@ -750,10 +779,12 @@ def get_qdq_to_remove(
     q_nodes_output_to_remove = []
     input_node_mapping = {}
     for node in model.graph.node:
-        if node.op_type in QUANT_OP_TYPES and node.input[0] in annotate_tensors:
-            input_node_mapping[node.input[0]] = node.output[0]
-            q_nodes_to_remove.append(node)
-            q_nodes_output_to_remove.append(node.output[0])
+        if node.op_type in QUANT_OP_TYPES or (remove_fused_qdq and node.op_type in FN_OP_TYPES):
+            if node.input[0] in annotate_tensors:
+                input_node_mapping[node.input[0]] = node.output[0]
+                q_nodes_to_remove.append(node)
+                if node.op_type in QUANT_OP_TYPES:
+                    q_nodes_output_to_remove.append(node.output[0])
     for node in model.graph.node:
         if node.op_type in DEQUANT_OP_TYPES and node.input[0] in q_nodes_output_to_remove:
             for k, v in input_node_mapping.items():
@@ -993,7 +1024,7 @@ def compute_scale_zp_fp(
         else:
             zero_point = np.array(np.round(qmin - rmin / scale), dtype=scale.dtype)
 
-    if method not in CalibrationMethod:
+    if method not in CalibrationMethod and scale != np.array(1.0, dtype=np.float32):
         logger.warning("Suggest using methods from CalibrationMethod as it only supports float scale.")
 
     return [zero_point, scale]
@@ -1025,6 +1056,7 @@ def quantize_data(
     pos_range: int = 5,
     use_pof2s: bool = True,
     use_scaling: bool = False,
+    is_partial_cal: bool = False,
 ) -> Any:
     """
     :param data: data to quantize
@@ -1095,14 +1127,29 @@ def quantize_data(
 
     if method == PowerOfTwoMethod.NonOverflow:
         return _check_type(rmin, rmax, zero_point, scale, quantized_data, zero_point_index=2)
-    elif method == PowerOfTwoMethod.MinMSE:
+    elif method == PowerOfTwoMethod.MinMSE and is_partial_cal:
+        zp_mse = zero_point
+        minmse_diffs = []
+        minmse_scales = []
+        minmse_zps = []
+        for i in range(pos_range):
+            new_scale = np.array(pos2scale(scale2pos(scale) + i - 1), dtype=data.dtype)
+            rmin = (qmin.astype(np.float32) - zero_point.astype(np.float32)) * new_scale
+
+            new_quantized_data = quantize_nparray(qType, np.asarray(data), new_scale, zp_mse)
+            diff = np.sum((dequantize_data(new_quantized_data, new_scale, zp_mse) - np.asarray(data)) ** 2)
+            minmse_diffs.append(diff)
+            minmse_scales.append(new_scale)
+            minmse_zps.append(zp_mse)
+
+        return (minmse_diffs, minmse_scales, minmse_zps, qmin, qmax)
+    elif method == PowerOfTwoMethod.MinMSE and not is_partial_cal:
         scale_mse = scale
         zp_mse = zero_point
         quantized_data_mse = quantized_data
         diff_min = float("inf")
         for i in range(pos_range):
-            new_scale = pos2scale(scale2pos(scale) + i - 1)
-            new_scale = np.array(new_scale, dtype=data.dtype)
+            new_scale = np.array(pos2scale(scale2pos(scale) + i - 1), dtype=data.dtype)
             rmin = (qmin.astype(np.float32) - zero_point.astype(np.float32)) * new_scale
 
             new_quantized_data = quantize_nparray(qType, np.asarray(data), new_scale, zp_mse)
@@ -1114,8 +1161,14 @@ def quantize_data(
 
         rmin_mse = (qmin.astype(np.float32) - zp_mse.astype(np.float32)) * scale_mse
         rmax_mse = (qmax.astype(np.float32) - zp_mse.astype(np.float32)) * scale_mse
-        return _check_type(rmin_mse, rmax_mse, zp_mse, scale_mse, quantized_data_mse, zero_point_index=2)
-
+        return _check_type(
+            rmin_mse.astype(data.dtype),
+            rmax_mse.astype(data.dtype),
+            zp_mse,
+            scale_mse,
+            quantized_data_mse,
+            zero_point_index=2,
+        )
     elif method == Int16Method.MinMax:
         return _check_type(rmin, rmax, zero_point, scale, quantized_data, zero_point_index=2)
     else:
@@ -1768,91 +1821,621 @@ def get_shape_from_tensor(tensor: onnx.TensorProto) -> list[int]:
     return shape
 
 
-def convert_fp16_scale_to_fp32(input_model: str | Path | ModelProto) -> ModelProto:
+def convert_fp16_scale_to_fp32(
+    input_model: str | Path | ModelProto,
+    nodes_to_quantize: list[str] = [],
+    nodes_to_exclude: list[str] = [],
+) -> ModelProto:
+    """Convert FP16 tensors to FP32 for selected nodes, inserting Cast nodes at boundaries.
+
+    :param input_model: ONNX model path or ``ModelProto``.
+    :param nodes_to_quantize: Node names to include for conversion (whitelist).
+    :param nodes_to_exclude: Node names to exclude from conversion (blacklist).
+    :return: Model with selected FP16 tensors converted to FP32.
+    """
     model = input_model if isinstance(input_model, onnx.ModelProto) else onnx.load(input_model)
+    onnx_model = ONNXModel(model)
 
-    for tensor in model.graph.initializer:
-        if tensor.data_type == onnx.TensorProto.FLOAT16:
-            logger.info(f"Converting initializer {tensor.name} from FP16 to FP32.")
+    input_name_to_nodes = onnx_model.input_name_to_nodes()
+    output_name_to_node = onnx_model.output_name_to_node()
+    node_by_name = {n.name: n for n in onnx_model.nodes() if n.name}
 
-            float16_data = onnx.numpy_helper.to_array(tensor)
-            float32_data = float16_data.astype(np.float32)
+    # ---------------------------------------------
+    # Convert nodes and initializers and value info
+    # ---------------------------------------------
+    all_node_names = set(node_by_name.keys())
 
-            new_tensor = onnx.numpy_helper.from_array(float32_data, tensor.name)
+    nodes_to_quantize_clean = [n for n in nodes_to_quantize if n in all_node_names]
+    nodes_to_exclude_clean = [n for n in nodes_to_exclude if n in all_node_names]
 
-            model.graph.initializer.remove(tensor)
-            model.graph.initializer.append(new_tensor)
+    # Phase 1 – Identify and convert nodes and initializers
+    nodes_for_conversion: set[str] = set()
+    inits_for_conversion: set[str] = set()
+    for node_name in all_node_names:
+        node = node_by_name[node_name]
+        if nodes_to_exclude_clean and node_name in nodes_to_exclude_clean:
+            continue
+        nodes_for_conversion.add(node_name)
 
-    for node in model.graph.node:
-        for i, input_name in enumerate(node.input):
-            for tensor in model.graph.initializer:
-                if tensor.name == input_name and tensor.data_type == onnx.TensorProto.FLOAT16:
-                    logger.info(f"Converting input {tensor.name} of node {node.name} from FP16 to FP32.")
+        for inp in node.input:
+            assert inp, f"Node {node.name} has no input!"
+            init = onnx_model.get_initializer(inp)
+            if init and init.data_type == onnx.TensorProto.FLOAT16:
+                inits_for_conversion.add(inp)
 
-                    float16_data = onnx.numpy_helper.to_array(tensor)
-                    float32_data = float16_data.astype(np.float32)
+    # Phase 2 – Convert attributes and value information for converted nodes
+    for node_name in nodes_for_conversion:
+        node = node_by_name[node_name]
 
-                    new_tensor = onnx.numpy_helper.from_array(float32_data, tensor.name)
-
-                    model.graph.initializer.remove(tensor)
-                    model.graph.initializer.append(new_tensor)
-
-        for i, output_name in enumerate(node.output):
-            for output in model.graph.value_info:
-                if output.name == output_name and output.type.tensor_type.elem_type == onnx.TensorProto.FLOAT16:
-                    logger.info(f"Converting output {output.name} of node {node.name} from FP16 to FP32.")
-
-                    output.type.tensor_type.elem_type = onnx.TensorProto.FLOAT
-
+        # Convert attributes of the converted nodes
         for attr in node.attribute:
+            # For Cast node with to attribute
             if attr.name == "to" and attr.i == TensorProto.FLOAT16:
                 attr.i = TensorProto.FLOAT
-                logger.info(f"Converting attributes of node {node.name} from FP16 to FP32.")
-
+                logger.debug(f"Converting attribute 'to' of node {node.name} from FP16 to FP32.")
+            # For Constant node with value attribute
             if attr.name == "value" and attr.t.data_type == TensorProto.FLOAT16:
                 new_data = onnx.numpy_helper.to_array(attr.t).astype("float32")
-                attr.t.data_type = TensorProto.FLOAT
-                attr.t.raw_data = new_data.tobytes()
-                logger.info(f"Converting attributes of node {node.name} from FP16 to FP32.")
+                new_tensor = onnx.numpy_helper.from_array(new_data, attr.t.name)
+                attr.t.CopyFrom(new_tensor)
+                logger.debug(f"Converting attribute 'value' of node {node.name} from FP16 to FP32.")
 
-    new_nodes = []
-    input_to_node_map: dict[str, list[NodeProto]] = {}
-    for node in model.graph.node:
-        for input_ in node.input:
-            if input_ not in input_to_node_map:
-                input_to_node_map[input_] = []
-            input_to_node_map[input_].append(node)
-    output_to_node_map: dict[str, list[NodeProto]] = {}
-    for node in model.graph.node:
-        for output_ in node.output:
-            if output_ not in output_to_node_map:
-                output_to_node_map[output_] = []
-            output_to_node_map[output_].append(node)
+        # Convert value information at the input tensors of the converted nodes
+        for inp in node.input:
+            if not inp or onnx_model.is_graph_input(inp):
+                continue
+            tt = onnx_model.get_tensor_type(inp)
+            if tt and tt.elem_type == onnx.TensorProto.FLOAT16:
+                tt.elem_type = onnx.TensorProto.FLOAT
+                logger.debug(f"Converting value information of node {node.name} from FP16 to FP32.")
 
-    for input_tensor in model.graph.input:
-        if input_tensor.type.tensor_type.elem_type == onnx.TensorProto.FLOAT16:
-            cast_node_name = f"{input_tensor.name}_Cast"
-            cast_node = onnx.helper.make_node(
-                "Cast", inputs=[input_tensor.name], outputs=[cast_node_name], to=onnx.TensorProto.FLOAT
+    # Phase 3 – Convert initializers
+    for init_name in inits_for_conversion:
+        old_init = onnx_model.get_initializer(init_name)
+        fp32_data = onnx.numpy_helper.to_array(old_init).astype(np.float32)
+        new_init = onnx.numpy_helper.from_array(fp32_data, old_init.name)
+        onnx_model.remove_initializer(old_init)
+        onnx_model.add_initializer(new_init)
+        logger.debug(f"Converting initializer {init_name} from FP16 to FP32.")
+
+    # ---------------------------------------------
+    # Insert Cast nodes
+    # ---------------------------------------------
+    # Insert Cast nodes at graph inputs, which should be kept as FP16
+    for inp in onnx_model.model.graph.input:
+        if inp.type.tensor_type.elem_type != onnx.TensorProto.FLOAT16:
+            continue
+
+        consumers = input_name_to_nodes.get(inp.name, [])
+        for index, consumer in enumerate(consumers):
+            if nodes_to_exclude_clean and consumer.name in nodes_to_exclude_clean:
+                continue
+
+            cast_name = f"{inp.name}_Cast_{index}"
+            cast_output_name = f"{cast_name}_output"
+            onnx_model.replace_node_input(consumer, inp.name, cast_output_name)
+            onnx_model.add_node(
+                onnx.helper.make_node(
+                    "Cast", inputs=[inp.name], outputs=[cast_output_name], name=cast_name, to=onnx.TensorProto.FLOAT
+                )
             )
-            new_nodes.append(cast_node)
+            logger.info(f"Inserted Cast node {cast_name} at the input of node {consumer.name} to convert FP16 to FP32.")
 
-            for after_input_node in input_to_node_map[input_tensor.name]:
-                after_input_node.input[0] = cast_node_name
+    if not (nodes_to_quantize_clean or nodes_to_exclude_clean):
+        # This is the simplest case, where we just need to insert Cast nodes at graph outputs
+        for out in onnx_model.model.graph.output:
+            if out.type.tensor_type.elem_type != onnx.TensorProto.FLOAT16:
+                continue
 
-    for output_tensor in model.graph.output:
-        if output_tensor.type.tensor_type.elem_type == onnx.TensorProto.FLOAT16:
-            cast_node_name = f"{output_tensor.name}_Cast"
-            cast_node = onnx.helper.make_node(
-                "Cast", inputs=[cast_node_name], outputs=[output_tensor.name], to=onnx.TensorProto.FLOAT16
+            producer = output_name_to_node.get(out.name, None)
+            if producer:
+                cast_name = f"{out.name}_Cast"
+                cast_input_name = f"{cast_name}_input"
+                onnx_model.replace_node_output(producer, out.name, cast_input_name)
+                onnx_model.add_node(
+                    onnx.helper.make_node(
+                        "Cast",
+                        inputs=[cast_input_name],
+                        outputs=[out.name],
+                        name=cast_name,
+                        to=onnx.TensorProto.FLOAT16,
+                    )
+                )
+                logger.info(
+                    f"Inserted Cast node {cast_name} at the output of node {producer.name} to convert FP32 to FP16."
+                )
+    else:
+        # Insert Cast nodes at the output of DQs at the boundaries between FP16 and FP32
+        for node_name in nodes_for_conversion:
+            node = node_by_name[node_name]
+            if not (
+                nodes_to_quantize_clean and node.name in nodes_to_quantize_clean or node.op_type in DEQUANT_OP_TYPES
+            ):
+                continue
+
+            for output in node.output:
+                tensor_type = onnx_model.get_tensor_type(output)
+                if tensor_type and tensor_type.elem_type != onnx.TensorProto.FLOAT16:
+                    continue
+
+                consumers = input_name_to_nodes.get(output, [])
+                for index, consumer in enumerate(consumers):
+                    if nodes_to_exclude_clean and consumer.name not in nodes_to_exclude_clean:
+                        continue
+
+                    cast_name = f"{output}_Cast_{index}"
+                    cast_output_name = f"{cast_name}_output"
+                    onnx_model.replace_node_input(consumer, output, cast_output_name)
+                    onnx_model.add_node(
+                        onnx.helper.make_node(
+                            "Cast",
+                            inputs=[output],
+                            outputs=[cast_output_name],
+                            name=cast_name,
+                            to=onnx.TensorProto.FLOAT16,
+                        )
+                    )
+                    logger.info(
+                        f"Inserted Cast node {cast_name} at the input of node {consumer.name} to convert FP32 to FP16."
+                    )
+
+    onnx_model.topological_sort()
+    return onnx_model.model
+
+
+def insert_quant_nodes_at_boundaries(
+    model: ModelProto,
+    tensor_quant_overrides: TensorQuantOverridesHelper,
+    tensors_range: TensorsData,
+    reduce_range: bool = False,
+    calibrate_method: CalibrationMethod = CalibrationMethod.MinMax,
+    extra_options: dict[str, Any] = {},
+) -> ModelProto:
+    """Insert additional pair of quant nodes (Q/DQ or BFPQDQ or MXQDQ nodes) at the boundary tensors of two different precisions.
+    :param model: ONNX model path or ``ModelProto``.
+    :param TensorQuantOverridesHelper tensor_quant_overrides: Tensor quantization overrides.
+    :param TensorsData tensors_range: Data range for all quantizing tensors.
+    :param bool reduce_range: Whether to reduce the range of the quantized tensor.
+    :param CalibrationMethod calibrate_method: Calibration method, the default is CalibrationMethod.MinMax.
+    :param Dict[str, Any] extra_options: Options for the transformation.
+    :return: Model with additional quant node pairs inserted at the boundaries.
+    """
+    onnx_model = ONNXModel(model)
+    output_name_to_node = onnx_model.output_name_to_node()
+    input_name_to_nodes = onnx_model.input_name_to_nodes()
+
+    tensor_names: set[str] = set()
+    for graph_input in onnx_model.model.graph.input:
+        tensor_names.add(graph_input.name)
+    for graph_output in onnx_model.model.graph.output:
+        tensor_names.add(graph_output.name)
+    for initializer in onnx_model.model.graph.initializer:
+        tensor_names.add(initializer.name)
+    for node in onnx_model.nodes():
+        tensor_names.update([name for name in node.input if name])
+        tensor_names.update([name for name in node.output if name])
+
+    node_names = {node.name for node in onnx_model.nodes() if node.name}
+    nodes_with_mixed_precision = extra_options.get("NodesWithMixedPrecision", [])
+
+    def _unique_name(base: str, existing: set[str]) -> str:
+        if base not in existing:
+            existing.add(base)
+            return base
+        index = 1
+        while True:
+            candidate = f"{base}_{index}"
+            if candidate not in existing:
+                existing.add(candidate)
+                return candidate
+            index += 1
+
+    def _attr_to_key(attr: onnx.AttributeProto) -> tuple[str, Any]:
+        if attr.type == onnx.AttributeProto.INT:
+            value: Any = attr.i
+        elif attr.type == onnx.AttributeProto.FLOAT:
+            value = attr.f
+        elif attr.type == onnx.AttributeProto.STRING:
+            value = attr.s
+        # elif attr.type == onnx.AttributeProto.INTS:
+        #     value = tuple(attr.ints)
+        # elif attr.type == onnx.AttributeProto.FLOATS:
+        #     value = tuple(attr.floats)
+        # elif attr.type == onnx.AttributeProto.STRINGS:
+        #     value = tuple(attr.strings)
+        else:
+            value = repr(attr)
+        return attr.name, value
+
+    def _qtype_from_quant_node(node: NodeProto) -> Any:
+        if len(node.input) >= 3 and node.input[2]:
+            zp_init = onnx_model.get_initializer(node.input[2])
+            if zp_init is not None:
+                return zp_init.data_type
+        # if node.output and node.output[0]:
+        #     tt = onnx_model.get_tensor_type(node.output[0])
+        #     if tt:
+        #         return tt.elem_type
+        return None
+
+    def _signature_from_quant_node(node: NodeProto) -> tuple[str, str, Any]:
+        domain = node.domain if node.domain else "ai.onnx"
+        return ("quant", f"{domain}::{node.op_type}", _qtype_from_quant_node(node))
+
+    def _signature_from_fn_node(node: NodeProto) -> tuple[str, str, tuple[tuple[str, Any], ...]]:
+        domain = node.domain if node.domain else COP_DOMAIN
+        attrs = tuple(sorted(_attr_to_key(attr) for attr in node.attribute))
+        return ("fn", f"{domain}::{node.op_type}", attrs)
+
+    def _upstream_stage_from_input(
+        input_name: str,
+    ) -> (
+        tuple[
+            str,
+            tuple[str, str, Any] | tuple[str, str, tuple[tuple[str, Any], ...]],
+            tuple[Any, ...],
+            str,
+        ]
+        | None
+    ):
+        producer = output_name_to_node.get(input_name)
+
+        if producer and producer.op_type in DEQUANT_OP_TYPES:
+            quant = output_name_to_node.get(producer.input[0])
+            if quant and quant.op_type in QUANT_OP_TYPES:
+                signature = _signature_from_quant_node(quant)
+                upstream_source = quant.input[0] if len(quant.input) >= 1 and quant.input[0] else input_name
+                return "pair", signature, (quant, producer), upstream_source
+
+        if producer and producer.op_type in FN_OP_TYPES:
+            signature = _signature_from_fn_node(producer)
+            upstream_source = producer.input[0] if len(producer.input) >= 1 and producer.input[0] else input_name
+            return "fn", signature, (producer,), upstream_source
+
+        return None
+
+    def _downstream_stage_from_consumer(
+        node: NodeProto,
+    ) -> (
+        tuple[
+            str,
+            tuple[str, str, Any] | tuple[str, str, tuple[tuple[str, Any], ...]],
+            tuple[Any, ...],
+            str,
+        ]
+        | None
+    ):
+        if node.op_type in QUANT_OP_TYPES:
+            dq_consumers = input_name_to_nodes.get(node.output[0], [])
+            dq_node = next((consumer for consumer in dq_consumers if consumer.op_type in DEQUANT_OP_TYPES), None)
+            if dq_node:
+                signature = _signature_from_quant_node(node)
+                downstream_target = dq_node.output[0] if len(dq_node.output) >= 1 and dq_node.output[0] else ""
+                return "pair", signature, (node, dq_node), downstream_target
+
+        if node.op_type in FN_OP_TYPES:
+            signature = _signature_from_fn_node(node)
+            downstream_target = node.output[0] if len(node.output) >= 1 and node.output[0] else ""
+            return "fn", signature, (node,), downstream_target
+
+        return None
+
+    def _has_tensor_override(tensor_name: str) -> bool:
+        return (
+            tensor_quant_overrides.has_per_tensor_overrides(tensor_name)
+            or tensor_quant_overrides.has_per_channel_overrides(tensor_name)
+            if tensor_quant_overrides
+            else False
+        )
+
+    def _get_input_override_tensor_name(
+        input_name: str,
+        upstream_source_name: str,
+    ) -> str | None:
+        candidate_names = [input_name]
+        if upstream_source_name and upstream_source_name != input_name:
+            candidate_names.append(upstream_source_name)
+        for candidate_name in candidate_names:
+            if _has_tensor_override(candidate_name):
+                return candidate_name
+        return None
+
+    def _get_output_override_tensor_name(output_name: str, downstream_target: str = "") -> str | None:
+        candidate_names: list[str] = [output_name]
+        if downstream_target and downstream_target != output_name:
+            candidate_names.append(downstream_target)
+
+        for candidate_name in candidate_names:
+            if _has_tensor_override(candidate_name):
+                return candidate_name
+        return None
+
+    def _insert_stage_between(
+        source_tensor: str,
+        target_node: NodeProto,
+        target_input_name: str,
+        stage_kind: str,
+        stage_nodes: tuple[Any, ...],
+        qparam_tensor_name: str,
+        name_scope: str,
+    ) -> None:
+        if stage_kind == "pair":
+            quant_template = stage_nodes[0]
+            dequant_template = stage_nodes[1]
+            assert quant_template is not None
+            assert dequant_template is not None
+
+            new_quant = copy.deepcopy(quant_template)
+            new_dequant = copy.deepcopy(dequant_template)
+
+            quant_name_base = f"{name_scope}_additional_{quant_template.op_type}"
+            dequant_name_base = f"{name_scope}_additional_{dequant_template.op_type}"
+            new_quant.name = _unique_name(quant_name_base, node_names)
+            new_dequant.name = _unique_name(dequant_name_base, node_names)
+
+            quant_output = _unique_name(f"{quant_name_base}_output", tensor_names)
+            dequant_output = _unique_name(f"{dequant_name_base}_output", tensor_names)
+
+            qtype = _qtype_from_quant_node(quant_template)
+
+            scale_dtype: Any = np.float32
+            quant_scale_init = (
+                onnx_model.get_initializer(quant_template.input[1])
+                if len(quant_template.input) >= 2 and quant_template.input[1]
+                else None
             )
-            new_nodes.append(cast_node)
+            if quant_scale_init is not None:
+                scale_dtype = onnx.helper.tensor_dtype_to_np_dtype(quant_scale_init.data_type)
+            # dequant_scale_init = (
+            #     onnx_model.get_initializer(dequant_template.input[1])
+            #     if len(dequant_template.input) >= 2 and dequant_template.input[1]
+            #     else None
+            # )
+            # elif dequant_scale_init is not None:
+            #    scale_dtype = onnx.helper.tensor_dtype_to_np_dtype(dequant_scale_init.data_type)
 
-            for before_output_node in output_to_node_map[output_tensor.name]:
-                before_output_node.output[0] = cast_node_name
+            if qtype is not None:
+                scale_zp = _make_scale_zp_initializers(qparam_tensor_name, qtype, scale_dtype)
+                if scale_zp is not None and len(new_quant.input) >= 3:
+                    new_quant.input[1] = scale_zp[0]
+                    new_quant.input[2] = scale_zp[1]
+                    if len(new_dequant.input) >= 3:
+                        new_dequant.input[1] = scale_zp[0]
+                        new_dequant.input[2] = scale_zp[1]
 
-    model.graph.node.extend(new_nodes)
-    return model
+            new_quant.input[0] = source_tensor
+            new_quant.output[0] = quant_output
+            new_dequant.input[0] = quant_output
+            new_dequant.output[0] = dequant_output
+
+            onnx_model.replace_node_input(target_node, target_input_name, dequant_output)
+            onnx_model.add_node(new_quant)
+            onnx_model.add_node(new_dequant)
+            return None
+
+        fn_template = stage_nodes[0]
+        assert fn_template is not None
+
+        new_fn = copy.deepcopy(fn_template)
+        fn_name_base = f"{name_scope}_additional_{fn_template.op_type}"
+        new_fn.name = _unique_name(fn_name_base, node_names)
+        fn_output = _unique_name(f"{fn_name_base}_output", tensor_names)
+        new_fn.input[0] = source_tensor
+        new_fn.output[0] = fn_output
+
+        onnx_model.replace_node_input(target_node, target_input_name, fn_output)
+        onnx_model.add_node(new_fn)
+        return None
+
+    def _make_scale_zp_initializers(tensor_name: str, qtype: int, scale_dtype: Any) -> tuple[str, str] | None:
+        if tensors_range is None or tensor_name not in tensors_range:
+            logger.warning(
+                f"Skip recomputing boundary scale/zp for tensor {tensor_name} because calibration range is unavailable."
+            )
+            return None
+
+        td = tensors_range[tensor_name]
+        assert hasattr(td, "range_value"), f"Invalid tensor range {td} without range_value"
+
+        rmin, rmax = td.range_value[0], td.range_value[1]
+        symmetric = extra_options.get("ActivationSymmetric", qtype in [onnx.TensorProto.INT8, onnx.TensorProto.INT16])
+        use_pof2s = extra_options.get("UsePowerOf2Scale", True)
+
+        qmin, qmax = get_qmin_qmax_for_qType(qtype, reduce_range=reduce_range, symmetric=symmetric)
+        if qtype in ONNX_FP_QTYPES_LIST:
+            zero_point, scale = compute_scale_zp_fp(
+                rmin=rmin,
+                rmax=rmax,
+                qmin=qmin,
+                qmax=qmax,
+                element_type=qtype,
+                method=calibrate_method,
+                symmetric=symmetric,
+                use_scaling=False,
+            )
+        else:
+            zero_point, scale = compute_scale_zp(
+                rmin=rmin,
+                rmax=rmax,
+                qmin=qmin,
+                qmax=qmax,
+                element_type=qtype,
+                method=calibrate_method,
+                symmetric=symmetric,
+                use_pof2s=use_pof2s,
+            )
+
+        scale_np = np.asarray(scale, dtype=scale_dtype).reshape(())
+        zp_np_dtype = onnx.helper.tensor_dtype_to_np_dtype(qtype)
+        zp_np = np.asarray(zero_point, dtype=zp_np_dtype).reshape(())
+        scale_name = _unique_name(f"{tensor_name}_additional_scale", tensor_names)
+        zp_name = _unique_name(f"{tensor_name}_additional_zero_point", tensor_names)
+
+        onnx_model.add_initializer(onnx.numpy_helper.from_array(scale_np, scale_name))
+        onnx_model.add_initializer(onnx.numpy_helper.from_array(zp_np, zp_name))
+        return scale_name, zp_name
+
+    def _find_template_stage(
+        all_node_stage_infos: dict[str, list[dict[str, Any]]], current_node_stage_infos: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Some nodes maybe surround by nodes with mixed precision, we cannot determine the template stage for
+        it based on its own stage infos. We need to find the template stage from adjacent nodes.
+        """
+        for stage_info in current_node_stage_infos:
+            for _, infos in all_node_stage_infos.items():
+                for info in infos:
+                    # The template stage should be from the adjacent node that shares the exact same tensor.
+                    if info["override_tensor_name"] == stage_info["override_tensor_name"] and (
+                        info["tensor_name"] == stage_info["override_tensor_name"]
+                        or info["override_tensor_name"] == stage_info["tensor_name"]
+                    ):
+                        if info["template_index"] < 0:
+                            continue
+
+                        logger.info(
+                            f"Found a template stage from the tensor {info['tensor_name']} of node {info['node_name']} "
+                            f"for the node {stage_info['node_name']}"
+                        )
+                        return infos[info["template_index"]]
+        return None
+
+    # Phase 1: collect all candidate boundaries and their upstream/downstream stage snapshots.
+    node_stage_infos: dict[str, list[dict[str, Any]]] = {}
+
+    for node_index, node in enumerate(list(onnx_model.nodes())):
+        if node.op_type in QUANT_OP_TYPES + DEQUANT_OP_TYPES + FN_OP_TYPES:
+            continue
+
+        node_key = f"{node.name or node.op_type}_{node_index}"
+        node_display_name = node.name or node.op_type
+        node_stage_infos[node_key] = []
+
+        for input_index, input_name in enumerate(node.input):
+            if input_name:
+                upstream_stage = _upstream_stage_from_input(input_name)
+                if upstream_stage:
+                    upstream_kind, upstream_signature, upstream_nodes, upstream_source_name = upstream_stage
+
+                    # Skip if the upstream source is an initializer.
+                    if onnx_model.get_initializer(upstream_source_name) is not None:
+                        continue
+
+                    input_override_tensor_name = _get_input_override_tensor_name(input_name, upstream_source_name)
+                    node_stage_infos[node_key].append(
+                        {
+                            "node_name": node_display_name,  # For example, "Conv_0"
+                            "tensor_type": "input",  # For example, "input"
+                            "tensor_index": input_index,  # For example, 0
+                            "tensor_name": input_name,  # For example, "input_0_DequantizeLinear_output"
+                            "override_tensor_name": input_override_tensor_name,  # For example, "input_0"
+                            "stage_kind": upstream_kind,  # For example, "pair"
+                            "stage_signature": upstream_signature,  # For example, ("quant", "ai.onnx::QuantizeLinear", 1)
+                            "stage_nodes": upstream_nodes,  # For example, (quant_template, dequant_template)
+                            "target_node": node,  # For example, Conv node instance
+                            "template_index": -1,  # For example, -1
+                        }
+                    )
+
+        for output_index, output_name in enumerate(node.output):
+            consumers = input_name_to_nodes.get(output_name, [])
+            if consumers:
+                # Reference the first consumer.
+                consumer = consumers[0]
+
+                downstream_stage = _downstream_stage_from_consumer(consumer)
+                if downstream_stage:
+                    downstream_kind, downstream_signature, downstream_nodes, downstream_source_name = downstream_stage
+
+                    output_override_tensor_name = _get_output_override_tensor_name(output_name, downstream_source_name)
+                    node_stage_infos[node_key].append(
+                        {
+                            "node_name": node_display_name,
+                            "tensor_type": "output",
+                            "tensor_index": output_index,
+                            "tensor_name": output_name,
+                            "override_tensor_name": output_override_tensor_name,
+                            "stage_kind": downstream_kind,
+                            "stage_signature": downstream_signature,
+                            "stage_nodes": downstream_nodes,
+                            "target_node": consumer,
+                            "template_index": -1,
+                        }
+                    )
+
+    # Phase 2: determine the template nodes for the boundaries to insert quant nodes.
+    inserted_count = 0
+
+    inserted_tensors: set[tuple[str, str]] = set()
+    for node_key, stage_infos in node_stage_infos.items():
+        if not stage_infos:
+            continue
+        node_name = stage_infos[0]["node_name"]
+
+        """
+        # Comment out this to make sure all nodes have target QDQ pairs
+        input_signatures = {info["stage_signature"] for info in stage_infos if info["tensor_type"] == "input"}
+        output_signatures = {info["stage_signature"] for info in stage_infos if info["tensor_type"] == "output"}
+        if input_signatures == output_signatures:
+            logger.debug(
+                f"Skipping boundary insertion for node {node_name}: input and output activations share the same quantization signature."
+            )
+            continue
+        """
+
+        template_index = -1
+        for index, info in enumerate(stage_infos):
+            if nodes_with_mixed_precision and node_name not in nodes_with_mixed_precision:
+                # Use the first input boundary if no override tensor name exists.
+                if not info["override_tensor_name"]:
+                    template_index = index
+                    break
+            else:
+                # Use the override tensor name if it exists as the template.
+                if info["override_tensor_name"]:
+                    template_index = index
+                    break
+
+        template_info: dict[str, Any] | None = None
+        if template_index >= 0:
+            template_info = stage_infos[template_index]
+        else:
+            template_info = _find_template_stage(node_stage_infos, stage_infos)
+        if template_info is None:
+            logger.warning(f"No template stage found for node {node_name} to insert quant nodes at the boundaries.")
+            continue
+
+        template_kind = template_info["stage_kind"]
+        template_signature = template_info["stage_signature"]
+        template_nodes = template_info["stage_nodes"]
+
+        for info in stage_infos:
+            if info["tensor_name"] == template_info["tensor_name"]:
+                continue
+            if info["stage_signature"] == template_signature:
+                continue
+            info["template_index"] = template_index  # Update the template index for potential use
+            qparam_tensor_name = info["override_tensor_name"] or info["tensor_name"]
+
+            inserted_tensor_key = (node_name, info["tensor_name"])
+            if inserted_tensor_key not in inserted_tensors:
+                _insert_stage_between(
+                    source_tensor=info["tensor_name"],
+                    target_node=info["target_node"],
+                    target_input_name=info["tensor_name"],
+                    stage_kind=template_kind,
+                    stage_nodes=template_nodes,
+                    qparam_tensor_name=qparam_tensor_name,
+                    name_scope=f"{qparam_tensor_name}_{node_name}_{info['tensor_index']}",
+                )
+                inserted_tensors.add(inserted_tensor_key)
+
+                inserted_count += 1
+
+    if inserted_count > 0:
+        logger.info(f"Inserted {inserted_count} quant nodes at the boundary tensors of two different precisions.")
+        onnx_model.topological_sort()
+
+    return onnx_model.model
 
 
 def get_eltwise_op(input_model: str | Path | ModelProto) -> list[str]:

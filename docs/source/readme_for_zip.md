@@ -3,7 +3,7 @@
 ## Installation
 
 1. Prerequisites
-    Python 3.10, 3.11 or 3.12 is required. Python 3.13 is not supported at the moment.
+    Python 3.11, 3.12 or 3.13 is required. Python 3.14 is not supported at the moment.
     Install PyTorch for the compute platform(CUDA, ROCM, CPU...). Version of torch >= 2.2.0.
     Install ONNX of version >= 1.16.0,<=1.19, ONNX Runtime of version >=1.20.1,<= 1.22.2, onnxruntime-extensions of version >= 0.4.2
 

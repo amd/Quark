@@ -8,7 +8,7 @@ import pytest
 import torch
 
 import quark.torch.kernel
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import torch_device
 from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (

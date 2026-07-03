@@ -12,8 +12,8 @@ from quark.torch.algorithm.api import add_algorithm_config_by_model
 from quark.torch.algorithm.utils.auto_config import dump_config_to_json
 from quark.torch.quantization.config.config import (
     AWQConfig,
-    Config,
     Float16Spec,
+    QConfig,
     QLayerConfig,
     RotationConfig,
     SmoothQuantConfig,
@@ -44,7 +44,7 @@ def test_smoke_enhance_algorithm_config():
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen1.5-0.5B")
-    config = Config(
+    config = QConfig(
         global_quant_config=DEFAULT_CONFIG,
         algo_config=[
             RotationConfig(scaling_layers={}, model_decoder_layers="model.layers"),

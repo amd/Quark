@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import AdaRoundConfig, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor_x = np.array(
     [
@@ -72,7 +72,7 @@ class DataReader(CalibrationDataReader):
 
 class SimpleConvModel(nn.Module):
     def __init__(self):
-        super(SimpleConvModel, self).__init__()
+        super().__init__()
         self.weight = nn.Parameter(torch.randn(4, 4))
         self.fc = nn.Linear(4, 1)
 

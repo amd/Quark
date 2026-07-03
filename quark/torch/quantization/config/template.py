@@ -1,26 +1,24 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch.nn as nn
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.export.main_export.quant_config_parser import get_layer_quant_config
-from quark.torch.quantization.config.algo_configs import get_algo_config
+from quark.torch.quantization.config.algo_configs import get_algo_config, get_supported_algorithm_types
 from quark.torch.quantization.config.config import (
     AlgoConfig,
-    AutoSmoothQuantConfig,
-    AWQConfig,
+    AmdFP4Spec,
     BFP16Spec,
-    Config,
+    FP4PerGroupSpec,
     FP8E4M3PerChannelSpec,
     FP8E4M3PerTensorSpec,
-    GPTAQConfig,
-    GPTQConfig,
+    FP8E5M3PerTensorSpec,
     Int4PerChannelSpec,
     Int4PerGroupSpec,
     Int8PerTensorSpec,
@@ -28,13 +26,14 @@ from quark.torch.quantization.config.config import (
     OCP_MXFP4Spec,
     OCP_MXFP6E2M3Spec,
     OCP_MXFP6E3M2Spec,
+    ProgressiveSpec,
+    QConfig,
     QLayerConfig,
-    QronosConfig,
-    RotationConfig,
-    SmoothQuantConfig,
+    ScaleQuantSpec,
     Uint4PerChannelSpec,
     Uint4PerGroupSpec,
 )
+from quark.torch.quantization.weight_convert import SplitFusedExperts, WeightConverter
 
 logger = ScreenLogger(__name__)
 
@@ -62,6 +61,21 @@ class Int4WeightOnlyScheme(QuantizationScheme):
             ch_axis=-1, is_dynamic=False, scale_type="float", group_size=self.group_size
         ).to_quantization_spec()
         return QLayerConfig(weight=weight_spec)
+
+
+class Int4WeightAndActivationScheme(QuantizationScheme):
+    """Scheme for INT4 weight and activation quantization."""
+
+    def __init__(self, group_size: int):
+        self.group_size = group_size
+
+    @property
+    def config(self) -> QLayerConfig:
+        weight_spec = Int4PerGroupSpec(
+            ch_axis=-1, is_dynamic=False, scale_type="float", group_size=self.group_size
+        ).to_quantization_spec()
+        act_spec = Int4PerGroupSpec(ch_axis=-1, is_dynamic=True, group_size=self.group_size).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=act_spec)
 
 
 class Int4WeightOnlyPerChannelScheme(QuantizationScheme):
@@ -143,6 +157,18 @@ class MXFP4Scheme(QuantizationScheme):
         return QLayerConfig(weight=spec, input_tensors=spec_dynamic)
 
 
+class MXFP4WeightOnlyScheme(QuantizationScheme):
+    """Scheme for weight-only MXFP4 quantization (e.g. gpt-oss source format)."""
+
+    def __init__(self) -> None:
+        pass
+
+    @property
+    def config(self) -> QLayerConfig:
+        spec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
+        return QLayerConfig(weight=spec)
+
+
 class MXFP6E3M2Scheme(QuantizationScheme):
     """Scheme for MXFP6E3M2 quantization."""
 
@@ -179,6 +205,23 @@ class MXFP4_MXFP6E2M3Scheme(QuantizationScheme):
     def config(self) -> QLayerConfig:
         weight_spec = OCP_MXFP4Spec(ch_axis=-1, is_dynamic=False).to_quantization_spec()
         input_spec = OCP_MXFP6E2M3Spec(ch_axis=-1, is_dynamic=True).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
+
+
+class AmdFP4Scheme(QuantizationScheme):
+    """
+    Scheme for amdfp4 quantization with E5M3 scale format.
+
+    Supports only ``group_size=16`` or ``group_size=32``.
+    """
+
+    def __init__(self, group_size: int = 16) -> None:
+        self.group_size = group_size
+
+    @property
+    def config(self) -> QLayerConfig:
+        weight_spec = AmdFP4Spec(ch_axis=-1, group_size=self.group_size, is_dynamic=False).to_quantization_spec()
+        input_spec = AmdFP4Spec(ch_axis=-1, group_size=self.group_size, is_dynamic=True).to_quantization_spec()
         return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
 
 
@@ -235,6 +278,94 @@ class PTPCFP8Scheme(QuantizationScheme):
         return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
 
 
+class FP4Block16ScaleE4M3Scheme(QuantizationScheme):
+    """Scheme for FP4 per-group quantization with FP8 E4M3 scale quantization for both weights and activations.
+
+    Uses FP4 per-group (group_size=16) with FP8 E4M3 per-tensor scale quantization.
+    This is a two-stage quantization where the scale itself is quantized to FP8 E4M3 format.
+    Weights use static quantization while activations use dynamic quantization.
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    @property
+    def config(self) -> QLayerConfig:
+        weight_spec = ScaleQuantSpec(
+            first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=False, scale_type="float32"),
+            second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
+        ).to_quantization_spec()
+        input_spec = ScaleQuantSpec(
+            first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=True, scale_type="float32"),
+            second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
+        ).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
+
+
+class AmdFP4GlobalScaleScheme(QuantizationScheme):
+    """Scheme for FP4 per-group quantization with FP8 E5M3 global scale quantization for both weights and activations.
+
+    Uses FP4 per-group with FP8 E5M3 per-tensor global scale quantization.
+    This is a two-stage quantization where the scale itself is quantized to FP8 E5M3 format.
+    Weights use static quantization while activations use dynamic quantization.
+    """
+
+    def __init__(self, group_size: int) -> None:
+        self.group_size = group_size
+
+    @property
+    def config(self) -> QLayerConfig:
+        weight_spec = ScaleQuantSpec(
+            first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=self.group_size, is_dynamic=False, scale_type="float32"),
+            second_stage=FP8E5M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
+        ).to_quantization_spec()
+        input_spec = ScaleQuantSpec(
+            first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=self.group_size, is_dynamic=True, scale_type="float32"),
+            second_stage=FP8E5M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
+        ).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
+
+
+class INT4_FP8Scheme(QuantizationScheme):
+    """Scheme with INT4 weights and FP8 activations (a.k.a. "W4A8").
+
+    The scheme name follows the ``<weight_format>_<activation_format>`` convention, the same
+    style as ``mxfp4_fp8``. Concretely:
+
+    Weight  (4-bit, INT4):
+        - Quantized to INT4 (4-bit signed integer), the final stored weight format.
+        - Quantization is *progressive* (two stages): the high-precision weight is first
+          quantized to FP8 E4M3 per-tensor, then that result is re-quantized to INT4.
+        - INT4 stage is per-channel (ch_axis=0), symmetric, static (no runtime calibration),
+          using min-max observation, half-even rounding, and a float32 scale.
+
+    Activation (8-bit, FP8):
+        - Quantized to FP8 E4M3 (8-bit floating point, 4 exponent / 3 mantissa bits).
+        - Per-tensor, dynamic (scale computed at runtime from each input), min-max, float32 scale.
+
+    This matches the AMD-Quark INT4-weight / FP8-activation recipe used by models such as
+    ``amd/Kimi-K2-Thinking-W4A8``.
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    @property
+    def config(self) -> QLayerConfig:
+        # Weight: progressive two-stage quantization, FP8 E4M3 per-tensor static -> INT4 per-channel static.
+        weight_spec = ProgressiveSpec(
+            first_stage=FP8E4M3PerTensorSpec(observer_method="min_max", scale_type="float32", is_dynamic=False),
+            second_stage=Int4PerChannelSpec(
+                symmetric=True, scale_type="float32", round_method="half_even", ch_axis=0, is_dynamic=False
+            ),
+        ).to_quantization_spec()
+        # Activation: FP8 E4M3 per-tensor dynamic.
+        input_spec = FP8E4M3PerTensorSpec(
+            observer_method="min_max", scale_type="float32", is_dynamic=True
+        ).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
+
+
 class QuantizationSchemeCollection:
     """Collection for quantization schemes."""
 
@@ -251,6 +382,9 @@ class QuantizationSchemeCollection:
         self._schemes["int4_wo_128"] = Int4WeightOnlyScheme(group_size=128)
         self._schemes["int4_wo_per_channel"] = Int4WeightOnlyPerChannelScheme()
 
+        # INT4 weight + activation schemes
+        self._schemes["int4_wa_64"] = Int4WeightAndActivationScheme(group_size=64)
+
         # UINT4 weight-only schemes
         self._schemes["uint4_wo_32"] = Uint4WeightOnlyScheme(group_size=32)
         self._schemes["uint4_wo_64"] = Uint4WeightOnlyScheme(group_size=64)
@@ -266,16 +400,40 @@ class QuantizationSchemeCollection:
 
         # OCP MXFP quantization schemes
         self._schemes["mxfp4"] = MXFP4Scheme()
+        self._schemes["mxfp4_weight_only"] = MXFP4WeightOnlyScheme()
         self._schemes["mxfp6_e3m2"] = MXFP6E3M2Scheme()
         self._schemes["mxfp6_e2m3"] = MXFP6E2M3Scheme()
         self._schemes["mxfp4_mxfp6_e2m3"] = MXFP4_MXFP6E2M3Scheme()
         self._schemes["mxfp4_fp8"] = MXFP4_FP8Scheme()
+
+        # amdfp4 quantization schemes
+        self._schemes["amdfp4"] = AmdFP4Scheme(group_size=16)
+        self._schemes["amdfp4_g32"] = AmdFP4Scheme(group_size=32)
+
+        # INT4 weight (progressive FP8 E4M3 -> INT4 per-channel) + FP8 E4M3 dynamic activation ("W4A8")
+        self._schemes["int4_fp8"] = INT4_FP8Scheme()
 
         # MX6 quantization schemes
         self._schemes["mx6"] = MX6Scheme()
 
         # BFP16 quantization schemes
         self._schemes["bfp16"] = BFP16Scheme()
+
+        # Block-scale schemes
+        # NVFP4: FP4 with group_size=16 and FP8 E4M3 per-group scale.
+        self._schemes["nvfp4"] = FP4Block16ScaleE4M3Scheme()
+        # Legacy alias kept for backward compatibility with saved configs / older scripts.
+        self._schemes["fp4_block16_scale_e4m3"] = self._schemes["nvfp4"]
+        self._schemes["amdfp4_global16"] = AmdFP4GlobalScaleScheme(group_size=16)  # E5M3 global scale, group_size=16
+        self._schemes["amdfp4_global32"] = AmdFP4GlobalScaleScheme(group_size=32)  # E5M3 global scale, group_size=32
+
+        # TODO: add later the following (names to be defined) that do not involve a global scale:
+        # fp4_block16, with E8M0 scale.
+        # fp4_block16, with E5M3 scale + global scale.
+        # fp4_block16, with E5M3 scale + NO global scale.
+        # fp4_block32, with E4M3 scale.
+        # fp4_block32, with E5M3 scale.
+        # fp4_block32 with E8M0 scale already exists under the name "mxfp4".
 
     def register_scheme(self, scheme_name: str, scheme: QuantizationScheme) -> None:
         """Register a quantization scheme."""
@@ -304,6 +462,38 @@ class QuantizationSchemeCollection:
         return self._schemes[scheme_name]
 
 
+# Substrings that mark a user pattern as targeting a self-attention container
+# (and therefore valid as the base spec for kv/q projections within it).
+_ATTN_TOKENS = ("self_attn", "self_attention", "attn", "attention")
+
+
+def _resolve_projection_base_spec(config: QConfig, projection_pattern: str) -> QLayerConfig:
+    """Resolve the base ``QLayerConfig`` for a kv/q projection pattern.
+
+    Pure structural scan over ``layer_quant_config`` keys. Two ways to match:
+
+    1. The user pattern's last segment equals this projection's leaf — catches
+       direct writes like ``{"*k_proj": ...}`` or ``model.layers.5.self_attn.k_proj``.
+    2. The user pattern contains a self-attention token — catches ``*self_attn*``,
+       ``*layers.0.self_attn.*``, chatglm ``*self_attention*``, dbrx
+       ``*norm_attn_norm.attn.*``.
+
+    Falls back to ``global_quant_config`` when both miss. Out of scope:
+    non-attention overrides (``*mlp*``), per-layer differentiation, and
+    positional broad overrides like ``*model.layers.0.*`` that don't carry an
+    attention token. The broader fix is to stop synthesising entries back into
+    ``layer_quant_config`` and compose ``kv_cache_quant_config`` at real-layer
+    resolution time instead.
+    """
+    proj_leaf = projection_pattern.rsplit(".", 1)[-1].strip("*")
+    for pattern, spec in config.layer_quant_config.items():
+        if proj_leaf and pattern.endswith(proj_leaf):
+            return spec
+        if any(token in pattern for token in _ATTN_TOKENS):
+            return spec
+    return cast(QLayerConfig, config.global_quant_config)
+
+
 class LLMTemplate:
     """
     A configuration template that defines how to quantize specific types of LLM models.
@@ -315,11 +505,11 @@ class LLMTemplate:
     :param List[str] kv_layers_name: List of k_proj and v_proj layer name patterns to match. Default is ``None``.
     :param Union[str, List[str]] q_layer_name: q_proj layer name pattern to match. Default is ``None``.
     :param List[str] exclude_layers_name: List of layer name patterns to exclude from quantization. Default is ``[]``.
-    :param AWQConfig awq_config: Configuration for AWQ algorithm. Default is ``None``.
-    :param GPTQConfig gptq_config: Configuration for GPTQ algorithm. Default is ``None``.
-    :param SmoothQuantConfig smoothquant_config: Configuration for SmoothQuant algorithm. Default is ``None``.
-    :param AutoSmoothQuantConfig autosmoothquant_config: Configuration for AutoSmoothQuant algorithm. Default is ``None``.
-    :param RotationConfig rotation_config: Configuration for Rotation algorithm. Default is ``None``.
+    :param Optional[Dict[str, AlgoConfig]] algorithm_configs: Dictionary of algorithm names to algorithm
+        configurations. Example: ``{"awq": custom_awq_config, "gptq": custom_gptq_config}``. Default is ``None``.
+    :param Dict[str, AlgoConfig] legacy_algorithm_parameters: Legacy keyword arguments in ``<algorithm>_config``
+        form (for backward compatibility). Passing these will emit a deprecation warning. Use
+        ``algorithm_configs`` for new code.
 
     Note:
         - The quantization schemes supported by the template are:
@@ -339,11 +529,14 @@ class LLMTemplate:
             - mxfp6_e2m3
             - mx6
             - bfp16
+            - int4_fp8
         - The quantization algorithms supported by the template are:
             - awq
             - gptq
+            - gptaq
             - smoothquant
             - autosmoothquant
+            - qronos
             - rotation
         - The KV cache schemes supported by the template are:
             - fp8
@@ -374,7 +567,7 @@ class LLMTemplate:
     _templates: dict[str, LLMTemplate] = {}
     _SCHEME_COLLECTION = QuantizationSchemeCollection()
     _SUPPORTED_SCHEMES = _SCHEME_COLLECTION.get_supported_schemes()
-    _SUPPORTED_ALGORITHMS = ["awq", "gptq", "gptaq", "smoothquant", "autosmoothquant", "qronos", "rotation"]
+    _SUPPORTED_ALGORITHMS = get_supported_algorithm_types()
     _SUPPORTED_KV_CACHE_SCHEMES = ["fp8"]
     _SUPPORTED_ATTENTION_SCHEMES = ["fp8"]
 
@@ -383,29 +576,70 @@ class LLMTemplate:
         model_type: str,
         kv_layers_name: list[str] | None = None,
         q_layer_name: str | list[str] | None = None,
+        gate_up_layers_name: list[str] | None = None,
         exclude_layers_name: list[str] = [],
-        awq_config: AWQConfig | None = None,
-        gptq_config: GPTQConfig | None = None,
-        gptaq_config: GPTAQConfig | None = None,
-        qronos_config: QronosConfig | None = None,
-        smoothquant_config: SmoothQuantConfig | None = None,
-        autosmoothquant_config: AutoSmoothQuantConfig | None = None,
-        rotation_config: RotationConfig | None = None,
+        algorithm_configs: dict[str, AlgoConfig | None] | None = None,
+        f2f_weight_converters: list[WeightConverter] | None = None,
+        **legacy_algorithm_parameters: AlgoConfig | None,
     ):
         self.model_type = model_type
         self.kv_layers_name = kv_layers_name
         self.q_layer_name = q_layer_name
         self.exclude_layers_name = exclude_layers_name
+        # Model-specific gate/up projection layer names for shared scale groups.
+        self.gate_up_layers_name = gate_up_layers_name if gate_up_layers_name is not None else ["gate_proj", "up_proj"]
+        # Pre-quantization checkpoint transformations applied only on the file-to-file path.
+        # For models whose checkpoint stores fused MoE expert tensors, these converters
+        # unfuse them into per-expert tensors so the resulting shards match the model's
+        # forward-pass layout. ``None`` means no transformation is required.
+        self.f2f_weight_converters = f2f_weight_converters
 
-        # Algorithm-specific configuration fields
+        # Algorithm-specific configuration fields. New code should use
+        # `algorithm_configs`; `legacy_algorithm_parameters` is kept only
+        # for backward compatibility and emits a deprecation warning.
         self.algo_config: dict[str, AlgoConfig | None] = {}
-        self.algo_config["awq"] = awq_config
-        self.algo_config["gptq"] = gptq_config
-        self.algo_config["gptaq"] = gptaq_config
-        self.algo_config["qronos"] = qronos_config
-        self.algo_config["smoothquant"] = smoothquant_config
-        self.algo_config["autosmoothquant"] = autosmoothquant_config
-        self.algo_config["rotation"] = rotation_config
+        for supported_algorithm_name in self._SUPPORTED_ALGORITHMS:
+            self.algo_config[supported_algorithm_name] = None
+
+        supported_legacy_parameter_to_algorithm_name = {
+            f"{supported_algorithm_name}_config": supported_algorithm_name
+            for supported_algorithm_name in self._SUPPORTED_ALGORITHMS
+        }
+
+        legacy_algorithm_parameter_names: list[str] = []
+        for legacy_parameter_name, algorithm_config in legacy_algorithm_parameters.items():
+            algorithm_name = supported_legacy_parameter_to_algorithm_name.get(legacy_parameter_name)
+            if algorithm_name is None:
+                supported_legacy_parameter_names = sorted(supported_legacy_parameter_to_algorithm_name.keys())
+                raise ValueError(
+                    f"Unsupported legacy algorithm keyword '{legacy_parameter_name}'. "
+                    "Legacy algorithm keyword arguments must use the '<algorithm>_config' format "
+                    f"and one of {supported_legacy_parameter_names}. "
+                    "Use `algorithm_configs` for new code."
+                )
+
+            self.algo_config[algorithm_name] = algorithm_config
+            legacy_algorithm_parameter_names.append(legacy_parameter_name)
+
+        if legacy_algorithm_parameter_names:
+            sorted_parameter_names = sorted(legacy_algorithm_parameter_names)
+            deprecation_message = (
+                "Deprecated keyword arguments were used when initializing `LLMTemplate`: "
+                f"{sorted_parameter_names}. These legacy keyword arguments will be removed soon. "
+                "Please configure algorithm parameters with `algorithm_configs`, for example "
+                "`LLMTemplate(..., algorithm_configs={'awq': custom_awq_config})`."
+            )
+            logger.warning(deprecation_message)
+
+        if algorithm_configs is not None:
+            for algorithm_name, algorithm_config in algorithm_configs.items():
+                normalized_algorithm_name = algorithm_name.lower()
+                if normalized_algorithm_name not in self._SUPPORTED_ALGORITHMS:
+                    raise ValueError(
+                        f"Unsupported algorithm '{algorithm_name}' in `algorithm_configs`. "
+                        f"Supported algorithms: {self._SUPPORTED_ALGORITHMS}."
+                    )
+                self.algo_config[normalized_algorithm_name] = algorithm_config
 
     @classmethod
     def list_available(cls: type[LLMTemplate]) -> list[str]:
@@ -470,15 +704,24 @@ class LLMTemplate:
             - deepseek
             - deepseek_v2
             - deepseek_v3
+            - deepseek_v32
+            - deepseek_vl_v2
             - gemma2
             - gemma3
             - gemma3_text
+            - glm4_moe
+            - glm4_moe_lite
+            - glm_moe_dsa
             - gptj
             - gpt_oss
+            - granitemoehybrid
             - grok-1
             - instella
+            - kimi_k2
+            - kimi_k25
             - llama
             - llama4
+            - minimax_m2
             - mistral
             - mixtral
             - mllama
@@ -490,9 +733,10 @@ class LLMTemplate:
             - qwen2
             - qwen2_moe
             - qwen3
-            - qwen3_next
             - qwen3_moe
+            - qwen3_next
             - qwen3_vl_moe
+            - qwen3_5_moe
 
         :return: The template object.
         :rtype: LLMTemplate
@@ -576,7 +820,8 @@ class LLMTemplate:
         layer_type_config: dict[type[nn.Module], str] | None = None,
         exclude_layers: list[str] | None = None,
         algo_configs: dict[str, AlgoConfig] | None = None,
-    ) -> Config:
+        shared_scale_groups: list[list[str]] | None = None,
+    ) -> QConfig:
         """
         Create a quantization configuration based on the provided parameters.
 
@@ -589,6 +834,7 @@ class LLMTemplate:
         :param Optional[Dict[Type[nn.Module], str]] layer_type_config: Dictionary of layer types and quantization scheme names.
         :param Optional[List[str]] exclude_layers: List of layer names to exclude from quantization.
         :param Optional[Dict[str, AlgoConfig]] algo_configs: Dictionary of algorithm names to their configurations.
+        :param Optional[List[List[str]]] shared_scale_groups: Groups of layer name suffixes that should share the global-scale observer. Each inner list represents a group of parallel layer suffixes (e.g. ``["q_proj", "k_proj", "v_proj"]``). If ``None``, the default for the scheme is used. Pass ``[]`` to disable.
 
         Example:
 
@@ -607,7 +853,8 @@ class LLMTemplate:
             if isinstance(algorithm, str):
                 algorithm = [algorithm]
             for algo in algorithm:
-                if algo not in self._SUPPORTED_ALGORITHMS:
+                normalized_algorithm_name = algo.lower()
+                if normalized_algorithm_name not in self._SUPPORTED_ALGORITHMS:
                     raise ValueError(f"Unsupported algorithm: {algo}")
         # Check if the KV cache scheme is supported
         if kv_cache_scheme and kv_cache_scheme not in self._SUPPORTED_KV_CACHE_SCHEMES:
@@ -619,14 +866,20 @@ class LLMTemplate:
         # Set up base global configuration
         global_config = self._create_global_config(scheme)
 
+        # Resolve shared-scale defaults for the selected scheme.
+        sync_moe_expert_input_amax = False
+        if shared_scale_groups is None:
+            shared_scale_groups, sync_moe_expert_input_amax = self._get_default_shared_scale_settings(scheme)
+
         # Create config object
-        config = Config(
+        config = QConfig(
             global_quant_config=global_config,
             min_kv_scale=min_kv_scale,
-            exclude=self.exclude_layers_name,
+            exclude=self.exclude_layers_name if exclude_layers is None else exclude_layers,
             kv_cache_group=self.kv_layers_name,
+            shared_scale_groups=shared_scale_groups,
+            sync_moe_expert_input_amax=sync_moe_expert_input_amax,
         )
-
         # Apply algorithm if specified
         if algorithm:
             config = self._set_algorithm(config, algorithm, algo_configs)
@@ -647,18 +900,27 @@ class LLMTemplate:
         if attention_scheme:
             config = self._set_attention_config(config, attention_scheme)
 
-        # Apply exclude layers configuration
-        if exclude_layers is not None:
-            config = self._set_exclude_layers_config(config, exclude_layers)
-
         return config
 
     def _create_global_config(self, scheme: str) -> QLayerConfig:
         return LLMTemplate._SCHEME_COLLECTION.get_scheme(scheme).config
 
+    def _get_default_shared_scale_settings(self, scheme: str) -> tuple[list[list[str]], bool]:
+        """Return default shared-scale settings for a given quantization scheme.
+
+        The returned tuple contains ``shared_scale_groups`` and the default
+        ``sync_moe_expert_input_amax`` value. Currently only the ``nvfp4``
+        scheme (also exposed as the legacy alias ``fp4_block16_scale_e4m3``)
+        uses non-empty shared-scale groups and enables MoE expert input amax
+        synchronization by default.
+        """
+        if scheme not in ("nvfp4", "fp4_block16_scale_e4m3"):
+            return [], False
+        return [["q_proj", "k_proj", "v_proj"], self.gate_up_layers_name], True
+
     def _set_algorithm(
-        self, config: Config, algorithm: str | list[str], algo_configs: dict[str, AlgoConfig] | None = None
-    ) -> Config:
+        self, config: QConfig, algorithm: str | list[str], algo_configs: dict[str, AlgoConfig] | None = None
+    ) -> QConfig:
         if isinstance(algorithm, str):
             algorithm = [algorithm]
 
@@ -671,82 +933,23 @@ class LLMTemplate:
         for algo in algorithm:
             if config.algo_config is None:
                 config.algo_config = []
-            algo_key = algo.lower()
-            if algo_key == "awq":
-                if effective_algo_config.get("awq"):
-                    config.algo_config.append(effective_algo_config["awq"])
-                else:
-                    logger.warning(
-                        f"No AWQ config provided for {self.model_type}, "
-                        "falling back to default AWQ config. If you need customized AWQ quantization for this model, "
-                        "please provide the AWQ config, and pass it to LLMTemplate constructor."
-                    )
-                    # Fallback to default AWQ config
-                    config.algo_config.append(AWQConfig())
-            elif algo_key == "gptq":
-                if effective_algo_config.get("gptq"):
-                    config.algo_config.append(effective_algo_config["gptq"])
-                else:
-                    logger.warning(
-                        f"No GPTQ config provided for {self.model_type}, "
-                        "falling back to default GPTQ config. If you need customized GPTQ quantization for this model, "
-                        "please provide the GPTQ config, and pass it to LLMTemplate constructor."
-                    )
-                    # Fallback to default GPTQ config
-                    config.algo_config.append(GPTQConfig())
-            elif algo_key == "gptaq":
-                if effective_algo_config.get("gptaq"):
-                    config.algo_config.append(effective_algo_config["gptaq"])
-                else:
-                    raise ValueError(
-                        f"No GPTAQ config provided for {self.model_type}. "
-                        "Please provide a GPTAQ config and pass it to the LLMTemplate constructor, "
-                        "or use a model type that has GPTAQ configuration defined."
-                    )
-            elif algo_key == "qronos":
-                if effective_algo_config.get("qronos"):
-                    config.algo_config.append(effective_algo_config["qronos"])
-                else:
-                    raise ValueError(
-                        f"No Qronos config provided for {self.model_type}. "
-                        "Please provide a Qronos config and pass it to the LLMTemplate constructor, "
-                        "or use a model type that has Qronos configuration defined."
-                    )
-            elif algo_key == "smoothquant":
-                if effective_algo_config.get("smoothquant"):
-                    config.algo_config.append(effective_algo_config["smoothquant"])
-                else:
-                    logger.warning(
-                        f"No SmoothQuant config provided for {self.model_type}, "
-                        "falling back to default SmoothQuant config. If you need customized SmoothQuant quantization for this model, "
-                        "please provide the SmoothQuant config, and pass it to LLMTemplate constructor."
-                    )
-                    # Fallback to default SmoothQuant config
-                    config.algo_config.append(SmoothQuantConfig())
-            elif algo_key == "autosmoothquant":
-                if effective_algo_config.get("autosmoothquant"):
-                    config.algo_config.append(effective_algo_config["autosmoothquant"])
-                else:
-                    logger.warning(
-                        f"No AutoSmoothQuant config provided for {self.model_type}, "
-                        "falling back to default AutoSmoothQuant config. If you need customized AutoSmoothQuant quantization for this model, "
-                        "please provide the AutoSmoothQuant config, and pass it to LLMTemplate constructor."
-                    )
-                    # Fallback to default AutoSmoothQuant config
-                    config.algo_config.append(AutoSmoothQuantConfig())
-            elif algo_key == "rotation":
-                if effective_algo_config.get("rotation"):
-                    config.algo_config.append(effective_algo_config["rotation"])
-                else:
-                    logger.warning(
-                        f"No Rotation config provided for {self.model_type}, "
-                        "not to use Rotation quantization for this model."
-                    )
-            else:
-                raise ValueError(f"Unsupported algorithm: {algo}")
+            algorithm_name = algo.lower()
+
+            if algorithm_name not in self._SUPPORTED_ALGORITHMS:
+                raise ValueError(
+                    f"The algorithm {algorithm_name} is not supported in Quark. Are you sure it is one of {self._SUPPORTED_ALGORITHMS}?"
+                )
+
+            if effective_algo_config[algorithm_name] is None:
+                raise ValueError(
+                    f"Requested the algorithm {algorithm_name}, but no default configuration is available for this algorithm for {self.model_type} architecture and no custom configuration was found in the provided `algo_configs: dict[str, AlgoConfig]` (algo_configs={algo_configs}). Consider using the argument `algo_configs` in `LLMTemplate.get_config` or open an issue."
+                )
+
+            config.algo_config.append(effective_algo_config[algorithm_name])
+
         return config
 
-    def _set_kv_cache_config(self, config: Config, kv_cache_scheme: str) -> Config:
+    def _set_kv_cache_config(self, config: QConfig, kv_cache_scheme: str) -> QConfig:
         # Use pattern matching to identify KV projection layers
         if self.kv_layers_name is None:
             return config
@@ -755,28 +958,36 @@ class LLMTemplate:
             spec = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
 
             for layer_name in self.kv_layers_name:
-                # Get the layer quantization configuration
+                # Canonical resolver first; returns None for excluded patterns,
+                # global for "no override matched", or the user spec otherwise.
                 layer_quant_config = get_layer_quant_config(config, nn.Linear, layer_name)
+                if layer_quant_config is not None and layer_quant_config is config.global_quant_config:
+                    layer_quant_config = _resolve_projection_base_spec(config, layer_name)
+
+                # exclude applies to weight/input only; kv-cache (output) is
+                # independent — matches the runtime exclude-with-kv branch in
+                # get_layer_quant_config.
                 if layer_quant_config is None:
-                    continue
-                layer_config = QLayerConfig(
-                    weight=layer_quant_config.weight,
-                    input_tensors=layer_quant_config.input_tensors,
+                    weight = None
+                    input_tensors = None
+                else:
+                    weight = layer_quant_config.weight
+                    input_tensors = layer_quant_config.input_tensors
+                    config.layer_quant_config[layer_name] = QLayerConfig(
+                        weight=weight,
+                        input_tensors=input_tensors,
+                        output_tensors=spec,
+                    )
+                config.kv_cache_quant_config[layer_name] = QLayerConfig(
+                    weight=weight,
+                    input_tensors=input_tensors,
                     output_tensors=spec,
                 )
-                config.layer_quant_config[layer_name] = layer_config
-                # Create a separate config for KV cache
-                kv_cache_config = QLayerConfig(
-                    weight=layer_quant_config.weight,
-                    input_tensors=layer_quant_config.input_tensors,
-                    output_tensors=spec,
-                )
-                config.kv_cache_quant_config[layer_name] = kv_cache_config
         else:
             raise ValueError(f"Unsupported KV cache quantization scheme: {kv_cache_scheme}")
         return config
 
-    def _set_attention_config(self, config: Config, attention_scheme: str) -> Config:
+    def _set_attention_config(self, config: QConfig, attention_scheme: str) -> QConfig:
         if attention_scheme == "fp8":
             spec = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
             config.softmax_quant_spec = spec
@@ -785,10 +996,11 @@ class LLMTemplate:
                 if isinstance(self.q_layer_name, str):
                     self.q_layer_name = [self.q_layer_name]
                 for q_layer_name in self.q_layer_name:
-                    # Get the layer quantization configuration
                     layer_quant_config = get_layer_quant_config(config, nn.Linear, q_layer_name)
                     if layer_quant_config is None:
                         continue
+                    if layer_quant_config is config.global_quant_config:
+                        layer_quant_config = _resolve_projection_base_spec(config, q_layer_name)
                     config.layer_quant_config[q_layer_name] = QLayerConfig(
                         weight=layer_quant_config.weight,
                         input_tensors=layer_quant_config.input_tensors,
@@ -798,20 +1010,14 @@ class LLMTemplate:
             raise ValueError(f"Unsupported attention quantization scheme: {attention_scheme}")
         return config
 
-    def _set_layer_name_config(self, config: Config, layer_name_config: dict[str, str]) -> Config:
+    def _set_layer_name_config(self, config: QConfig, layer_name_config: dict[str, str]) -> QConfig:
         for layer_name, layer_scheme in layer_name_config.items():
             config.layer_quant_config[layer_name] = LLMTemplate._SCHEME_COLLECTION.get_scheme(layer_scheme).config
         return config
 
-    def _set_layer_type_config(self, config: Config, layer_type_config: dict[type[nn.Module], str]) -> Config:
+    def _set_layer_type_config(self, config: QConfig, layer_type_config: dict[type[nn.Module], str]) -> QConfig:
         for layer_type, layer_scheme in layer_type_config.items():
             config.layer_type_quant_config[layer_type] = LLMTemplate._SCHEME_COLLECTION.get_scheme(layer_scheme).config
-        return config
-
-    def _set_exclude_layers_config(self, config: Config, exclude_layers: list[str]) -> Config:
-        config.exclude.clear()
-        for layer_name in exclude_layers:
-            config.exclude.append(layer_name)
         return config
 
 
@@ -821,133 +1027,57 @@ DEFAULT_TEMPLATES = {
         "kv_layers_name": ["*query_key_value"],
         "q_layer_name": "*query_key_value",
         "exclude_layers_name": ["transformer.output_layer"],
-        "awq_config": "chatglm",
-        "gptq_config": "chatglm",
-        "gptaq_config": "chatglm",
-        "qronos_config": "chatglm",
-        "smoothquant_config": "chatglm",
-        "autosmoothquant_config": "chatglm",
-        "rotation_config": "chatglm",
     },
     "cohere": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "cohere",
-        "gptq_config": "cohere",
-        "gptaq_config": "cohere",
-        "qronos_config": "cohere",
-        "smoothquant_config": "cohere",
-        "autosmoothquant_config": "cohere",
-        "rotation_config": "cohere",
     },
     "dbrx": {
         "kv_layers_name": ["*Wqkv"],
         "q_layer_name": "*Wqkv",
         "exclude_layers_name": ["lm_head", "*router.layer"],
-        "awq_config": "dbrx",
-        "gptq_config": "dbrx",
-        "gptaq_config": "dbrx",
-        "qronos_config": "dbrx",
-        "smoothquant_config": "dbrx",
-        "autosmoothquant_config": "dbrx",
-        "rotation_config": "dbrx",
+        "gate_up_layers_name": ["w1", "v1"],
     },
     "deepseek": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate"],
-        "awq_config": "deepseek",
-        "gptq_config": "deepseek",
-        "gptaq_config": "deepseek",
-        "qronos_config": "deepseek",
-        "smoothquant_config": "deepseek",
-        "autosmoothquant_config": "deepseek",
-        "rotation_config": "deepseek",
+        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
     },
     "deepseek_v2": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate"],
-        "awq_config": "deepseek_v2",
-        "gptq_config": "deepseek_v2",
-        "gptaq_config": "deepseek_v2",
-        "qronos_config": "deepseek_v2",
-        "smoothquant_config": "deepseek_v2",
-        "autosmoothquant_config": "deepseek_v2",
-        "rotation_config": "deepseek_v2",
+        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate", "*mlp.gate.linear"],
     },
     "deepseek_v3": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate"],
-        "awq_config": "deepseek_v3",
-        "gptq_config": "deepseek_v3",
-        "gptaq_config": "deepseek_v3",
-        "qronos_config": "deepseek_v3",
-        "smoothquant_config": "deepseek_v3",
-        "autosmoothquant_config": "deepseek_v3",
-        "rotation_config": "deepseek_v3",
+        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate", "*mlp.gate.linear"],
     },
     "deepseek_v32": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*mlp.gate", "model.layers.61.*", "*self_attn*"],
-        "awq_config": "deepseek_v32",
-        "gptq_config": "deepseek_v32",
-        "gptaq_config": "deepseek_v32",
-        "qronos_config": "deepseek_v32",
-        "smoothquant_config": "deepseek_v32",
-        "autosmoothquant_config": "deepseek_v32",
-        "rotation_config": "deepseek_v32",
+        "exclude_layers_name": ["lm_head", "*mlp.gate", "*mlp.gate.linear", "model.layers.61.*", "*self_attn*"],
     },
     "deepseek_vl_v2": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": ["*q_proj"],
         "exclude_layers_name": ["lm_head", "model.sam_model*", "model.vision_model*", "model.projector*"],
-        "awq_config": "deepseek_vl_v2",
-        "gptq_config": "deepseek_vl_v2",
-        "gptaq_config": "deepseek_vl_v2",
-        "qronos_config": "deepseek_vl_v2",
-        "smoothquant_config": "deepseek_vl_v2",
-        "autosmoothquant_config": "deepseek_vl_v2",
-        "rotation_config": "deepseek_vl_v2",
     },
     "gemma2": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "gemma2",
-        "gptq_config": "gemma2",
-        "gptaq_config": "gemma2",
-        "qronos_config": "gemma2",
-        "smoothquant_config": "gemma2",
-        "autosmoothquant_config": "gemma2",
-        "rotation_config": "gemma2",
     },
     "gemma3": {
         "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
         "q_layer_name": "*language_model.*q_proj",
         "exclude_layers_name": ["*vision_tower*", "*multi_modal_projector*", "*lm_head"],
-        "awq_config": "gemma3",
-        "gptq_config": "gemma3",
-        "gptaq_config": "gemma3",
-        "qronos_config": "gemma3",
-        "smoothquant_config": "gemma3",
-        "autosmoothquant_config": "gemma3",
-        "rotation_config": "gemma3",
     },
     "gemma3_text": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["*lm_head"],
-        "awq_config": "gemma3_text",
-        "gptq_config": "gemma3_text",
-        "gptaq_config": "gemma3_text",
-        "qronos_config": "gemma3_text",
-        "smoothquant_config": "gemma3_text",
-        "autosmoothquant_config": "gemma3_text",
-        "rotation_config": "gemma3_text",
     },
     "glm4_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -955,81 +1085,62 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "lm_head",
             "*mlp.gate",
+            "*mlp.gate.linear",
             "*self_attn*",
             "*shared_experts.*",
             "*mlp.down_proj",
             "*mlp.gate_proj",
             "*mlp.up_proj",
         ],
-        "awq_config": "glm4_moe",
-        "gptq_config": "glm4_moe",
-        "gptaq_config": "glm4_moe",
-        "qronos_config": "glm4_moe",
-        "smoothquant_config": "glm4_moe",
-        "autosmoothquant_config": "glm4_moe",
-        "rotation_config": "glm4_moe",
+    },
+    "glm4_moe_lite": {
+        "kv_layers_name": ["*kv_a_proj_with_mqa", "*kv_b_proj"],
+        "q_layer_name": "*q_a_proj",
+        "exclude_layers_name": [
+            "lm_head",
+            "*self_attn*",
+            "*mlp.gate",
+        ],
+    },
+    "glm_moe_dsa": {
+        "kv_layers_name": ["*kv_a_proj_with_mqa", "*kv_b_proj"],
+        "q_layer_name": "*q_a_proj",
+        "exclude_layers_name": [
+            "*self_attn*",
+            "*mlp.gate",
+            "*lm_head",
+            "*mlp.gate_proj",
+            "*mlp.up_proj",
+            "*mlp.down_proj",
+        ],
     },
     "gptj": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "gptj",
-        "gptq_config": "gptj",
-        "gptaq_config": "gptj",
-        "qronos_config": "gptj",
-        "smoothquant_config": "gptj",
-        "autosmoothquant_config": "gptj",
-        "rotation_config": "gptj",
     },
     "gpt_oss": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head", "*router*"],
-        "awq_config": "gpt_oss",
-        "gptq_config": "gpt_oss",
-        "gptaq_config": "gpt_oss",
-        "qronos_config": "gpt_oss",
-        "smoothquant_config": "gpt_oss",
-        "autosmoothquant_config": "gpt_oss",
-        "rotation_config": "gpt_oss",
     },
     "granitemoehybrid": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head", "*router*"],
-        "awq_config": "granitemoehybrid",
-        "gptq_config": "granitemoehybrid",
-        "gptaq_config": "granitemoehybrid",
-        "qronos_config": "granitemoehybrid",
-        "smoothquant_config": "granitemoehybrid",
-        "autosmoothquant_config": "granitemoehybrid",
-        "rotation_config": "granitemoehybrid",
     },
     "grok-1": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate"],
-        "awq_config": "grok-1",
-        "gptq_config": "grok-1",
-        "gptaq_config": "grok-1",
-        "qronos_config": "grok-1",
-        "smoothquant_config": "grok-1",
-        "autosmoothquant_config": "grok-1",
-        "rotation_config": "grok-1",
+        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
+        "gate_up_layers_name": ["linear", "linear_v"],
     },
     "instella": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "instella",
-        "gptq_config": "instella",
-        "gptaq_config": "instella",
-        "qronos_config": "instella",
-        "smoothquant_config": "instella",
-        "autosmoothquant_config": "instella",
-        "rotation_config": "instella",
     },
-    "kimi_k25": {
+    "kimi_k2": {
         "kv_layers_name": ["*kv_a_proj_with_mqa", "*kv_b_proj"],
         "q_layer_name": "*q_a_proj",
         "exclude_layers_name": [
@@ -1040,28 +1151,28 @@ DEFAULT_TEMPLATES = {
             "*mlp.up_proj",
             "*mlp.down_proj",
             "*shared_experts*",
+        ],
+    },
+    "kimi_k25": {
+        "kv_layers_name": ["*kv_a_proj_with_mqa", "*kv_b_proj"],
+        "q_layer_name": "*q_a_proj",
+        "exclude_layers_name": [
+            "*self_attn*",
+            "*mlp.gate",
+            "*mlp.gate.linear",
+            "*lm_head",
+            "*mlp.gate_proj",
+            "*mlp.up_proj",
+            "*mlp.down_proj",
+            "*shared_experts*",
             "*mm_projector*",
             "*vision_tower*",
         ],
-        "awq_config": "kimi_k25",
-        "gptq_config": "kimi_k25",
-        "gptaq_config": "kimi_k25",
-        "qronos_config": "kimi_k25",
-        "smoothquant_config": "kimi_k25",
-        "autosmoothquant_config": "kimi_k25",
-        "rotation_config": "kimi_k25",
     },
     "llama": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "llama",
-        "gptq_config": "llama",
-        "gptaq_config": "llama",
-        "qronos_config": "llama",
-        "smoothquant_config": "llama",
-        "autosmoothquant_config": "llama",
-        "rotation_config": "llama",
     },
     "llama4": {
         "kv_layers_name": ["*language_model.*.k_proj", "*language_model.*.v_proj"],
@@ -1072,169 +1183,72 @@ DEFAULT_TEMPLATES = {
             "vision_model*",
             "*lm_head",
         ],
-        "awq_config": "llama4",
-        "gptq_config": "llama4",
-        "gptaq_config": "llama4",
-        "qronos_config": "llama4",
-        "smoothquant_config": "llama4",
-        "autosmoothquant_config": "llama4",
-        "rotation_config": "llama4",
     },
     "minimax_m2": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head", "*block_sparse_moe.gate*", "*self_attn*"],
-        "awq_config": "minimax_m2",
-        "gptq_config": "minimax_m2",
-        "gptaq_config": "minimax_m2",
-        "qronos_config": "minimax_m2",
-        "smoothquant_config": "minimax_m2",
-        "autosmoothquant_config": "minimax_m2",
-        "rotation_config": "minimax_m2",
+        "gate_up_layers_name": ["w1", "w3"],
     },
     "mistral": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "mistral",
-        "gptq_config": "mistral",
-        "gptaq_config": "mistral",
-        "qronos_config": "mistral",
-        "smoothquant_config": "mistral",
-        "autosmoothquant_config": "mistral",
-        "rotation_config": "mistral",
     },
     "mixtral": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate"],
-        "awq_config": "mixtral",
-        "gptq_config": "mixtral",
-        "gptaq_config": "mixtral",
-        "qronos_config": "mixtral",
-        "smoothquant_config": "mixtral",
-        "autosmoothquant_config": "mixtral",
-        "rotation_config": "mixtral",
+        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
     },
     "mllama": {
         "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
         "q_layer_name": "*self_attn.q_proj",
         "exclude_layers_name": ["*lm_head", "*patch_embedding", "multi_modal_projector"],
-        "awq_config": "mllama",
-        "gptq_config": "mllama",
-        "gptaq_config": "mllama",
-        "qronos_config": "mllama",
-        "smoothquant_config": "mllama",
-        "autosmoothquant_config": "mllama",
-        "rotation_config": "mllama",
     },
     "olmo": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "olmo",
-        "gptq_config": "olmo",
-        "gptaq_config": "olmo",
-        "qronos_config": "olmo",
-        "smoothquant_config": "olmo",
-        "autosmoothquant_config": "olmo",
-        "rotation_config": "olmo",
     },
     "opt": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "opt",
-        "gptq_config": "opt",
-        "gptaq_config": "opt",
-        "qronos_config": "opt",
-        "smoothquant_config": "opt",
-        "autosmoothquant_config": "opt",
-        "rotation_config": "opt",
     },
     "phi": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "phi",
-        "gptq_config": "phi",
-        "gptaq_config": "phi",
-        "qronos_config": "phi",
-        "smoothquant_config": "phi",
-        "autosmoothquant_config": "phi",
-        "rotation_config": "phi",
     },
     "phi3": {
         "kv_layers_name": ["*qkv_proj"],
         "q_layer_name": "*qkv_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "phi3",
-        "gptq_config": "phi3",
-        "gptaq_config": "phi3",
-        "qronos_config": "phi3",
-        "smoothquant_config": "phi3",
-        "autosmoothquant_config": "phi3",
-        "rotation_config": "phi3",
     },
     "qwen": {
         "kv_layers_name": ["*c_attn"],
         "q_layer_name": "*c_attn",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "qwen",
-        "gptq_config": "qwen",
-        "gptaq_config": "qwen",
-        "qronos_config": "qwen",
-        "smoothquant_config": "qwen",
-        "autosmoothquant_config": "qwen",
-        "rotation_config": "qwen",
     },
     "qwen2": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "qwen2",
-        "gptq_config": "qwen2",
-        "gptaq_config": "qwen2",
-        "qronos_config": "qwen2",
-        "smoothquant_config": "qwen2",
-        "autosmoothquant_config": "qwen2",
-        "rotation_config": "qwen2",
     },
     "qwen2_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.shared_expert_gate"],
-        "awq_config": "qwen2_moe",
-        "gptq_config": "qwen2_moe",
-        "gptaq_config": "qwen2_moe",
-        "qronos_config": "qwen2_moe",
-        "smoothquant_config": "qwen2_moe",
-        "autosmoothquant_config": "qwen2_moe",
-        "rotation_config": "qwen2_moe",
+        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"],
     },
     "qwen3": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "qwen3",
-        "gptq_config": "qwen3",
-        "gptaq_config": "qwen3",
-        "qronos_config": "qwen3",
-        "smoothquant_config": "qwen3",
-        "autosmoothquant_config": "qwen3",
-        "rotation_config": "qwen3",
     },
     "qwen3_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate"],
-        "awq_config": "qwen3_moe",
-        "gptq_config": "qwen3_moe",
-        "gptaq_config": "qwen3_moe",
-        "qronos_config": "qwen3_moe",
-        "smoothquant_config": "qwen3_moe",
-        "autosmoothquant_config": "qwen3_moe",
-        "rotation_config": "qwen3_moe",
+        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
     },
     "qwen3_next": {
         "kv_layers_name": ["*qkvz"],
@@ -1245,48 +1259,67 @@ DEFAULT_TEMPLATES = {
             "*linear_attn.in_proj_ba",
             "*linear_attn.in_proj_qkvz",
             "*mlp.gate",
+            "*mlp.gate.linear",
             "*mlp.shared_expert_gate",
             "*self_attn.k_proj",
             "*self_attn.q_proj",
             "*self_attn.v_proj",
         ],
-        "awq_config": "qwen3_next",
-        "gptq_config": "qwen3_next",
-        "gptaq_config": "qwen3_next",
-        "qronos_config": "qwen3_next",
-        "smoothquant_config": "qwen3_next",
-        "autosmoothquant_config": "qwen3_next",
-        "rotation_config": "qwen3_next",
     },
     "qwen3_vl_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*mlp.gate", "*.visual.*"],
-        "awq_config": "qwen3_vl_moe",
-        "gptq_config": "qwen3_vl_moe",
-        "gptaq_config": "qwen3_vl_moe",
-        "qronos_config": "qwen3_vl_moe",
-        "smoothquant_config": "qwen3_vl_moe",
-        "autosmoothquant_config": "qwen3_vl_moe",
-        "rotation_config": "qwen3_vl_moe",
+        "exclude_layers_name": ["lm_head", "*mlp.gate", "*mlp.gate.linear", "*.visual.*"],
+    },
+    "qwen3_5_moe": {
+        "kv_layers_name": ["*k_proj", "*v_proj"],
+        "q_layer_name": "*q_proj",
+        "exclude_layers_name": [
+            "lm_head",
+            "model.visual.*",
+            "mtp.*",
+            "*mlp.gate",
+            "*mlp.gate.linear",
+            "*shared_expert_gate*",
+            "*.linear_attn.*",
+            "*.self_attn.*",
+            "*.shared_expert.*",
+        ],
+        # qwen3_5_moe stores experts as fused tensors:
+        #   gate_up_proj: (num_experts, 2*intermediate, hidden)
+        #   down_proj:    (num_experts, hidden, intermediate)
+        # The file-to-file path needs to unfuse them into per-expert tensors so the
+        # resulting shards match the per-expert nn.Linear forward layout.
+        "f2f_weight_converters": [
+            WeightConverter(
+                "gate_up_proj",
+                ["gate_proj.weight", "up_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+            WeightConverter(
+                "down_proj",
+                ["down_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+        ],
     },
 }
 
 
 def _create_template_from_config(model_type: str, config: dict[str, Any]) -> LLMTemplate:
     """create a template from configuration dictionary."""
+    algorithm_configs: dict[str, AlgoConfig | None] = {}
+    for supported_algorithm_name in LLMTemplate._SUPPORTED_ALGORITHMS:
+        algorithm_configs[supported_algorithm_name] = get_algo_config(supported_algorithm_name, model_type)
+
     return LLMTemplate(
         model_type=model_type,
         kv_layers_name=config["kv_layers_name"],
         q_layer_name=config["q_layer_name"],
+        gate_up_layers_name=config.get("gate_up_layers_name"),
         exclude_layers_name=config["exclude_layers_name"],
-        awq_config=get_algo_config("awq", config["awq_config"]),  # type: ignore
-        gptq_config=get_algo_config("gptq", config["gptq_config"]),  # type: ignore
-        gptaq_config=get_algo_config("gptaq", config["gptaq_config"]),  # type: ignore
-        qronos_config=get_algo_config("qronos", config["qronos_config"]),  # type: ignore
-        smoothquant_config=get_algo_config("smoothquant", config["smoothquant_config"]),  # type: ignore
-        autosmoothquant_config=get_algo_config("autosmoothquant", config["autosmoothquant_config"]),
-        rotation_config=get_algo_config("rotation", config["rotation_config"]),
+        algorithm_configs=algorithm_configs,
+        f2f_weight_converters=config.get("f2f_weight_converters"),
     )  # type: ignore
 
 
@@ -1299,8 +1332,9 @@ To add a new model template, follow these steps:
     1. Add the model configuration to DEFAULT_TEMPLATES dictionary above.
     2. Add corresponding algorithm configs to the algo config registry if the algorithm is needed.
     (see quark/torch/quantization/config/algo_config.py)
-    3. Update the docstring list in LLMTemplate.get() method to include the new model type.
-    4. Test the new template with various quantization schemes and algorithms
+    3. Algorithm configuration lookup always uses ``model_type`` for built-in templates.
+    4. Update the docstring list in LLMTemplate.get() method to include the new model type.
+    5. Test the new template with various quantization schemes and algorithms
 
 Example for adding "new_model":
 
@@ -1310,11 +1344,6 @@ Example for adding "new_model":
         "kv_layers_name": ["*attention.k_proj", "*attention.v_proj"],
         "q_layer_name": "*attention.q_proj",
         "exclude_layers_name": ["lm_head"],
-        "awq_config": "new_model",
-        "gptq_config": "new_model",
-        "smoothquant_config": "new_model",
-        "autosmoothquant_config": "new_model",
-        "rotation_config": "new_model",
     }
 """
 

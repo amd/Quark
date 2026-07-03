@@ -1,14 +1,14 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import numpy as np
 import torch
 
-from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
+from quark.common.utils.import_utils import is_gguf_available_and_minimum_version
 
-if is_gguf_available_and_version_0_6_0():
+if is_gguf_available_and_minimum_version():
     from gguf import GGMLQuantizationType  # type: ignore
 
 

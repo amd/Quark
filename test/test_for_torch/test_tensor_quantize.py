@@ -10,9 +10,10 @@ from torch import ops
 from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
 from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerChannelMinMaxObserver
-from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
+from quark.torch.quantization.tensor_quantize import BufferReusePool, FakeQuantizeBase, SequentialQuantize
 from quark.torch.kernel import quant_fp8_e4m3, dequant_fp8_e4m3, quant_fp8_e5m2, dequant_fp8_e5m2
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import PatchEverywhere, torch_device
+from quark.torch.quantization.config.config import FP4PerGroupSpec, FP8E4M3PerTensorSpec, ScaleQuantSpec
 
 input_tensor = torch.tensor(
     [
@@ -87,6 +88,21 @@ def test_int_per_channel_quantize():
     scale = torch.tensor([4.0624, 5.7138, 7.5172, 9.7354, 6.5853, 2.2768, 1.7770, 0.7387, 1.3623, 5.6237])
     zero_point = torch.tensor([2, 3, 2, 1, 4, 1, 0, 2, 6, 1])
     process_int_per_channel_quantize(DEFAULT_INT8_PER_TENSOR_SYM_SPEC, torch_device, scale, zero_point)
+
+
+def test_fake_quantize_per_channel_affine_guard_fake_tensor():
+    from torch._subclasses.fake_tensor import FakeTensorMode  # type: ignore[reportMissingImports]
+
+    with FakeTensorMode():
+        fake_input = torch.empty(2, 3)
+        fake_scale = torch.ones(3)
+        fake_zero_point = torch.zeros(3, dtype=torch.int32)
+        output = torch.ops.torch_guard.fake_quantize_per_channel_affine_guard(
+            fake_input, fake_scale, fake_zero_point, 1, -128, 127
+        )
+
+    assert output.shape == fake_input.shape
+    assert output.device == fake_input.device
 
 
 def process_fp8_per_tensor_quantize(quantization_spec, device, scale, zero_point, torch_dtype, max_norm):
@@ -449,6 +465,253 @@ def test_int3_per_group_quantize():
     )
 
     assert torch.equal(output_tensor, golden_tensor)
+
+
+def test_sequential_quantize_mixed_dynamic():
+    mixed_dynamic_quantization_spec = ScaleQuantSpec(
+        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=5, is_dynamic=True, scale_type="float32"),
+        second_stage=FP8E4M3PerTensorSpec(is_dynamic=False, scale_type="float32"),
+    ).to_quantization_spec()
+
+    fake_quantize = SequentialQuantize(mixed_dynamic_quantization_spec, torch_device)
+    assert fake_quantize.is_dynamic is True
+    assert fake_quantize[0].is_dynamic is True
+    assert fake_quantize[1].is_dynamic is False
+
+    fake_quantize.enable_observer()
+    mixed_dynamic_input_tensor = input_tensor.to(torch_device)
+    output_tensor = fake_quantize(mixed_dynamic_input_tensor)
+
+    assert output_tensor.shape == mixed_dynamic_input_tensor.shape
+    assert fake_quantize[1].scale.numel() > 0
+    state_dict_keys = set(fake_quantize.state_dict().keys())
+    assert "0.scale" not in state_dict_keys
+    assert "0.zero_point" not in state_dict_keys
+    assert "1.scale" in state_dict_keys
+    assert "1.zero_point" not in state_dict_keys
+
+
+def test_sequential_quantize_dynamic_scale_not_exported():
+    dynamic_quantization_spec = ScaleQuantSpec(
+        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=5, is_dynamic=True, scale_type="float32"),
+        second_stage=FP8E4M3PerTensorSpec(is_dynamic=True, scale_type="float32"),
+    ).to_quantization_spec()
+
+    dynamic_sequential_quantize = SequentialQuantize(dynamic_quantization_spec, torch_device)
+    dynamic_sequential_quantize.enable_observer()
+    dynamic_input_tensor = input_tensor.to(torch_device)
+    output_tensor = dynamic_sequential_quantize(dynamic_input_tensor)
+
+    assert output_tensor.shape == dynamic_input_tensor.shape
+    state_dict_keys = set(dynamic_sequential_quantize.state_dict().keys())
+    assert "0.scale" not in state_dict_keys
+    assert "0.zero_point" not in state_dict_keys
+    assert "1.scale" not in state_dict_keys
+    assert "1.zero_point" not in state_dict_keys
+
+
+def test_fake_quantize_buffer_reuse_enabled_by_env_var():
+    with PatchEverywhere("QUARK_ENABLE_BUFFER_REUSE", True, module_name_prefix="quark"):
+        spec = QTensorConfig(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorMinMaxObserver,
+            symmetric=False,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+        )
+        quantizer_a = FakeQuantizeBase.get_fake_quantize(spec)
+        quantizer_b = FakeQuantizeBase.get_fake_quantize(spec)
+        assert quantizer_a.enable_buffer_reuse
+
+        pool = quantizer_a._buffer_pool
+        pool._device_buffer_pools.clear()
+        pool._buffer_stats.clear()
+
+        new_scale = torch.tensor([0.5], device=torch_device, dtype=torch.float32)
+        quantizer_a.update_buffer("scale", new_scale, torch_device)
+        quantizer_b.update_buffer("scale", new_scale, torch_device)
+
+        device_str = str(torch_device)
+        assert device_str in pool._device_buffer_pools
+        assert len(pool._device_buffer_pools[device_str]) > 0
+        stats = pool._buffer_stats[device_str]
+        assert stats["call_count"] >= 2
+
+
+def test_fake_quantize_env_buffer_reuse_keeps_numerical_equivalence():
+    """
+    Test that fake quantization with buffer reuse enabled produces numerically equivalent results.
+
+    This test verifies that enabling buffer reuse optimization does not affect the numerical
+    output of fake quantization operations by comparing outputs with and without buffer reuse.
+    """
+    spec = QTensorConfig(
+        dtype=Dtype.int8,
+        qscheme=QSchemeType.per_tensor,
+        observer_cls=PerTensorMinMaxObserver,
+        symmetric=False,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+    )
+
+    quantizer_no_reuse = FakeQuantizeBase.get_fake_quantize(spec)
+    quantizer_no_reuse.enable_observer(False)
+
+    scale = torch.tensor([0.25], device=torch_device)
+    zero_point = torch.tensor([0], device=torch_device)
+    quantizer_no_reuse.scale = scale
+    quantizer_no_reuse.zero_point = zero_point
+
+    x = torch.tensor([[-1.0, -0.5, 0.2, 1.2], [0.3, -0.7, 0.0, 0.9]], dtype=torch.float32, device=torch_device)
+    y_no_reuse = quantizer_no_reuse(x)
+
+    with PatchEverywhere("QUARK_ENABLE_BUFFER_REUSE", True, module_name_prefix="quark"):
+        quantizer_reuse = FakeQuantizeBase.get_fake_quantize(spec)
+        quantizer_reuse.enable_observer(False)
+        quantizer_reuse.scale = scale
+        quantizer_reuse.zero_point = zero_point
+        y_reuse = quantizer_reuse(x)
+
+    assert torch.equal(y_reuse, y_no_reuse)
+
+
+def test_fake_quantize_buffer_reuse_tracks_device_stats():
+    with PatchEverywhere("QUARK_ENABLE_BUFFER_REUSE", True, module_name_prefix="quark"):
+        spec = QTensorConfig(
+            dtype=Dtype.int8,
+            qscheme=QSchemeType.per_tensor,
+            observer_cls=PerTensorMinMaxObserver,
+            symmetric=False,
+            scale_type=ScaleType.float,
+            round_method=RoundType.half_even,
+            is_dynamic=False,
+        )
+        quantizer_a = FakeQuantizeBase.get_fake_quantize(spec)
+        quantizer_b = FakeQuantizeBase.get_fake_quantize(spec)
+        quantizer_c = FakeQuantizeBase.get_fake_quantize(spec)
+
+        pool = quantizer_a._buffer_pool
+        pool._device_buffer_pools.clear()
+        pool._buffer_stats.clear()
+
+        input_device = torch_device
+        # First call allocates the pooled slot; subsequent compatible calls reuse it,
+        # so we need at least three calls to observe ``reuse_count >= 2``.
+        quantizer_a.update_buffer("scale", torch.tensor([0.25], device=input_device), input_device)
+        quantizer_b.update_buffer("scale", torch.tensor([0.5], device=input_device), input_device)
+        quantizer_c.update_buffer("scale", torch.tensor([0.75], device=input_device), input_device)
+
+        device_str = str(input_device)
+        assert device_str in pool._buffer_stats
+        assert pool._buffer_stats[device_str]["call_count"] >= 3
+        assert pool._buffer_stats[device_str]["reuse_count"] >= 2
+
+
+# -- BufferReusePool unit tests (CPU-only; cover oversize / grow / cap fallback) ---
+
+
+def test_buffer_reuse_pool_can_reuse_rejects_oversize_tensor():
+    """``can_reuse`` must short-circuit to False when the candidate exceeds the cap."""
+    pool = BufferReusePool(max_buffer_numel=4)
+    big = torch.empty(8, device="cpu")
+    assert pool.can_reuse(big, torch.device("cpu")) is False
+
+    small = torch.empty(2, device="cpu")
+    assert pool.can_reuse(small, torch.device("cpu")) is True
+
+
+def test_buffer_reuse_pool_oversize_request_returns_unpooled():
+    """A request larger than the cap must be served from a fresh allocation,
+    leaving the pool empty."""
+    pool = BufferReusePool(max_buffer_numel=4)
+    device = torch.device("cpu")
+
+    out = pool._get_or_allocate_buffer(device, (16,), torch.float32, "scale", numel=16)
+    assert out.shape == (16,)
+    assert out.dtype == torch.float32
+    # Slot must NOT be created for an oversize request.
+    assert pool._device_buffer_pools[str(device)] == {}
+    # total_bytes must stay zero since nothing was pooled.
+    assert pool._buffer_stats[str(device)]["total_bytes"] == 0
+
+
+def test_buffer_reuse_pool_grows_existing_slot():
+    """Re-requesting a larger shape must reallocate the slot (delta-update bytes,
+    no reuse_count bump) and keep returning slices of the grown buffer."""
+    pool = BufferReusePool(max_buffer_numel=64)
+    device = torch.device("cpu")
+    device_str = str(device)
+    key = ("scale", torch.float32, 1)
+
+    first = pool._get_or_allocate_buffer(device, (4,), torch.float32, "scale", numel=4)
+    assert first.shape == (4,)
+    assert pool._device_buffer_pools[device_str][key].shape == (4,)
+    bytes_after_alloc = pool._buffer_stats[device_str]["total_bytes"]
+    assert bytes_after_alloc == 4 * torch.empty(0, dtype=torch.float32).element_size()
+    assert pool._buffer_stats[device_str]["reuse_count"] == 0
+
+    grown = pool._get_or_allocate_buffer(device, (8,), torch.float32, "scale", numel=8)
+    assert grown.shape == (8,)  # caller still sees the requested shape (a slice)
+    # The pooled buffer was reallocated to the larger shape.
+    assert pool._device_buffer_pools[device_str][key].shape == (8,)
+    # Growth is an alloc, not a reuse.
+    assert pool._buffer_stats[device_str]["reuse_count"] == 0
+    # total_bytes is delta-adjusted: subtract old, add new.
+    bytes_after_grow = pool._buffer_stats[device_str]["total_bytes"]
+    assert bytes_after_grow == 8 * torch.empty(0, dtype=torch.float32).element_size()
+
+
+def test_buffer_reuse_pool_grow_beyond_cap_falls_back():
+    """When *growing* the slot would exceed ``max_buffer_numel`` (even though the
+    request itself fits under the cap), the pool must serve the request from a
+    transient allocation and leave the slot's existing buffer untouched, so any
+    existing callers' pooled views remain valid.
+
+    To exercise the grow-then-exceed branch (rather than the cheap early-return on
+    a request that's already too large), we use 2-D shapes whose elementwise max
+    exceeds the cap while each individual request stays under it.
+    """
+    pool = BufferReusePool(max_buffer_numel=8)
+    device = torch.device("cpu")
+    device_str = str(device)
+    key = ("scale", torch.float32, 2)
+
+    # Establish a 2-D slot of shape (4, 1) — numel=4, under cap=8.
+    pool._get_or_allocate_buffer(device, (4, 1), torch.float32, "scale", numel=4)
+    bytes_after_alloc = pool._buffer_stats[device_str]["total_bytes"]
+    assert pool._device_buffer_pools[device_str][key].shape == (4, 1)
+
+    # Request (1, 8) — numel=8, fits under the cap, but elementwise-max with the
+    # existing slot is (4, 8) = 32 elements which blows the cap.
+    out = pool._get_or_allocate_buffer(device, (1, 8), torch.float32, "scale", numel=8)
+    assert out.shape == (1, 8)
+    # Slot is untouched — still the original (4, 1) buffer.
+    assert pool._device_buffer_pools[device_str][key].shape == (4, 1)
+    # No bookkeeping change because we didn't replace the slot.
+    assert pool._buffer_stats[device_str]["total_bytes"] == bytes_after_alloc
+    # And it's not a reuse either — it's a transient allocation.
+    assert pool._buffer_stats[device_str]["reuse_count"] == 0
+
+
+def test_constants_log_when_buffer_reuse_enabled(monkeypatch):
+    """Re-importing ``quark.torch.utils.constants`` with ``QUARK_ENABLE_BUFFER_REUSE=1``
+    must flip the flag and trigger the info log line. We restore the original module
+    state after the test so other tests remain unaffected."""
+    import importlib
+
+    from quark.torch.utils import constants as constants_module
+
+    monkeypatch.setenv("QUARK_ENABLE_BUFFER_REUSE", "1")
+    try:
+        reloaded = importlib.reload(constants_module)
+        assert reloaded.QUARK_ENABLE_BUFFER_REUSE is True
+    finally:
+        # Restore the env-var-free state so we don't leak the flag into later tests.
+        monkeypatch.delenv("QUARK_ENABLE_BUFFER_REUSE", raising=False)
+        importlib.reload(constants_module)
 
 
 if __name__ == "__main__":

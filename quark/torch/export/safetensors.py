@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from quark.shares.utils.import_utils import is_safetensors_available, is_transformers_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_safetensors_available, is_transformers_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.export.utils import (
     get_state_dict_for_export,
 )
@@ -37,7 +37,27 @@ def export_hf_model(
 
     state_dict = get_state_dict_for_export(model)
 
+    # Sanitize generation_config: transformers v5 strictly validates flags such as
+    # `top_p`/`top_k`/`temperature` requiring `do_sample=True`. Some upstream HF
+    # checkpoints (e.g. zai-org/GLM-5) ship configs that fail this check, which
+    # would otherwise discard 1+ hour of calibration on an export-time error.
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None:
+        sampling_flag_set = (
+            getattr(generation_config, "top_p", None) is not None
+            or getattr(generation_config, "top_k", None) not in (None, 0)
+            or getattr(generation_config, "typical_p", None) is not None
+        )
+        do_sample = getattr(generation_config, "do_sample", False)
+        if sampling_flag_set and not do_sample:
+            logger.warning(
+                "Model generation_config has sampling fields (top_p/top_k/typical_p) but "
+                "do_sample=False. Setting do_sample=True to satisfy transformers v5 validation."
+            )
+            generation_config.do_sample = True
+
     # Save model to safetensors.
+    # NOTE: Tied weights sharing the same `tensor.data_ptr()` are removed in the `save_pretrained` call.
     model.save_pretrained(export_dir, state_dict=state_dict)  # type: ignore[attr-defined]
 
     # Optionally, save the tokenizer from the original model.

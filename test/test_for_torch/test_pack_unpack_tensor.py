@@ -7,6 +7,7 @@ import pytest
 import torch
 
 import quark.torch.kernel  # noqa
+from quark.torch.quantization.config.type import QSchemeType
 from quark.torch.utils import create_pack_method
 
 torch.manual_seed(42)
@@ -298,3 +299,57 @@ def test_int3_infer_tensor_shape(qscheme):
     assert pack_method._infer_tensor_shape((4, 8)) == (4, 3)
     assert pack_method._infer_tensor_shape((2, 16)) == (2, 6)
     assert pack_method._infer_tensor_shape((3, 32)) == (3, 12)
+
+
+def _per_block_spec(block_size, symmetric=True):
+    """Build a minimal stand-in for QTensorConfig that the per_block path reads."""
+    spec = type("S", (), {})()
+    spec.qscheme = QSchemeType.per_block
+    spec.block_size = block_size
+    spec.symmetric = symmetric
+    spec.dtype = None
+    spec.ch_axis = None
+    spec.group_size = None
+    return spec
+
+
+def test_per_block_infer_scale_shape_symmetric():
+    """per_block symmetric: scale shape = dims // block_size; zero_point shape = ()."""
+    pm = create_pack_method("per_tensor", "fp8_e4m3")
+    spec = _per_block_spec([128, 128], symmetric=True)
+    scale_shape, zp_shape = pm._infer_scale_zero_point_shape((256, 512), spec)
+    assert scale_shape == (2, 4)
+    assert zp_shape == ()
+
+
+def test_per_block_infer_scale_shape_asymmetric_matches_scale():
+    """per_block asymmetric: zero_point shape mirrors scale_shape."""
+    pm = create_pack_method("per_tensor", "fp8_e4m3")
+    spec = _per_block_spec([128, 128], symmetric=False)
+    scale_shape, zp_shape = pm._infer_scale_zero_point_shape((256, 512), spec)
+    assert scale_shape == (2, 4)
+    assert zp_shape == (2, 4)
+
+
+def test_per_block_infer_raises_when_block_size_wrong_rank():
+    """per_block requires len(block_size) == len(shape) or raises."""
+    pm = create_pack_method("per_tensor", "fp8_e4m3")
+    spec = _per_block_spec([128], symmetric=True)
+    try:
+        pm._infer_scale_zero_point_shape((256, 512), spec)
+    except ValueError as exc:
+        assert "block_size" in str(exc)
+    else:
+        raise AssertionError("expected ValueError when block_size rank mismatches shape")
+
+
+def test_per_block_infer_raises_on_non_divisible_dims():
+    """per_block dims must each be divisible by the matching block_size."""
+    pm = create_pack_method("per_tensor", "fp8_e4m3")
+    spec = _per_block_spec([100, 128], symmetric=True)
+    try:
+        pm._infer_scale_zero_point_shape((256, 512), spec)
+    except ValueError as exc:
+        assert "divisible by block_size" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on non-divisible dims")

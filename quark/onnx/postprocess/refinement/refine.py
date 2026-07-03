@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -10,6 +10,7 @@ import onnx.numpy_helper
 from onnx import ModelProto, NodeProto, TensorProto, helper
 from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
     DEQUANT_OP_TYPES,
     QUANT_OP_TYPES,
@@ -22,7 +23,6 @@ from quark.onnx.quantization.quant_utils import (
     scale2pos,
 )
 from quark.onnx.utils.model_utils import ONNXQuantizedModel
-from quark.shares.utils.log import ScreenLogger
 
 REFINE_OP_TYPES = QUANT_OP_TYPES + DEQUANT_OP_TYPES
 
@@ -983,3 +983,120 @@ def align_quantize_info(
             manager.adjust_bias_scale()
 
     return manager.model
+
+
+def refine_block_axis(model: ModelProto) -> ModelProto:
+    """
+    This function is used to refine the axis of block floating-point data types,
+    because the hardware scaled MFMA instructions are expecting the block axes
+    to be the reduced K dimension.
+
+    Taking 'MatMul' nodes for example:
+    The shape of input A is (M, K) and input B is (K, N), the shape of the matrix
+    multiply result should be (M, N) and K dimension will be reduced. The axis of
+    input A's BFP/MX should be 1 and input B's should be 0, both on dimension K.
+
+    For "Gemm" nodes, it also needs to check its attributes to determine the axis.
+
+    For "Softmax" nodes, it also needs to check its attributes to determine the axis.
+    """
+
+    target_ops = ["Gemm", "MatMul", "Softmax"]
+
+    def _get_attr(node: NodeProto, attr_name: str, default_value: Any) -> Any:
+        """
+        Retrieve the attribute value from the node, and return the default value if the attribute is not found.
+
+        :param NodeProto node: The node proto.
+        :param str attr_name: The name of the attribute.
+        :param Any default_value: The default value.
+
+        :return: The attribute value.
+        """
+        for a in node.attribute:
+            if a.name == attr_name:
+                return helper.get_attribute_value(a)
+        return default_value
+
+    def _set_attr(node: NodeProto, attr_name: str, attr_value: Any) -> None:
+        """
+        Set the attribute value for the node.
+
+        :param NodeProto node: The node proto.
+        :param str attr_name: The name of the attribute.
+        :param Any attr_value: The attribute value.
+        """
+        for a in node.attribute:
+            if a.name == attr_name:
+                node.attribute.remove(a)
+        node.attribute.append(helper.make_attribute(attr_name, attr_value))
+
+    def _check_refined_nodes(refined_nodes: list[NodeProto], check_node: NodeProto, axis: int) -> None:
+        """
+        Check if the refined nodes are already refined.
+        :param list[NodeProto] refined_node_names: The names of the refined nodes.
+        :param NodeProto check_node: The quant node to check, it should be a BFPQDQ or MXQDQ node.
+        :param int axis: The axis to set.
+        """
+        if check_node in refined_nodes:
+            original_axis = _get_attr(check_node, "axis", 1)
+            if original_axis != axis:
+                logger.warning(
+                    f"The node {check_node.name} is already refined with axis {original_axis}.It will be set to {axis}."
+                )
+        else:
+            refined_nodes.append(check_node)
+
+    parser = ONNXQuantizedModel(model)
+
+    refined_nodes: list[NodeProto] = []
+    for node in model.graph.node:
+        if node.op_type not in target_ops:
+            continue
+
+        node_struct = parser.find_target_node_fns(node)
+
+        if node.op_type == "MatMul":
+            fn_a = node_struct["input_qdqs"][0][0]
+            fn_b = node_struct["input_qdqs"][1][0]
+            fn_o = node_struct["output_qdqs"][0][0] if node_struct["output_qdqs"] else None
+
+            # Assuming that the ranks of both inputs are greater than 1 here,
+            # since rank-1 is rare in neural nets (the axis can also be ignored).
+            if fn_a is not None:
+                init_a = parser.onnx_model.get_initializer(fn_a.input[0])
+                axis = len(init_a.dims) - 1 if init_a and len(init_a.dims) else -1
+                _check_refined_nodes(refined_nodes, fn_a, axis)
+                _set_attr(fn_a, "axis", axis)
+                if fn_o is not None:
+                    # The MatMul output's axis should match its RHS input (input A)
+                    _check_refined_nodes(refined_nodes, fn_o, axis)
+                    _set_attr(fn_o, "axis", axis)
+            if fn_b is not None:
+                init_b = parser.onnx_model.get_initializer(fn_b.input[0])
+                axis = len(init_b.dims) - 2 if init_b and len(init_b.dims) else -2
+                _check_refined_nodes(refined_nodes, fn_b, axis)
+                _set_attr(fn_b, "axis", axis)
+
+        elif node.op_type == "Gemm":
+            fn_a = node_struct["input_qdqs"][0][0]
+            fn_b = node_struct["input_qdqs"][1][0]
+            if fn_a is not None:
+                trans_a = _get_attr(node, "transA", 0)
+                axis = 0 if trans_a else 1
+                _check_refined_nodes(refined_nodes, fn_a, axis)
+                _set_attr(fn_a, "axis", axis)
+            if fn_b is not None:
+                trans_b = _get_attr(node, "transB", 0)
+                axis = 1 if trans_b else 0
+                _check_refined_nodes(refined_nodes, fn_b, axis)
+                _set_attr(fn_b, "axis", axis)
+
+        elif node.op_type == "Softmax":
+            fn_i = node_struct["input_qdqs"][0][0]
+            if fn_i is not None:
+                axis = _get_attr(node, "axis", -1)
+                _check_refined_nodes(refined_nodes, fn_i, axis)
+                _set_attr(fn_i, "axis", axis)
+
+    return model

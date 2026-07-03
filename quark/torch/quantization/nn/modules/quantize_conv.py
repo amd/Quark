@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,7 +12,7 @@ from torch import Tensor
 from torch.nn.common_types import _size_2_t
 from torch.nn.modules.utils import _pair
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
@@ -38,7 +38,7 @@ class _QuantizedConvNd(nn.modules.conv._ConvNd, QuantMixin):
         padding_mode: str,
         quant_config: QLayerConfig,
         reload: bool = False,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),  # noqa: B008
     ) -> None:
         super().__init__(
             in_channels,
@@ -127,10 +127,12 @@ class QuantConv2d(_QuantizedConv):
         groups: int = 1,
         bias: bool = True,
         padding_mode: str = "zeros",
-        quant_config: QLayerConfig = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
         reload: bool = False,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),  # noqa: B008
     ) -> None:
+        if quant_config is None:
+            quant_config = QLayerConfig()
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
@@ -184,7 +186,7 @@ class _QuantizedConvTransposeNd(_QuantizedConvNd, nn.modules.conv._ConvTranspose
         dim: int,
         quant_config: QLayerConfig,
         reload: bool = False,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),  # noqa: B008
     ) -> None:
         super().__init__(
             in_channels,
@@ -280,10 +282,12 @@ class QuantConvTranspose2d(_QuantizedConvTransposeNd):
         bias: bool = True,
         dilation: _size_2_t = 1,
         padding_mode: str = "zeros",
-        quant_config: QLayerConfig = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
         reload: bool = False,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),  # noqa: B008
     ) -> None:
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)

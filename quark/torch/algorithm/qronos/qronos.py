@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.common import BaseHessianAlgorithm, BaseHessianProcessor, RestoreOriginalWeights
 from quark.torch.algorithm.utils.module import get_device
@@ -420,7 +420,7 @@ class QronosProcessor(BaseHessianProcessor):
                 def hook(module: nn.Module, input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
                     algo_instances[name].add_batch_quantized(input[0].data, output.data, name)
 
-                return hook
+                return hook  # noqa: B023 — hook is local, not a captured loop variable
 
             def add_batch_nonquantized_hook(
                 name: str,
@@ -428,7 +428,7 @@ class QronosProcessor(BaseHessianProcessor):
                 def hook(module: nn.Module, input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
                     algo_instances[name].add_batch_nonquantized(input[0].data, output.data, name)
 
-                return hook
+                return hook  # noqa: B023 — hook is local, not a captured loop variable
 
             hook_handles_H = []
             for name in grouped_inner_layers:

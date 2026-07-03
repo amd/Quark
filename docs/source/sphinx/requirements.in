@@ -5,3 +5,4 @@ astroid>=3.3.8,<4.0  # https://github.com/zarr-developers/zarr-python/pull/2796,
 nbconvert
 pypandoc
 requests
+cryptography>=48.0.1  # pin floor; otherwise only pulled transitively via pyjwt

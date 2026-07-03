@@ -11,13 +11,12 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import torch_device
-from quark.testing import slow_test
+from quark.common.utils.testing_utils import slow_test, torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import (
-    Config,
     GPTQConfig,
     Int2PerGroupSpec,
+    QConfig,
     QLayerConfig,
     QTensorConfig,
 )
@@ -96,28 +95,28 @@ DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG = QLayerConfig(
 )
 
 # Per channel GPTQ Config.
-PERCHANNEL_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_INT4_PER_CHANNEL_CONFIG, algo_config=[GPTQConfig()])
+PERCHANNEL_GPTQ_CONFIG = QConfig(global_quant_config=DEFAULT_W_INT4_PER_CHANNEL_CONFIG, algo_config=[GPTQConfig()])
 
 # Per channel GPTQ Config by group_size == -1.
-PERGROUP_GPTQ_NEG_ONE_GROUPSIZE_CONFIG = Config(
+PERGROUP_GPTQ_NEG_ONE_GROUPSIZE_CONFIG = QConfig(
     global_quant_config=DEFAULT_GPTQ_NEG_ONE_GROUPSIZE_CONFIG, algo_config=[GPTQConfig()]
 )
 
 # Per group dynamic group GPTQ Config.
-PERGROUP_DYNAMIC_GROUP_GPTQ_CONFIG = Config(
+PERGROUP_DYNAMIC_GROUP_GPTQ_CONFIG = QConfig(
     global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[GPTQConfig(static_groups=False, desc_act=False)]
 )
 
 # MX FP4 dynamic group GPTQ Config.
-MXFP4_DYNAMIC_GROUP_GPTQ_CONFIG = Config(
+MXFP4_DYNAMIC_GROUP_GPTQ_CONFIG = QConfig(
     global_quant_config=DEFAULT_W_MXFP4_A_MXFP4_KV_MXFP4_CONFIG,
     algo_config=[GPTQConfig(static_groups=False, desc_act=False)],
 )
 
 # Default GPTQ Config
-DEFAULT_GPTQ_CONFIG = Config(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[GPTQConfig()])
+DEFAULT_GPTQ_CONFIG = QConfig(global_quant_config=DEFAULT_W_UINT4_PER_GROUP_CONFIG, algo_config=[GPTQConfig()])
 
-DEFAULT_GPTQ_INT2_CONFIG = Config(global_quant_config=DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG, algo_config=[GPTQConfig()])
+DEFAULT_GPTQ_INT2_CONFIG = QConfig(global_quant_config=DEFAULT_GPTQ_W_INT2_PER_GROUP_CONFIG, algo_config=[GPTQConfig()])
 
 EXCLUDE_LAYERS = ["lm_head"]
 
@@ -186,7 +185,7 @@ def quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=False
         MXFP4_DYNAMIC_GROUP_GPTQ_CONFIG,
     ],
 )
-def test_smoke_gptq_quantization(quant_config: Config):
+def test_smoke_gptq_quantization(quant_config: QConfig):
     quant_config.algo_config[0].inside_layer_modules = [
         "self_attn.k_proj",
         "self_attn.v_proj",

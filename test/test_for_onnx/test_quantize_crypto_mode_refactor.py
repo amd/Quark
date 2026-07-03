@@ -7,12 +7,12 @@ import unittest
 import numpy as np
 import onnx
 import onnxruntime
+from onnx_testing_utils import prepare_model
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [

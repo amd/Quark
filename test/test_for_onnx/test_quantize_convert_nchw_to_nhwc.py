@@ -6,13 +6,14 @@ import copy
 import unittest
 
 import numpy as np
+import onnx
 import onnxruntime
+from onnx_testing_utils import prepare_model
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -112,12 +113,39 @@ def tensor_quantize(output_dir):
     return output
 
 
+def check_option(output_dir):
+    input_model_path, output_model_path = prepare_model(output_dir)
+    data_reader = prepare_data()
+    quant_config = prepare_config()
+    quantizer = prepare_quantizer(quant_config)
+    quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+    quantized_model = onnx.load(output_model_path)
+    qnode_num = 0
+    for node in quantized_model.graph.node:
+        if node.op_type == "QuantizeLinear":
+            qnode_num += 1
+    if quant_config.global_quant_config.extra_options.get("ForceQuantizeNoInputCheck", False):
+        # If ForceQuantizeNoInputCheck is True, there should be 4 QuantizeLinear nodes,
+        # since the input of the first Transpose node should be quantized.
+        output = qnode_num == 4
+    else:
+        # If ForceQuantizeNoInputCheck is False, there should be 3 QuantizeLinear nodes,
+        # since the input of the first Transpose node should not be quantized.
+        output = qnode_num == 3
+    return output
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_convert_nchw_to_nhwc(self, tmpdir: str):
         output = tensor_quantize(tmpdir)
         comp_equal = output == output_tensor
         self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_convert_nchw_to_nhwc_with_option(self, tmpdir: str):
+        output = check_option(tmpdir)
+        self.assertEqual(output, True)
 
 
 if __name__ == "__main__":

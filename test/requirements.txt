@@ -1,17 +1,29 @@
 accelerate<1.12
-brevitas==0.10.3
-gguf==0.6.0
+brevitas
+compressed-tensors>=0.15.0
+diffusers>=0.37.0
+gguf>=0.10.0
 huggingface_hub
 importlib-metadata
 matplotlib
+numpy>=2.1.3
 onnx>=1.16.0,<=1.19
 onnxoptimizer
 onnxruntime_extensions>=0.4.2
+opencv-python-headless
 optuna
 plotly
 pytest>=9.0
 pytest-cov>=6.0.0
+# Pin: safetensors 0.8.0rc0 has a regression in the load_file -> modify dict
+# -> save_file (same path) flow that produces a zero-filled output file.
+# Repros test/test_for_torch/test_hf_export_import.py::test_checkpoint_conversion_mapping
+# in CI on any torch-touching PR. See PR description for the full investigation.
+# Relax this upper bound once an upstream safetensors release lands the fix.
+safetensors>=0.5,<0.8
+torchao
 torchsummary
+trl>=0.28.0
 # transformers is NOT listed here - it's installed separately in CI with specific versions from workflow matrix
 # Policy: Test 2 versions - chosen stable version and latest version for future compatibility
 # See .github/workflows/ci_unittest_main_{torch,onnx}.yml for tested versions (currently 4.55.4 and 4.57.0)

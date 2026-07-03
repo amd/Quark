@@ -34,7 +34,7 @@ Attributes
 
 **axis - INT** (default is '1'):
 
-(Optional) The axis for spliting the input tensor to blocks.
+(Optional) The axis for spliting the input tensor to blocks. Negative value means counting dimensions from the back. Accepted range is [-r, r-1] where r = rank(input). When the rank of the input is 1, the axis can be ignored because it has been fixed to 0 internally.
 
 **bit_width - INT** (default is '16'):
 
@@ -50,12 +50,15 @@ Attributes
 
 **sub_block_size - INT** (default is '2'):
 
-(Optional) Size of a sub block, only effective if 'bfp_method' is 'to_bfp_prime'.
+(Optional) Size of a sub-block, only effective if 'bfp_method' is 'to_bfp_prime'.
 
 **sub_block_shift_bits - INT** (default is '1'):
 
-(Optional) Shift bits of a sub block, only effective if 'bfp_method' is 'to_bfp_prime'.
+(Optional) Shift bits of a sub-block, only effective if 'bfp_method' is 'to_bfp_prime'.
 
+**convert_to_bfloat_before_bfp - INT** (default is '0'):
+
+(Optional) Convert the input tensor to bfloat16 before converting to BFP or MX if set to 1. This is a custom option for specific kernels.
 
 Table 1. Configurations of commonly used block float-point series data types
 
@@ -96,4 +99,4 @@ Type Constraints
 
 - **T** in ( tensor(float) ):
 
-Constrain input and output types to float tensors.
+Constrain input and output types to float32 or float16 tensors.

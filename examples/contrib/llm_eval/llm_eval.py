@@ -21,11 +21,11 @@ from lm_eval.api.task import Task
 from lm_eval.evaluator_utils import get_task_list
 from lm_eval.tasks import TaskManager, get_task_dict
 from onnxruntime import InferenceSession
-from optimum.onnxruntime import ORTModelForCausalLM
 from torch import nn as nn
 from transformers import AutoConfig, AutoTokenizer, tokenization_utils_base
 from utilities import _adjust_config, oga_generation
 
+from quark.common.utils.import_utils import UnavailableObject, is_optimum_available, is_package_lower_or_equal
 from quark.contrib.llm_eval import (
     lm_eval_entrypoint,
     meteor_eval,
@@ -35,8 +35,13 @@ from quark.contrib.llm_eval import (
     rouge_eval,
     rouge_meteor_generations,
 )
-from quark.shares.utils.import_utils import is_package_lower_or_equal
+from quark.contrib.llm_eval.evaluation import ppl_eval_with_synthetic_dataset
 from quark.torch import import_model_from_safetensors
+
+if is_optimum_available():
+    from optimum.onnxruntime import ORTModelForCausalLM
+else:
+    ORTModelForCausalLM = UnavailableObject("optimum[onnxruntime]")
 
 # TODO: Using sys.path.append is bad practice.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -80,7 +85,7 @@ def prepare_model(
             model = import_model_from_safetensors(model, model_dir=import_model_dir, multi_device=False)
         model_obj = model
 
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     tokenizer = get_tokenizer(
         model_dir, max_seq_len=seq_len, model_type=model_type, trust_remote_code=trust_remote_code
     )
@@ -233,6 +238,12 @@ def setup_parser_with_modelopt_args():
     quark_group.add_argument("--ppl", action="store_true")
     quark_group.add_argument("--use_ppl_eval_for_kv_cache", action="store_true")
     quark_group.add_argument(
+        "--ppl_eval_with_synthetic_dataset",
+        type=str,
+        required=False,
+        default=None,
+    )
+    quark_group.add_argument(
         "--use_ppl_eval_for_kv_cache_context_size",
         type=int,
         help="Context size used in PPL evaluation for KV cache.",
@@ -334,11 +345,12 @@ if __name__ == "__main__":
         lm_eval_args = lm_eval_parser.parse_args()
 
         model_args = lm_eval_args.model_args if lm_eval_args.model_args is not None else {}
+        # In new lm-eval, trust_remote_code is passed via --model_args instead of a standalone flag
+        lm_eval_args.trust_remote_code = bool(model_args.get("trust_remote_code", False))
 
-    if getattr(lm_eval_args, "trust_remote_code", False):
+    if lm_eval_args.trust_remote_code:
         datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = True
         model_args["trust_remote_code"] = True
-        lm_eval_args.trust_remote_code = None
 
     if args.metrics_output_dir is not None:
         from datetime import datetime
@@ -353,7 +365,14 @@ if __name__ == "__main__":
         results = {}
 
         # PPL
-        if args.ppl or args.use_ppl_eval_for_kv_cache or args.rouge or args.meteor or args.mlperf_rouge:
+        if (
+            args.ppl
+            or args.use_ppl_eval_for_kv_cache
+            or args.rouge
+            or args.meteor
+            or args.mlperf_rouge
+            or args.ppl_eval_with_synthetic_dataset is not None
+        ):
             # load the model
             model_obj, tokenizer, testenc = prepare_model(
                 model_args["pretrained"],
@@ -363,7 +382,7 @@ if __name__ == "__main__":
                 args.seq_len,
                 lm_eval_args.device,
                 args.multi_gpu,
-                args.ppl,
+                args.ppl or args.ppl_eval_with_synthetic_dataset is not None,
                 lm_eval_args.trust_remote_code,
                 num_eval_data=args.num_eval_data,
             )
@@ -421,6 +440,17 @@ if __name__ == "__main__":
                     batch_size=lm_eval_args.batch_size,
                 )
 
+            if args.ppl_eval_with_synthetic_dataset is not None:
+                ppl = ppl_eval_with_synthetic_dataset(
+                    tokenizer,
+                    model_obj,
+                    lm_eval_args.device,
+                    dataset=args.ppl_eval_with_synthetic_dataset,
+                    is_onnx_model=args.import_file_format == "onnx_format",
+                )
+                print(f"\n[INFO] Perplexity: {ppl.item()}")
+                quark_metrics["Perplexity"] = ppl.item()
+
         # LM EVAL HARNESS TASKS
         if lm_eval_args.tasks is not None:
             if lm_eval_args.model == "hf":
@@ -466,10 +496,16 @@ if __name__ == "__main__":
 
     # decoupled predictions and evaluations
     elif args.mode == "offline":
-        if "," in lm_eval_args.tasks:
-            raise ValueError("Please provide only 1 task")
-
-        task_name = lm_eval_args.tasks
+        # Normalize tasks to a plain string (new lm-eval versions may return a list)
+        tasks_value = lm_eval_args.tasks
+        if isinstance(tasks_value, list):
+            if len(tasks_value) > 1:
+                raise ValueError("Please provide only 1 task")
+            task_name = tasks_value[0]
+        else:
+            if "," in tasks_value:
+                raise ValueError("Please provide only 1 task")
+            task_name = tasks_value
         if args.retrieve_dataset:
             print("Retrieving dataset...")
             get_dataset(task_name, num_fewshot=lm_eval_args.num_fewshot, limit=lm_eval_args.limit)
@@ -499,7 +535,7 @@ if __name__ == "__main__":
             # parse the inputs.json file
             with open(str(args.inputs_path)) as f:
                 inputs = json.load(f)
-            filename = f"{args.model_name}_{lm_eval_args.tasks}_limit-{lm_eval_args.limit}_{args.case}.txt"
+            filename = f"{args.model_name}_{task_name}_limit-{lm_eval_args.limit}_{args.case}.txt"
             if args.import_file_format == "onnx_format":
                 references = oga_generation(
                     case=args.case,

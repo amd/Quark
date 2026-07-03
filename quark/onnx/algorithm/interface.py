@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,8 +11,7 @@ from onnxruntime.quantization.calibrate import CalibrationDataReader, Calibratio
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import QuantType
 
-from quark.onnx.utils.system_utils import Profiler
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.utils.log import ScreenLogger, log_errors
 
 from .bc.bias_correction import bias_correction
 from .cle.equalization import cle_transforms
@@ -79,7 +78,6 @@ def apply_CLE(
     )
 
 
-@Profiler(msg=[["", "", "pre process: smooth quant"]])
 def apply_SmoothQuant(
     float_model: onnx.ModelProto,
     data_reader: CalibrationDataReader,
@@ -135,7 +133,7 @@ def apply_QuaRot(
 
         r1_matrix = get_rotation_matrix(num_channels=hidden_size, random=random_had, device="cpu")
     except Exception as e:
-        raise AssertionError(f"Error! The dim of the target R1 matrix is not support due to {e}.")
+        raise AssertionError(f"Error! The dim of the target R1 matrix is not support due to {e}.") from e
     r_mat = {"R1": r1_matrix.numpy()}
 
     return rotation_transforms(

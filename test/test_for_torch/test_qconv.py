@@ -32,7 +32,7 @@ DEFAULT_W_INT8_A_INT8_PER_TENSOR_CONFIG = QLayerConfig(
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=10):
-        super(SimpleCNN, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(in_channels=1, out_channels=2, kernel_size=3, stride=1, padding=1)
         self.fc = nn.Linear(in_features=64, out_features=num_classes)
 

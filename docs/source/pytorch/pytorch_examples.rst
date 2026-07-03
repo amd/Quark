@@ -29,6 +29,7 @@ The example folder is in amd_quark.zip.
    :maxdepth: 1
 
    Diffusion Model Quantization <example_quark_torch_diffusers>
+   Diffusion Model Quantization xDiT <example_quark_torch_xdit>
    AMD Quark Extension for Brevitas Integration <example_quark_torch_brevitas>
    Integration with AMD Pytorch-light (APL) <example_quark_torch_pytorch_light>
    Language Model Pruning <example_quark_torch_llm_pruning>

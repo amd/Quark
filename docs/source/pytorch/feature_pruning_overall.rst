@@ -97,7 +97,7 @@ Init Prune Config & Calibration/Test Dataset
 
 .. code-block:: python
 
-    from quark.torch.pruning.config import Config
+    from quark.torch.pruning.config import PConfig
     from quark.torch.pruning.config import OSSCARConfig, LayerImportancePruneConfig
     # Init Prune config
     # Using OSSCAR
@@ -105,11 +105,11 @@ Init Prune Config & Calibration/Test Dataset
     # or Using depth-wise prune
     algo_config = LayerImportancePruneConfig.from_dict((json.load(algo_config_file))
 
-    pruning_config = Config(algo_config=pruning_algo_config)
+    pruning_config = PConfig(algo_config=pruning_algo_config)
 
     # Init the Calibration/Test dataset (Fake code)
     def get_wikitext_dataset(data_dir, tokenizer):
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
         return testenc
 

@@ -108,7 +108,7 @@ The ``quantize_quark.py`` script supports a ``--file2file_quantization`` flag th
    python examples/torch/language_modeling/llm_ptq/quantize_quark.py \
        --model_dir /path/to/model \
        --quant_scheme mxfp4 \
-       --exclude_layers "*self_attn*" "*mlp.gate" "*lm_head" \
+       --exclude_layers "*self_attn*" "*mlp.gate" "*mlp.gate.linear" "*lm_head" \
        --output_dir /path/to/output \
        --file2file_quantization \
        --skip_evaluation

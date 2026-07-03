@@ -17,26 +17,25 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 
+from quark.common.utils.log import ScreenLogger
 from quark.contrib.llm_eval import ppl_eval
-from quark.shares.utils.log import ScreenLogger
 from quark.torch import LLMTemplate, ModelQuantizer, export_safetensors
 from quark.torch.quantization.config.config import AWQConfig
+from quark.torch.utils.accelerate_helper import clone_align_devices_hook
 from quark.torch.utils.llm import (
     get_calib_dataloader,
     get_model,
     get_tokenizer,
-    prepare_for_moe_quant,
-    revert_model_patching,
+    preprocess_for_quantization,
 )
 
 try:
     # Needed only when the model is loaded with accelerate offload (meta tensors).
-    from accelerate.hooks import AlignDevicesHook, add_hook_to_module  # type: ignore
+    from accelerate.hooks import add_hook_to_module  # type: ignore
     from accelerate.utils import PrefixedDataset  # type: ignore
 
     _ACCELERATE_AVAILABLE = True
 except Exception:
-    AlignDevicesHook = None  # type: ignore[assignment]
     add_hook_to_module = None  # type: ignore[assignment]
     PrefixedDataset = None  # type: ignore[assignment]
     _ACCELERATE_AVAILABLE = False
@@ -168,7 +167,7 @@ def _register_glm47_flash_template() -> None:
             # layer-0 is a dense MLP (first_k_dense_replace=1)
             "model.layers.0.mlp.*",
         ],
-        awq_config=_build_glm4_moe_lite_awq_config(),
+        algorithm_configs={"awq": _build_glm4_moe_lite_awq_config()},
     )
     LLMTemplate.register_template(glm47_flash_template)
     logger.info("Registered LLMTemplate: %s", model_type)
@@ -273,16 +272,7 @@ def _glm4moelite_sync_weights_to_linear(module: Any) -> bool:
                     dataset.all_keys.append(full_name)
                     dataset.state_dict[full_name] = layer_value[idx]
 
-                    quark_hook = AlignDevicesHook(
-                        execution_device=hook.execution_device,
-                        offload=hook.offload,
-                        io_same_device=hook.io_same_device,
-                        weights_map=prefixed_weights_map,
-                        offload_buffers=hook.offload_buffers,
-                        place_submodules=hook.place_submodules,
-                        skip_keys=hook.skip_keys,
-                        tied_params_map=hook.tied_params_map,
-                    )
+                    quark_hook = clone_align_devices_hook(hook, weights_map=prefixed_weights_map)
                     linear_module = getattr(expert_module, layer_name)
                     add_hook_to_module(linear_module, quark_hook)
             else:
@@ -438,7 +428,7 @@ def main(args: argparse.Namespace) -> None:
         attn_implementation=args.model_attn_implementation,
         trust_remote_code=args.trust_remote_code,
     )
-    prepare_for_moe_quant(model)
+    preprocess_for_quantization(model)
     # GLM-4.7-Flash (glm4_moe_lite) needs an extra MoE expert replacement pass before quantization.
     patch_glm4moelite_moe(model)
     model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
@@ -481,7 +471,6 @@ def main(args: argparse.Namespace) -> None:
     quantizer = ModelQuantizer(quant_config, args.multi_device)
     model = quantizer.quantize_model(model, calib_dataloader)
     model = quantizer.freeze(model)
-    revert_model_patching(model)
 
     logger.info("Step 4/4: Exporting HF safetensors (following quantize_quark.py: export_safetensors) ...")
     _copy_non_weight_files(args.input_model_path, args.output_quantized_hf_path)
@@ -497,7 +486,7 @@ def main(args: argparse.Namespace) -> None:
 
     if args.do_evaluation:
         logger.info("Evaluating PPL...")
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         if args.num_eval_data != -1:
             text = "\n\n".join(testdata["text"][: args.num_eval_data])
         else:

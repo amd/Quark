@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.type import Dtype
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassBase
 from quark.torch.quantization.graph.optimization.utils import get_quantizer_scale_pos, is_quantizer_node
@@ -76,7 +76,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
             may_quantizer_module = getattr(m, may_activation_quant_node.target)
             return (
                 may_quantizer_module
-                if isinstance(may_quantizer_module, (ScaledFakeQuantize, FrozenScaledFakeQuantize))
+                if isinstance(may_quantizer_module, ScaledFakeQuantize | FrozenScaledFakeQuantize)
                 else None
             )
         else:
@@ -98,7 +98,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
             if isinstance(may_weight_quant_node, Node) and isinstance(may_weight_quant_node.target, str):
                 may_quantizer = getattr(m, may_weight_quant_node.target)
                 return (
-                    may_quantizer if isinstance(may_quantizer, (FrozenScaledFakeQuantize, ScaledFakeQuantize)) else None
+                    may_quantizer if isinstance(may_quantizer, FrozenScaledFakeQuantize | ScaledFakeQuantize) else None
                 )
             return None
         elif is_call_module_node(conv_node):
@@ -125,7 +125,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
             if isinstance(may_bias_quat_node, Node) and isinstance(may_bias_quat_node.target, str):
                 may_quantizer = getattr(m, may_bias_quat_node.target)
                 return (
-                    may_quantizer if isinstance(may_quantizer, (FrozenScaledFakeQuantize, ScaledFakeQuantize)) else None
+                    may_quantizer if isinstance(may_quantizer, FrozenScaledFakeQuantize | ScaledFakeQuantize) else None
                 )
             return None
         elif is_call_module_node(conv_node):
@@ -163,7 +163,7 @@ class AdjustBiasScaleQOPass(OptPassBase):
             )  # w & b: per_channel, a: per_tensor
             if (not cond_1) and (not cond_2):
                 logger.warning(
-                    "AdjustBiasScale: Bias: int32 quant format, scale_bias = scale_w * scale_a, the dimension mismatch. pleach check Quantconfig"
+                    "AdjustBiasScale: Bias: int32 quant format, scale_bias = scale_w * scale_a, the dimension mismatch. please check QuantConfig"
                 )
                 continue
 

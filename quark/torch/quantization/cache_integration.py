@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -20,14 +20,14 @@ compatible with Quark's export system.
 """
 
 import inspect
-from typing import Any, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-from quark.shares.utils.import_utils import is_transformers_available, is_transformers_version_higher_or_equal
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_transformers_available, is_transformers_version_higher_or_equal
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -143,7 +143,7 @@ class QuarkQuantizedCache(Cache):
         max_cache_len: int = 4096,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float16,
-        layer_device_map: dict[int, Union[str, int, torch.device]] | None = None,
+        layer_device_map: dict[int, str | int | torch.device] | None = None,
         kv_quantizers: dict[str, dict[int, Any]] | None = None,
     ):
         """
@@ -347,6 +347,11 @@ class QuarkQuantizedCache(Cache):
         # Load configuration
         if "kv_cache.config" in state_dict:
             config = state_dict["kv_cache.config"]
+            if config.numel() < 3:
+                raise ValueError(
+                    f"kv_cache.config tensor must have at least 3 elements "
+                    f"(num_quantized_layers, num_k_quantizers, num_v_quantizers), got {config.numel()}"
+                )
             num_quantized_layers = config[0].item()
             num_k_quantizers = config[1].item()
             num_v_quantizers = config[2].item()

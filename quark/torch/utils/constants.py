@@ -1,14 +1,15 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import os
+import sys
 from pathlib import Path
 
 import torch
 
-from quark.shares.utils.import_utils import is_transformers_available, is_transformers_version_lower
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_transformers_available, is_transformers_version_lower
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -33,10 +34,38 @@ if QUARK_DEBUG_NAN:
 
 # Allows to disable `torch.compile` default usage throughout AMD Quark.
 # Currently, torch.compile is used by default for `ScaledFakeQuantize` QDQ.
-QUARK_DISABLE_COMPILE = os.environ.get("QUARK_DISABLE_COMPILE", "0") == "1"
+#
+# torch.compile's default Inductor backend requires Triton, which has no official
+# Windows support (https://github.com/triton-lang/triton/issues/1640). Without it,
+# the compiled `scaled_fake_quantize` raises `torch._inductor.exc.TritonMissing`
+# during quantization on Windows. We therefore disable torch.compile by default on
+# Windows, unless the user explicitly opts in/out via the environment variable.
+_QUARK_DISABLE_COMPILE_ENV = os.environ.get("QUARK_DISABLE_COMPILE")
 
-if QUARK_DISABLE_COMPILE:
-    logger.info("Disabling torch.compile usage in AMD Quark as QUARK_DISABLE_COMPILE=1.")
+if _QUARK_DISABLE_COMPILE_ENV is not None:
+    QUARK_DISABLE_COMPILE = _QUARK_DISABLE_COMPILE_ENV == "1"
+    if QUARK_DISABLE_COMPILE:
+        logger.info("Disabling torch.compile usage in AMD Quark as QUARK_DISABLE_COMPILE=1.")
+elif sys.platform == "win32":
+    QUARK_DISABLE_COMPILE = True
+    logger.info(
+        "Disabling torch.compile usage in AMD Quark by default on Windows, as torch.compile's "
+        "Inductor backend requires Triton which is not available on Windows. Set "
+        "`QUARK_DISABLE_COMPILE=0` to force-enable torch.compile."
+    )
+else:
+    QUARK_DISABLE_COMPILE = False
+
+# Enables tensor quantization buffer reuse in fake quantizers.
+# This can reduce allocation churn for frequently-updated qparam buffers.
+QUARK_ENABLE_BUFFER_REUSE = os.environ.get("QUARK_ENABLE_BUFFER_REUSE", "0") == "1"
+
+if QUARK_ENABLE_BUFFER_REUSE:
+    logger.info("Enabling tensor quantization buffer reuse in AMD Quark as QUARK_ENABLE_BUFFER_REUSE=1.")
+
+# Periodically log FakeQuantize buffer-pool stats (calls, reuses, total memory).
+# Off by default to avoid log spam during calibration. Usage: QUARK_LOG_BUFFER_STATS=1.
+QUARK_LOG_BUFFER_STATS = os.environ.get("QUARK_LOG_BUFFER_STATS", "0") == "1"
 
 # Selects the Q/DQ/QDQ implementation to use with mxfp4.
 # Available: "hip", "triton". Default is "hip".
@@ -55,6 +84,48 @@ if QUARK_TORCH_COMPILE_MODE != "max-autotune-no-cudagraphs":
     logger.info(f"Using torch.compile mode='{QUARK_TORCH_COMPILE_MODE}'.")
 
 QUARK_ALGO_DEBUG = os.environ.get("QUARK_ALGO_DEBUG", "0") == "1"
+
+# --- Debug/Diagnostic ---
+
+# Enable activation histogram saving during quantization debug
+# Usage: QUARK_DEBUG_ACT_HIST=1
+QUARK_DEBUG_ACT_HIST = os.environ.get("QUARK_DEBUG_ACT_HIST", "0") == "1"
+
+# Path to pickled input tensor for debug activation collection
+# Usage: QUARK_DEBUG_INPUT_PICKLE=/path/to/input.pkl
+QUARK_DEBUG_INPUT_PICKLE = os.environ.get("QUARK_DEBUG_INPUT_PICKLE", None)
+
+# Debug output directory for quantization statistics and plots
+# Usage: QUARK_DEBUG=/path/to/debug/output
+QUARK_DEBUG = os.environ.get("QUARK_DEBUG", None)
+
+# --- AWQ Algorithm ---
+
+# Enable GPU memory optimization during AWQ (forces SDPA attention)
+# Usage: QUARK_AWQ_MEMORY_OPTIMIZATION=1
+QUARK_AWQ_MEMORY_OPTIMIZATION = os.environ.get("QUARK_AWQ_MEMORY_OPTIMIZATION", "0") == "1"
+
+if QUARK_AWQ_MEMORY_OPTIMIZATION:
+    logger.info("Enabling AWQ memory optimization in AMD Quark as QUARK_AWQ_MEMORY_OPTIMIZATION=1.")
+
+# Save AWQ activation scales to file
+# Usage: QUARK_SAVE_ACTIVATION_SCALES=true  (note: uses "true", not "1")
+QUARK_SAVE_ACTIVATION_SCALES = os.environ.get("QUARK_SAVE_ACTIVATION_SCALES", None) == "true"
+
+# Filename for saved activation scales
+QUARK_ACTIVATION_SCALES_FILENAME = os.environ.get("QUARK_ACTIVATION_SCALES_FILENAME", "activation_scales_awq.pt")
+
+# --- GPTQ Algorithm ---
+
+# Store input/output tensors on GPTQ instance for manual debugging
+# Usage: QUARK_GPTQ_DEBUG=1  (renamed from generic "DEBUG")
+QUARK_GPTQ_DEBUG = os.environ.get("QUARK_GPTQ_DEBUG", "0") == "1"
+
+# --- Validation ---
+
+# Enable scale validation after quantization
+# Usage: QUARK_CHECK_SCALE=1
+QUARK_CHECK_SCALE = os.environ.get("QUARK_CHECK_SCALE", "0") == "1"
 
 
 GFX_SUPPORT_FP8 = {"gfx942", "gfx950"}

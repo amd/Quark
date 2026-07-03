@@ -22,7 +22,7 @@ from .utils import AverageMeter
 def weight_only_quantize(model, loader, quant_scheme, group_size):
     if quant_scheme in ["w_uint4_asym", "w_int4_sym"]:
         dtype = Dtype.uint4 if "unint4" in quant_scheme else Dtype.int4
-        symmetric = False if "asym" in quant_scheme else True
+        symmetric = "asym" not in quant_scheme
         WEIGHT_SPEC = QTensorConfig(
             dtype=dtype,
             observer_cls=PerGroupMinMaxObserver,
@@ -50,7 +50,7 @@ def weight_only_quantize(model, loader, quant_scheme, group_size):
 
 def full_finetune(model, tokenizer, finetune_loader, optimizer, num_epoch, output_dir):
     main_device = next(model.parameters()).device
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
     best_ppl = ppl_eval(model, testenc, main_device)
     print(f"\n[QUARK-INFO]: Perplexity Test of Wikitext2 before Fine-Tuning: {best_ppl}")

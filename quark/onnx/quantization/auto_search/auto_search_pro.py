@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
@@ -103,7 +103,7 @@ class AutoSearchPro:
 
         self.search_space = self.config.get("search_space", DEFAULT_CONFIG["search_space"])
         if "search_space" in self.config:
-            QCONFIG_ALL_PARAMS_SEARCH = [item for item in QCONFIG_ALL_PARAMS] + [
+            QCONFIG_ALL_PARAMS_SEARCH = list(QCONFIG_ALL_PARAMS) + [
                 "weight",
                 "weight_params",
                 "activation",

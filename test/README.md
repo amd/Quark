@@ -2,7 +2,7 @@
 
 ### Avoid hard-coding PyTorch devices
 
-Instead, we should make use of the `torch_device` variable defined at [quark/shares/utils/testing_utils.py](/quark/shares/utils/testing_utils.py#L16-L41). This one is by default initialized to "cpu" device, and in case a GPU is available, is set to "cuda" device. This is useful as tests as this one can be run independently of the device, and may support other devices in the future as well.
+Instead, we should make use of the `torch_device` variable defined at [quark/common/utils/testing_utils.py](/quark/common/utils/testing_utils.py#L16-L41). This one is by default initialized to "cpu" device, and in case a GPU is available, is set to "cuda" device. This is useful as tests as this one can be run independently of the device, and may support other devices in the future as well.
 
 Tests that use `torch_device` but can only be run on GPU can be skipped on CPU with the `@require_torch_cuda` decorator as shown at [example](/test/test_for_torch/test_lsq_FakeQuantize.py#L34).
 
@@ -30,7 +30,7 @@ This allows to test Quark in the CI in a basic environment without many external
 Tests that are flaky (sometime fail, but most of the time pass), for example due to non-deterministic GPU execution, can be decorated with:
 
 ```python
-from quark.shares.utils.testing_utils import retry_flaky_test
+from quark.common.utils.testing_utils import retry_flaky_test
 
 @retry_flaky_test()
 def test_that_is_flaky():

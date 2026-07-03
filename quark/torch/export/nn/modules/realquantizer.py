@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,15 +12,22 @@ from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.utils import calculate_qmin_qmax
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
 from quark.torch.utils import create_pack_method
+from quark.torch.utils.numerics import to_e8m0_uint8
 from quark.torch.quantization.constants import INT_QUANT_DTYPES, PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.observer.lsq_observer import LSQObserver
-from quark.torch.quantization.observer.observer import ObserverBase, PlaceholderObserver
+from quark.torch.quantization.observer.observer import (
+    ObserverBase,
+    PerBlockMXBufferReuseObserver,
+    PerBlockMXObserver,
+    PlaceholderObserver,
+)
 from quark.torch.quantization.utils import get_num_bits
 from quark.torch.quantization.config.type import ZeroPointType
 from quark.torch.utils import assert_no_nan
 from torch.distributed._tensor.experimental import implicit_replication  # type: ignore
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
+from quark.common.data_type import BaseFP8_E5M3
 
 logger = ScreenLogger(__name__)
 
@@ -31,6 +38,10 @@ class RealQuantizerBase(ABC, nn.Module):
         self.qspec = qspec
         self.is_dynamic = qspec.is_dynamic
         self.is_scale_quant = qspec.is_scale_quant
+
+    @property
+    def quant_spec(self) -> QTensorConfig:
+        return self.qspec
 
     @abstractmethod
     def forward(self, X: torch.Tensor) -> torch.Tensor:
@@ -46,10 +57,6 @@ class RealQuantizerBase(ABC, nn.Module):
 
     @abstractmethod
     def to_real_quantize_params(self, param: torch.Tensor) -> torch.Tensor:
-        pass
-
-    @abstractmethod
-    def has_static_scale(self) -> bool:
         pass
 
     def update_dynamic_params(self, X: torch.Tensor) -> None:
@@ -72,7 +79,7 @@ class StaticRealQuantizer(RealQuantizerBase, ABC):
         reorder: bool,
         real_quantized: bool,
         float_dtype: torch.dtype,
-        device: torch.device | None = torch.device("cuda"),
+        device: torch.device | None = torch.device("cuda"),  # noqa: B008
         scale_shape: tuple[int, ...] | None = None,
         zero_point_shape: tuple[int, ...] | None = None,
     ) -> None:
@@ -128,11 +135,13 @@ class StaticRealQuantizer(RealQuantizerBase, ABC):
 
         if getattr(self.qspec, "scale_format", None) == "e8m0":
             scale = 2 ** (scale.view(torch.uint8).to(torch.int16) - 127).to(self.float_dtype)
+        elif getattr(self.qspec, "scale_format", None) == "e5m3":
+            # Dequantize E5M3 (uint8) to float32
+            scale = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
+                "fp8_e5m3", scale, None, None, -1, -1, "per_tensor"
+            ).to(self.float_dtype)
 
         return scale, zero_point
-
-    def has_static_scale(self) -> bool:
-        return True
 
 
 class StaticScaledRealQuantizer(StaticRealQuantizer):
@@ -150,7 +159,7 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
         reorder: bool,
         real_quantized: bool,
         float_dtype: torch.dtype,
-        device: torch.device | None = torch.device("cuda"),
+        device: torch.device | None = torch.device("cuda"),  # noqa: B008
         scale_shape: tuple[int, ...] | None = None,
         zero_point_shape: tuple[int, ...] | None = None,
     ) -> None:
@@ -174,6 +183,8 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
             self.register_buffer("scale", quantizer.scale)
             if self.qspec.dtype in INT_QUANT_DTYPES:
                 self.register_buffer("zero_point", quantizer.zero_point.to(torch.int))
+            if hasattr(quantizer, "_quantized_block_scale"):
+                self._quantized_block_scale = quantizer._quantized_block_scale
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         # If real_quantized, unpack and dequantize tensor.
@@ -183,6 +194,11 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
             # for weight, bias
             X = self.unpack_tensor(X)
             scale, zero_point = self.unpack_params()
+            # Ensure scale and zero_point are on the same device as X
+            if scale.device != X.device:
+                scale = scale.to(X.device)
+            if zero_point is not None and zero_point.device != X.device:
+                zero_point = zero_point.to(X.device)
             with implicit_replication():
                 X = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
                     self.qspec.dtype.value,
@@ -196,6 +212,11 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
         else:
             # X = self.unpack_tensor(X)
             scale, zero_point = self.unpack_params()
+            # Ensure scale and zero_point are on the same device as X
+            if scale.device != X.device:
+                scale = scale.to(X.device)
+            if zero_point is not None and zero_point.device != X.device:
+                zero_point = zero_point.to(X.device)
             with implicit_replication():
                 X = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
                     self.qspec.dtype.value,
@@ -233,8 +254,6 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
             dtype, param, scale, zero_point, ch_axis, group_size, quant_min, quant_max, round_method, qscheme_str_name
         )
         w_res = self.pack_method.pack(w_res, self.reorder)
-        w_res = w_res.to("cpu")
-        torch.cuda.empty_cache()
         return w_res
 
     def to_fake_quantize_params(self, param: torch.Tensor) -> torch.Tensor:
@@ -275,13 +294,28 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
     # Try to convert scale to int8 and transpose scale
     def maybe_convert_and_transpose_scale(self) -> None:
         if getattr(self.qspec, "scale_format", None) == "e8m0":
-            self.scale = (torch.log2(self.scale).round().to(torch.int16).clamp(-127, 127) + 127).to(torch.uint8)
+            self.scale = to_e8m0_uint8(self.scale)
 
         if getattr(self.qspec.dtype, "value", None) in ["int8", "uint8", "int4", "uint4", "int2"]:
             if self.scale.ndim > 2:
                 raise ValueError("Only supports self.scale with dimensions not greater than 2.")
             if getattr(self.qspec.qscheme, "value", None) == "per_group":
                 self.scale = self.scale.t().contiguous()
+
+        if getattr(self.qspec, "scale_format", None) == "e5m3":
+            # Quantize the scale to E5M3 format
+            self.scale = quark.torch.kernel.scaled_real_quantize(  # type: ignore[attr-defined]
+                Dtype.fp8_e5m3.value,
+                self.scale,
+                None,  # scale (not needed - simple conversion to E5M3)
+                None,  # zero_point
+                -1,  # axis
+                1,  # group_size
+                BaseFP8_E5M3.min_value,
+                BaseFP8_E5M3.max_value,
+                2,  # round_method (round)
+                "per_group",
+            )
 
 
 class StaticNonScaledRealQuantizer(StaticRealQuantizer):
@@ -297,7 +331,7 @@ class StaticNonScaledRealQuantizer(StaticRealQuantizer):
         reorder: bool,
         real_quantized: bool,
         float_dtype: torch.dtype,
-        device: torch.device | None = torch.device("cuda"),
+        device: torch.device | None = torch.device("cuda"),  # noqa: B008
         scale_shape: tuple[int, ...] | None = None,
         zero_point_shape: tuple[int, ...] | None = None,
     ) -> None:
@@ -319,8 +353,6 @@ class StaticNonScaledRealQuantizer(StaticRealQuantizer):
             param, dtype, mx_element_dtype, axis, block_size
         )
         w_res = self.pack_method.pack(w_res, self.reorder)
-        w_res = w_res.to("cpu")
-        torch.cuda.empty_cache()
         return w_res
 
     def pack_zero_point(self) -> None:
@@ -334,17 +366,12 @@ class DynamicScaledQuantizer(RealQuantizerBase):
     def __init__(
         self,
         qspec: QTensorConfig,
-        quantizer: FakeQuantizeBase | None = None,
-        device: torch.device | None = torch.device("cuda"),
+        device: torch.device | None = torch.device("cuda"),  # noqa: B008
         float_dtype: torch.dtype | None = None,
-        scale_shape: tuple[int, ...] | None = None,
-        zero_point_shape: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__(qspec)
         self.device = device
         self.float_dtype = float_dtype
-        self.scale_shape = scale_shape
-        self.zero_point_shape = zero_point_shape
         self.dtype = qspec.dtype
         self.mx_element_dtype = qspec.mx_element_dtype
         self.qscheme = qspec.qscheme
@@ -363,38 +390,20 @@ class DynamicScaledQuantizer(RealQuantizerBase):
         )
         assert self.zero_point_type == ZeroPointType.int32, "Only support int32 zero point!"
 
-        # For dynamic quantizer, when it is scale per tensor quantizer, the scale and zero point are not None
-        # and are registered as buffers. Otherwise, they are None and are not registered as buffers.
-        self.register_buffer("scale", None)
-        self.register_buffer("zero_point", None)
-        if quantizer is not None and self.has_static_scale():
-            self.register_buffer("scale", quantizer.scale)
-            if quantizer.zero_point is not None and self.qspec.dtype in INT_QUANT_DTYPES:
-                self.register_buffer("zero_point", quantizer.zero_point.to(torch.int))
-        else:
-            quant_torch_dtype = self.qspec.dtype.to_torch_packed_dtype()
-            if self.has_static_scale():
-                if self.scale_shape is not None:
-                    self.register_buffer(
-                        "scale", torch.empty(self.scale_shape, device=self.device, dtype=self.float_dtype)
-                    )
-                else:
-                    self.register_buffer("scale", torch.empty((), device=self.device, dtype=self.float_dtype))
-                if self.qspec.dtype in INT_QUANT_DTYPES:
-                    if self.zero_point_shape is not None:
-                        self.register_buffer(
-                            "zero_point",
-                            torch.empty(self.zero_point_shape, device=self.device, dtype=quant_torch_dtype),
-                        )
-                    else:
-                        self.register_buffer("zero_point", torch.empty((), device=self.device, dtype=quant_torch_dtype))
+        # Dynamic quantizers always compute qparams from the current input tensor.
+        # Keep buffers uninitialized and fill them during update_dynamic_params().
+        self.register_buffer("scale", None, persistent=False)
+        self.register_buffer("zero_point", None, persistent=False)
 
         self.quant_min, self.quant_max = calculate_qmin_qmax(self.dtype)
 
     @staticmethod
     def create_observer(quant_spec: QTensorConfig, device: torch.device | None = None) -> ObserverBase:
         if quant_spec.observer_cls is not None:
-            return quant_spec.observer_cls(quant_spec, device)
+            observer_cls = quant_spec.observer_cls
+            if observer_cls is PerBlockMXObserver and quant_spec.enable_buffer_reuse:
+                observer_cls = PerBlockMXBufferReuseObserver
+            return observer_cls(quant_spec, device)
         else:
             return PlaceholderObserver(quant_spec)
 
@@ -415,11 +424,18 @@ class DynamicScaledQuantizer(RealQuantizerBase):
         self.update_dynamic_params(X)
         # Do fake quantize
         mx_element_dtype = None if self.mx_element_dtype is None else self.mx_element_dtype.value
+        # Ensure scale and zero_point are on the same device as X
+        scale = self.scale
+        zero_point = self.zero_point
+        if scale is not None and scale.device != X.device:
+            scale = scale.to(X.device)
+        if zero_point is not None and zero_point.device != X.device:
+            zero_point = zero_point.to(X.device)
         X_quantized: torch.Tensor = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
             self.dtype.value,
             X,
-            self.scale,
-            self.zero_point.to(torch.int) if self.zero_point is not None else None,
+            scale,
+            zero_point.to(torch.int) if zero_point is not None else None,
             self.ch_axis,
             self.group_size,
             self.quant_min,
@@ -433,16 +449,12 @@ class DynamicScaledQuantizer(RealQuantizerBase):
         return X_quantized
 
     def update_dynamic_params(self, X: torch.Tensor) -> None:
-        if not self.has_static_scale():
-            observer = self.create_observer(self.qspec, self.device)
-            assert not isinstance(observer, (TQTObserver, LSQObserver)), "Not supported for TQT and LSQ observer!"
+        observer = self.create_observer(self.qspec, X.device)
+        assert not isinstance(observer, TQTObserver | LSQObserver), "Not supported for TQT and LSQ observer!"
 
-            # Do observation
-            observer(X.detach())
-            self.scale, self.zero_point = self.calculate_qparams(observer, X)
-
-    def has_static_scale(self) -> bool:
-        return self.qspec.is_scale_quant and self.qspec.qscheme == QSchemeType.per_tensor
+        # Do observation
+        observer(X.detach())
+        self.scale, self.zero_point = self.calculate_qparams(observer, X)
 
     def to_real_quantize_params(self, param: torch.Tensor) -> torch.Tensor:
         return param
@@ -484,11 +496,12 @@ class SequentialRealQuantizer(nn.Sequential):
             "StaticNonScaledRealQuantizer is not supported in SequentialRealQuantizer currently."
         )
 
-        # Verify all quantizers have consistent is_dynamic configuration
-        assert all(quantizer.is_dynamic == quantizers[0].is_dynamic for quantizer in quantizers), (
-            "The is_dynamic configuration of all quantizers should be the same"
-        )
-        self.is_dynamic = quantizers[0].is_dynamic
+        tensor_quantizers = [quantizer for quantizer in quantizers if quantizer.is_scale_quant is False]
+        assert len(tensor_quantizers) > 0, "SequentialRealQuantizer must contain at least one tensor quantizer"
+        assert all(
+            tensor_quantizer.is_dynamic == tensor_quantizers[0].is_dynamic for tensor_quantizer in tensor_quantizers
+        ), "Tensor quantizers in SequentialRealQuantizer must share the same is_dynamic configuration"
+        self.is_dynamic = tensor_quantizers[0].is_dynamic
 
         # Verify all quantizers have consistent real_quantized configuration
         assert all(quantizer.real_quantized == quantizers[0].real_quantized for quantizer in quantizers), (
@@ -505,10 +518,9 @@ class SequentialRealQuantizer(nn.Sequential):
                 if i < len(self) - 1:
                     next_module = self[i + 1]
                     if next_module.is_scale_quant:
-                        # if the scale quantizer of current module exists, use the scale quantizer
-                        # to fake quantize the scale of current module, as we need the real float scale
-                        # to do quantization of current module
-                        module.scale = next_module.to_fake_quantize_params(module.scale)
+                        # Skip if scale was pre-computed in get_real_quantizer (combined division)
+                        if not hasattr(module, "_quantized_block_scale"):
+                            module.scale = next_module.to_fake_quantize_params(module.scale)
                 param = module.to_real_quantize_params(param)
         return param
 
@@ -520,9 +532,14 @@ class SequentialRealQuantizer(nn.Sequential):
         for i, module in enumerate(self):
             if not module.is_scale_quant:
                 if i < len(self) - 1 and self[i + 1].is_scale_quant and not self.is_dynamic:
-                    # if the scale quantizer of current module exists, use the scale quantizer
-                    # to real quantize the scale of current module
-                    module.scale = self[i + 1].to_real_quantize_params(module.scale)
+                    quantized_scale = getattr(module, "_quantized_block_scale", None)
+                    if quantized_scale is not None:
+                        # Use pre-computed quantized block scale (combined division)
+                        device = module.scale.device
+                        module.scale = self[i + 1].pack_method.pack(quantized_scale, self[i + 1].reorder)
+                        module.scale = module.scale.to(device)
+                    else:
+                        module.scale = self[i + 1].to_real_quantize_params(module.scale)
                     self[i + 1].maybe_convert_and_transpose_scale()
                 module.maybe_convert_and_transpose_scale()
 
@@ -543,21 +560,7 @@ class SequentialRealQuantizer(nn.Sequential):
                     if module_index < len(self) - 1:
                         next_module = self[module_index + 1]
                         if next_module.is_scale_quant:
-                            next_module.update_dynamic_params(scale)
-                            n_scale, n_zero_point = next_module.unpack_params()
-                            scale = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                                next_module.qspec.dtype.value,
-                                scale.to(next_module.float_dtype),
-                                n_scale,
-                                n_zero_point.to(torch.int) if n_zero_point is not None else None,
-                                next_module.qspec.ch_axis,
-                                next_module.qspec.group_size,
-                                next_module.quant_min,
-                                next_module.quant_max,
-                                next_module.round_method,
-                                next_module.qspec.qscheme.value,
-                                None,
-                            )
+                            scale = next_module(scale.to(next_module.float_dtype))
 
                     x = quark.torch.kernel.scaled_real_quantize(  # type: ignore[attr-defined]
                         module.qspec.dtype.value,
@@ -578,20 +581,7 @@ class SequentialRealQuantizer(nn.Sequential):
                     if module_index > 0:
                         previous_module = self[len(self) - module_index]
                         if previous_module.is_scale_quant:
-                            p_scale, p_zero_point = previous_module.unpack_params()
-                            scale = quark.torch.kernel.scaled_fake_quantize(  # type: ignore[attr-defined]
-                                previous_module.qspec.dtype.value,
-                                scale.to(previous_module.float_dtype),
-                                p_scale,
-                                p_zero_point.to(torch.int) if p_zero_point is not None else None,
-                                previous_module.qspec.ch_axis,
-                                previous_module.qspec.group_size,
-                                previous_module.quant_min,
-                                previous_module.quant_max,
-                                previous_module.round_method,
-                                previous_module.qspec.qscheme.value,
-                                None,
-                            )
+                            scale = previous_module(scale.to(previous_module.float_dtype))
 
                     x = quark.torch.kernel.dequantize(  # type: ignore[attr-defined]
                         module.qspec.dtype.value,
@@ -640,7 +630,7 @@ def get_real_quantizer(
     reorder: bool | None = None,
     real_quantized: bool | None = None,
     float_dtype: torch.dtype | None = None,
-    device: torch.device | None = torch.device("cuda"),
+    device: torch.device | None = torch.device("cuda"),  # noqa: B008
     scale_shape: tuple[int, ...] | list[tuple[int, ...]] | None = None,
     zero_point_shape: tuple[int, ...] | list[tuple[int, ...]] | None = None,
 ) -> RealQuantizerBase | SequentialRealQuantizer:
@@ -667,6 +657,7 @@ def get_real_quantizer(
             )
             assert isinstance(real_quantizer, RealQuantizerBase), "real_quantizer must be a RealQuantizerBase!"
             quantizers.append(real_quantizer)
+
         return SequentialRealQuantizer(*quantizers)
     else:
         assert not isinstance(quantizer, SequentialQuantize), (
@@ -682,11 +673,8 @@ def get_real_quantizer(
             )
             return DynamicScaledQuantizer(
                 qspec=qspec,
-                quantizer=quantizer,
                 device=device,
                 float_dtype=float_dtype,
-                scale_shape=scale_shape,
-                zero_point_shape=zero_point_shape,
             )
 
         assert reorder is not None, "reorder must be provided for static real quantizer!"

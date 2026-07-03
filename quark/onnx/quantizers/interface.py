@@ -22,10 +22,10 @@ from onnxruntime.quantization.quant_utils import (
 )
 from onnxruntime.quantization.registry import IntegerOpsRegistry
 
+from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration import Int16Method, LayerWiseMethod, PowerOfTwoMethod
 from quark.onnx.quantization.quant_utils import ExtendedQuantFormat
-from quark.onnx.utils.system_utils import Profiler
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .extended_quantizer import ExtendedQDQQuantizer
 from .matmul_nbits_quantizer import (
@@ -59,6 +59,8 @@ def set_parameters_and_domain(
 
     # There is a process of removing QDQ within the quantizers,
     # so we have to set the op types for the removal before-hand.
+    # Clear so each call gets a fresh list; avoids state leaking across runs (e.g. pytest multi-file or repeated quantize).
+    remove_qdq_op_type.clear()
     if extra_options.get("RemoveQDQConvClip", True):
         remove_qdq_op_type.append("Clip")
     if extra_options.get("RemoveQDQConvRelu", True):
@@ -152,6 +154,7 @@ def create_matmul_nbits_quantizer(
 
 
 @log_errors
+@profile_scope(ProfileStep.QUANTIZATION_MATMUL_NBITS)
 def run_matmul_nbits_quantization(
     float_model: onnx.ModelProto,
     data_reader: CalibrationDataReader,
@@ -404,7 +407,7 @@ def create_static_quantizer(
 
 
 @log_errors
-@Profiler(msg=[["static quantization"]])
+@profile_scope(ProfileStep.QUANTIZATION_STATIC)
 def run_static_quantization(
     float_model: onnx.ModelProto,
     tensors_range: TensorsData,
@@ -535,6 +538,7 @@ def create_dynamic_quantizer(
 
 
 @log_errors
+@profile_scope(ProfileStep.QUANTIZATION_DYNAMIC)
 def run_dynamic_quantization(
     float_model: onnx.ModelProto,
     per_channel: bool = False,

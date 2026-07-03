@@ -48,7 +48,7 @@ def get_pileval(
 def get_wikitext2(
     tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, device: str | None, seed: int = 0
 ) -> list[dict[str, torch.Tensor]]:
-    traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
+    traindata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
     trainenc = tokenizer("\n\n".join(traindata["text"]), return_tensors="pt")
     trainenc = trainenc.to(device)
 
@@ -98,11 +98,11 @@ def get_calib_dataloader_to_tensor(
     if dataset_name == "pileval":
         dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation", cache_dir="data_cache")
         text_data = dataset["text"][:num_calib_data]
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
+    elif dataset_name in ("cnn_dailymail", "abisee/cnn_dailymail"):
+        dataset = load_dataset("abisee/cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
         text_data = dataset["article"][:num_calib_data]
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
+    elif dataset_name in ("wikitext", "Salesforce/wikitext"):
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
         text_data = dataset["text"][:num_calib_data]
     else:
         raise NotImplementedError
@@ -146,17 +146,17 @@ def get_calib_dataloader_to_dict(
     if dataset_name == "pileval":
         dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation", cache_dir="data_cache")
         prompt_col_name = "text"
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
+    elif dataset_name in ("cnn_dailymail", "abisee/cnn_dailymail"):
+        dataset = load_dataset("abisee/cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
         prompt_col_name = "article"
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
+    elif dataset_name in ("wikitext", "Salesforce/wikitext"):
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
         prompt_col_name = "text"
     else:
         raise NotImplementedError
 
     dataset = dataset.select(
-        indices=[i for i in range(min(len(dataset), num_calib_data))],
+        indices=list(range(min(len(dataset), num_calib_data))),
         keep_in_memory=True,
     )
     tokenized_datasets = dataset.map(

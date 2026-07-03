@@ -1,8 +1,9 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+import sys
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -10,8 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from quark.shares.utils.import_utils import is_transformers_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_transformers_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.rotation.cayley import SGDG
 
 if is_transformers_available():
@@ -166,7 +167,7 @@ class OrthogonalTrainingCallback(TrainerCallback):
         self.start_params = start_params
 
     def on_step_begin(self, args, state, control, **kwargs):  # type: ignore
-        print("", flush=True)  # For some reason HF's trainer does not always flush.
+        sys.stdout.flush()  # For some reason HF's trainer does not always flush.
 
         tb_writer = self.tensorboard_callback.tb_writer
         assert tb_writer is not None

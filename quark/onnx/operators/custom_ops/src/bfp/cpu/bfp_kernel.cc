@@ -9,9 +9,7 @@
 #include <cmath>
 #include <iostream>
 
-namespace quark_onnx {
-extern float float2bfloat_cpu(const float x, std::string str = "false");
-}
+#include "bfloat_convert.h"
 
 uint32_t __float_as_uint(float x) { return *reinterpret_cast<uint32_t*>(&x); }
 
@@ -273,7 +271,7 @@ void BFPPrimeCPUKernel(
 
 void Float2BFloat(float* input, int n) {
   for (int i = 0; i < n; i++) {
-    *(input + i) = quark_onnx::float2bfloat_cpu(*(input + i), "false");
+    *(input + i) = quark_onnx::float2bfloat_cpu(*(input + i));
   }
 }
 

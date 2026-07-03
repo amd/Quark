@@ -48,6 +48,9 @@ struct MXFixNeuronKernel {
 
   Ort::Value do_mx(Ort::Value& input);
 
+  Ort::Value cast_to_fp32(OrtKernelContext* context, Ort::Value& input);
+  Ort::Value cast_to_fp16(OrtKernelContext* context, Ort::Value& input);
+
  private:
   const OrtApi& ort_;
   Ort::KernelInfo info_copy_{nullptr};
@@ -57,6 +60,11 @@ struct MXFixNeuronKernel {
   bool op_pad_init_ = false;
   Ort::Op op_slice_{nullptr};
   bool op_slice_init_ = false;
+  Ort::Op op_cast_to_fp32_{nullptr};
+  bool op_cast_to_fp32_init_ = false;
+  Ort::Op op_cast_to_fp16_{nullptr};
+  bool op_cast_to_fp16_init_ = false;
+  bool is_fp16_input_ = false;
   std::vector<Buffer> tmp_buffers_;
 
   std::string scale_dtype_ = "e8m0";
@@ -137,12 +145,12 @@ struct MXFixNeuron
 
   size_t GetInputTypeCount() const { return 1; };
   ONNXTensorElementDataType GetInputType(size_t /*index*/) const {
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
   };
 
   size_t GetOutputTypeCount() const { return 1; };
   ONNXTensorElementDataType GetOutputType(size_t /*index*/) const {
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
   };
 
 #if ORT_API_VERSION >= 17

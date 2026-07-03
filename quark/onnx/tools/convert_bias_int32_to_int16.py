@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -16,9 +16,9 @@ import onnx
 from onnx import numpy_helper
 from onnxruntime.quantization.onnx_model import ONNXModel
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.tools.convert_opset_version import convert_opset_version
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     try:
         ort_session = create_infer_session_for_onnx_model(args.input_model_path, providers=["CPUExecutionProvider"])
     except Exception as e:
-        raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}")
+        raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime Error: \n{e}") from e
 
     input_model = onnx.load(args.input_model_path)
     output_model, flag = convert_bias_int32_to_int16(input_model)

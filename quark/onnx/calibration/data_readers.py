@@ -1,11 +1,12 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import numpy as np
 import onnx
@@ -13,8 +14,8 @@ import onnxruntime
 from onnx.onnx_ml_pb2 import NodeProto
 from onnxruntime.quantization.calibrate import CalibrationDataReader
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -40,11 +41,15 @@ class CachedDataReader(CalibrationDataReader):  # type: ignore
         self._data_cache = []
         self.quantize_fp16 = quantize_fp16
         n = 1
+        total_nbytes = 0
         while True:
             inputs = dr.get_next()
             if not inputs or self.data_size is not None and n > self.data_size:
                 break
             n = n + 1
+            for input_name, input_array in inputs.items():
+                assert isinstance(input_array, np.ndarray), "The input should be a numpy array."
+                total_nbytes += input_array.nbytes
             if self.quantize_fp16:
                 new_inputs = {}
                 for input_name, input_array in inputs.items():
@@ -77,7 +82,9 @@ class CachedDataReader(CalibrationDataReader):  # type: ignore
         if len(self._data_cache) == 0:
             raise ValueError("No data in the input calibration data reader")
         else:
-            logger.debug(f"Obtained calibration data with {len(self._data_cache)} iters")
+            logger.info(
+                f"Totally {len(self._data_cache)} samples were cached using {total_nbytes / (1024**3):.2f}GB of memory."
+            )
 
         self.enum_data_dicts = iter(self._data_cache)
 
@@ -143,7 +150,7 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
         """
 
         def _deal_shape_value(list_or_tuple_shape: int | list[int] | Any) -> Any:
-            if not isinstance(list_or_tuple_shape, (list, tuple)):
+            if not isinstance(list_or_tuple_shape, list | tuple):
                 logger.warning(f"Invalid input shape {list_or_tuple_shape}")
                 return []
 
@@ -276,7 +283,8 @@ class RandomDataReader(CalibrationDataReader):  # type: ignore
                 if input_shape is not None:
                     np.random.seed(42)
                     if "tensor(string)" in input_node.type:
-                        input_data = np.chararray(tuple(input_shape))
+                        input_data = np.full(tuple(input_shape), "", dtype=object)
+
                     else:
                         if self._input_data_range is None:
                             input_data = np.random.random(input_shape).astype(input_type)
@@ -337,7 +345,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
         def _deal_shape_value(
             list_or_tuple_shape: list[int] | tuple[int] | list[list[int]] | list[Any] | Any,
         ) -> Any:
-            if not isinstance(list_or_tuple_shape, (list, tuple)):
+            if not isinstance(list_or_tuple_shape, list | tuple):
                 logger.warning(f"Invalid input shape {list_or_tuple_shape}")
                 return []
 
@@ -356,7 +364,7 @@ class PathDataReader(CalibrationDataReader):  # type: ignore
         if isinstance(self._input_shape, dict):
             if input_name in self._input_shape:
                 return _deal_shape_value(self._input_shape[input_name])
-        elif all(isinstance(n, (list, tuple)) for n in self._input_shape):
+        elif all(isinstance(n, list | tuple) for n in self._input_shape):
             if input_index < len(self._input_shape):
                 return _deal_shape_value(self._input_shape[input_index])
         else:

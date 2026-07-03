@@ -13,7 +13,7 @@ import torch.nn as nn
 import quark.torch.extensions.brevitas.algos as brevitas_algos
 import quark.torch.extensions.brevitas.api as brevitas_api
 import quark.torch.extensions.brevitas.config as brevitas_config
-from quark.shares.utils.testing_utils import require_torch_lower_or_equal
+from quark.common.utils.testing_utils import require_torch_lower_or_equal
 
 
 class SimpleNetwork(nn.Module):

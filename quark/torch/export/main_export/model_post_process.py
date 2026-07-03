@@ -1,16 +1,27 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.export.config.config import JsonExporterConfig
+
+if TYPE_CHECKING:
+    from quark.torch.quantization.config.config import QConfig
 from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
+from quark.torch.export.prequantized_layer_handler import (
+    dequantize_prequantized_linears,
+    preserve_prequantized_layers,
+)
 from quark.torch.export.utils import find_patterns_groups
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.tensor_quantize import SequentialQuantize
@@ -21,13 +32,18 @@ logger = ScreenLogger(__name__)
 
 class ModelPostProcessor:
     def __init__(
-        self, model: nn.Module, export_config: JsonExporterConfig, custom_mode: str, output_quant: bool
+        self,
+        model: nn.Module,
+        export_config: JsonExporterConfig,
+        custom_mode: str,
+        output_quant: bool,
+        quantization_config: QConfig | None = None,
     ) -> None:
         self._model = model
         self._config = export_config
         self.custom_mode = custom_mode
         self.output_quant = output_quant
-        self._name_module_map: dict[str, nn.Module] = {}
+        self._quantization_config = quantization_config
 
     @property
     def model(self) -> nn.Module:
@@ -53,30 +69,88 @@ class ModelPostProcessor:
         If `weight_format=real_quantized"` is used, relevant modules will be replaced by modules handling low-precision data types, as `QParamsLinear`.
 
         If `weight_format=fake_quantized"` high precision parameters and original modules are kept.
+
+        Pre-quantized linears (FP8Linear, compressed-tensors quantized linear) that were NOT quantized by Quark
+        (e.g., in ignore list) will be dequantized to nn.Linear for export compatibility.
         """
         logger.info("Model post process start.")
         logger.info("Simplifying quantized operators...")
-        named_modules = dict(self._model.named_modules(remove_duplicate=False))
+
+        if getattr(self._quantization_config, "keep_prequantized_layers", False):
+            preserve_prequantized_layers(
+                model=self._model,
+                custom_mode=self.custom_mode,
+                pack_method=self._config.pack_method,
+                quantization_config=self._quantization_config,
+            )
+        else:
+            dequantize_prequantized_linears(self._model)
+
+        def _release_module_tensors(module: QuantLinear) -> None:
+            """Release heavyweight tensor references from an exported QuantLinear."""
+            # Weight tensors
+            if hasattr(module, "weight") and module.weight is not None:
+                module.weight = None
+            if hasattr(module, "bias") and module.bias is not None:
+                module.bias = None
+            # Quantizers (hold scale, zero_point tensors)
+            if hasattr(module, "_weight_quantizer_inv"):
+                module._weight_quantizer_inv = None
+            if hasattr(module, "_weight_quantizer"):
+                module._weight_quantizer = None
+            if hasattr(module, "_input_quantizer"):
+                module._input_quantizer = None
+            if hasattr(module, "_output_quantizer"):
+                module._output_quantizer = None
+            if hasattr(module, "_bias_quantizer"):
+                module._bias_quantizer = None
 
         if self._config.weight_format == "real_quantized":
             logger.info("Real_quantized: Doing real quantization for operators...")
-            for name, module in tqdm(named_modules.items()):
-                if isinstance(module, QuantLinear):
-                    self._name_module_map[name] = module
-                    # In export flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
-                    module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
-                    # w b at cpu, scale zero_point at gpu
-                    export_linear = QParamsLinear.from_module(
-                        module,
-                        self.custom_mode,
-                        self._config.pack_method,
-                    )
-                    setattr_recursive(self._model, name, export_linear)
+            # Keep only module names so replaced QuantLinear instances are not
+            # pinned in memory by a snapshot of `named_modules`.
+            quantlinear_names = [
+                name
+                for name, module in self._model.named_modules(remove_duplicate=False)
+                if isinstance(module, QuantLinear)
+            ]
+            processed_count = 0
+            for name in tqdm(quantlinear_names, desc="Converting QuantLinear for export", total=len(quantlinear_names)):
+                module = getattr_recursive(self._model, name)
+                if not isinstance(module, QuantLinear):
+                    continue
+
+                # In export flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
+                module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
+                # Perform real quantization and packing on the original device.
+                export_linear = QParamsLinear.from_module(
+                    module,
+                    self.custom_mode,
+                    self._config.pack_method,
+                )
+                setattr_recursive(self._model, name, export_linear)
+                _release_module_tensors(module)
+                processed_count += 1
+
+                # Drop local references so the old QuantLinear can be reclaimed
+                # immediately after replacement.
+                del module
+                del export_linear
+
+                # Periodically collect Python cycles and return freed blocks to
+                # the CUDA allocator.
+                if processed_count % 10 == 0 and torch.cuda.is_available():
+                    # gc.collect()
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                # gc.collect()
+                torch.cuda.empty_cache()
         elif self._config.weight_format == "fake_quantized":
             logger.info("Fake_quantized: save float_w, scale and zero_point for operators...")
+            named_modules = dict(self._model.named_modules(remove_duplicate=False))
             for name, module in tqdm(named_modules.items()):
                 if isinstance(module, QuantLinear):
-                    self._name_module_map[name] = module
                     # In export flow, we need to modify the state_dict format, so we add the "export_enabled" flag to control the flow.
                     module.register_buffer("export_enabled", torch.tensor([1], dtype=torch.uint8), persistent=False)
         named_modules = dict(self._model.named_modules(remove_duplicate=False))
@@ -85,18 +159,6 @@ class ModelPostProcessor:
             self._merge_params_for_DbrxExperts()
 
         logger.info("Model post process end")
-        return self._model
-
-    def reset_model(self) -> nn.Module:
-        if hasattr(self, "name_dbrxexperts_map"):
-            for name, module in self.name_dbrxexperts_map.items():
-                setattr_recursive(self._model, name, module)
-
-        logger.info("Resetting model to frozen model...")
-        for name, module in self._name_module_map.items():
-            if self._config.weight_format == "real_quantized":
-                setattr_recursive(self._model, name, module)
-            module.export_enabled[0] = 0
         return self._model
 
     def _virtual_merge_weight_matrix(self) -> None:
@@ -281,7 +343,6 @@ class ModelPostProcessor:
 
     def _merge_params_for_DbrxExperts(self) -> None:
         named_modules = dict(self._model.named_modules(remove_duplicate=False))
-        self.name_dbrxexperts_map: dict[str, nn.Module] = {}
         for name, module in tqdm(named_modules.items()):
             if module.__class__.__name__ == "DbrxExperts_":
                 export_experts = torch.nn.Module()
@@ -345,4 +406,3 @@ class ModelPostProcessor:
                     w2_output_scale_concat = torch.stack(w2_output_scale_tensors)
                     export_experts.mlp.w2_output_scale = torch.nn.Parameter(w2_output_scale_concat, requires_grad=False)
                 setattr_recursive(self._model, name, export_experts)
-                self.name_dbrxexperts_map[name] = module

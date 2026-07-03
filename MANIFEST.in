@@ -1,3 +1,9 @@
+# Include C++ source files for JIT fallback compilation
+recursive-include quark/common/csrc *
+recursive-include quark/torch/include *
 recursive-include quark/torch/kernel/hw_emulation/csrc *
 recursive-include quark/onnx/operators/custom_ops *
-recursive-include quark/contrib/onnx_utils/src/ryzenai_onnx_utils *
+
+# Include pre-compiled extension libraries
+recursive-include quark/torch/kernel/hw_emulation/lib *.so *.dll *.dylib
+recursive-include quark/onnx/operators/custom_ops/lib *.so *.dll *.dylib

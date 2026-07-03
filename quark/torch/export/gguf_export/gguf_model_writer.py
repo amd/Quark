@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # Copyright (c) 2023-2024 The ggml authors
@@ -11,19 +11,21 @@ from __future__ import annotations
 import json
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager
 from enum import IntEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import torch
 
-from quark.shares.utils.import_utils import (
-    is_gguf_available_and_version_0_6_0,
+from quark.common.utils.import_utils import (
+    is_gguf_available_and_minimum_version,
     is_safetensors_available,
     is_transformers_available,
 )
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.torch.export.gguf_export.tensor_convert import convert_to_gguf
 from quark.torch.export.gguf_export.utils import permute
 
@@ -34,7 +36,7 @@ if is_safetensors_available():
     from safetensors import safe_open
 
 
-if is_gguf_available_and_version_0_6_0():
+if is_gguf_available_and_minimum_version():
     import gguf  # type: ignore
 
 logger = ScreenLogger(__name__)
@@ -127,7 +129,7 @@ class ModelWriter(ABC):
         ):
             return gguf.GGMLQuantizationType.Q4_1
         else:
-            raise Exception("Unsupported quant spec")
+            raise ValueError("Unsupported quant spec")
 
     def is_quant_spec_complete(self, quant_spec: QuantSpec) -> bool:
         return quant_spec.tensor is not None and quant_spec.scales is not None and quant_spec.zero_points is not None
@@ -150,8 +152,8 @@ class ModelWriter(ABC):
         pass
 
     def get_tensors(self) -> Iterator[tuple[str, torch.Tensor]]:
-        ctx: ContextManager[Any]
-        ctx = cast(ContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))  # type: ignore
+        ctx: AbstractContextManager[Any]  # pragma: no cover
+        ctx = cast(AbstractContextManager[Any], safe_open(self.safetensor_path, framework="pt", device="cpu"))  # type: ignore  # pragma: no cover
 
         with ctx as model_part:
             for name in model_part.keys():  # noqa
@@ -246,8 +248,8 @@ class ModelWriter(ABC):
     def from_model_architecture(cls: type[ModelWriter], arch: str) -> type[ModelWriter]:
         try:
             return cls._model_classes[arch]
-        except KeyError:
-            raise NotImplementedError(f"Architecture {arch!r} not supported!")
+        except KeyError as e:  # pragma: no cover
+            raise NotImplementedError(f"Architecture {arch!r} not supported!") from e
 
     # used for GPT-2 BPE and WordPiece vocabs
     def get_vocab_base(self) -> tuple[list[str], list[int], str]:
@@ -472,7 +474,6 @@ class LlamaModelWriter(ModelWriter):
             if n_dims == 1:
                 data_torch = data_torch.to(torch.float32)
 
-            raw_shape = None
             raw_dtype = None
             if name in quant_info:
                 quant_spec_map[name] = QuantSpec(
@@ -496,7 +497,6 @@ class LlamaModelWriter(ModelWriter):
                         zero_point=quant_spec.zero_points,  # type: ignore
                         gguf_type=quant_spec.quant_type,
                     )
-                    raw_shape = quant_spec.tensor.shape
                     raw_dtype = quant_spec.quant_type
                     name = quant_spec.tensor_name
                 else:
@@ -513,7 +513,6 @@ class LlamaModelWriter(ModelWriter):
                         zero_point=quant_spec.zero_points,  # type: ignore
                         gguf_type=quant_spec.quant_type,
                     )
-                    raw_shape = quant_spec.tensor.shape
                     raw_dtype = quant_spec.quant_type
                     name = quant_spec.tensor_name
                 else:
@@ -533,4 +532,4 @@ class LlamaModelWriter(ModelWriter):
             if new_name is None:
                 raise ValueError(f"Can not map tensor {name!r}")
 
-            self.gguf_writer.add_tensor(new_name, data, raw_shape=raw_shape, raw_dtype=raw_dtype)
+            self.gguf_writer.add_tensor(new_name, data, raw_dtype=raw_dtype)

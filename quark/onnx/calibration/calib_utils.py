@@ -1,21 +1,22 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-import json
+import copy
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, HistogramCollector, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.utils.import_utils import _is_package_available
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.utils.system_utils import check_and_create_path, create_tmp_dir
-from quark.shares.utils.import_utils import _is_package_available
-from quark.shares.utils.log import ScreenLogger
 
 from .calibrators import create_calibrator_float_scale
 from .methods import LayerWiseMethod
@@ -111,32 +112,146 @@ def save_tensor_hist_fig(
         del calibrator
 
 
-def save_tensors_range(tensors_range: Any, tensors_range_file: None | str) -> None:
-    if tensors_range_file is not None:
-        tensors_range_dict = {}
-        for key in tensors_range.data:
-            temp_value = tensors_range.data[key].range_value
-            tensors_range_dict[key] = (temp_value[0].tolist(), temp_value[1].tolist())
-        with open(tensors_range_file, "w") as json_file:
-            json.dump(tensors_range_dict, json_file, indent=2)
-    else:
-        logger.error("Save the tensors range failed, because no file path provided.")
+def build_tensor_producer_map(model: onnx.ModelProto) -> dict[str, onnx.NodeProto]:
+    """
+    Build a mapping from tensor names to the ONNX nodes that produce them.
+
+    This function iterates over all nodes in the model graph and records
+    which node is responsible for producing each output tensor. The resulting
+    mapping enables efficient upstream traversal of the computation graph
+    starting from any tensor.
+
+    :param onnx.ModelProto model: The ONNX model whose graph will be analyzed.
+    :return: Dict[str, onnx.NodeProto]: A dictionary mapping output tensor names
+        to the `NodeProto` that produces each tensor.
+    """
+    tensor_producer = {}
+    for node in model.graph.node:
+        for output in node.output:
+            tensor_producer[output] = node
+    return tensor_producer
 
 
-def load_tensors_range(tensors_range_file: None | str) -> TensorsData | None:
-    tensors_range: TensorsData | None = None
-    if tensors_range_file is not None:
-        assert os.path.exists(tensors_range_file), "The tensors range file does not exist."
-        with open(tensors_range_file) as json_file:
-            loaded_dict = json.load(json_file)
-        tensors_range_dict = {}
-        for key in loaded_dict:
-            temp_value = loaded_dict[key]
-            tensors_range_dict[key] = (
-                np.array(temp_value[0], dtype=np.float32),
-                np.array(temp_value[1], dtype=np.float32),
-            )
-        tensors_range = TensorsData(CalibrationMethod.MinMax, tensors_range_dict)
-    else:
-        logger.error("Load the tensors range failed, because no file path provided.")
-    return tensors_range
+def find_nearest_non_passthrough_output(
+    tensor_name: str, tensor_producer: dict[str, onnx.NodeProto], passthrough_types: set[str]
+) -> str | None:
+    """
+    Find the nearest upstream tensor produced by a non-passthrough node.
+
+    Starting from the given tensor name, this function walks upstream through
+    the computation graph. If the tensor is produced by a passthrough node
+    (e.g., Reshape, Transpose), the search continues recursively through
+    that node's inputs until a non-passthrough node is found.
+
+    If the tensor has no recorded producer, it is assumed to be a graph input
+    or initializer and is returned as-is.
+
+    :param str tensor_name: The name of the tensor to trace upstream from.
+    :param Dict[str, onnx.NodeProto] tensor_producer: Mapping from tensor names to the nodes that produce them.
+    :param set passthrough_types: Set of ONNX op_type strings that are considered passthrough operations.
+    :return: Optional[str]: The name of the nearest upstream tensor produced by a non-passthrough node, or None if no such ancestor can be found.
+    """
+    if tensor_name not in tensor_producer:
+        # Graph input or initializer
+        return tensor_name
+
+    node = tensor_producer[tensor_name]
+
+    if node.op_type not in passthrough_types:
+        # Found non-passthrough ancestor
+        return tensor_name
+
+    # Node is passthrough, continue searching through its inputs
+    for input_tensor in node.input:
+        ancestor = find_nearest_non_passthrough_output(input_tensor, tensor_producer, passthrough_types)
+        if ancestor is not None:
+            return ancestor
+
+    return None
+
+
+def nearest_non_passthrough_ancestor_mapping(
+    model: onnx.ModelProto, passthrough_node_types: list[str]
+) -> tuple[dict[str, str], list[str]]:
+    """
+    Compute a mapping from passthrough node outputs to their nearest
+    non-passthrough ancestor outputs.
+
+    This function implements the Nearest Non-Passthrough Ancestor Mapping (NNPAM)
+    algorithm. For each passthrough node in the model, it determines the closest
+    upstream tensor that originates from a non-passthrough operation.
+
+    The resulting mapping can be used for graph simplification, optimization,
+    or dependency analysis where passthrough operations should be ignored.
+
+    :param onnx.ModelProto model: The ONNX model to analyze.
+    :param List[str] passthrough_node_types: List of ONNX op_type strings that should be treated as passthrough nodes.
+    :param set passthrough_types: Set of ONNX op_type strings that are considered passthrough operations.
+    :return: Dict[str, str]: A dictionary mapping each passthrough node output tensor name to the tensor name of its nearest non-passthrough ancestor.
+    """
+    passthrough_types = set(passthrough_node_types)
+    tensor_producer = build_tensor_producer_map(model)
+
+    result = {}
+    missing_types = []
+
+    for node in model.graph.node:
+        if node.op_type not in passthrough_types:
+            continue
+
+        for output in node.output:
+            ancestor = find_nearest_non_passthrough_output(output, tensor_producer, passthrough_types)
+            if ancestor is not None:
+                result[output] = ancestor
+            if ancestor is None and node.op_type not in missing_types:
+                missing_types.append(node.op_type)
+
+    return result, missing_types
+
+
+def update_tensors_range_with_dependencies(tensors_range: Any, dependencies: dict[str, str]) -> Any:
+    """
+    Update tensor ranges based on dependency mappings.
+
+    This function propagates tensor range values according to a dependency mapping. If a tensor depends on
+    another tensor, its range is replaced with the range of its dependency.
+
+    The function assumes `tensors_range.data` is a mapping from tensor names to objects that expose a
+    `range_value` attribute, where `range_value` contains a pair of numeric arrays (e.g., min/max).
+
+    :param Any tensors_range: An object containing tensor range data. It must have a `.data` attribute structured as: Dict[str, TensorRange] where `TensorRange.range_value` is a tuple/list of arrays.
+    :param Dict[str, str] dependencies: A mapping from tensor name to dependent tensor name. Example: {"output_tensor": "input_tensor"}
+    :return: Any: A new `TensorsData` object with updated tensor ranges, where dependent tensors inherit the range of their source tensors.
+    """
+    # Convert tensors_range into a simple dict: tensor_name -> (min, max)
+    tensors_range_dict: dict[str, Any] = {}
+
+    for tensor_name, tensor_data in tensors_range.data.items():
+        min_val, max_val = tensor_data.range_value
+        tensors_range_dict[tensor_name] = (
+            min_val.tolist(),
+            max_val.tolist(),
+        )
+
+    # Copy original ranges so only dependent tensors are overridden
+    new_tensors_range_dict = copy.deepcopy(tensors_range_dict)
+
+    # Apply dependency-based updates
+    for target_tensor, source_tensor in dependencies.items():
+        if source_tensor in tensors_range_dict:
+            new_tensors_range_dict[target_tensor] = tensors_range_dict[source_tensor]
+
+    for key in new_tensors_range_dict:
+        temp_value = new_tensors_range_dict[key]
+        new_tensors_range_dict[key] = (
+            np.array(temp_value[0], dtype=np.float32),
+            np.array(temp_value[1], dtype=np.float32),
+        )
+
+    # Reconstruct TensorsData object
+    new_tensors_range = TensorsData(
+        CalibrationMethod.MinMax,
+        new_tensors_range_dict,
+    )
+
+    return new_tensors_range

@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.scale import apply_scale
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import append_str_prefix, get_moe_layers, get_named_quant_linears
@@ -271,7 +271,7 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
             w_q = mx.qdq_mxfp4(w, qspec.scale_calculation_mode)
         else:
             for module in linear_layer.modules():
-                if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
+                if isinstance(module, ScaledFakeQuantize | NonScaledFakeQuantize):
                     module.enable_observer()
                     module.enable_fake_quant()
 
@@ -292,7 +292,7 @@ class AutoSmoothQuantProcessor(BaseAlgoProcessor):
             quantizer.observer.reset_state()
             quantizer.observer.to(linear_layer.weight.device)
             for module in linear_layer.modules():
-                if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
+                if isinstance(module, ScaledFakeQuantize | NonScaledFakeQuantize):
                     module.disable_observer()
                     module.disable_fake_quant()
 

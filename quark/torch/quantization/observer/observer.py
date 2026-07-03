@@ -1,10 +1,11 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
+import os
 from abc import abstractmethod
 from collections import Counter
 from typing import TYPE_CHECKING, Any, cast
@@ -17,9 +18,9 @@ import quark.torch.kernel  # noqa
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import QTensorConfig
-from quark.shares.data_type import BaseObserverBase
-from quark.shares.utils.import_utils import is_torch_greater_or_equal_2_5
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.data_type import BaseObserverBase
+from quark.common.utils.import_utils import is_torch_greater_or_equal_2_5
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_int  # type: ignore
 from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType, ZeroPointType
 from quark.torch.quantization.nn.utils import check_min_max_valid
@@ -30,6 +31,7 @@ from quark.torch.quantization.utils import (
     reshape_to_blocks,
     t_exponent,
 )
+from quark.torch.utils.numerics import safe_max, safe_min
 
 logger = ScreenLogger(__name__)
 
@@ -39,11 +41,18 @@ class ObserverBase(BaseObserverBase, nn.Module):
         super().__init__()
         self.dtype = qspec.dtype
 
+        self.qspec = qspec
         self.scale_torch_dtype = None
+
+        # TODO: Remove the usage of `scale_format` throughout Quark codebase and rely solely on `scale_type`
+        self.scale_format = qspec.scale_format
+        self.scale_calculation_mode = qspec.scale_calculation_mode
+
         if qspec.scale_type in [ScaleType.float32, ScaleType.float16, ScaleType.bfloat16]:
             self.scale_torch_dtype = qspec.scale_type.to_torch_dtype()
 
-        self._num_observed_tokens: int | None = None
+        self._num_observed_tokens: int = 0
+        self.quant_max_first_level: float | None = None
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> Any:
@@ -77,10 +86,6 @@ class ObserverBase(BaseObserverBase, nn.Module):
         if not isinstance(batch_tensor, torch.Tensor):
             raise ValueError(f"Expected value to be a tensor, got {type(batch_tensor)}")
 
-        if self._num_observed_tokens is None:
-            # initialize the count
-            self._num_observed_tokens = 0
-
         # For some models with MoE (e.g., Llama4), the MoE computation is performed by matrix multiplication
         # between the input and the weights of experts. In these models, the routing mechanism selectively assigns
         # tokens to different experts. When the input corresponding to a particular expert is all zeros, it indicates
@@ -93,6 +98,92 @@ class ObserverBase(BaseObserverBase, nn.Module):
         valid_rows = torch.nonzero(row_mask, as_tuple=True)[0]
         observed_tokens = valid_rows.numel()
         self._num_observed_tokens += observed_tokens
+
+    def get_scale(
+        self,
+        amax: torch.Tensor,
+        eps: float,
+        scale_format: str,
+    ) -> torch.Tensor:
+        """
+        Calculate scale based on ``amax`` and ``scale_format``.
+
+        :param torch.Tensor amax: Maximum absolute value tensor used for scale calculation.
+        :param float eps: Small epsilon value to prevent division by zero.
+        :return: Calculated scale tensor.
+        """
+        if scale_format == "e8m0":
+            dtype = self.qspec.dtype if self.qspec.mx_element_dtype is None else self.qspec.mx_element_dtype
+            _, _, emax = get_dtype_params(dtype)
+            if self.scale_calculation_mode is None or self.scale_calculation_mode == "even":
+                scale = even_round(amax, dtype)
+            elif self.scale_calculation_mode == "floor":
+                # The masked_fill below is load-bearing: torch.log2(0) -> -inf,
+                # pow(2, -inf - emax) -> exact 0, which masked_fill then replaces
+                # with eps. Do NOT route this through safe_log2 — that would
+                # produce a tiny finite scale (~2**(-126-emax)) that slips past
+                # the `scale == 0.0` check and breaks test_per_block_simple_scale.
+                scale = torch.pow(2, torch.floor(torch.log2(amax)) - emax)
+                scale = scale.masked_fill(scale == 0.0, eps)
+            elif self.scale_calculation_mode == "ceil":
+                scale = torch.pow(2, torch.ceil(torch.log2(amax)) - emax)
+                scale = scale.masked_fill(scale == 0.0, eps)
+            else:
+                raise ValueError(f"Unsupported scale_calculation_mode: {self.scale_calculation_mode}")
+        elif scale_format == "e4m3":
+            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
+            scale = torch.div(amax, quant_max)
+            scale = scale.masked_fill(scale == 0.0, eps)
+
+            # two-level scale
+            local_amax = amax.float()
+            elem_format_max = quant_max
+            global_amax = amax.max().float()
+            scale_format_max = 448.0  # FP8E4M3 scale
+            local_unscale = local_amax / elem_format_max
+            two_level_scale = scale_format_max * (elem_format_max / global_amax)
+            scale = (local_unscale * two_level_scale).to(torch.float8_e4m3fn).float() / two_level_scale
+            # Output dtype is controlled by self.scale_torch_dtype (set via scale_type config).
+            # When scale_type="float32", scale stays in float32; otherwise follows model dtype.
+            scale = scale.to(self.scale_torch_dtype)
+        elif scale_format == "e5m3":
+            # E5M3 format: 5 exponent bits, 3 mantissa bits, no sign bit
+            # Compute scale to remap amax to e.g. FP4 max (similar to float32 case).
+            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
+            scale = torch.div(amax, quant_max)
+            scale = scale.masked_fill(scale == 0.0, eps)
+
+            # TODO: we should be able to call `non_scaled_fake_quantize`, `scaled_fake_quantize`, etc. with named arguments. This is quite ugly!
+            scale = quark.torch.kernel.non_scaled_fake_quantize(
+                scale,
+                "fp8_e5m3",
+                "",  # mx_element_dtype
+                -1,  # ch_axis
+                1,  # group_size=1, i.e. elementwise fake quantization.
+                "",  # scale_calculation_mode
+            )
+        elif scale_format == "float32":
+            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
+            # Cast amax to scale_torch_dtype before division to avoid precision loss.
+            # When scale_type="float32", this ensures the division is computed in float32
+            # rather than the model's native dtype (e.g. BF16).
+            amax = amax.to(self.scale_torch_dtype) if self.scale_torch_dtype else amax
+            # In sequential quantization (e.g. FP4 with FP8 global scale), use a single
+            # division amax / (quant_max_first_level * quant_max) instead of successive
+            # divisions amax / quant_max_first_level / quant_max, avoiding intermediate rounding.
+            if self.quant_max_first_level is not None:
+                divisor = self.quant_max_first_level * quant_max
+            else:
+                divisor = quant_max
+
+            scale = torch.div(amax, divisor)
+            scale = scale.masked_fill(scale == 0.0, eps)
+        else:
+            raise ValueError(
+                f"scale_format must be one of e8m0, e4m3, e5m3, or float32, got scale_format={scale_format}."
+            )
+
+        return scale
 
 
 class PlaceholderObserver(ObserverBase):
@@ -140,14 +231,11 @@ class UniformScalingObserver(ObserverBase):
     ) -> None:
         super().__init__(qspec, device)
 
-        self.qspec = qspec
         self.symmetric = qspec.symmetric
         self.scale_type = qspec.scale_type
         self.qscheme = qspec.qscheme
         self.is_dynamic = qspec.is_dynamic
         self.zero_point_type = qspec.zero_point_type
-        self.scale_format = qspec.scale_format
-        self.scale_calculation_mode = qspec.scale_calculation_mode
 
         self.register_buffer("min_val", torch.tensor(float("inf"), device=device), persistent=False)
         self.register_buffer("max_val", torch.tensor(float("-inf"), device=device), persistent=False)
@@ -161,7 +249,7 @@ class UniformScalingObserver(ObserverBase):
 
     def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
-        if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2]:
+        if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp8_e5m3]:
             return self.calculate_fp8_quant_parameters(min_val, max_val)
         elif self.dtype == Dtype.fp4:
             return self.calculate_fp4_quant_parameters(min_val, max_val)
@@ -209,65 +297,31 @@ class UniformScalingObserver(ObserverBase):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
+
         self.eps = self.eps.to(min_val.dtype).to(min_val.device)
-
-        device = min_val_neg.device
-        scale = torch.ones(min_val_neg.size(), dtype=torch.float32, device=device)
-        zero_point = torch.zeros(min_val_neg.size(), dtype=torch.int32, device=device)
-
         amax = torch.maximum(torch.abs(min_val_neg), torch.abs(max_val_pos))
-        _, max_norm = calculate_qmin_qmax(self.dtype)
-        scale = amax / max_norm
-        scale = scale.masked_fill(scale == 0.0, self.eps)
+
+        scale = self.get_scale(
+            amax=amax,
+            eps=self.eps,
+            scale_format="float32",
+        )
+        # TODO: We should just use `zero_point = None` here - not allocating unnecessary memory.
+        zero_point = torch.zeros_like(scale)
+
         return scale.to(self.scale_torch_dtype), zero_point
 
     def calculate_fp4_quant_parameters(
         self, min_val: torch.Tensor, max_val: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # TODO: reduce redundancy with calculate_qparams in PerBlockMXObserver, need to re-design
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
 
         amax = torch.maximum(torch.abs(min_val_neg), torch.abs(max_val_pos))
-        _, _, emax = get_dtype_params(self.dtype)
-        _, quant_max = calculate_qmin_qmax(self.dtype)
 
-        if self.scale_format == "e8m0":
-            if self.scale_calculation_mode is None or self.scale_calculation_mode == "even":
-                scale = even_round(amax, self.dtype)
-            elif self.scale_calculation_mode == "floor":
-                scale = torch.pow(2, torch.floor(torch.log2(amax)) - emax)
-                scale = scale.masked_fill(scale == 0.0, self.eps)
-            elif self.scale_calculation_mode == "ceil":
-                scale = torch.pow(2, torch.ceil(torch.log2(amax)) - emax)
-                scale = scale.masked_fill(scale == 0.0, self.eps)
-            else:
-                raise ValueError(f"Unsupported scale_calculation_mode: {self.scale_calculation_mode}")
-            zero_point = torch.zeros_like(scale)
-        elif self.scale_format == "e4m3":
-            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
-            scale = torch.div(amax, quant_max)
-            scale = scale.masked_fill(scale == 0.0, self.eps)
-
-            # two-level scale
-            orginal_dtype = scale.dtype
-            local_amax = amax.float()
-            elem_format_max = quant_max
-            global_amax = amax.max().float()
-            scale_format_max = 448.0  # FP8E4M3 scale
-            local_unscale = local_amax / elem_format_max
-            two_level_scale = scale_format_max * (elem_format_max / global_amax)
-            scale = (local_unscale * two_level_scale).to(torch.float8_e4m3fn).float() / two_level_scale
-            scale = scale.to(orginal_dtype)
-
-            zero_point = torch.zeros_like(scale)
-        elif self.scale_format == "float32":
-            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
-            scale = torch.div(amax, quant_max)
-            scale = scale.masked_fill(scale == 0.0, self.eps)
-            zero_point = torch.zeros_like(scale)
-        else:
-            raise KeyError("scale_format must be either e8m0, e4m3 or float32.")
+        scale = self.get_scale(amax=amax, eps=self.eps, scale_format=self.scale_format)
+        # TODO: We should just use `zero_point = None` here - not allocating unnecessary memory.
+        zero_point = torch.zeros_like(scale)
 
         return scale.masked_fill(scale == 0.0, torch.finfo(torch.float32).eps).to(self.scale_torch_dtype), zero_point
 
@@ -315,9 +369,10 @@ class PerTensorMinMaxObserver(UniformScalingObserver):
 class PerTensorPowOf2MinMaxObserver(PerTensorMinMaxObserver):
     def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
-            "Currently PerTensorPowOf2Observer only support int8, uint8 and int32 Dtype"
-        )
+        if qspec.dtype not in [Dtype.int8, Dtype.uint8, Dtype.int32]:
+            raise ValueError(
+                f"PerTensorPowOf2MinMaxObserver only supports int8, uint8, and int32 dtypes, got {qspec.dtype}."
+            )
 
         self.record_scale: list[float] = []
         self.record_zp: list[float] = []
@@ -469,7 +524,6 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
     ) -> None:
         super().__init__(qspec, device)
 
-        self.qspec = qspec
         self.ch_axis = qspec.ch_axis
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
@@ -524,7 +578,7 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
     def reset_min_max_vals(self) -> None:  # TODO
         """Resets the min/max values."""
         if not hasattr(self, "min_val") or not hasattr(self, "max_val"):
-            raise AttributeError("PerChannelMinMaxObserver has no attribute 'min_val' or 'max_val'.")
+            raise RuntimeError("PerChannelMinMaxObserver has no attribute 'min_val' or 'max_val'.")
         self.min_val = torch.tensor(float("inf"))
         self.max_val = torch.tensor(float("-inf"))
 
@@ -532,9 +586,10 @@ class PerChannelMinMaxObserver(UniformScalingObserver):
 class PerChannelPowOf2MinMaxObserver(PerChannelMinMaxObserver):
     def __init__(self, qspec: QTensorConfig, device: torch.device | None = None) -> None:
         super().__init__(qspec, device)
-        assert qspec.dtype in [Dtype.int8, Dtype.uint8, Dtype.int32], (
-            "Currently PerChannelPowOf2MinMaxObserver only support int8, uint8 and int32 Dtype"
-        )
+        if qspec.dtype not in [Dtype.int8, Dtype.uint8, Dtype.int32]:
+            raise ValueError(
+                f"PerChannelPowOf2MinMaxObserver only supports int8, uint8, and int32 dtypes, got {qspec.dtype}."
+            )
 
         self.record_scale_zp: list[torch.Tensor] = []
         self.compute_device = "cpu"
@@ -693,7 +748,6 @@ class PerBlockMXObserver(ObserverBase):
         self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec=qspec, device=device)
-        self.qspec = qspec
         assert self.qspec.dtype in [Dtype.fp4, Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp6_e2m3, Dtype.fp6_e3m2]
         assert qspec.group_size is not None
         assert qspec.ch_axis is not None
@@ -704,8 +758,6 @@ class PerBlockMXObserver(ObserverBase):
         self.eps = eps
         self.is_dynamic = qspec.is_dynamic
         self.amax = torch.tensor(0.0, dtype=torch.float)
-        self.scale_format = qspec.scale_format
-        self.scale_calculation_mode = qspec.scale_calculation_mode
 
     def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
         block_x = reshape_to_blocks(x_orig, self.block_size, self.axis)
@@ -721,46 +773,19 @@ class PerBlockMXObserver(ObserverBase):
         return x_orig
 
     def calculate_qparams(self) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.scale_format == "e8m0":
-            dtype = self.qspec.dtype if self.qspec.mx_element_dtype is None else self.qspec.mx_element_dtype
-            _, _, emax = get_dtype_params(dtype)
-            if self.scale_calculation_mode is None or self.scale_calculation_mode == "even":
-                scale = even_round(self.amax, dtype)
-            elif self.scale_calculation_mode == "floor":
-                scale = torch.pow(2, torch.floor(torch.log2(self.amax)) - emax)
-                scale = scale.masked_fill(scale == 0.0, self.eps)
-            elif self.scale_calculation_mode == "ceil":
-                scale = torch.pow(2, torch.ceil(torch.log2(self.amax)) - emax)
-                scale = scale.masked_fill(scale == 0.0, self.eps)
-            else:
-                raise ValueError(f"Unsupported scale_calculation_mode: {self.scale_calculation_mode}")
-            zero_point = torch.zeros_like(scale)
-        elif self.scale_format == "e4m3":
-            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
-            scale = torch.div(self.amax, quant_max)
-            scale = scale.masked_fill(scale == 0.0, self.eps)
-
-            # two-level scale
-            orginal_dtype = scale.dtype
-            local_amax = self.amax.float()
-            elem_format_max = quant_max
-            global_amax = self.amax.max().float()
-            scale_format_max = 448.0  # FP8E4M3 scale
-            local_unscale = local_amax / elem_format_max
-            two_level_scale = scale_format_max * (elem_format_max / global_amax)
-            scale = (local_unscale * two_level_scale).to(torch.float8_e4m3fn).float() / two_level_scale
-            scale = scale.to(orginal_dtype)
-
-            zero_point = torch.zeros_like(scale)
-        elif self.scale_format == "float32":
-            _, quant_max = calculate_qmin_qmax(self.qspec.dtype)
-            scale = torch.div(self.amax, quant_max)
-            scale = scale.masked_fill(scale == 0.0, self.eps)
-            zero_point = torch.zeros_like(scale)
+        if self.scale_format in ["e8m0", "e4m3", "e5m3", "float32"]:
+            scale = self.get_scale(
+                amax=self.amax,
+                eps=self.eps,
+                scale_format=self.scale_format,
+            )
         else:
             # TODO: there is no test covering this case.
+            # TODO: Most likely should be removed.
             scale = t_exponent(self.amax)  # pragma: no cover
-            zero_point = torch.zeros_like(scale)
+
+        # TODO: We should just use `zero_point = None` here - not allocating unnecessary memory.
+        zero_point = torch.zeros_like(scale)
 
         scale = scale.to(self.scale_torch_dtype)
         return scale, zero_point
@@ -774,8 +799,137 @@ class PerBlockMXObserver(ObserverBase):
     def reset_min_max_vals(self) -> None:
         """Resets the amax values."""
         if not hasattr(self, "amax"):
-            raise AttributeError("PerBlockMXObserver has no attribute 'amax'.")
+            raise RuntimeError("PerBlockMXObserver has no attribute 'amax'.")
         self.amax = torch.tensor(0.0)
+
+
+class PerBlockMXBufferReuseObserver(PerBlockMXObserver):
+    """Per-block MX observer using reusable device buffers for memory efficiency."""
+
+    _device_buffers: dict[str, dict[str, Any]] = {}
+    _gpu_stats: dict[str, dict[str, int]] = {}
+
+    def __init__(
+        self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
+    ) -> None:
+        super().__init__(qspec=qspec, device=device, eps=eps)
+        self.max_input_numel: int = getattr(qspec, "max_input_numel", 16 * 1024 * 1024)
+        self.buffer_reuse_debug: bool = os.environ.get("QUARK_BUFFER_REUSE_DEBUG", "0") == "1"
+
+    @classmethod
+    def _allocate_buffers(cls, block_shape: tuple[int, int, int], device: torch.device) -> None:
+        """Pre-allocate reusable buffers for the given shape and device."""
+        device_str = str(device)
+
+        cls._device_buffers[device_str] = {
+            "block_x": torch.empty(block_shape, device=device, dtype=torch.float32),
+            "amax": torch.empty((block_shape[0], block_shape[1], 1), device=device, dtype=torch.float32),
+            "shape": block_shape,
+        }
+
+        if device_str not in cls._gpu_stats:
+            cls._gpu_stats[device_str] = {"reuse_count": 0, "total_bytes": 0, "call_count": 0}
+
+        block_bytes = block_shape[0] * block_shape[1] * block_shape[2] * 4
+        amax_bytes = block_shape[0] * block_shape[1] * 4
+        total_bytes = block_bytes + amax_bytes
+        cls._gpu_stats[device_str]["total_bytes"] = total_bytes
+
+    @classmethod
+    def _can_use_buffers(cls, block_shape: tuple[int, int, int], device: torch.device) -> bool:
+        device_str = str(device)
+        if device_str not in cls._device_buffers:
+            return False
+
+        buffer_shape = cls._device_buffers[device_str]["shape"]
+        return all(current <= max_size for current, max_size in zip(block_shape, buffer_shape, strict=False))
+
+    @classmethod
+    def _print_stats(cls, device: torch.device) -> None:
+        device_str = str(device)
+        if device_str in cls._gpu_stats:
+            stats = cls._gpu_stats[device_str]
+            reuse_rate = (stats["reuse_count"] / stats["call_count"] * 100) if stats["call_count"] > 0 else 0
+            total_mb = stats["total_bytes"] / (1024 * 1024)
+            logger.info(
+                f"[PerBlockMXBufferReuseObserver Stats - {device_str}] "
+                f"Calls: {stats['call_count']}, "
+                f"Buffer Reuses: {stats['reuse_count']} ({reuse_rate:.1f}%), "
+                f"Total Buffer Memory: {total_mb:.2f} MB"
+            )
+            if torch.cuda.is_available():
+                logger.info(torch.cuda.memory_summary(device=None, abbreviated=False))
+
+    def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
+        device_str = str(x_orig.device)
+        if device_str not in self._gpu_stats:
+            self._gpu_stats[device_str] = {"reuse_count": 0, "total_bytes": 0, "call_count": 0}
+        self._gpu_stats[device_str]["call_count"] += 1
+
+        shape_list = list(x_orig.shape)
+        shape_list[self.axis], shape_list[-1] = shape_list[-1], shape_list[self.axis]
+
+        flat_size = 1
+        for i in range(len(shape_list) - 1):
+            flat_size *= shape_list[i]
+        last_dim = shape_list[-1]
+
+        num_elem_to_be_padded = self.block_size - last_dim % self.block_size
+        if num_elem_to_be_padded == self.block_size:
+            num_elem_to_be_padded = 0
+        padded_last_dim = last_dim + num_elem_to_be_padded
+
+        num_blocks = padded_last_dim // self.block_size
+        block_shape = (flat_size, num_blocks, self.block_size)
+
+        block_numel = block_shape[0] * block_shape[1] * block_shape[2]
+        within_range = block_numel <= self.max_input_numel
+        if not within_range:
+            return super().forward(x_orig)
+
+        if not self._can_use_buffers(block_shape, x_orig.device):
+            self._allocate_buffers(block_shape, x_orig.device)
+        else:
+            self._gpu_stats[device_str]["reuse_count"] += 1
+
+        device_buffers = self._device_buffers[device_str]
+        block_work_view = device_buffers["block_x"][: block_shape[0], : block_shape[1], : block_shape[2]]
+        amax_view = device_buffers["amax"][: block_shape[0], : block_shape[1], :]
+
+        x_t = x_orig.transpose(self.axis, -1)
+        x_2d = x_t.reshape(-1, last_dim)
+
+        if num_elem_to_be_padded > 0:
+            block_x_2d = block_work_view.reshape(flat_size, padded_last_dim)
+            block_x_2d[:, :last_dim].copy_(x_2d)
+            block_x_2d[:, last_dim:].zero_()
+        else:
+            block_work_view.copy_(x_2d.reshape(block_shape))
+
+        torch.abs(block_work_view, out=block_work_view)
+        torch.amax(block_work_view, dim=-1, keepdim=True, out=amax_view)
+        amax = amax_view.squeeze(-1)
+
+        if x_orig.dtype != torch.float32:
+            amax = amax.to(x_orig.dtype)
+
+        if self.is_dynamic:
+            if self.amax.shape == amax.shape:
+                self.amax.copy_(amax)
+            else:
+                self.amax = amax.clone()
+        else:
+            if self.amax.shape != amax.shape and self.amax.dim() > 0:
+                self.amax = torch.tensor(0.0, dtype=torch.float32)
+            if self.amax.shape == amax.shape and self.amax.dim() > 0:
+                torch.maximum(self.amax, amax, out=self.amax)
+            else:
+                self.amax = torch.max(self.amax, amax)
+
+        if self.buffer_reuse_debug and self._gpu_stats[device_str]["call_count"] % 1000 == 1:
+            self._print_stats(x_orig.device)
+
+        return x_orig
 
 
 class PerBlockMXDiffsObserver(PerBlockMXObserver):
@@ -847,7 +1001,6 @@ class PerBlockBFPObserver(ObserverBase):
         self, qspec: QTensorConfig, device: torch.device | None = None, eps: float = torch.finfo(torch.float32).eps
     ) -> None:
         super().__init__(qspec=qspec, device=device)
-        self.qspec = qspec
         self.block_size = qspec.group_size
         self.axis = qspec.ch_axis
         self.eps = eps
@@ -904,7 +1057,6 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
     ) -> None:
         super().__init__(qspec, device)
 
-        self.qspec = qspec
         self.ch_axis = cast(int, qspec.ch_axis)
         self.group_size = cast(int, qspec.group_size)
         self.group_count = 1  # Set default value
@@ -965,13 +1117,32 @@ class PerGroupMinMaxObserver(UniformScalingObserver):
 
     def calculate_qparams(self, min_val: torch.Tensor, max_val: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Calculates the quantization parameters."""
-        if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2]:
+        if self.dtype in [Dtype.fp8_e4m3, Dtype.fp8_e5m2, Dtype.fp8_e5m3]:
             _scale, _zero_point = super().calculate_fp8_quant_parameters(min_val, max_val)
         else:
             _scale, _zero_point = super().calculate_int_quant_params(min_val, max_val)
         _scale = _scale.reshape(-1, self.group_count)
         _zero_point = _zero_point.reshape(-1, self.group_count)
         return _scale, _zero_point
+
+
+class PerBlock2DMinMaxObserver(UniformScalingObserver):
+    """Placeholder observer for 2D per-block quantization (e.g. FP8 per_block with block_size=[128, 128]).
+
+    Currently Quark does not perform per_block calibration on tensors at runtime.
+    This class exists so that ``QTensorConfig`` with ``qscheme=per_block`` can reference
+    a valid observer_cls (used during export config generation for pre-quantized layers).
+
+    If per_block calibration is needed in the future, implement ``forward()`` to divide
+    the input into 2D blocks of shape ``(block_size[0], block_size[1])`` and compute
+    per-block min/max statistics.
+    """
+
+    def forward(self, x_orig: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(
+            "PerBlock2DMinMaxObserver does not support calibration yet. "
+            "It is currently only used as a config placeholder for pre-quantized layer export."
+        )
 
 
 class PerTensorHistogramObserver(UniformScalingObserver):
@@ -1005,14 +1176,26 @@ class PerTensorHistogramObserver(UniformScalingObserver):
                 x = x[torch.where(x != 0)]
 
             assert isinstance(x, torch.Tensor)
+            # safe_max/safe_min guard against the all-zero + skip_zeros path where
+            # x is empty; without them .max()/.min() would raise RuntimeError.
             if self.symmetric is not None and self.symmetric is False:
-                x_max = x.max().item()
-                x_min = x.min().item()
+                x_max = safe_max(x)
+                x_min = safe_min(x)
             else:
-                if torch.min(x) < 0.0:
+                if x.numel() > 0 and torch.min(x) < 0.0:
                     x = x.abs()
-                x_max = x.max().item()
+                x_max = safe_max(x)
                 x_min = 0.0
+
+            # Constant-valued input (x_min == x_max) would make torch.histc /
+            # linspace degenerate. Nudge x_max enough that linspace produces
+            # strictly increasing bins in fp32 — the gap between consecutive
+            # fp32 values near |x_min| is |x_min| * eps_fp32, so the span must
+            # exceed num_bins * |x_min| * eps_fp32 to avoid bin collisions.
+            if x_min == x_max:
+                eps_fp32 = torch.finfo(torch.float32).eps
+                span = max(abs(x_min), 1.0) * self._num_bins * eps_fp32
+                x_max = x_min + max(span, torch.finfo(torch.float32).tiny)
 
             if self.calib_bin_edges.nelement() == 0 and self.calib_hist.nelement() == 0:
                 self.calib_hist = torch.histc(x, bins=self._num_bins, min=x_min, max=x_max)
@@ -1155,16 +1338,35 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
 
         # Calculate cumulative distribution function
         hist_total = histogram.sum()
+
+        # Empty / zero-mass histogram: no meaningful percentile exists. Return a
+        # zero range so downstream qparam calculation produces a degenerate but
+        # valid (zero-scale-handled) result rather than a low-level NaN crash.
+        if hist_total.item() <= 0:
+            logger.warning(
+                f"PerTensorPercentileObserver (id={hex(id(self))}) received an empty / zero-mass histogram; "
+                "returning a zero (min, max) range. This usually means the layer's activations were all "
+                "zero across the calibration set, which produces a degenerate quantization for this layer. "
+                "To locate the offending layer, run "
+                "`[n for n, m in model.named_modules() if id(m) == "
+                f"{id(self)}]` after calibration."
+            )
+            zero = torch.zeros(1, device=self.device)
+            return zero, zero
+
         cumulative_dist = torch.cumsum(histogram / hist_total, dim=0)
+        last_idx = cumulative_dist.numel() - 1
 
         if self.symmetric is not None and self.symmetric is False:
             target_pct_one_side = (100.0 - percentile) / 200.0
 
-            upper_idx = (cumulative_dist >= target_pct_one_side).nonzero().min().item()
+            upper_matches = (cumulative_dist >= target_pct_one_side).nonzero()
+            upper_idx = upper_matches.min().item() if upper_matches.numel() > 0 else last_idx
             assert isinstance(upper_idx, int), "Index must be an integer"
             max_value = bin_edges[upper_idx]
 
-            lower_idx = (cumulative_dist <= (1 - target_pct_one_side)).nonzero().min().item()
+            lower_matches = (cumulative_dist <= (1 - target_pct_one_side)).nonzero()
+            lower_idx = lower_matches.min().item() if lower_matches.numel() > 0 else 0
             assert isinstance(lower_idx, int), "Index must be an integer"
             min_value = bin_edges[lower_idx]
 
@@ -1174,7 +1376,8 @@ class PerTensorPercentileObserver(PerTensorHistogramObserver):
             assert isinstance(cumulative_dist_max, float)
             target_pct = min(target_pct, cumulative_dist_max)
 
-            upper_idx = (cumulative_dist >= target_pct).nonzero().min().item()
+            upper_matches = (cumulative_dist >= target_pct).nonzero()
+            upper_idx = upper_matches.min().item() if upper_matches.numel() > 0 else last_idx
             assert isinstance(upper_idx, int), "Index must be an integer"
             max_value = bin_edges[upper_idx]
 
@@ -1209,10 +1412,19 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
         counts = calib_hist
         edges = calib_bin_edges
 
+        # Need at least two edges to form a single bin center.
+        if edges.numel() < 2:
+            raise ValueError(f"calib_bin_edges must have at least 2 elements, got {edges.numel()}")
+
         counts = counts.to(self.device)
         edges = edges.to(self.device)
 
         centers = (edges[1:] + edges[:-1]) / 2
+
+        # Default start_bin (2045) targets the standard 2048-bin histogram. Clamp
+        # so the search loop always evaluates at least one center for smaller
+        # histograms instead of leaving ``mses`` empty for torch.stack.
+        effective_start_bin = min(start_bin, max(0, len(centers) - 1))
 
         mses = []
         arguments = []
@@ -1220,7 +1432,7 @@ class PerTensorMSEObserver(PerTensorHistogramObserver):
         min_value = torch.tensor(0, device="cpu")
         min_value = min_value.to(self.device)
 
-        for i in range(start_bin, len(centers), stride):
+        for i in range(effective_start_bin, len(centers), stride):
             amax = centers[i]
             if self.dtype in [Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8]:
                 quant_centers = self.int_fake_tensor_quant(centers, min_value, amax)

@@ -9,16 +9,17 @@
 # license information.
 # --------------------------------------------------------------------------
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.quantization.quant_utils import ExtendedQuantType
-from quark.onnx.utils.system_utils import Profiler, create_tmp_dir
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.onnx.utils.system_utils import create_tmp_dir
 
 from .calibrators import create_calibrator_float_scale, create_calibrator_power_of_two
 from .methods import LayerWiseMethod, PowerOfTwoMethod
@@ -71,6 +72,7 @@ def calibrate_model(
                 model_input,
                 op_types_to_calibrate,
                 augmented_model_path=Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
+                activation_type=activation_type,
                 calibrate_method=calibrate_method,
                 use_external_data_format=use_external_data_format,
                 execution_providers=execution_providers,
@@ -79,10 +81,8 @@ def calibrate_model(
         logger.info(
             f"Data collection of {calibrate_method} in progress. Runtime will depend on your model and data size."
         )
-        with Profiler(msg=[["", "", "calibration: collect data (onnx inference + numpy statistics)"]]):
-            calibrator.collect_data(calib_data_reader)
-        with Profiler(msg=[["", "", "calibration: compute data"]]):
-            tensors_range = calibrator.compute_data()
+        calibrator.collect_data(calib_data_reader)
+        tensors_range = calibrator.compute_data()
         del calibrator
 
         return tensors_range

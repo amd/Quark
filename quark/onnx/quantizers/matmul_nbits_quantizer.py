@@ -20,7 +20,7 @@ from onnxruntime.capi._pybind_state import quantize_matmul_4bits
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import attribute_to_kwarg
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 

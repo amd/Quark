@@ -1,8 +1,9 @@
 accelerate
-diffusers==0.31.0
-huggingface-hub==0.25.2
+diffusers
+DistVAE
+huggingface-hub
 open-clip-torch==2.7.0
 opencv-python-headless
-optimum[onnxruntime]
 scipy
 sentencepiece
+xfuser

@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CalibMethod, ModelQuantizer, QConfig, QLayerConfig, ScaleType, UInt8Spec, XInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array([[0.36239759, 0.55816052, 0.28596501, 0.2115006]]).astype(np.float32)
 golden_output = np.array([[27.0, 15.5, 15.0, 19.0]]).astype(np.float32)
@@ -38,7 +38,7 @@ class DataReader(CalibrationDataReader):
 
 class MultiMulAddModel(nn.Module):
     def __init__(self):
-        super(MultiMulAddModel, self).__init__()
+        super().__init__()
         self.mul1 = nn.Linear(4, 4, bias=False)
         self.mul2 = nn.Linear(4, 4, bias=False)
         self.add = nn.Linear(4, 4, bias=False)

@@ -1,8 +1,9 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+import copy
 from typing import Any
 
 import onnx
@@ -10,13 +11,13 @@ from onnx import NodeProto
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantFormat
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.calibration.methods import ExtendedCalibrationMethod, LayerWiseMethod, PowerOfTwoMethod
 from quark.onnx.quantization.quant_utils import (
     ExtendedQuantFormat,
     get_all_target_nodes,
     recursive_update,
 )
-from quark.shares.utils.log import ScreenLogger
 
 from .config import QConfig
 from .data_type import DataType, Int8, UInt8
@@ -35,7 +36,6 @@ from .spec import (
     QTensorConfig,
     QuantGranularity,
     ScaleType,
-    XInt8Spec,
 )
 
 logger = ScreenLogger(__name__)
@@ -59,7 +59,6 @@ QCONFIG_ALL_PARAMS = {
     "CryptoMode",
     "PrintSummary",
     "IgnoreWarnings",
-    "LogSeverityLevel",
     "ActivationScaled",
     "WeightScaled",
     "QuantizeFP16",
@@ -75,6 +74,7 @@ QCONFIG_ALL_PARAMS = {
     "MatMulConstBOnly",
     "AddQDQPairToWeight",
     "OpTypesToExcludeOutputQuantization",
+    "NodesToExcludeOutputQuantization",
     "DedicatedQDQPair",
     "QDQOpTypePerChannelSupportToAxis",
     "CalibTensorRangeSymmetric",
@@ -82,8 +82,8 @@ QCONFIG_ALL_PARAMS = {
     "CalibMovingAverageConstant",
     "Percentile",
     "LWPMetric",
-    "ActivationBitWidth",
     "PercentileCandidates",
+    "CalibOptimizeDisk",
     "UseRandomData",
     "RandomDataReaderInputShape",
     "RandomDataReaderInputDataRange",
@@ -122,6 +122,7 @@ QCONFIG_ALL_PARAMS = {
     "AlignTranspose",
     "AlignReshape",
     "AdjustBiasScale",
+    "SaveAndRestore",
     "TensorsRangeFile",
     "ReplaceClip6Relu",
     "CopySharedInit",
@@ -134,10 +135,12 @@ QCONFIG_ALL_PARAMS = {
     "RemoveQDQMulAdd",
     "RemoveQDQBetweenOps",
     "RemoveQDQInstanceNorm",
+    "RemoveFusedQDQ",
     "FoldBatchNorm",
     "BF16WithClip",
     "BF16QDQToCast",
     "FixShapes",
+    "FillAllValueInfo",
     "FoldRelu",
     "CalibDataSize",
     "CalibOptimizeMem",
@@ -152,9 +155,15 @@ QCONFIG_ALL_PARAMS = {
     "EvalMetrics",
     "EvalDataReader",
     "TmpDir",
+    "UserCustomOpLibPath",
+    "TensorQuantOverrides",
     "EncryptionAlgorithm",
     "WeightCalibrateMethod",
     "MinMSEModeFloatScale",
+    "CalibPassthroughOpTypes",
+    "BFPAttributes",
+    "MXAttributes",
+    "EnableDualQuantNodePairs",
 }
 
 
@@ -264,31 +273,31 @@ def _check_qlayer_config(qlayer_config: QLayerConfig) -> None:
 def _map_mx_config(
     input_tensors_instance: QTensorConfig, weight_instance: QTensorConfig, extra_options: dict[str, Any]
 ) -> dict[str, Any]:
-    if type(input_tensors_instance) == MX4Spec and type(weight_instance) == MX4Spec:
+    if type(input_tensors_instance) is MX4Spec and type(weight_instance) is MX4Spec:
         if "BFPAttributes" not in extra_options:
             extra_options["BFPAttributes"] = {**DEFAULT_MICROEXPONENTS_PARAMS, "bit_width": 11}
-    if type(input_tensors_instance) == MX6Spec and type(weight_instance) == MX6Spec:
+    if type(input_tensors_instance) is MX6Spec and type(weight_instance) is MX6Spec:
         if "BFPAttributes" not in extra_options:
             extra_options["BFPAttributes"] = {**DEFAULT_MICROEXPONENTS_PARAMS, "bit_width": 13}
-    if type(input_tensors_instance) == MX9Spec and type(weight_instance) == MX9Spec:
+    if type(input_tensors_instance) is MX9Spec and type(weight_instance) is MX9Spec:
         if "BFPAttributes" not in extra_options:
             extra_options["BFPAttributes"] = {**DEFAULT_MICROEXPONENTS_PARAMS, "bit_width": 16}
-    if type(input_tensors_instance) == MXFP4E2M1Spec and type(weight_instance) == MXFP4E2M1Spec:
+    if type(input_tensors_instance) is MXFP4E2M1Spec and type(weight_instance) is MXFP4E2M1Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "fp4_e2m1"}
-    if type(input_tensors_instance) == MXFP6E3M2Spec and type(weight_instance) == MXFP6E3M2Spec:
+    if type(input_tensors_instance) is MXFP6E3M2Spec and type(weight_instance) is MXFP6E3M2Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "fp6_e3m2"}
-    if type(input_tensors_instance) == MXFP6E2M3Spec and type(weight_instance) == MXFP6E2M3Spec:
+    if type(input_tensors_instance) is MXFP6E2M3Spec and type(weight_instance) is MXFP6E2M3Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "fp6_e2m3"}
-    if type(input_tensors_instance) == MXFP8E5M2Spec and type(weight_instance) == MXFP8E5M2Spec:
+    if type(input_tensors_instance) is MXFP8E5M2Spec and type(weight_instance) is MXFP8E5M2Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "fp8_e5m2"}
-    if type(input_tensors_instance) == MXFP8E4M3Spec and type(weight_instance) == MXFP8E4M3Spec:
+    if type(input_tensors_instance) is MXFP8E4M3Spec and type(weight_instance) is MXFP8E4M3Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "fp8_e4m3"}
-    if type(input_tensors_instance) == MXInt8Spec and type(weight_instance) == MXInt8Spec:
+    if type(input_tensors_instance) is MXInt8Spec and type(weight_instance) is MXInt8Spec:
         if "MXAttributes" not in extra_options:
             extra_options["MXAttributes"] = {**DEFAULT_MICROSCALING_PARAMS, "element_dtype": "int8"}
     return extra_options
@@ -432,34 +441,66 @@ def _map_layer_type_config(
     return tensor_quant_config_dict, nodes_to_exclude
 
 
-def _map_mixed_precision_tensors(extra_options: dict[str, Any]) -> None:
+def _get_mixed_precision_nodes(
+    specific_layer_config: dict[QLayerConfig, list[str]] | None,
+    layer_type_config: dict[QLayerConfig | None, list[str]] | None,
+    model_input: str | onnx.ModelProto,
+) -> list[str]:
+    """
+    Return ONNX node names that use mixed precision from ``specific_layer_config``
+    and ``layer_type_config``.
+
+    :param specific_layer_config: Per-layer name patterns to quantization configs, or ``None``.
+    :param layer_type_config: Per operator-type overrides; ``None`` keys are ignored here.
+    :param model_input: Path to the ONNX model file or ONNX model object.
+    :return: Sorted list of unique node names.
+    """
+    layer_configs = specific_layer_config or {}
+    type_configs = layer_type_config or {}
+    if not layer_configs and not type_configs:
+        return []
+
+    model = onnx.load(model_input) if isinstance(model_input, str) else model_input
+
+    node_names: set[str] = set()
+
+    for _, layer_list in layer_configs.items():
+        node_names.update(get_all_target_nodes(model, layer_list))
+
+    for qlayer_config, op_types in type_configs.items():
+        if qlayer_config is None:
+            continue
+        for node in model.graph.node:
+            if node.op_type in op_types:
+                node_name = node.name or node.op_type
+                node_names.add(node_name)
+
+    return sorted(node_names)
+
+
+def _map_mixed_precision_tensors(mixed_precision_tensors: dict[Any, list[str]]) -> dict[str, list[dict[str, Any]]]:
     """
     Map the legacy format 'MixedPrecisionTensor' to 'TensorQuantOverrides'.
 
-    :param Dict[str, Any] extra_options: Extra options for quantization.
-
+    :param dict[Any, list[str]] mixed_precision_tensors: Mixed precision tensors to be mapped.
+    :return: A tensor-level quantization configuration dictionary, where keys are tensor
+        names and values are lists of dictionaries specifying quantization type and other options.
     """
-    if extra_options.get("MixedPrecisionTensor") is None:
-        return None
-
     logger.warning(
-        "The option 'MixedPrecisionTensor' will be deprecated in future versions, "
+        "The option 'MixedPrecisionTensor' and 'SpecificTensorPrecision' will be deprecated in future versions, "
         "please use 'TensorQuantOverrides' instead."
     )
 
-    if extra_options.get("TensorQuantOverrides") is None:
-        extra_options["TensorQuantOverrides"] = {}
+    tensor_quant_overrides: dict[str, list[dict[str, Any]]] = dict()
 
-    for k, v in extra_options["MixedPrecisionTensor"].items():
+    if not mixed_precision_tensors:
+        return tensor_quant_overrides
+
+    for k, v in mixed_precision_tensors.items():
         for tensor_name in v:
-            if tensor_name in extra_options["TensorQuantOverrides"]:
-                for override in extra_options["TensorQuantOverrides"][tensor_name]:
-                    assert isinstance(override, dict), f"The {override} should be a dict."
-                    override["quant_type"] = k
-            else:
-                extra_options["TensorQuantOverrides"][tensor_name] = [{"quant_type": k}]
+            tensor_quant_overrides[tensor_name] = [{"quant_type": k}]
 
-    extra_options.pop("MixedPrecisionTensor")
+    return tensor_quant_overrides
 
 
 # TODO: The _map_activation_calibration_method function is meant to map the new calibration method to the old one and to maintain compatibility between them. In the future, both this mapping function and the old calibration method will be removed.
@@ -585,7 +626,7 @@ def _map_q_config(q_config: QConfig, model_input: str) -> dict[str, Any]:
             if isinstance(tmp, tuple):
                 mapping["subgraphs_to_exclude"].append(tmp)
     mapping["use_external_data_format"] = q_config.use_external_data_format
-    mapping["extra_options"] = q_config.extra_options
+    mapping["extra_options"] = copy.deepcopy(q_config.extra_options)
     if (
         input_tensors_instance.scale_type == ScaleType.PowerOf2
         and input_tensors_instance.calibration_method != weight_instance.calibration_method
@@ -604,27 +645,37 @@ def _map_q_config(q_config: QConfig, model_input: str) -> dict[str, Any]:
         )
     mapping["extra_options"]["ActivationSymmetric"] = input_tensors_instance.symmetric
     mapping["extra_options"]["WeightSymmetric"] = weight_instance.symmetric
-    if "TensorQuantOverrides" in q_config.extra_options:
-        mapping["extra_options"]["TensorQuantOverrides"] = q_config.extra_options["TensorQuantOverrides"]
-    else:
-        mapping["extra_options"]["TensorQuantOverrides"] = dict()
-    recursive_update(
-        mapping["extra_options"]["TensorQuantOverrides"],
-        _map_specific_layer_config(q_config.specific_layer_config, model_input),
-    )
+    # Initialize a new TensorQuantOverrides dictionary to gather the tensor quantization overrides
+    # from mixed precision related parameters and options.
+    mapping["extra_options"]["TensorQuantOverrides"] = dict()
+    mapping["extra_options"]["SpecificTensorPrecision"] = False
+    if "MixedPrecisionTensor" in q_config.extra_options and q_config.extra_options.get(
+        "SpecificTensorPrecision", False
+    ):
+        recursive_update(
+            mapping["extra_options"]["TensorQuantOverrides"],
+            _map_mixed_precision_tensors(q_config.extra_options["MixedPrecisionTensor"]),
+        )
     recursive_update(
         mapping["extra_options"]["TensorQuantOverrides"],
         _map_layer_type_config(q_config.layer_type_config, model_input)[0],
     )
-    if "MixedPrecisionTensor" in q_config.extra_options:
-        mapping["extra_options"]["MixedPrecisionTensor"] = q_config.extra_options["MixedPrecisionTensor"]
+    recursive_update(
+        mapping["extra_options"]["TensorQuantOverrides"],
+        _map_specific_layer_config(q_config.specific_layer_config, model_input),
+    )
+    if "TensorQuantOverrides" in q_config.extra_options:
+        recursive_update(
+            mapping["extra_options"]["TensorQuantOverrides"],
+            q_config.extra_options["TensorQuantOverrides"],
+        )
+    if "NodesWithMixedPrecision" in q_config.extra_options:
+        # This option is for internal use only, here we just prepare for the debug purpose.
+        mapping["extra_options"]["NodesWithMixedPrecision"] = q_config.extra_options["NodesWithMixedPrecision"]
     else:
-        mapping["extra_options"]["MixedPrecisionTensor"] = dict()
-    if len(mapping["extra_options"]["MixedPrecisionTensor"]) > 0:
-        mapping["extra_options"]["SpecificTensorPrecision"] = True
-        _map_mixed_precision_tensors(mapping["extra_options"])
-    else:
-        mapping["extra_options"]["SpecificTensorPrecision"] = False
+        mapping["extra_options"]["NodesWithMixedPrecision"] = _get_mixed_precision_nodes(
+            q_config.specific_layer_config, q_config.layer_type_config, model_input
+        )
     mapping["nodes_to_exclude"] += _map_layer_type_config(q_config.layer_type_config, model_input)[1]  # type: ignore
     if "InputNodes" in q_config.extra_options:
         mapping["extra_options"]["InputNodes"] = q_config.extra_options["InputNodes"]
@@ -677,7 +728,7 @@ def _map_q_config(q_config: QConfig, model_input: str) -> dict[str, Any]:
     if "EnableNPUCnn" in q_config.extra_options:
         mapping["extra_options"]["EnableNPUCnn"] = q_config.extra_options["EnableNPUCnn"]
     else:
-        if type(input_tensors_instance) == XInt8Spec and type(weight_instance) == XInt8Spec:
+        if input_tensors_instance.scale_type == ScaleType.PowerOf2 and weight_instance.scale_type == ScaleType.PowerOf2:
             mapping["extra_options"]["EnableNPUCnn"] = True
         else:
             mapping["extra_options"]["EnableNPUCnn"] = False

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,7 +12,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import AlgoConfig, AWQConfig, QConfig
 
 logger = ScreenLogger(__name__)
@@ -80,7 +80,7 @@ def add_auto_config(
             item["module2inspect"] = re.split(r"\.\d+\.", item["module2inspect"], maxsplit=1)[-1]
             item["layers"] = [re.split(r"\.\d+\.", layer, maxsplit=1)[-1] for layer in item["layers"]]
             item["layers"].sort()
-            scaling_layers_set.add(tuple([item["prev_op"], item["module2inspect"], *item["layers"]]))
+            scaling_layers_set.add((item["prev_op"], item["module2inspect"], *item["layers"]))  # pragma: no cover
         awq_config["scaling_layers"] = [
             {"prev_op": item[0], "inp": item[2], "module2inspect": item[1], "layers": list(item[2:])}
             for item in scaling_layers_set
@@ -111,7 +111,7 @@ class EasyGraph:
     @staticmethod
     def find_nearest_module_name(node: torch.fx.node.Node) -> str:
         module_info: str = ""
-        if "nn_module_stack" in node.meta:
+        if "nn_module_stack" in node.meta and node.meta["nn_module_stack"]:
             name_info = [value for _, value in node.meta["nn_module_stack"].items()][-1][0]
             module_info = name_info.replace("L['self'].", "")
 
@@ -218,7 +218,7 @@ class EasyGraph:
             tmp_node = node_stack.pop()
             if tmp_node.op == "output":
                 continue
-            node_type = [x for x in tmp_node.meta["source_fn_stack"]][-1][-1]
+            node_type = list(tmp_node.meta["source_fn_stack"])[-1][-1]
             if any(keyword is node_type for keyword in CONST_PARAM_SOURCE_FN):
                 continue
             if any(str(keyword) in str(node_type) for keyword in linear_node_list):
@@ -236,7 +236,7 @@ class EasyGraph:
 
     def get_module_name_by_node(self, node: torch.fx.node.Node) -> Any:
         if "source_fn_stack" in node.meta:
-            module_info = [x for x in node.meta["source_fn_stack"]]
+            module_info = list(node.meta["source_fn_stack"])
             node_name = module_info[-1][0]
             if node_name in self.parameters_convert:
                 return self.parameters_convert[node_name]
@@ -253,7 +253,7 @@ class EasyGraph:
     def find_nn_linear(self) -> None:
         for node in self.gm.graph.nodes:
             if "source_fn_stack" in node.meta:
-                module_info = [x for x in node.meta["source_fn_stack"]]
+                module_info = list(node.meta["source_fn_stack"])
                 if module_info[-1][-1] is torch.nn.Linear or module_info[-1][-1] == torch.nn.functional.linear:
                     args_name_list = node.args
                     module_name = self.get_module_name_by_node(node)
@@ -268,7 +268,7 @@ class EasyGraph:
                 prefix_model.append(module_name)
                 if len(node.args) == 0:
                     # const parameters
-                    parent_node = [k for k in node.users][0]
+                    parent_node = list(node.users)[0]
                     for node_args in parent_node.args:
                         if isinstance(node_args, torch.fx.node.Node):
                             if node_args is not node:
@@ -353,7 +353,7 @@ class EasyGraph:
         if self._is_weight_node(node):
             return self._add_pair_list(node, prefix_model)
 
-        node_type = [x for x in node.meta["source_fn_stack"]][-1][-1]
+        node_type = list(node.meta["source_fn_stack"])[-1][-1]
 
         if self.is_node_source_matching_target(node, MODULES_WITH_CONST_PARAM) and self._is_target_type(
             node_type, CONST_PARAM_SOURCE_FN
@@ -392,8 +392,10 @@ class EasyGraph:
                 else:
                     sub_node.bfs_flag = node.bfs_flag  # type: ignore[attr-defined]
                 node_list.insert(0, sub_node)
-        logger.info("no common node")
-        raise RuntimeError()
+        raise RuntimeError(
+            "Could not find a common descendant node for the specified layers. "
+            "This may indicate that the model graph structure is not compatible with the auto-config algorithm."
+        )
 
     def generate_module2inspect(self, parameterized_pair_dict: dict[str, Any]) -> None:
         self.module_name2node = {}

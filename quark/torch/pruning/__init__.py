@@ -1,8 +1,8 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from quark.torch.pruning.config import Config, LayerImportancePruneConfig, OSSCARConfig
+from quark.torch.pruning.config import LayerImportancePruneConfig, OSSCARConfig, PConfig
 
-__all__ = ["Config", "OSSCARConfig", "LayerImportancePruneConfig"]
+__all__ = ["PConfig", "OSSCARConfig", "LayerImportancePruneConfig"]

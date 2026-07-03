@@ -163,7 +163,7 @@ class NpyDataReader(BasicDataReader):
 def get_pileval(
     tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, device: str | None, seed: int = 0
 ) -> list[dict[str, torch.Tensor]]:
-    dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation", cache_dir="data_cache")
+    dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
     dataset = dataset.shuffle(seed=seed)
     samples = []
     n_run = 0
@@ -194,7 +194,7 @@ def get_pileval(
 def get_wikitext2(
     tokenizer: PreTrainedTokenizer, nsamples: int, seqlen: int, device: str | None, seed: int = 0
 ) -> list[dict[str, torch.Tensor]]:
-    traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
+    traindata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
     trainenc = tokenizer("\n\n".join(traindata["text"]), return_tensors="pt")
     trainenc = trainenc.to(device)
 
@@ -244,13 +244,13 @@ def get_calib_dataloader_to_tensor(
     device: str | None = None,
 ) -> DataLoader[torch.Tensor]:
     if dataset_name == "pileval":
-        dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation", cache_dir="data_cache")
+        dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
         text_data = dataset["text"][:num_calib_data]
-    elif dataset_name == "cnn_dailymail":
-        dataset = load_dataset("cnn_dailymail", name="3.0.0", split="train", cache_dir="data_cache")
+    elif dataset_name in ("cnn_dailymail", "abisee/cnn_dailymail"):
+        dataset = load_dataset("abisee/cnn_dailymail", name="3.0.0", split="train")
         text_data = dataset["article"][:num_calib_data]
-    elif dataset_name == "wikitext":
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir="data_cache")
+    elif dataset_name in ("wikitext", "Salesforce/wikitext"):
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
         text_data = dataset["text"][:num_calib_data]
     else:
         raise NotImplementedError

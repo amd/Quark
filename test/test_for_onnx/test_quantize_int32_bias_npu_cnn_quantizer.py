@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer, PowerOfTwoMethod, QuantFormat, QuantizationConfig, QuantType
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
     [
@@ -96,7 +96,7 @@ class DataReader(CalibrationDataReader):
 
 class Int32BiasNpuCnnQuantizerModel(nn.Module):
     def __init__(self):
-        super(Int32BiasNpuCnnQuantizerModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(8, 16, kernel_size=3, stride=1, padding=1)
         self.conv3 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)

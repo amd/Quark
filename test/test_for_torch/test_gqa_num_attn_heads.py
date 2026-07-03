@@ -9,8 +9,8 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, Llama4Config, Llama4ForConditionalGeneration
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization import (
     Int8PerTensorSpec,

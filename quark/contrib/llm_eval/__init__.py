@@ -9,6 +9,7 @@ from .evaluation import (
     mlperf_rouge_eval,
     ppl_eval,
     ppl_eval_for_kv_cache,
+    ppl_eval_with_synthetic_dataset,
     rouge_eval,
     rouge_meteor_generations,
     task_eval,
@@ -23,6 +24,7 @@ __all__ = [
     "mlperf_rouge_eval",
     "ppl_eval",
     "ppl_eval_for_kv_cache",
+    "ppl_eval_with_synthetic_dataset",
     "rouge_eval",
     "rouge_meteor_generations",
 ]

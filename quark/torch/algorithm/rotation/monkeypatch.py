@@ -12,7 +12,8 @@
 import copy
 import functools
 import types
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch.nn as nn
 

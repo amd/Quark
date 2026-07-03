@@ -10,8 +10,8 @@ import onnxruntime as ort
 import torch
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, QuantGranularity, UInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -68,7 +68,7 @@ output_tensor = np.array(
 # In order to cover all the op types we supported, we create a customized model here
 class CustomModel(torch.nn.Module):
     def __init__(self, in_channels=3, out_channels=4, kernel_size=3, matmul_dim=4, layernorm_dim=4):
-        super(CustomModel, self).__init__()
+        super().__init__()
 
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=kernel_size // 2)
         self.matmul_weight = torch.nn.Parameter(torch.randn(matmul_dim, matmul_dim))

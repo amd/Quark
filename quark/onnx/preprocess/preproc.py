@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,6 +11,8 @@ import onnx
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.algorithm import apply_pre_quant_algorithms
 from quark.onnx.calibration import CachedDataReader
 from quark.onnx.optimizations import optimize_model, optimize_model_using_onnxrt, optimize_model_using_onnxslim
@@ -25,8 +27,6 @@ from quark.onnx.tools.fix_shapes import fix_input_and_output_shapes, infer_all_t
 from quark.onnx.tools.float16 import convert_float16_to_float
 from quark.onnx.utils.model_utils import convert_nchw_to_nhwc as convert_func
 from quark.onnx.utils.model_utils import save_onnx_model_with_external_data
-from quark.onnx.utils.system_utils import Profiler
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -302,7 +302,7 @@ def apply_pre_optimization_after_algo(
 
 
 @log_errors
-@Profiler(msg=[["pre process"]])
+@profile_scope(ProfileStep.PRE_PROCESS)
 def apply_pre_process(
     float_model: onnx.ModelProto,
     model_path: Path,

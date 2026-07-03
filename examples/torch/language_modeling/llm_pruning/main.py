@@ -8,7 +8,8 @@ import json
 import os
 import sys
 
-from quark.torch.pruning.config import BlockwiseTuningConfig, Config, OSSCARConfig
+from quark.torch.algorithm.config import BlockwiseTuningConfig
+from quark.torch.pruning.config import OSSCARConfig, PConfig
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -16,7 +17,7 @@ from quark.contrib.llm_eval import eval_model
 from quark.torch.utils.llm import get_calib_dataloader, get_model, get_tokenizer, save_model, set_seed
 
 
-def get_config(args: argparse.Namespace, model_type: str) -> Config:
+def get_config(args: argparse.Namespace, model_type: str) -> PConfig:
     if args.pruning_algo == "osscar":
         algo_config_file = "models/" + model_type + "/osscar_config.json"
         with open(algo_config_file) as file:
@@ -33,7 +34,7 @@ def get_config(args: argparse.Namespace, model_type: str) -> Config:
     else:
         pruning_algo_config = None
 
-    pruning_config = Config(algo_config=pruning_algo_config, blockwise_tuning_config=blockwise_tuning_config)
+    pruning_config = PConfig(algo_config=pruning_algo_config, blockwise_tuning_config=blockwise_tuning_config)
 
     if args.pruning_algo is not None and model_type is None:
         raise ValueError(f"{args.pruning_algo} is not tested for current model")

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,6 +11,8 @@ import onnxruntime
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
+from quark.common.utils.import_utils import _is_package_available
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.calibration import Int16Method, LayerWiseMethod, PowerOfTwoMethod
 from quark.onnx.quantization.quant_utils import (
     DEQUANT_OP_TYPES,
@@ -20,8 +22,6 @@ from quark.onnx.quantization.quant_utils import (
     ExtendedQuantType,
     is_version_below,
 )
-from quark.shares.utils.import_utils import _is_package_available
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -119,11 +119,17 @@ def check_fast_fintune_arguments(
 
     if weight_type in [ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16]:
         if "AddQDQPairToWeight" in extra_options and not extra_options["AddQDQPairToWeight"]:
-            logger.warning("Fast finetune requires not to fold QuantizeLinear for weights.")
+            logger.warning(
+                "Fast finetune requires not to fold QuantizeLinear for weights. "
+                "AddQDQPairToWeight has been changed to True."
+            )
         extra_options["AddQDQPairToWeight"] = True
     else:
         if "AddQDQPairToWeight" in extra_options and extra_options["AddQDQPairToWeight"]:
-            logger.warning("Fast finetune requires folding QuantizeLinear for weights.")
+            logger.warning(
+                "Fast finetune requires folding QuantizeLinear for weights. "
+                "AddQDQPairToWeight has been changed to False."
+            )
         extra_options["AddQDQPairToWeight"] = False
 
 

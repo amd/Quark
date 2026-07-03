@@ -7,9 +7,10 @@ import unittest
 
 import numpy as np
 import onnxruntime
+from onnx_testing_utils import prepare_model
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod, get_library_path
 from quark.onnx.quantization.config.custom_config import (
     A8W8_CONFIG,
@@ -67,7 +68,6 @@ from quark.onnx.quantization.config.custom_config import (
     XINT8_ADAROUND_CONFIG,
     XINT8_CONFIG,
 )
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [

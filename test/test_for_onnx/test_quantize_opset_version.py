@@ -13,9 +13,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import INT8_TRANSFORMER_DEFAULT_CONFIG, XINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
     [
@@ -84,7 +84,7 @@ class DataReader(CalibrationDataReader):
 
 class PatchEmbedding(nn.Module):
     def __init__(self, in_channels, patch_size, emb_size):
-        super(PatchEmbedding, self).__init__()
+        super().__init__()
         self.patch_size = patch_size
         self.projection = nn.Conv2d(in_channels, emb_size, kernel_size=patch_size, stride=patch_size)
 
@@ -97,7 +97,7 @@ class PatchEmbedding(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, emb_size, num_heads, mlp_dim, dropout=0.1):
-        super(TransformerBlock, self).__init__()
+        super().__init__()
         self.norm1 = nn.LayerNorm(emb_size)
         self.attn = nn.MultiheadAttention(emb_size, num_heads, dropout=dropout)
         self.norm2 = nn.LayerNorm(emb_size)
@@ -113,7 +113,7 @@ class TransformerBlock(nn.Module):
 
 class Fuse_Layer_Norm_Model(nn.Module):
     def __init__(self, img_size=4, patch_size=2, in_channels=3, emb_size=64, num_heads=4, mlp_dim=128, num_classes=10):
-        super(Fuse_Layer_Norm_Model, self).__init__()
+        super().__init__()
         self.patch_embedding = PatchEmbedding(in_channels, patch_size, emb_size)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, emb_size))
         self.pos_embedding = nn.Parameter(torch.zeros(1, (img_size // patch_size) ** 2 + 1, emb_size))
@@ -133,7 +133,7 @@ class Fuse_Layer_Norm_Model(nn.Module):
 
 class Fuse_Gelu_Model(nn.Module):
     def __init__(self):
-        super(Fuse_Gelu_Model, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(1, 1)
         self.gelu = nn.GELU()
 

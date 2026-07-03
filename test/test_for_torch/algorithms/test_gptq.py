@@ -3,9 +3,9 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import require_torch_higher_or_equal, torch_device
-from quark.testing.common_utils import skip_if_no_gpu
+from quark.common.utils.testing_utils import require_torch_higher_or_equal, skip_if_no_gpu, torch_device
 from quark.torch import ModelQuantizer
+from quark.torch.algorithm.gptq.gptq import _compute_hinv_cholesky_factor
 from quark.torch.quantization import Uint4PerChannelSpec
 from quark.torch.quantization.config.config import (
     GPTQConfig,
@@ -15,6 +15,50 @@ from quark.torch.quantization.config.config import (
     Uint4PerGroupSpec,
 )
 from quark.torch.utils import getattr_recursive, setattr_recursive
+
+
+def test_gptq_hinv_cholesky_factor_matches_original_path_for_spd_hessian():
+    H = torch.tensor([[2.0, 0.5], [0.5, 1.5]], dtype=torch.float32)
+    damp = torch.tensor(0.01, dtype=H.dtype)
+
+    expected = H.clone()
+    diag = torch.arange(expected.shape[0], device=expected.device)
+    expected[diag, diag] += damp
+    expected = torch.linalg.cholesky(expected)
+    expected = torch.cholesky_inverse(expected)
+    expected = torch.linalg.cholesky(expected, upper=True)
+
+    actual = _compute_hinv_cholesky_factor(H.clone(), damp)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_gptq_hinv_cholesky_factor_recovers_from_nearly_pd_hessian():
+    H = torch.tensor([[1.0, 1.0001], [1.0001, 1.0]], dtype=torch.float32)
+    damp = torch.tensor(1e-8, dtype=H.dtype)
+
+    Hinv = _compute_hinv_cholesky_factor(H, damp)
+
+    assert torch.isfinite(Hinv).all()
+    assert Hinv.shape == H.shape
+
+
+def test_gptq_hinv_cholesky_factor_reraises_linalg_error_after_retry_exhaustion(monkeypatch: pytest.MonkeyPatch):
+    H = torch.eye(2, dtype=torch.float32)
+    damp = torch.tensor(0.01, dtype=H.dtype)
+    attempts = 0
+
+    def always_fail(*args: object, **kwargs: object) -> torch.Tensor:
+        nonlocal attempts
+        attempts += 1
+        raise torch.linalg.LinAlgError("mock cholesky failure")
+
+    monkeypatch.setattr(torch.linalg, "cholesky", always_fail)
+
+    with pytest.raises(torch.linalg.LinAlgError, match="mock cholesky failure"):
+        _compute_hinv_cholesky_factor(H.clone(), damp)
+
+    assert attempts == 6
 
 
 # For torch requirement, refer to /pull/2529#issuecomment-235620

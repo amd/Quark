@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -32,7 +32,7 @@ from torch.distributed._tensor import Replicate, Shard
 from torch.distributed._tensor.placement_types import DTensorSpec
 from torch.onnx import errors, symbolic_helper
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.kernel import mx
 from quark.torch.kernel.hw_emulation.extensions import kernel_ext
 from quark.torch.kernel.hw_emulation.hw_emulation_interface import fake_quantize_int_per_channel_affine
@@ -335,7 +335,7 @@ class NonScaledFakeQuantizeFunction(Function):
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
-        return grad_outputs, None, None, None, None
+        return grad_outputs, None, None, None, None, None
 
     @staticmethod
     @symbolic_helper.parse_args("s", "v")
@@ -475,6 +475,7 @@ class DeQuantizeFunction(Function):
         axis: int | None,
         group_size: int | None,
         qscheme: str | None,
+        block_size: tuple[int, int] | None = None,
     ) -> torch.Tensor:
         # Default value setting
         zero_point = zero_point if zero_point is not None else torch.Tensor([])  # Set illegal value for zero_point
@@ -482,11 +483,15 @@ class DeQuantizeFunction(Function):
         group_size = group_size if group_size is not None else 1  # Set same default value as ONNX QuantLinear
         qscheme = qscheme if qscheme is not None else "None"
 
+        # For per_block quantization, use dedicated dequantize_fp8_per_block op
+        if qscheme == "per_block" and quant_dtype == "fp8_e4m3" and block_size is not None:
+            return ops.quark.dequantize_fp8_per_block(inputs, scale, block_size)
+
         return ops.quark.dequantize(quant_dtype, inputs, scale, zero_point, axis, group_size, qscheme)
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: torch.Tensor) -> Any:
-        return None, grad_outputs, None, None, None, None, None
+        return None, grad_outputs, None, None, None, None, None, None
 
 
 dequantize = DeQuantizeFunction.apply
@@ -565,7 +570,7 @@ class LSQQuantize(Function):
             dims = [i for i in range(x.dim()) if i != ch_axis]
         else:
             scaled_x = x / scale + zero_point
-            dims = [i for i in range(x.dim())]
+            dims = list(range(x.dim()))
 
         rounded_scaled_x = torch.round(scaled_x)
         is_lt_min = (rounded_scaled_x < quant_min).float()

@@ -1,17 +1,15 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import types
-from typing import Callable
+from collections.abc import Callable
 
 import torch.fx
 from torch.fx import Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QConfig
-
-# Graph
 from quark.torch.quantization.graph.optimization.model_optimization import (
     _apply_post_hw_powof2_constrain_passes,
     apply_post_calib_optimize_passes,
@@ -21,13 +19,11 @@ from quark.torch.quantization.graph.optimization.model_optimization import (
     trans_opsfunc_2_quant_module,
 )
 from quark.torch.quantization.graph.optimization.remove_dropout_node import RemoveDropoutNode
-from quark.torch.quantization.graph.processor.insert_quantizer import insert_quantizer
+from quark.torch.quantization.graph.processor.insert_quantizer import apply_layer_quant_config, insert_quantizer
 from quark.torch.quantization.graph.processor.processor_utils import OP_TO_ANNOTATOR, STATIC_OPS, propagate_annotation
 from quark.torch.quantization.graph.processor.tag_quant_node import mask_op_with_no_grad_no_quant, tag_quant_nodes
 from quark.torch.quantization.graph.torch_utils import QUANT_CONV_WITH_BN, allow_exported_model_train_eval
 
-# from torch.ao.quantization.pt2e.utils import _get_node_name_to_scope
-# from quark.torch.quantization.config.config import QLayerConfig
 logger = ScreenLogger(__name__)
 
 global_post_quant_hw_constrain_func: Callable[[torch.fx.GraphModule], torch.fx.GraphModule] = (
@@ -143,6 +139,9 @@ def prepare_quant_model(model: torch.fx.GraphModule, config: QConfig) -> torch.f
 
     # Insert operators input/output QDQ `call_module` nodes if necessary, using the previous meta annotation.
     model = insert_quantizer(model)
+
+    # Override quantizers for layers that match layer_quant_config (compare with global_quant_config; replace only when different).
+    apply_layer_quant_config(model, config)
 
     model.meta.update(original_graph_meta)
     return model

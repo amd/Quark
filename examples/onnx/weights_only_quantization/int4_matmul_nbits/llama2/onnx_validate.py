@@ -28,7 +28,7 @@ WEIGHTS_NAME = "pytorch_model.bin"
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, args, block_size=512):
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         text = ""
         for i in testdata:
             text += i["text"]
@@ -63,7 +63,7 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
     from torch.nn import CrossEntropyLoss
 
     # Loop to handle MNLI double evaluation (matched, mis-matched)
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     test_data = ""
     for i in testdata:
         test_data += i["text"]
@@ -199,7 +199,7 @@ def main():
             args.model_name_or_path, provider=provider, use_cache=True, use_io_binding=False
         )
         result = evaluate_onnx(args, model, tokenizer, prefix=prefix)
-        result = dict((k + f"_{global_step}", v) for k, v in result.items())
+        result = {k + f"_{global_step}": v for k, v in result.items()}
         results.update(result)
 
 

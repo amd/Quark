@@ -1,12 +1,13 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from enum import Enum
+from typing import Any
 
-from quark.shares.data_type import BaseDataType
-from quark.shares.utils.log import ScreenLogger
+from quark.common.data_type import BaseDataType
+from quark.common.utils.log import ScreenLogger
 
 from .data_type import (
     BFP16,
@@ -26,7 +27,9 @@ from .data_type import (
     UInt8,
     UInt16,
     UInt32,
+    parse_data_type,
 )
+from .utils import config_to_dict
 
 logger = ScreenLogger(__name__)
 
@@ -65,7 +68,36 @@ class QuantGranularity(Enum):
     Group = 2
 
 
-# TODO: Move QTensorConfig into the quark/shares
+ENUM_CLASS_MAP = {
+    "CalibMethod": CalibMethod,
+    "ScaleType": ScaleType,
+    "QuantGranularity": QuantGranularity,
+}
+
+
+def parse_enum(v: str) -> Any:
+    """
+    Parse a string representation of an enum into the corresponding
+    Enum member.
+
+    The expected format is "<EnumClass>.<MemberName>". If the string
+    does not match a known enum type, the original value is returned.
+
+    :param str v: String to be parsed.
+    :return: Enum member if parsing succeeds, otherwise the original value.
+    """
+    if not isinstance(v, str) or "." not in v:
+        return v
+
+    cls_name, member = v.split(".", 1)
+    enum_cls = ENUM_CLASS_MAP.get(cls_name)
+    if enum_cls is None:
+        return v  # not enum, return raw string
+
+    return getattr(enum_cls, member)
+
+
+# TODO: Move QTensorConfig into the quark/common
 class QTensorConfig:
     """
     Configuration for a quantized tensor.
@@ -110,6 +142,31 @@ class QTensorConfig:
     def set_data_type(self, data_type: BaseDataType) -> None:
         """Set the data type."""
         self.data_type = data_type
+
+    def to_dict(self) -> dict[str, Any]:
+        return config_to_dict(self)
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> Any:
+        """
+        Convert a dictionary into a QTensorConfig object.
+
+        Enum values and data types are parsed and normalized during
+        the conversion process.
+
+        :param dict[str, Any] d: Dictionary representation of a tensor config.
+        :return: Constructed QTensorConfig instance.
+        """
+
+        kwargs = {}
+        for k, v in d.items():
+            if k == "data_type":
+                kwargs[k] = parse_data_type(v)
+            elif isinstance(v, str) and "." in v:
+                kwargs[k] = parse_enum(v)
+            else:
+                kwargs[k] = v
+        return QTensorConfig(**kwargs)
 
 
 class Int8Spec(QTensorConfig):
@@ -400,11 +457,10 @@ class MXInt8Spec(QTensorConfig):
         super().__init__(symmetric, scale_type, calibration_method, quant_granularity, data_type)
 
 
-# TODO: Move QLayerConfig into the quark/shares
+# TODO: Move QLayerConfig into the quark/common
 class QLayerConfig:
     """
     Layer-level quantization configuration.
-
     :param QTensorConfig input_tensors: Quantization spec for input_tensors.
     :param QTensorConfig activation: Quantization spec for activations.
     :param QTensorConfig weight: Quantization spec for weights.
@@ -425,3 +481,22 @@ class QLayerConfig:
         self.weight = weight
         self.bias = bias
         self.output_tensors = output_tensors
+
+    def to_dict(self) -> dict[str, Any]:
+        return config_to_dict(self)
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> Any:
+        """
+        Convert a dictionary into a QLayerConfig object.
+        Tensor configurations for inputs, weights, bias, and outputs
+        are parsed if present.
+        :param dict[str, Any] d: Dictionary representation of a layer config.
+        :return: Constructed QLayerConfig instance.
+        """
+        return QLayerConfig(
+            input_tensors=QTensorConfig.from_dict(d["input_tensors"]) if "input_tensors" in d else None,
+            weight=QTensorConfig.from_dict(d["weight"]) if "weight" in d else None,
+            bias=QTensorConfig.from_dict(d["bias"]) if "bias" in d else None,
+            output_tensors=QTensorConfig.from_dict(d["output_tensors"]) if "output_tensors" in d else None,
+        )

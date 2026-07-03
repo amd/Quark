@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -16,6 +16,24 @@ def get_op_name(root_module: nn.Module, op: nn.Module) -> str:
         if submodule is op:
             return name  # type: ignore
     raise ValueError(f"Cannot find op {op} in module {root_module}")
+
+
+def infer_decoder_layers_path(model: nn.Module) -> str:
+    """Auto-detect the path to decoder layers (e.g., 'model.layers')."""
+    modulelist_paths = [name for name, module in model.named_modules() if isinstance(module, nn.ModuleList)]
+
+    # Keep only root-level ModuleList paths, filtering out nested ones.
+    # Example: ["model.layers", "model.layers.1.mlp.experts", ...] -> ["model.layers"]
+    def _filter_root_paths(paths: list[str]) -> list[str]:
+        sorted_paths = sorted({p for p in paths if p}, key=lambda s: (s.count("."), len(s), s))
+        roots: list[str] = []
+        for path in sorted_paths:
+            if not any(path == r or path.startswith(r + ".") for r in roots):
+                roots.append(path)
+        return roots
+
+    root_paths = _filter_root_paths(modulelist_paths)
+    return root_paths[0] if root_paths else ""
 
 
 def resolve_star(submodule_names: list[str] | str, model: nn.Module) -> list[str]:

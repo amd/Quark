@@ -21,9 +21,9 @@ from transformers.testing_utils import (
     require_torch_multi_gpu,
 )
 
-from quark.shares.utils.import_utils import is_transformers_version_higher_or_equal
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.api import _move_quantizer_to_dict
 from quark.torch.quantization.config.config import GPTQConfig, QConfig, QLayerConfig, QTensorConfig
@@ -175,7 +175,7 @@ def ppl_eval(model: nn.Module, testenc: AutoTokenizer, dev: str, file_format: st
         except ModuleNotFoundError:
             raise ImportError(
                 "Quark depends on ONNX Runtime GenAI. Please install ONNX Runtime GenAI by following the instructions at: https://onnxruntime.ai/docs/genai/howto/install"
-            )
+            ) from None
 
         params = og.GeneratorParams(model)
         params.try_graph_capture_with_max_batch_size(1)
@@ -236,7 +236,7 @@ def test_eval_tp(
     model.tensor_parallel(tp_mesh)
 
     logger.info("\n[TP-INFO]: Evaluating ...")
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_DIR,
         trust_remote_code=True,
@@ -268,7 +268,7 @@ def test_load_multi_device(working_dir: str, weight_format: str):
     )
     quant_config = QConfig(global_quant_config=INT8_PER_TENSOR_CONFIG)
 
-    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
     if working_dir is not None:
@@ -312,7 +312,7 @@ class TestTensorParallel(TestCasePlus):
                 result = subprocess.run(cmd, capture_output=True, env=self.get_env(), text=True, check=True)
                 logger.info(f"\n[TP-INFO]: Evaluating done: \n{result}")
             except subprocess.CalledProcessError as e:
-                raise Exception(f"The following error was captured: {e.stderr}")
+                raise Exception(f"The following error was captured: {e.stderr}") from e
 
         """
         # successful return here == success - any errors would have caused an error in the sub-call

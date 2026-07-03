@@ -17,7 +17,7 @@ For example, you can perform a typical interactive user installation of Minicond
 
    wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
    bash Miniforge3-$(uname)-$(uname -m).sh
-   conda create -y -n AMD_Quark python=3.12
+   conda create -y -n AMD_Quark python=3.13
    conda activate AMD_Quark
 
 You may then use ``pip`` to install Quark into your Python environment from PyPI, and all dependencies.
@@ -44,11 +44,11 @@ We will install Quark from PyPI, which will pull in required dependencies.
 
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-Next, if you are using the ONNX-to-ONNX flow in Quark, please install ONNX Runtime. We recommend using an ONNX Runtime version ≥ 1.20.1 and ≤ 1.22.2 for compatibility.
+Next, if you are using the ONNX-to-ONNX flow in Quark, please install ONNX Runtime. We recommend using an ONNX Runtime version ≥ 1.22.2 and ≤ 1.25.1 for compatibility.
 
 .. code-block:: bash
 
-   pip install "onnxruntime>=1.20.1,<=1.22.2"
+   pip install "onnxruntime>=1.22.2,<=1.25.1"
 
 Next, if you are using the OnnxRuntime Gen AI (OGA) Flow for LLM models, please install ONNX Runtime Gen AI.
 
@@ -78,7 +78,7 @@ The rest of this guide gives more specific installation instructions for:
 Install Python
 ^^^^^^^^^^^^^^
 
-Python 3.10, 3.11 or 3.12 is required. *Python 3.13 is not currently supported* by Quark's dependencies.
+Python 3.11, 3.12 or 3.13 is required. *Python 3.14 is not currently supported* by Quark's dependencies.
 
 On all platforms we recommend installing Python with an environment such as `Miniforge <https://github.com/conda-forge/miniforge>`_,
 which will simplify installation of dependencies.
@@ -93,7 +93,7 @@ and that you install the dependencies from the following subsections into that e
 
 .. code-block:: bash
 
-   conda create -n AMD_Quark python=3.12
+   conda create -n AMD_Quark python=3.13
    conda activate AMD_Quark
 
 Verify your Python version is one of those supported with:
@@ -102,7 +102,7 @@ Verify your Python version is one of those supported with:
 
    python --version
 
-You should see the version number returned e.g. ``Python 3.12.9``, which is fine.
+You should see the version number returned e.g. ``Python 3.13.0``, which is fine.
 
 If you are using an conda-based environment, such as Miniforge,
 we recommend that you install the following dependencies with ``pip install``.
@@ -133,19 +133,19 @@ Linux
 """""
 .. note::
 
-   The commands below assume **ROCm 6.4**, but for a different ROCm version or further options, consult the `PyTorch <https://pytorch.org/get-started/locally/>`__ install guide.
+   The commands below assume **ROCm 7.1**, but for a different ROCm version or further options, consult the `PyTorch <https://pytorch.org/get-started/locally/>`__ install guide.
 
-To install **PyTorch with ROCm** 6.4 GPU support, in a Python environment using ``pip``:
-
-.. code-block:: bash
-
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
-
-To install **PyTorch with CUDA** 12.6 GPU support:
+To install **PyTorch with ROCm** 7.1 GPU support, in a Python environment using ``pip``:
 
 .. code-block:: bash
 
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.1
+
+To install **PyTorch with CUDA** 13.0 GPU support:
+
+.. code-block:: bash
+
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
 If neither of these combinations is available on your system, you may install without GPU support:
 
@@ -157,14 +157,14 @@ If neither of these combinations is available on your system, you may install wi
 Install ONNX Runtime
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-ONNX Runtime version >=1.20.1 and <=1.22.2 is required.
+ONNX Runtime version >=1.22.2 and <=1.25.1 is required.
 
 Windows
 """""""
 .. note::
    ROCm support on Windows is under active development and will be made available in a future release.
 
-To install **ONNX Runtime with CUDA** 12.X GPU support, in a Python environment using ``pip``:
+To install **ONNX Runtime with CUDA** 13.X GPU support, in a Python environment using ``pip``:
 
 .. code-block:: bash
 
@@ -181,15 +181,15 @@ Linux
 """""
 .. note::
 
-   The commands below assume **ROCm 6.4.4**, but for a different ROCm version or further options, consult the `ONNX Runtime <https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-rocm>`__ install guide.
+   The commands below assume **CPU**, but for a different accelerator or further options, consult the `ONNX Runtime <https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-rocm>`__ install guide.
 
-To install **ONNX Runtime with ROCm 6.4.4** GPU support, in a Python environment using ``pip``:
+.. To install **ONNX Runtime with ROCm 7.1** GPU support, in a Python environment using ``pip``:
 
-.. code-block:: bash
+.. .. code-block:: bash
 
-   pip install onnxruntime-rocm
+..    pip install onnxruntime-rocm
 
-To install **ONNX Runtime with CUDA** 12.X GPU support:
+To install **ONNX Runtime with CUDA** 13.X GPU support:
 
 .. code-block:: bash
 
@@ -236,16 +236,228 @@ Install Quark
 We recommend new users install Quark from PyPI with ``pip``. It's also possible to install from a ZIP download, which contains additional examples.
 
 
-Install Quark from PyPI with pip
-""""""""""""""""""""""""""""""""
+Quick Install Selector
+""""""""""""""""""""""
 
-Releases of AMD Quark are available on PyPI at https://pypi.org/project/amd-quark/, and can be installed with ``pip``:
+Select your preferences and run the generated command. AMD Quark is distributed in two wheel
+flavors, hosted on **different package indexes**:
 
-.. code-block:: bash
+* The **universal wheel** (``py3-none-any``) is the **recommended default for most users**, and is
+  published to `PyPI <https://pypi.org/project/amd-quark/>`__. It works on every operating system, Python
+  version, and accelerator, regardless of your PyTorch version, so it is the most portable and reliable
+  choice. It does not ship pre-compiled ``_C`` extensions; instead, the *fast quantization kernels* and
+  *ONNX custom operators library* are compiled the first time they are imported, which requires a C++
+  compiler (and ``nvcc`` / ``hipcc`` for GPU builds) on your machine — see *Install a C++ Compiler* above.
+* The **pre-built wheels** are an optional optimization for PyTorch 2.10 and newer, and are hosted on
+  the `AMD package index <https://pypi.amd.com/simple/>`__ rather than PyPI. They ship pre-compiled C++ extensions, which means:
 
-   pip install amd-quark
+  * **No C++ compiler is needed** — you can skip the *Install a C++ Compiler* step entirely, with no
+    ``g++`` / ``build-essential``, Visual Studio, ``nvcc``, or ``hipcc`` required.
+  * **No first-run compilation** — the first ``import quark`` no longer triggers a one-time JIT build,
+    so the *Compile Fast Quantization Kernels* and *Compile Custom Operators Library* steps below are
+    unnecessary.
 
-Nightly builds are not yet available on PyPI.
+  Pre-built wheels are published for CPU, CUDA, ROCm 7.1, and ROCm 7.2 on Linux and Windows for Python 3.11–3.13.
+
+Because the two flavors live on different indexes, the one you get depends on which index you install
+from. A plain ``pip install amd-quark`` pulls the universal wheel from PyPI. To get a pre-built wheel,
+point ``pip`` at the AMD package index. When in doubt, the universal wheel from PyPI is
+the safe, preferred choice.
+
+.. <!-- spellcheck-disable -->
+
+.. raw:: html
+
+   <div class="qk-selector" id="qk-selector">
+     <div class="qk-row">
+       <div class="qk-label">Quark Wheel</div>
+       <div class="qk-options" data-group="wheel">
+         <button type="button" class="qk-opt qk-active" data-value="universal">Universal (PyPI)</button>
+         <button type="button" class="qk-opt" data-value="prebuilt">Pre-built (AMD index)</button>
+       </div>
+     </div>
+     <div class="qk-row">
+       <div class="qk-label">Your OS</div>
+       <div class="qk-options" data-group="os">
+         <button type="button" class="qk-opt qk-active" data-value="linux">Linux</button>
+         <button type="button" class="qk-opt" data-value="windows">Windows</button>
+       </div>
+     </div>
+     <div class="qk-row">
+       <div class="qk-label">PyTorch</div>
+       <div class="qk-options" data-group="torch">
+         <button type="button" class="qk-opt qk-active" data-value="2.2-2.9">2.2 &ndash; 2.9</button>
+         <button type="button" class="qk-opt" data-value="2.10+">2.10+</button>
+       </div>
+     </div>
+     <div class="qk-row">
+       <div class="qk-label">Python</div>
+       <div class="qk-options" data-group="python">
+         <button type="button" class="qk-opt" data-value="3.11">3.11</button>
+         <button type="button" class="qk-opt" data-value="3.12">3.12</button>
+         <button type="button" class="qk-opt qk-active" data-value="3.13">3.13</button>
+       </div>
+     </div>
+     <div class="qk-row">
+       <div class="qk-label">Compute Platform</div>
+       <div class="qk-options" data-group="platform">
+         <button type="button" class="qk-opt qk-active" data-value="cpu">CPU</button>
+         <button type="button" class="qk-opt" data-value="cu128">CUDA 12.8</button>
+         <button type="button" class="qk-opt" data-value="rocm71">ROCm 7.1</button>
+         <button type="button" class="qk-opt" data-value="rocm72">ROCm 7.2</button>
+       </div>
+     </div>
+     <div class="qk-row qk-cmd-row">
+       <div class="qk-label">Run this Command</div>
+       <div class="qk-cmd">
+         <pre><code id="qk-cmd-out"></code></pre>
+       </div>
+     </div>
+   </div>
+
+   <style>
+   .qk-selector {
+     border: 1px solid var(--bs-border-color, #d0d7de);
+     border-radius: 8px;
+     overflow: hidden;
+     margin: 1em 0 1.5em 0;
+     font-size: 0.95em;
+   }
+   .qk-row {
+     display: flex;
+     flex-wrap: wrap;
+     align-items: stretch;
+     border-bottom: 1px solid var(--bs-border-color, #d0d7de);
+   }
+   .qk-row:last-child { border-bottom: none; }
+   .qk-label {
+     flex: 0 0 170px;
+     display: flex;
+     align-items: center;
+     padding: 10px 14px;
+     font-weight: 600;
+     background: var(--bs-tertiary-bg, #f6f8fa);
+     border-right: 1px solid var(--bs-border-color, #d0d7de);
+   }
+   .qk-options {
+     flex: 1 1 320px;
+     display: flex;
+     flex-wrap: wrap;
+   }
+   .qk-opt {
+     flex: 1 1 0;
+     min-width: 72px;
+     padding: 10px 14px;
+     border: none;
+     border-right: 1px solid var(--bs-border-color, #d0d7de);
+     background: transparent;
+     color: inherit;
+     cursor: pointer;
+     font: inherit;
+     text-align: center;
+     transition: background 0.12s ease;
+   }
+   .qk-opt:last-child { border-right: none; }
+   .qk-opt:hover:not(.qk-disabled) { background: rgba(127,127,127,0.12); }
+   .qk-opt.qk-active {
+     background: #ee4c2c;
+     color: #fff;
+     font-weight: 600;
+   }
+   .qk-opt.qk-disabled {
+     opacity: 0.4;
+     cursor: not-allowed;
+   }
+   .qk-cmd-row .qk-label { align-items: flex-start; }
+   .qk-cmd { flex: 1 1 320px; padding: 0; }
+   .qk-cmd pre {
+     margin: 0;
+     padding: 12px 14px;
+     background: var(--bs-tertiary-bg, #f6f8fa);
+     white-space: pre-wrap;
+     word-break: break-all;
+     overflow-x: auto;
+   }
+   .qk-cmd code { background: transparent; border: none; padding: 0; }
+   </style>
+
+   <script>
+   (function () {
+     function selected(root, group) {
+       var el = root.querySelector('[data-group="' + group + '"] .qk-active:not(.qk-disabled)');
+       return el ? el.getAttribute("data-value") : null;
+     }
+
+     function setActive(btn) {
+       var group = btn.parentNode;
+       group.querySelectorAll(".qk-opt").forEach(function (b) { b.classList.remove("qk-active"); });
+       btn.classList.add("qk-active");
+     }
+
+     var PREBUILT_PY = ["3.11", "3.12", "3.13"];
+
+     function applyConstraints(root) {
+       var os = selected(root, "os");
+       var python = selected(root, "python");
+       var platBtns = root.querySelectorAll('[data-group="platform"] .qk-opt');
+
+       // ROCm builds are Linux-only.
+       platBtns.forEach(function (b) {
+         var v = b.getAttribute("data-value");
+         var disabled = (os === "windows" && (v === "rocm71" || v === "rocm72"));
+         b.classList.toggle("qk-disabled", disabled);
+         if (disabled && b.classList.contains("qk-active")) {
+           b.classList.remove("qk-active");
+           root.querySelector('[data-group="platform"] [data-value="cpu"]').classList.add("qk-active");
+         }
+       });
+
+       // Pre-built wheels need PyTorch 2.10+ and Python 3.11-3.13; otherwise fall back to universal.
+       var torch = selected(root, "torch");
+       var prebuiltBtn = root.querySelector('[data-group="wheel"] [data-value="prebuilt"]');
+       var prebuiltDisabled = (torch !== "2.10+") || (PREBUILT_PY.indexOf(python) === -1);
+       prebuiltBtn.classList.toggle("qk-disabled", prebuiltDisabled);
+       if (prebuiltDisabled && prebuiltBtn.classList.contains("qk-active")) {
+         prebuiltBtn.classList.remove("qk-active");
+         root.querySelector('[data-group="wheel"] [data-value="universal"]').classList.add("qk-active");
+       }
+     }
+
+     function render(root) {
+       applyConstraints(root);
+       var wheel = selected(root, "wheel");
+       var platform = selected(root, "platform");
+       var outEl = root.querySelector("#qk-cmd-out");
+
+       if (wheel === "prebuilt") {
+         outEl.textContent = "pip install amd-quark --extra-index-url https://pypi.amd.com/simple/" + platform + "/";
+       } else {
+         outEl.textContent = "pip install amd-quark";
+       }
+     }
+
+     function init() {
+       var root = document.getElementById("qk-selector");
+       if (!root) return;
+       root.querySelectorAll(".qk-opt").forEach(function (btn) {
+         btn.addEventListener("click", function () {
+           if (btn.classList.contains("qk-disabled")) return;
+           setActive(btn);
+           render(root);
+         });
+       });
+       render(root);
+     }
+
+     if (document.readyState === "loading") {
+       document.addEventListener("DOMContentLoaded", init);
+     } else {
+       init();
+     }
+   })();
+   </script>
+
+.. <!-- spellcheck-enable -->
 
 
 Install Quark + Quark Examples from Download
@@ -352,7 +564,6 @@ Previous Versions of AMD Quark
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
--  `quark_0.11.1.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.1.zip>`__
 -  `quark_0.11.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.zip>`__
 -  `quark_0.10.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.10.zip>`__
 -  `quark_0.9.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.9.zip>`__
@@ -361,7 +572,6 @@ Previous Versions of AMD Quark
 -  `quark_0.8.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.8.zip>`__
 -  `quark_0.7.zip <https://www.xilinx.com/bin/public/openDownload?filename=amd_quark-0.7.zip>`__
 -  `quark_0.6.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.6.0.zip>`__
--  `quark_0.5.1.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.5.1+88e60b456.zip>`__
 -  `quark_0.5.1.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.5.1+88e60b456.zip>`__
 -  `quark_0.5.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.5.0+fae64a406.zip>`__
 -  `quark_0.2.0.zip <https://www.xilinx.com/bin/public/openDownload?filename=quark-0.2.0+6af1bac23.zip>`__

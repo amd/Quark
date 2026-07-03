@@ -1,5 +1,6 @@
 import pytest
 
+from quark.torch.quantization.utils import calculate_qmin_qmax
 from quark.torch.utils import AppError, LossError
 
 
@@ -39,3 +40,9 @@ def test_raise_loss_error():
         raise LossError("NaN loss detected")
     # Verify that the caught exception contains the expected message
     assert "NaN loss detected" in str(excinfo.value)
+
+
+def test_calculate_qmin_qmax_unknown_dtype_interpolates_value():
+    """Regression test: ValueError message must interpolate the dtype value, not show literal '{dtype}'."""
+    with pytest.raises(ValueError, match=r"not_a_real_dtype"):
+        calculate_qmin_qmax("not_a_real_dtype")  # type: ignore[arg-type]

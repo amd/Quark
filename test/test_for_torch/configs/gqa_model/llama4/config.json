@@ -73,7 +73,9 @@
     "projector_dropout": 0.0,
     "projector_input_dim": 12,
     "projector_output_dim": 12,
-    "rope_theta": 10,
+    "rope_parameters": {
+      "rope_theta": 10
+    },
     "vision_feature_layer": -1,
     "vision_feature_select_strategy": "default",
     "vision_output_dim": 12

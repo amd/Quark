@@ -6,7 +6,7 @@ import pytest
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import (
+from quark.common.utils.testing_utils import (
     require_accelerate,
     require_torch_cuda,
     require_torch_higher_or_equal,

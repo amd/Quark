@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Peuning API for PyTorch."""
@@ -9,9 +9,9 @@ import torch.fx
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.api import apply_advanced_pruning_algo, blockwise_tuning_algo
-from quark.torch.pruning.config import Config
+from quark.torch.pruning.config import PConfig
 from quark.torch.pruning.model_transformation import process_model_pruning
 from quark.torch.pruning.utils import pre_process_tuning
 
@@ -26,11 +26,11 @@ class ModelPruner:
 
     This class handles the configuration and processing of the model for pruning based on user-defined parameters. It is essential to ensure that the 'config' provided has all necessary pruning parameters defined. This class assumes that the model is compatible with the pruning settings specified in 'config'.
 
-    :param Config config: Model pruning configuration.
+    :param PConfig config: Model pruning configuration.
 
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: PConfig) -> None:
         self.config = config
         self._is_accelerate: bool | None = None
 
@@ -111,4 +111,6 @@ class ModelPruner:
         | DataLoader[dict[str, torch.Tensor]]
         | None = None,
     ) -> nn.Module:
-        return blockwise_tuning_algo(fp_model, model, self.config, self._is_accelerate, dataloader)
+        return blockwise_tuning_algo(
+            fp_model, model, self.config.blockwise_tuning_config, self._is_accelerate, dataloader
+        )

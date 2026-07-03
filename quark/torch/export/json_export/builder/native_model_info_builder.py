@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -36,7 +36,7 @@ class NativeModelInfoBuilder:
     def _build_quant_info(
         quantizer: ScaledFakeQuantize, param_dict: dict[str, torch.Tensor], tensor_type: str, node_name: str
     ) -> dict[str, str | int | float | None]:
-        if isinstance(quantizer, (StaticScaledFakeQuantize, FrozenScaledFakeQuantize)):
+        if isinstance(quantizer, StaticScaledFakeQuantize | FrozenScaledFakeQuantize):
             scale_name = f"{tensor_type}_scale"
             tensor_name = f"{node_name}.{scale_name}"
             param_dict[tensor_name] = quantizer.scale.detach()
@@ -101,6 +101,13 @@ class NativeModelInfoBuilder:
                 child_module, mod_name, param_dict, compressed=compressed, reorder=reorder
             )
             module_dict[key] = child_result  # type: ignore
+
+        # Save registered buffers (e.g. smooth_factor) directly on this module.
+        for buf_name, buf_tensor in module.named_buffers(recurse=False):
+            buf_key = name + "." + buf_name
+            module_dict[buf_name] = buf_key
+            param_dict[buf_key] = buf_tensor.detach()
+
         return module_dict
 
     def build_model_info(

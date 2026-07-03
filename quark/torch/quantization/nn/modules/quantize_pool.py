@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn.common_types import _size_2_t, _size_any_opt_t
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
@@ -32,10 +32,12 @@ class QuantAvgPool2d(nn.AvgPool2d, QuantMixin):
         count_include_pad: bool = True,
         divisor_override: int | None = None,
         # args about quantization
-        quant_config: QLayerConfig = QLayerConfig(),
-        device: torch.device = torch.device("cpu"),
+        quant_config: QLayerConfig | None = None,
+        device: torch.device = torch.device("cpu"),  # noqa: B008
         **kwargs: Any,
     ) -> None:
+        if quant_config is None:
+            quant_config = QLayerConfig()
         super().__init__(kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override)
         self.init_quantizer(quant_config, device, **kwargs)
 
@@ -82,10 +84,12 @@ class QuantAdaptiveAvgPool2d(nn.AdaptiveAvgPool2d, QuantMixin):
         self,
         output_size: _size_any_opt_t,
         # args about quantization
-        quant_config: QLayerConfig = QLayerConfig(),
-        device: torch.device = torch.device("cpu"),
+        quant_config: QLayerConfig | None = None,
+        device: torch.device = torch.device("cpu"),  # noqa: B008
         **kwargs: Any,
     ) -> None:
+        if quant_config is None:
+            quant_config = QLayerConfig()
         super(nn.AdaptiveAvgPool2d, self).__init__(output_size)
         self.init_quantizer(quant_config, device, **kwargs)
 
@@ -96,10 +100,10 @@ class QuantAdaptiveAvgPool2d(nn.AdaptiveAvgPool2d, QuantMixin):
         Align NPU etc. hw constrain
         """
 
-        if (isinstance(self.output_size, (tuple, list)) and tuple(self.output_size) != (1, 1)) or (
+        if (isinstance(self.output_size, tuple | list) and tuple(self.output_size) != (1, 1)) or (
             isinstance(self.output_size, int) and self.output_size != 1
         ):
-            print("[WARNING] For AdaptiveAvgPooling, NPU only supports output_size=1")
+            logger.warning("For AdaptiveAvgPooling, NPU only supports output_size=1")
 
         scale = 1.0
         if input.shape[2] == 3 and input.shape[3] == 3:

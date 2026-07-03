@@ -23,7 +23,8 @@ INT_QUANT_DTYPES = [
 # PR 1070 added a transpose for the scale of low precision int data types whenever using per-group quantization.
 PER_GROUP_INT_TRANSPOSE_DTYPES = [Dtype.int2, Dtype.int3, Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8]
 
-ALL_QUANT_DTYPES = set(INT_QUANT_DTYPES) | {
+# TODO: Verify correctness of having Dtype.mx, mx6, mx9 here.
+SCALED_QUANT_DTYPES = set(INT_QUANT_DTYPES) | {
     Dtype.fp8_e4m3,
     Dtype.fp8_e5m2,
     Dtype.mx,
@@ -32,7 +33,9 @@ ALL_QUANT_DTYPES = set(INT_QUANT_DTYPES) | {
     Dtype.fp4,
     Dtype.fp6_e2m3,
     Dtype.fp6_e3m2,
+    Dtype.fp8_e5m3,
 }
+
 USING_NON_SCALED_QUANT = [Dtype.mx, Dtype.mx6, Dtype.mx9, Dtype.bfp16]
 
 ONLY_DTYPE_CHANGE = [Dtype.bfloat16, Dtype.float16]

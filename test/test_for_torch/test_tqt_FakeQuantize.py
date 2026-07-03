@@ -5,7 +5,7 @@
 
 import torch
 
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import torch_device
 from quark.torch.quantization.config.config import QTensorConfig, TQTSpec
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType, TQTThresholdInitMeth
 from quark.torch.quantization.observer.tqt_observer import TQTObserver

@@ -11,9 +11,9 @@ import onnxruntime
 from onnx import TensorProto, helper
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig
 from quark.onnx.quantization.quant_utils import is_version_below
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 np.random.seed(42)
 tensor_1 = np.random.rand(1, 2, 4, 4).astype(np.float32)

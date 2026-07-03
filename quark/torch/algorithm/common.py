@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, get_named_quant_linears, move_to_device

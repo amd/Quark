@@ -13,8 +13,8 @@ import torch.nn as nn
 import yaml
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CLEConfig, Int16Spec, ModelQuantizer, QConfig, QLayerConfig, XInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 
 def make_input_tensor():
@@ -67,7 +67,7 @@ class DataReader(CalibrationDataReader):
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)

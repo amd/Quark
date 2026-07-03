@@ -1,14 +1,15 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import gc
-import os
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+from quark.torch.utils import QUARK_AWQ_MEMORY_OPTIMIZATION
 
 
 class TensorData(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
@@ -29,7 +30,6 @@ class TensorData(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
 def clear_memory(weight: torch.Tensor | None = None) -> None:
     if weight is not None:
         del weight
-    QUARK_AWQ_MEMORY_OPTIMIZATION = os.environ.get("QUARK_AWQ_MEMORY_OPTIMIZATION", None) == "1"
     # When memory recycling is turned on in QUARK_AWQ_MEMORY_OPTIMIZATION mode
     if QUARK_AWQ_MEMORY_OPTIMIZATION:
         gc.collect()

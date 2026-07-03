@@ -1,15 +1,15 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import json
 import multiprocessing
-import os
+from collections.abc import Collection, Iterable, Iterator
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Iterable, Iterator
+from typing import Any
 
 import numpy as np
 import torch
@@ -17,12 +17,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.import_utils import is_matplotlib_available, is_transformers_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_matplotlib_available, is_transformers_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize, StaticScaledFakeQuantize
+from quark.torch.utils import QUARK_DEBUG_ACT_HIST, QUARK_DEBUG_INPUT_PICKLE
 
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
@@ -31,11 +32,6 @@ if is_matplotlib_available():
     import matplotlib.pyplot as plt
 
 logger = ScreenLogger(__name__)
-
-SAVE_ACTIVATIONS_HISTOGRAM = os.environ.get("QUARK_DEBUG_ACT_HIST", None) == "1"
-DEBUG_INPUT_PICKLE = os.environ.get("QUARK_DEBUG_INPUT_PICKLE", None)
-
-QUARK_DEBUG = os.environ.get("QUARK_DEBUG", "0") == "1"
 
 
 def weight_stats_hook(
@@ -112,7 +108,7 @@ def activation_stats_hook(
         stats[module_name]["ref_input_tensor"] = input_tensor
         stats[module_name]["ref_output_tensor"] = input_tensor  # For non-quantized models, QDQ is a no-op.
 
-        if SAVE_ACTIVATIONS_HISTOGRAM:
+        if QUARK_DEBUG_ACT_HIST:
             if "input_ref_histogram" not in stats[module_name]:
                 histogram = torch.histogram(input_tensor.flatten().cpu(), bins=100)
                 tuple_histogram = (histogram[0].numpy(), histogram[1].numpy())
@@ -150,11 +146,11 @@ def activation_stats_hook(
         # Compare output tensor of FakeQuantizeBase to its input tensor.
         stats[module_name]["l1_io_error"].append(reldiff(quantized_tensor, input_tensor))
 
-        if SAVE_ACTIVATIONS_HISTOGRAM and "input_histogram" not in stats[module_name]:
+        if QUARK_DEBUG_ACT_HIST and "input_histogram" not in stats[module_name]:
             histogram = torch.histogram(input_tensor.flatten().cpu(), bins=100)
             stats[module_name]["input_histogram"] = (histogram[0].numpy(), histogram[1].numpy())
 
-        if SAVE_ACTIVATIONS_HISTOGRAM and "input_qdq_histogram" not in stats[module_name]:
+        if QUARK_DEBUG_ACT_HIST and "input_qdq_histogram" not in stats[module_name]:
             histogram = torch.histogram(quantized_tensor.flatten().cpu(), bins=100)
             stats[module_name]["input_qdq_histogram"] = (histogram[0].numpy(), histogram[1].numpy())
 
@@ -320,7 +316,7 @@ def summarize_activation(stats: dict[str, Any], log_dir: Path) -> None:
     labels = [key.replace("._input_quantizer", "_i").replace("._output_quantizer", "_o") for key in l1_io_error]
     barplot(labels, l1_io_error.values(), name="summary_io_quantization_error", log_dir=log_dir)
 
-    if SAVE_ACTIVATIONS_HISTOGRAM:
+    if QUARK_DEBUG_ACT_HIST:
         save_distribution_args = [
             (module_name, tensor_stats, log_dir)
             for module_name, tensor_stats in stats.items()
@@ -386,15 +382,15 @@ def collect_quantization_statistics(
             "The package `matplotlib` is required to collect quantization error statistics and plot them. Please install `matplotlib` (example: `pip install matplotlib`)."
         )
 
-    if DEBUG_INPUT_PICKLE is None:
-        if SAVE_ACTIVATIONS_HISTOGRAM:
+    if QUARK_DEBUG_INPUT_PICKLE is None:
+        if QUARK_DEBUG_ACT_HIST:
             logger.warning(
                 "The histograms of activations / activation errors are saved only for the first item in the dataloader. Please make sure that this input is meaningful, and bear in mind that this item was used as well for calibration. In order to use specific inputs to collect activation quantization statistics, please specify the environment variable `QUARK_DEBUG_INPUT_PICKLE` to a file containing the reference tensor or dict inputs saved with `torch.save`."
             )
 
         input_iterable: Iterable[Any] | None = dataloader
     else:
-        input_dict = torch.load(DEBUG_INPUT_PICKLE, weights_only=True)
+        input_dict = torch.load(QUARK_DEBUG_INPUT_PICKLE, weights_only=True)
         input_iterable = [input_dict]
 
     if input_iterable is not None:
@@ -468,7 +464,7 @@ class QuantizerStatsHelper:
         summary[quantizer_type] = {}
         self.summary = summary[quantizer_type]
         self.quantizer_type = quantizer_type
-        self.moudule_name = module_name
+        self.module_name = module_name
 
     def get_scale_min_max(self) -> tuple[Any, Any]:
         return self.quantizer.scale.min().item(), self.quantizer.scale.max().item()
@@ -482,7 +478,7 @@ class QuantizerStatsHelper:
         is_zero = min_max[0] == 0.0
         if is_zero:
             logger.warning(
-                f"{self.moudule_name + '.' + self.quantizer_type} has zero scale. This may lead to incorrect quantization."
+                f"{self.module_name + '.' + self.quantizer_type} has zero scale. This may lead to incorrect quantization."
             )
         self.summary["has_zero_scale"] = is_zero
 
@@ -548,7 +544,7 @@ def check_scale_stats(model: nn.Module, config: QConfig) -> None:
             module_stats.check_scale()
 
     # save to file
-    os.makedirs(SCALE_DEBUG_DIR, exist_ok=True)
+    Path(SCALE_DEBUG_DIR).mkdir(parents=True, exist_ok=True)
     save_file = SCALE_DEBUG_DIR + "/" + SCALE_STATS_FILE
     with open(save_file, "w") as f:
         json.dump(summary, f, indent=4)

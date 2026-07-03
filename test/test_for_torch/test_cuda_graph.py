@@ -13,8 +13,13 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import PatchEverywhere, require_torch_higher_or_equal, slow, torch_device
-from quark.testing import skip_if_no_gpu
+from quark.common.utils.testing_utils import (
+    PatchEverywhere,
+    require_torch_higher_or_equal,
+    skip_if_no_gpu,
+    slow_test,
+    torch_device,
+)
 from quark.torch.algorithm.gptq.gptq import fasterquant_inner_graph, record_graphs, replay_fasterquant_inner_graphs
 from quark.torch.export.nn.modules import realquantizer
 from quark.torch.quantization import (
@@ -28,6 +33,7 @@ from quark.torch.quantization import (
 )
 from quark.torch.quantization.api import ModelQuantizer
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, ScaledFakeQuantize
+from quark.torch.utils.llm.data_preparation import get_calib_dataloader
 
 
 @skip_if_no_gpu
@@ -252,8 +258,8 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
             quantizer = ModelQuantizer(config, multi_device=False)
             model_no_graph = quantizer.quantize_model(model_no_graph, calib_dataloader)
 
-        model_params_no_graph = {name: param for name, param in model_no_graph.named_parameters()}
-        model_params_no_graph = model_params_no_graph | {name: param for name, param in model_no_graph.named_buffers()}
+        model_params_no_graph = dict(model_no_graph.named_parameters())
+        model_params_no_graph = model_params_no_graph | dict(model_no_graph.named_buffers())
 
         for name, param in model_graph.named_parameters():
             absdiff = (param - model_params_no_graph[name]).abs()
@@ -264,10 +270,12 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
             assert torch.equal(model_params_no_graph[name], param), f"{name} max absdiff: {absdiff.max()}"
 
 
-@slow
+@slow_test
 @skip_if_no_gpu
 @pytest.mark.parametrize("model_id", ["facebook/opt-6.7b", "meta-llama/Llama-2-70b-chat-hf"])
 def test_gptq_cuda_graph_speed(model_id: str):
+    n_layers = 10
+
     if model_id == "facebook/opt-6.7b":
         device_map = None
     else:
@@ -306,14 +314,32 @@ def test_gptq_cuda_graph_speed(model_id: str):
     config = QConfig(global_quant_config=global_quant_config, algo_config=[gptq_config])
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    text = "Hello, how are you?"
-    tokenized_outputs = tokenizer(text, return_tensors="pt")
-    calib_dataloader = DataLoader(tokenized_outputs["input_ids"])
+    def truncate_layers(model: AutoModelForCausalLM) -> None:
+        if hasattr(model.model, "decoder"):
+            model.model.decoder.layers = model.model.decoder.layers[:n_layers]
+        else:
+            model.model.layers = model.model.layers[:n_layers]
+        model.config.num_hidden_layers = n_layers
 
     model_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
     if device_map is None:
         model_graph = model_graph.to(torch_device)
+
+    # Run through only through a few layers to speed up this test.
+    truncate_layers(model_graph)
+
+    main_device = model_graph.device
+    calib_dataloader = get_calib_dataloader(
+        dataset_name="pileval",
+        tokenizer=tokenizer,
+        batch_size=1,
+        num_calib_data=128,
+        seqlen=2048,
+        device=main_device,
+    )
 
     model_graph = model_graph.eval()
 
@@ -335,6 +361,7 @@ def test_gptq_cuda_graph_speed(model_id: str):
             model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
             if device_map is None:
                 model_no_graph = model_no_graph.to(torch_device)
+            truncate_layers(model_no_graph)
 
             model_no_graph = model_no_graph.eval()
 
@@ -345,7 +372,8 @@ def test_gptq_cuda_graph_speed(model_id: str):
 
             time_no_graph = time.time() - start
 
+        # NOTE: Only 1.1x here as we use n_layers=10, and Graph capture in the first layer is slow. The speedup is higher with more layers.
         print(f"time_no_graph: {time_no_graph} s, time_with_graph: {time_with_graph} s")
-        assert time_no_graph / time_with_graph > 1.95, (
+        assert time_no_graph / time_with_graph > 1.1, (
             f"time_no_graph: {time_no_graph} s, time_with_graph: {time_with_graph} s"
         )

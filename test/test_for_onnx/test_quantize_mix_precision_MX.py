@@ -11,9 +11,9 @@ import onnxruntime
 import torch
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ExtendedQuantFormat, ExtendedQuantType, ModelQuantizer, QuantizationConfig
 from quark.onnx.quantization.config.custom_config import BF16_MIXED_MXINT8_CONFIG, BF16_MXINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -105,6 +105,32 @@ MXandBFP_dedicate_mp_output_tensor = np.array(
     ],
 ).astype(np.float32)
 
+MXandBFP_remove_fused_qdq_mp_output_tensor = np.array(
+    [
+        [
+            [
+                [-0.00292969, -0.07128906, -0.05273438, -0.13281250],
+                [-0.03808594, -0.06738281, -0.17968750, -0.13085938],
+                [-0.00585938, -0.07324219, -0.05664062, -0.12207031],
+                [-0.06347656, -0.08886719, -0.17773438, -0.10058594],
+            ]
+        ]
+    ],
+).astype(np.float32)
+
+MXandBFP_exclude_output_quantization_mp_output_tensor = np.array(
+    [
+        [
+            [
+                [-0.00289917, -0.07128906, -0.05224609, -0.1328125],
+                [-0.03808594, -0.06640625, -0.17968750, -0.1328125],
+                [-0.00659180, -0.07324219, -0.05517578, -0.12304688],
+                [-0.06201172, -0.08789062, -0.17578125, -0.09960938],
+            ]
+        ]
+    ],
+).astype(np.float32)
+
 MXandInt16_standard_mp_output_tensor = np.array(
     [
         [
@@ -186,7 +212,7 @@ MXQOperator_custom_mp_output_tensor = np.array(
 
 class ConvsModel(torch.nn.Module):
     def __init__(self):
-        super(ConvsModel, self).__init__()
+        super().__init__()
         self.conv1 = torch.nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = torch.nn.ReLU()
         self.conv21 = torch.nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
@@ -295,6 +321,42 @@ def prepare_MXandBFP_dedicate_config():
         extra_options={
             "AddQDQPairToWeight": False,
             "DedicatedQDQPair": True,
+        },
+    )
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_MXandBFP_remove_fused_qdq_config():
+    """
+    This config will remove the fused QDQ nodes (MXQuantizeDequantize) between Conv and Relu.
+    """
+    quant_config = QuantizationConfig(
+        calibrate_method=CalibrationMethod.MinMax,
+        quant_format=ExtendedQuantFormat.QDQ,
+        activation_type=ExtendedQuantType.QBFP,
+        weight_type=ExtendedQuantType.QMX,
+        extra_options={
+            "AddQDQPairToWeight": False,
+            "RemoveFusedQDQ": True,
+        },
+    )
+
+    return Config(global_quant_config=quant_config)
+
+
+def prepare_MXandBFP_exclude_output_quantization_config():
+    """
+    This config will exclude the output quantization of the Conv node.
+    """
+    quant_config = QuantizationConfig(
+        calibrate_method=CalibrationMethod.MinMax,
+        quant_format=ExtendedQuantFormat.QDQ,
+        activation_type=ExtendedQuantType.QBFP,
+        weight_type=ExtendedQuantType.QMX,
+        extra_options={
+            "AddQDQPairToWeight": False,
+            "NodesToExcludeOutputQuantization": ["/conv21/Conv", "/conv22/Conv"],
         },
     )
 
@@ -478,6 +540,26 @@ class TestTensorQuantize(unittest.TestCase):
         output = tensor_quantize(tmpdir, quant_config)
         comp_equal = np.allclose(output, MXandBFP_dedicate_mp_output_tensor, atol=1e-2)
         self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_MXandBFP_remove_fused_qdq_mix_precision(self, tmpdir: str):
+        """
+        To test the new "RemoveFusedQDQ" option's functionality.
+        """
+        quant_config = prepare_MXandBFP_remove_fused_qdq_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, MXandBFP_remove_fused_qdq_mp_output_tensor, atol=1e-2)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_MXandBFP_exclude_output_quantization_mix_precision(self, tmpdir: str):
+        """
+        To test the new "NodesToExcludeOutputQuantization" option's functionality.
+        """
+        quant_config = prepare_MXandBFP_exclude_output_quantization_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, MXandBFP_exclude_output_quantization_mp_output_tensor, atol=1e-2)
+        self.assertTrue(np.all(comp_equal))
 
     @use_temporary_directory
     def test_quantize_MXandInt16_standard_mix_precision(self, tmpdir: str):

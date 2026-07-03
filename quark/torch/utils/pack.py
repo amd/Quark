@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,6 +12,7 @@ from torch import Tensor
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 from quark.torch.quantization.constants import PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.utils import get_dtype_params
+from quark.torch.utils.numerics import safe_log2
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import QTensorConfig
@@ -103,6 +104,18 @@ class PackMethod:
                 raise NotImplementedError(
                     f"Packed shape inference for per group quantization with `ch_axis={quantization_spec.ch_axis}` is not implemented in Quark. Please open an issue."
                 )
+        elif quantization_spec.qscheme == QSchemeType.per_block:
+            block_size = quantization_spec.block_size
+            if block_size is None or len(block_size) != len(shape_list):
+                raise ValueError(
+                    f"per_block quantization requires block_size with one entry per tensor dim; got block_size={block_size} for shape {shape_list}."
+                )
+            if any(dim % blk != 0 for dim, blk in zip(shape_list, block_size, strict=False)):
+                raise ValueError(
+                    f"per_block tensor dims {shape_list} must each be divisible by block_size {block_size}."
+                )
+            scale_shape = tuple(dim // blk for dim, blk in zip(shape_list, block_size, strict=False))
+            zero_point_shape = () if quantization_spec.symmetric else scale_shape
 
         return scale_shape, zero_point_shape
 
@@ -392,7 +405,9 @@ class Pack_mxfp4(PackMethod):
         tensor = tensor.transpose(axis, -1)
 
         tensor = tensor.reshape(-1, 33)
-        scale_part = torch.log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
+        # Degenerate (all-zero) blocks have a zero scale; safe_log2 keeps the
+        # int8 cast finite instead of producing -inf bits.
+        scale_part = safe_log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
         element_part = (tensor[:, 1:] / (2.0 ** (127 - 1))).view(torch.int32)
         element_part = ((element_part >> 22) & 0x07) + ((element_part >> 28) & 0x08)
         element_part = element_part.to(torch.uint8)
@@ -459,7 +474,7 @@ class Pack_mxfp6(PackMethod):
         tensor = tensor.transpose(axis, -1)
 
         tensor = tensor.reshape(-1, 33)
-        scale_part = torch.log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
+        scale_part = safe_log2(tensor[:, :1]).to(torch.int8).view(torch.uint8)
         fp6_ebias = (1 << (self.e_bits - 1)) - 1
         element_part = (tensor[:, 1:] / (2.0 ** (127 - fp6_ebias))).view(torch.int32)
         fp6_mbias = 23 - self.m_bits

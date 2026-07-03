@@ -1,14 +1,14 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import operator
 
 import torch
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
@@ -102,7 +102,7 @@ def fold_bn_after_concat(m: GraphModule) -> GraphModule:
             |
             |
     """
-    device = [module for module in m.parameters()][0].device
+    device = list(m.parameters())[0].device
     count_replace_num = 0  # used for track
     quant_module_id_2_name: dict[str, str] = {}
     to_delete_node: list[Node] = []

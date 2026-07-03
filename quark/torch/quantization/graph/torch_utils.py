@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -9,7 +9,7 @@ import torch
 import torch.fx
 from torch import ops  # type: ignore[attr-defined]
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.nn.modules.quantize_conv import QuantConv2d, QuantConvTranspose2d
 from quark.torch.quantization.nn.modules.quantize_conv_bn_fused import (
     QuantConvTransposeBatchNorm2d,
@@ -27,7 +27,6 @@ from quark.torch.quantization.observer.observer import (
 from quark.torch.quantization.observer.tqt_observer import TQTObserver
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize, StaticScaledFakeQuantize
 
-# from torch.ao.quantization.pt2e.utils import _get_node_name_to_scope
 logger = ScreenLogger(__name__)
 """
 NOTE for better development, all ops type check should be here

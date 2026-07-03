@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Graph transforms for the conversion of onnx models."""
@@ -9,8 +9,8 @@ from typing import Any
 import numpy as np
 from onnx import helper
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.utils import model_utils
-from quark.shares.utils.log import ScreenLogger
 
 from .transforms import NodeTree, OpTypePattern, Transform
 

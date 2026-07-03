@@ -10,4 +10,4 @@ The Quark command-line interface (CLI) provides tools for interacting with the Q
    :caption: Getting Started with AMD Quark
    :maxdepth: 1
 
-   ONNX Adapter <quark_cli_onnx_adapter>
+   Shapeshifter <quark_shapeshifter>

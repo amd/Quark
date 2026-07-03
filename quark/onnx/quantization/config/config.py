@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Config API for ONNX"""
@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .algorithm import AlgoConfig
+from .algorithm import from_dict as dict_to_algo
 from .data_type import DataType
 from .legacy import QuantizationConfig
 from .spec import Int8Spec, QLayerConfig
+from .utils import config_to_dict
 
 
 @dataclass(eq=True)
@@ -27,7 +29,7 @@ class Config:
     global_quant_config: QuantizationConfig
 
 
-# TODO: Move QConfig into quark/shares
+# TODO: Move QConfig into quark/common
 @dataclass(eq=True, init=False)
 class QConfig:
     """
@@ -72,6 +74,49 @@ class QConfig:
         self.algo_config = algo_config or []  # type: ignore
         self.use_external_data_format = use_external_data_format
         self.extra_options = kwargs
+
+    def to_dict(self) -> dict[str, Any]:
+        return config_to_dict(self)
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> QConfig:
+        """
+        Convert a dictionary into a QConfig object.
+
+        This includes global configuration, per-layer configuration,
+        algorithm configurations, and extra options.
+
+        :param dict[str, Any] d: Dictionary representation of a quantization config.
+        :return: Constructed QConfig instance.
+        """
+        if "global_config" in d:
+            global_cfg = QLayerConfig.from_dict(d["global_config"])
+        else:
+            raise ValueError("QConfig dict must contain field 'global_config'.")
+
+        specific_layer_cfg = {
+            QLayerConfig.from_dict(batch[0]) if batch[0] is not None else None: batch[1]
+            for batch in d.get("specific_layer_config", [])
+        }
+
+        layer_type_cfg = {
+            QLayerConfig.from_dict(batch[0]) if batch[0] is not None else None: batch[1]
+            for batch in d.get("layer_type_config", [])
+        }
+
+        algo_cfgs = [dict_to_algo(x) for x in d.get("algo_config", [])]
+
+        extra = d.get("extra_options", {})
+
+        return QConfig(
+            global_config=global_cfg,
+            specific_layer_config=specific_layer_cfg,
+            layer_type_config=layer_type_cfg,
+            exclude=d.get("exclude", []),
+            algo_config=algo_cfgs,
+            use_external_data_format=d.get("use_external_data_format", False),
+            **extra,
+        )
 
     @staticmethod
     def get_default_config(config_name: str) -> Config:

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
@@ -8,10 +8,10 @@ import sys
 from math import sqrt
 
 import torch
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassBase
 from quark.torch.quantization.graph.optimization.utils import _copy_node_meta_info, replace_ops_module_name_suffix
 from quark.torch.quantization.graph.torch_utils import (
@@ -69,7 +69,7 @@ class SplitQuantModuleCalledOverOnce(OptPassBase):
 
     def call(self, m: GraphModule) -> GraphModule:
         need_process_qt_module = QUANT_CONV_LIKE_MODULE
-        device = [module for module in m.parameters()][0].device  # cpu/gpu
+        device = list(m.parameters())[0].device  # cpu/gpu
         qt_module_target = set()
 
         def _get_split_module_name(name: str) -> str:
@@ -79,7 +79,7 @@ class SplitQuantModuleCalledOverOnce(OptPassBase):
             return name + "_sp_" + str(idx)
 
         for n in m.graph.nodes:
-            if not n.op == "call_module":
+            if n.op != "call_module":
                 continue
             if not isinstance(getattr(m, n.target), need_process_qt_module):
                 continue
@@ -140,7 +140,7 @@ class ConvertBn2D2ConvQOPass(OptPassBase):
         )
 
     def call(self, m: GraphModule) -> GraphModule:
-        device = [module for module in m.parameters()][0].device  # cpu/gpu
+        device = list(m.parameters())[0].device  # cpu/gpu
         count_replace_num = 0  # used for track
         to_delete_node = []
         for n in m.graph.nodes:
@@ -339,14 +339,14 @@ class ConvertAdaptiveavgpool2d2Quantadaptiveavgpool2DQOPass(OptPassBase):
 
     def call(self, m: GraphModule) -> GraphModule:
         count_replace_num = 0
-        device = [module for module in m.parameters()][0].device  # cpu/gpu
+        device = list(m.parameters())[0].device  # cpu/gpu
         need_to_delete_node: list[Node] = []
         for n in m.graph.nodes:
             if not is_adaptive_avg_pool2d_node(n):
                 continue
             adaptive_avg_pool_node = n
             output_size = adaptive_avg_pool_node.args[1]
-            if (isinstance(output_size, (tuple, list)) and tuple(output_size) != (1, 1)) or (
+            if (isinstance(output_size, tuple | list) and tuple(output_size) != (1, 1)) or (
                 isinstance(output_size, int) and output_size != 1
             ):
                 logger.warning("For QuantAdaptiveAvgPool2d, DPU only supports output_size=1, so skip replacement")
@@ -394,7 +394,7 @@ class ConverAvgpool2d2QuantAvgPool2dQOPass(OptPassBase):
 
     def call(self, m: GraphModule) -> GraphModule:
         count_replace_num = 0
-        device = [module for module in m.parameters()][0].device  # cpu/gpu
+        device = list(m.parameters())[0].device  # cpu/gpu
         need_to_delete_node: list[Node] = []
         for n in m.graph.nodes:
             if not is_avg_pool2d_node(n):
@@ -632,7 +632,7 @@ class SplitLargeKernelPoolQOPass(OptPassBase):
                 )
                 continue
             batch, channel, in_h, in_w = input_node.meta["val"].shape
-            if (not in_h * in_w > 512) or (not adaptive_pool_node.args[1] == [1, 1]):  # no need to optimize
+            if (not in_h * in_w > 512) or (adaptive_pool_node.args[1] != [1, 1]):  # no need to optimize
                 continue
 
             kh1, kh2 = self._get_factors(in_h)
@@ -818,7 +818,7 @@ class ConvertLeakyReLu2QuantLeakyReLuQOPass(OptPassBase):
 
     def call(self, m: GraphModule) -> GraphModule:
         count_replace_num = 0
-        device = [module for module in m.parameters()][0].device  # cpu/gpu
+        device = list(m.parameters())[0].device  # cpu/gpu
         need_to_delete_node: list[Node] = []
         for n in m.graph.nodes:
             if not is_leaky_relu_node(n):

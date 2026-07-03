@@ -12,9 +12,9 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import S16S8_ASWS_CONFIG, XINT8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array([3.0]).astype(np.float32)
 
@@ -39,7 +39,7 @@ class DataReader(CalibrationDataReader):
 
 class SimpleMulModel(nn.Module):
     def __init__(self):
-        super(SimpleMulModel, self).__init__()
+        super().__init__()
         self.weight = nn.Parameter(torch.tensor([2.0]))
 
     def forward(self, x):

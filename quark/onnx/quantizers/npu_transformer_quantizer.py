@@ -13,6 +13,7 @@ from typing import Any
 from onnx import ModelProto
 from onnxruntime.quantization.quant_utils import QuantizationMode, ms_domain
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
     __producer__,
     __version__,
@@ -21,7 +22,6 @@ from quark.onnx.quantization.quant_utils import (
     modified_annotate_input,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger
 
 from .qdq_quantizer import QDQQuantizer
 from .registry import CreateNPUTransformerQDQQuantizer

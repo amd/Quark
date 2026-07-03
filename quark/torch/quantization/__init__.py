@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -43,7 +43,6 @@ from quark.torch.quantization.config.config import (
     QConfig,
     QLayerConfig,
     QTensorConfig,
-    QuaRotConfig,
     RotationConfig,
     ScaleQuantSpec,
     SmoothQuantConfig,
@@ -93,12 +92,9 @@ __all__ = [
     "RotationConfig",
     "SmoothQuantConfig",
     "AutoSmoothQuantConfig",
-    "QuaRotConfig",
     "OnlineRotationConfig",
-    "OCP_MXFP4PerGroupSpec",
     "OCP_MXFP4DiffsSpec",
     "OCP_MXFP8E4M3Spec",
-    "OCP_MXFP8E5M2Spec",
     "OCP_MXFP8E5M2Spec",
     "OCP_MXFP6E2M3Spec",
     "OCP_MXFP6E3M2Spec",

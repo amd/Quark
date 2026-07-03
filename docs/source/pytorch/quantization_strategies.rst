@@ -74,3 +74,53 @@ Here is one sample example for different quant strategies:
 The strategies share the same user API.
 You simply need to set the strategy through the quantization configuration, as demonstrated in the previous example.
 For more details about setting quantization configuration, refer to the "Configuring AMD Quark for PyTorch" chapter.
+
+Choosing a strategy for diffusion models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When quantizing activations of diffusion models (the UNet or transformer
+submodule), **prefer dynamic activation quantization -- and FP8 in
+particular -- over static observer-based activation quantization.**
+
+The quantized submodule is called many times per image, once per denoising
+timestep, and its activation magnitudes vary substantially across those steps
+(high-noise early steps versus low-noise late steps):
+
+- A **static** scale is calibrated once over all timesteps, so it must cover the
+  union of those ranges; most timesteps then use only a fraction of the
+  available quantization bins. Static ``min/max`` observers are also
+  outlier-sensitive (a single extreme activation inflates the scale for every
+  step); ``percentile`` and ``MSE`` observers help but remain static.
+- A **dynamic** scale is recomputed per forward pass, adapting to the actual
+  range at each timestep, at a small per-forward runtime cost. Dynamic scaling
+  also unlocks finer-grained quantization schemes. These include per-channel,
+  per-group, and per-token scales. We cannot do these with a single static scale,
+  since these schemes consider the range within each forward pass
+  rather than relying on one range fixed across all timesteps.
+- **FP8 (E4M3)** has a wider dynamic range and non-uniform spacing compared to
+  INT8's uniform grid, so it tolerates the per-step variation and outliers
+  better.
+
+A good default for diffusion activation quantization is therefore **dynamic
+FP8**:
+
+.. code-block:: python
+
+   from quark.torch.quantization import FP8E4M3PerTensorSpec
+   from quark.torch.quantization.config.config import QConfig, QLayerConfig
+
+   fp8_dyn = FP8E4M3PerTensorSpec(is_dynamic=True).to_quantization_spec()
+   quant_config = QConfig(global_quant_config=QLayerConfig(weight=fp8_dyn, input_tensors=fp8_dyn))
+
+.. note::
+
+   The relative quality of dynamic versus static activation quantization is
+   model- and configuration-dependent. Validate the specific configuration
+   end-to-end (for example with CLIP/FID on a diffusion model) before relying on
+   it in production.
+
+For very low-bit activations (such as INT4 activations, ``w4a4``), use
+:doc:`SVDQuant <svdquant>`, whose smoothing and low-rank error correction make
+aggressive weight and activation quantization viable. See also
+:doc:`Quantizing Diffusion Models with Quark <example_quark_torch_diffusers>`
+and :doc:`xDiT Inference with Quark Quantization <example_quark_torch_xdit>`.

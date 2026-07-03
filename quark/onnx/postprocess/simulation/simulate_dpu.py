@@ -1,14 +1,16 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import math
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import onnx
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
     COP_DOMAIN,
     COP_IN_OP_NAME,
@@ -18,7 +20,6 @@ from quark.onnx.quantization.quant_utils import (
     get_clip_min_max,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger
 
 from .simulate_dpu_softmax import SimulateDPUSoftmax
 

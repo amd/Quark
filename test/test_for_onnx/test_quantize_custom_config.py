@@ -7,13 +7,13 @@ import unittest
 
 import numpy as np
 import onnxruntime
+from onnx_testing_utils import prepare_model
 from onnxruntime.quantization import CalibrationDataReader
 from onnxruntime.quantization.quant_utils import QuantFormat
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config import get_default_config
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [

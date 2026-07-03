@@ -1,9 +1,10 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import random
+from collections.abc import Iterator
 from typing import Any
 
 import numpy
@@ -12,7 +13,7 @@ import torch
 from numpy.typing import NDArray
 from torch.utils.data import Dataset
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 from .create_torch.create_model import TorchModel
 from .onnx_subgraph import Subgraph
@@ -151,19 +152,166 @@ class TrainDataset(Dataset[Any]):  # type: ignore
         return inp_data_quant_tensor, inp_data_float_tensor, out_data_float_tensor
 
 
+class DaliLoaderWrapper:
+    """
+    Wrapper class for DALI data loader to provide PyTorch-compatible interface.
+    Enables iteration and length calculation for DALI iterators in PyTorch workflows.
+    """
+
+    def __init__(self, dali_iterator: Any, total_samples: int, batch_size: int) -> None:
+        self.loader = dali_iterator
+        self.total_samples = total_samples
+        self.batch_size = batch_size
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.loader)
+
+    def __len__(self) -> int:
+        return self.total_samples
+
+
+def build_nv_gds_dataloader(
+    inp_data_quant: list[Any],
+    inp_data_float: list[Any],
+    out_data_float: list[Any],
+    train_params: TrainParameters,
+    num_threads: int = 4,
+    device_id: int = 0,
+    shuffle: bool = True,
+) -> DaliLoaderWrapper:
+    """
+    Build a DALI DataLoader using GPU Direct Storage (GDS) to read three sets of .npy files
+    from a single data_dir, separated by file prefixes:
+        - Quantized input: files starting with "q_input_data"
+        - Float input: files starting with "f_input_data"
+        - Float output: files starting with "f_output_data"
+    The loader guarantees alignment and optional synchronized shuffling.
+    """
+
+    from tempfile import NamedTemporaryFile
+
+    import nvidia.dali.fn as fn  # type: ignore
+    import nvidia.dali.types as types  # type: ignore
+    from nvidia.dali.pipeline import pipeline_def  # type: ignore
+    from nvidia.dali.plugin.pytorch import DALIGenericIterator, LastBatchPolicy  # type: ignore
+
+    # Create temporary .txt files for DALI
+    def create_file_list_txt(files: list[str]) -> str:
+        """
+        Create a temporary text file containing a list of file paths.
+
+        :param files: A list of file paths to write to the temporary file
+        :return: The path to the created temporary file
+        """
+        with NamedTemporaryFile(mode="w+", delete=False) as tmp:  # pragma: no cover
+            for f in files:
+                tmp.write(f + "\n")
+            tmp.flush()
+        return tmp.name
+
+    quant_list_txt = create_file_list_txt(inp_data_quant)
+    float_in_list_txt = create_file_list_txt(inp_data_float)
+    float_out_list_txt = create_file_list_txt(out_data_float)
+
+    @pipeline_def
+    def numpy_gds_pipeline(
+        quant_file_list: str,
+        float_in_file_list: str,
+        float_out_file_list: str,
+        shard_id: int = 0,
+        num_shards: int = 1,
+        shuffle: bool = False,
+    ) -> tuple[Any, Any, Any]:
+        """
+        DALI pipeline definition for reading three sets of numpy files from GPU using GPU Direct Storage.
+
+        :param quant_file_list: Path to text file containing list of quantized input .npy files
+        :param float_in_file_list: Path to text file containing list of float input .npy files
+        :param float_out_file_list: Path to text file containing list of float output .npy files
+        :param shard_id: Shard ID for distributed training (default: 0)
+        :param num_shards: Total number of shards for distributed training (default: 1)
+        :return: Tuple of three tensors (inp_quant, inp_float, out_float) read from GPU and cast to FLOAT type
+        """
+        seed = random.randint(1, 1705472343)
+        inp_quant = fn.readers.numpy(
+            device="gpu",
+            file_list=quant_file_list,
+            random_shuffle=shuffle,
+            shard_id=shard_id,
+            num_shards=num_shards,
+            name="QuantReader",
+            seed=seed,
+        )
+        inp_quant = fn.cast(inp_quant, dtype=types.FLOAT)
+
+        inp_float = fn.readers.numpy(
+            device="gpu",
+            file_list=float_in_file_list,
+            random_shuffle=shuffle,
+            shard_id=shard_id,
+            num_shards=num_shards,
+            name="FloatInputReader",
+            seed=seed,
+        )
+        inp_float = fn.cast(inp_float, dtype=types.FLOAT)
+
+        out_float = fn.readers.numpy(
+            device="gpu",
+            file_list=float_out_file_list,
+            random_shuffle=shuffle,
+            shard_id=shard_id,
+            num_shards=num_shards,
+            name="FloatOutputReader",
+            seed=seed,
+        )
+        out_float = fn.cast(out_float, dtype=types.FLOAT)
+
+        return inp_quant, inp_float, out_float
+
+    # Build pipeline
+    pipe = numpy_gds_pipeline(
+        quant_file_list=quant_list_txt,
+        float_in_file_list=float_in_list_txt,
+        float_out_file_list=float_out_list_txt,
+        batch_size=train_params.batch_size,
+        num_threads=num_threads,
+        device_id=device_id,
+        shuffle=shuffle,
+    )
+    pipe.build()
+
+    # Wrap pipeline for PyTorch
+    loader = DALIGenericIterator(
+        pipelines=pipe,
+        output_map=["inp_quant", "inp_float", "out_float"],
+        dynamic_shape=False,
+        last_batch_policy=LastBatchPolicy.DROP,  # replace fill_last_batch
+        auto_reset=True,  # auto reset for each epoch
+    )
+
+    total_samples = len(inp_data_quant)
+    loader = DaliLoaderWrapper(loader, total_samples, train_params.batch_size)
+
+    return loader
+
+
 def train_torch_module_api(
     quant_module: torch.nn.Module,
     inp_data_quant: NDArray[Any] | list[Any],
     inp_data_float: NDArray[Any] | list[Any],
     out_data_float: NDArray[Any] | list[Any],
     train_params: TrainParameters,
+    gds_info: dict[str, Any] = {"use_gds": False},
 ) -> Any:
     """
     Call torch training classes for adaround or adaquant
     """
     if isinstance(inp_data_quant, list) and len(inp_data_quant) > 0 and isinstance(inp_data_quant[0], str):
-        train_dataset = TrainDataset(inp_data_quant, inp_data_float, out_data_float)  # type: ignore
-        ModelOptimizer.run_with_dataset(quant_module, train_dataset, train_params)
+        if gds_info["use_gds"]:
+            train_dataset = build_nv_gds_dataloader(inp_data_quant, inp_data_float, out_data_float, train_params)
+        else:
+            train_dataset = TrainDataset(inp_data_quant, inp_data_float, out_data_float)  # type: ignore
+        ModelOptimizer.run_with_dataset(quant_module, train_dataset, train_params, gds_info)
     else:
         ModelOptimizer.run(quant_module, inp_data_quant, inp_data_float, out_data_float, train_params)
 
@@ -181,6 +329,7 @@ def optimize_module(
     inp_data_float: NDArray[Any] | list[Any],
     out_data_float: NDArray[Any] | list[Any],
     extra_options: Any,
+    gds_info: dict[str, Any] = {"use_gds": False},
 ) -> Any:
     """
     Optimize the onnx module with fast finetune algorithms by torch optimizer
@@ -190,7 +339,7 @@ def optimize_module(
 
     train_params = parse_options_to_params(extra_options)
 
-    return train_torch_module_api(torch_module, inp_data_quant, inp_data_float, out_data_float, train_params)
+    return train_torch_module_api(torch_module, inp_data_quant, inp_data_float, out_data_float, train_params, gds_info)
 
 
 def estimate_memory(model: torch.nn.Module, dummy_input: Any) -> float:

@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CalibMethod, Int8Spec, ModelQuantizer, QConfig, QLayerConfig, UInt8Spec
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -62,7 +62,7 @@ class DataReader(CalibrationDataReader):
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
@@ -104,11 +104,13 @@ def prepare_model(output_dir):
     return onnx_model_path, onnx_quantized_model_path
 
 
-def prepare_config():
+def prepare_config(optimize_disk=False):
     act_spec = UInt8Spec()
     act_spec.set_calibration_method(CalibMethod.LayerwisePercentile)
     weight_spec = Int8Spec()
-    quant_config = QConfig(global_config=QLayerConfig(activation=act_spec, weight=weight_spec))
+    quant_config = QConfig(
+        global_config=QLayerConfig(activation=act_spec, weight=weight_spec), CalibOptimizeDisk=optimize_disk
+    )
     return quant_config
 
 
@@ -119,7 +121,6 @@ def prepare_config_mse():
     quant_config = QConfig(
         global_config=QLayerConfig(activation=act_spec, weight=weight_spec),
         LWPMetric="mse",
-        ActivationBitWidth=8,
         PercentileCandidates=[99.99, 99.9999],
     )
     return quant_config
@@ -151,10 +152,10 @@ def infer_quantized_model(quantized_model_path):
     return output
 
 
-def tensor_quantize(output_dir):
+def tensor_quantize(output_dir, optimize_disk=False):
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
-    quant_config = prepare_config()
+    quant_config = prepare_config(optimize_disk)
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -175,6 +176,12 @@ class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize(self, tmpdir: str):
         output = tensor_quantize(tmpdir)
+        comp_equal = np.allclose(output, output_golden, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_optimize_disk(self, tmpdir: str, optimize_disk=True):
+        output = tensor_quantize(tmpdir, optimize_disk)
         comp_equal = np.allclose(output, output_golden, atol=1e-1)
         self.assertEqual(comp_equal, True)
 

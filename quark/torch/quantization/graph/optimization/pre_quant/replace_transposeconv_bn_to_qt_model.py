@@ -1,14 +1,14 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import operator
 
 import torch
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
@@ -39,7 +39,7 @@ def replace_transposeconv2dbn_quantconv_module(m: GraphModule) -> GraphModule:
         required: [input, weight]
         optional: [bias, running_mean, running_var, training]
     """
-    device = [module for module in m.parameters()][0].device  # cpu/gpu
+    device = list(m.parameters())[0].device  # cpu/gpu
     count_replace_num = 0  # used for track
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
@@ -77,7 +77,7 @@ def replace_transposeconv2dbn_quantconv_module(m: GraphModule) -> GraphModule:
             )
         ) or (not is_all_nodes_save_parameters(m, need_check_node)):
             logger.warning(
-                f"Skip replace node: {transposeconv.name} and {bn_node.name} to QuantizedConvBatchNorm2d, bacause not all args (Nodes): {need_check_node} save Parameters."
+                f"Skip replace node: {transposeconv.name} and {bn_node.name} to QuantizedConvBatchNorm2d, because not all args (Nodes): {need_check_node} save Parameters."
             )
 
             recognized_but_not_optimized += 1

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -14,15 +14,16 @@ try:
     from transformers import AutoProcessor  # type: ignore[attr-defined]
     from transformers.processing_utils import ProcessorMixin
 
-except ImportError:
+except ImportError as e:
     print(
-        "AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`."
+        f"AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`: {e}."
     )
     exit(1)
 
 # Gracefully handle imports, as user may not have Quark installed.
 try:
-    from quark.contrib.llm_eval import ppl_eval
+    from quark.common.utils.log import ScreenLogger
+    from quark.contrib.llm_eval import ppl_eval, ppl_eval_with_synthetic_dataset
     from quark.experimental.cli import base_cli
     from quark.torch import (
         LLMTemplate,
@@ -33,11 +34,13 @@ try:
         get_calib_dataloader,
         get_model,
         get_tokenizer,
-        prepare_for_moe_quant,
+        preprocess_for_quantization,
     )
-except ImportError:
-    print("AMD Quark needs to be installed with e.g. `pip3 install amd-quark`.")
+except ImportError as e:
+    print(f"AMD Quark needs to be installed with e.g. `pip3 install amd-quark`: {e}.")
     exit(1)
+
+logger = ScreenLogger(__name__)
 
 
 class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
@@ -151,6 +154,12 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
 
         # Argument for evaluation
         parser.add_argument("--skip_evaluation", action="store_true")
+        parser.add_argument(
+            "--evaluation_dataset",
+            help="Dataset for evaluation",
+            default="wikitext",
+            choices=["wikitext", "wikitext_gpt_oss_120b"],
+        )
 
         parser.add_argument(
             "--no_trust_remote_code",
@@ -173,10 +182,10 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         dname += "/torch_llm/llm_ptq/"
         os.makedirs(dname, exist_ok=True)
         os.chdir(dname)
-        print("\n[INFO]: Working directory is now=" + dname)
+        logger.info(f"Working directory is now={dname}")
 
         # 1. Define original model
-        print("\n[INFO]: Loading model ...")
+        logger.info("Loading model ...")
 
         # We currently use CPU memory to load large models because GPU memory is typically smaller.
         # The model will be dispatched to different GPUs based on the total number of GPUs specified by torchrun --nproc-per-node.
@@ -191,7 +200,7 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         model, model_dtype = get_model(
             args.model_dir, "auto", device, True, args.multi_device, trust_remote_code=trust_remote_code
         )
-        prepare_for_moe_quant(model)
+        preprocess_for_quantization(model)
 
         model_type = model.config.model_type if hasattr(model.config, "model_type") else model.config.architectures[0]
 
@@ -204,7 +213,7 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
             processor.save_pretrained(args.output_dir)
 
         # 3. Define calibration dataloader(still need this step for weight only and dynamic quantization in Quark for current version.)
-        print("\n[INFO]: Loading dataset ...")
+        logger.info("Loading dataset ...")
         # When the model is small, accelerate will place it on the last device
         main_device = model.device if hasattr(model, "device") else args.device
         calib_dataloader = get_calib_dataloader(
@@ -253,7 +262,7 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         model = quantizer.freeze(model)
 
         # 6. (Optional) Model exporting
-        print("\n[INFO]: Exporting hugging face format safetensors...")
+        logger.info("Exporting hugging face format safetensors...")
         with torch.no_grad():
             export_safetensors(
                 model=model,
@@ -266,9 +275,16 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
                 tokenizer.save_pretrained(args.output_dir)  # type: ignore[attr-defined]
 
         if not args.skip_evaluation:
-            print("\n[INFO]: Evaluating ...")
+            logger.info("Evaluating ...")
             # Prepare test data for perplexity evaluation
-            testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-            testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")  # type: ignore[operator]
-            ppl = ppl_eval(model, testenc, main_device)
-            print(f"\n[INFO] Perplexity: {ppl.item()}")
+            if args.evaluation_dataset == "wikitext":
+                testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
+                testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")  # type: ignore[operator]
+                ppl = ppl_eval(model, testenc, main_device)
+            elif (
+                args.evaluation_dataset == "wikitext_gpt_oss_20b" or args.evaluation_dataset == "wikitext_gpt_oss_120b"
+            ):
+                ppl = ppl_eval_with_synthetic_dataset(tokenizer, model, main_device, args.evaluation_dataset)
+            else:
+                raise ValueError(f"Unsupported evaluation dataset: {args.evaluation_dataset}")
+            logger.info(f"Perplexity: {ppl.item()}")

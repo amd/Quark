@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -12,8 +12,9 @@ A tool for showing the activation distribution of a model.
 import argparse
 import os
 import pathlib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,10 +24,10 @@ from numpy.typing import NDArray
 from onnxruntime.quantization.calibrate import CalibraterBase, CalibrationDataReader, CalibrationMethod
 from tqdm import tqdm
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.calibration import CachedDataReader, RandomDataReader, create_calibrator_float_scale
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
 from quark.onnx.utils.system_utils import check_and_create_path, create_tmp_dir
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 

@@ -87,6 +87,28 @@ Load and Run
 
    python quantize_diffusers.py --model_id runwayml/stable-diffusion-v1-5 --model_name unet --controlnet_id lllyasviel/control_v11p_sd15_canny --input_image {guidance image if controlnet is used} --load --export_path ./quantized_models --prompt "A city at night with people walking around."
 
+Native Inference
+~~~~~~~~~~~~~~~~
+
+Quark can convert quantized ``Linear`` layers in Diffusers transformer or UNet modules to native inference kernels during ``ModelQuantizer.freeze``. Use ``RuntimeOptions`` to select the native linear backend after quantization and before running generation.
+
+.. code-block:: python
+
+   from quark.torch.quantization.api import ModelQuantizer
+   from quark.torch.quantization.utils import RuntimeOptions
+
+   runtime_options = RuntimeOptions(native_linear_mode="fp8_per_tensor")
+   pipe.transformer = ModelQuantizer.freeze(
+       pipe.transformer,
+       runtime_options=runtime_options,
+   )
+
+For MXFP4 quantization, set ``native_linear_mode="mxfp4"``. The ``examples/torch/diffusers/benchmark_flux_fp8_compile.py`` script provides a complete FLUX FP8 native inference benchmark, including optional ``torch.compile``.
+
+.. code-block:: shell
+
+   python benchmark_flux_fp8_compile.py --mode eager
+
 Benchmark
 ---------
 

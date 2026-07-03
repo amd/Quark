@@ -8,13 +8,14 @@ from typing import TYPE_CHECKING, Any, Literal, Union
 import torch
 import torch.nn as nn
 
-from quark.shares.utils.import_utils import is_accelerate_available
+from quark.common.utils.import_utils import is_accelerate_available
 from quark.torch.utils.torch_utils import getattr_recursive, setattr_recursive
 
 if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook
     from accelerate.utils import OffloadedWeightsLoader, PrefixedDataset, find_tied_parameters
 elif TYPE_CHECKING:
+    from accelerate.hooks import AlignDevicesHook
     from accelerate.utils import OffloadedWeightsLoader, PrefixedDataset
 
 
@@ -42,6 +43,45 @@ def untie_parameters(model: nn.Module) -> nn.Module:
                 setattr_recursive(model, param_name, param.clone())
 
     return model
+
+
+def clone_align_devices_hook(
+    hook: "AlignDevicesHook",
+    *,
+    weights_map: Any = None,
+) -> "AlignDevicesHook":
+    """Create a new ``AlignDevicesHook`` mirroring the configuration of ``hook``.
+
+    Used when swapping a module for a replacement (e.g. ``Linear`` -> ``QuantLinear``)
+    while preserving accelerate's device-placement state. The returned hook can then
+    be attached to the replacement module via ``add_hook_to_module``.
+
+    Args:
+        hook: The source ``AlignDevicesHook`` whose configuration should be copied.
+        weights_map: Optional override for the cloned hook's ``weights_map``. When
+            ``None`` (the default), ``hook.weights_map`` is used unchanged. Pass an
+            explicit value to substitute (e.g. a ``PrefixedDataset`` for an expert
+            sub-layer).
+
+    Returns:
+        A new ``AlignDevicesHook`` with all attributes copied from ``hook`` (with
+        the optional ``weights_map`` override applied).
+    """
+    if not is_accelerate_available():
+        raise ImportError(
+            "The function `clone_align_devices_hook` requires the package `accelerate`, but it was not found in the environment. Please install it with `pip install accelerate.`"
+        )
+
+    return AlignDevicesHook(
+        execution_device=hook.execution_device,
+        offload=hook.offload,
+        io_same_device=hook.io_same_device,
+        weights_map=hook.weights_map if weights_map is None else weights_map,
+        offload_buffers=hook.offload_buffers,
+        place_submodules=hook.place_submodules,
+        skip_keys=hook.skip_keys,
+        tied_params_map=hook.tied_params_map,
+    )
 
 
 class OffloadParameter:

@@ -29,19 +29,18 @@ AMD Quark provides advanced tools for model quantization. This documentation wil
 Here you will find references on how you can leverage Quark to seamlessly run quantized models on the Ryzen AI NPU.
 Ryzen AI leverages ONNX models to represent models and execute them through ONNX Runtime.
 
-To help you get started, we also have examples at the :ref:`ONNX Examples <ryzenai_onnx_examples>` page!
-
 .. toctree::
    :hidden:
    :caption: Resources
    :maxdepth: 0
 
    Quick Start for Ryzen AI <tutorial_quick_start_for_ryzenai.rst>
-   Best Practice for Ryzen AI in AMD Quark ONNX <ryzen_ai_best_practice.rst>
-   Auto-Search for Ryzen AI ONNX Model Quantization <../../tutorials/onnx/ryzen_ai/resnet50/onnx_ryzen_ai_resnet50_tutorial>
-   Quantizing LLMs for ONNX Runtime GenAI <tutorial_uint4_oga>
+   Best Practice for Ryzen AI <ryzen_ai_best_practice.rst>
+   INT8/INT16 Quantizations <int8_int16_quantization.rst>
    FP32/FP16 to BF16 Model Conversion <tutorial_convert_fp32_or_fp16_to_bf16.rst>
-   Power-of-Two Scales (XINT8) Quantization <tutorial_xint8_quantize.rst>
-   Float Scales (A8W8 and A16W8) Quantization <tutorial_a8w8_and_a16w8_quantize.rst>
+   Quantize LLMs for ONNX Runtime GenAI <tutorial_uint4_oga>
+   AutoSearch for Ryzen AI <../../tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_resnet50/onnx_ryzen_ai_auto_search_resnet50_tutorial>
+   Efficiency Improvement <../../onnx/efficiency_improvement.rst>
+   Troubleshooting <../../onnx/onnx_troubleshooting.rst>
 
 Quark also delivers a plethora of post-processing tools that might be of use for Ryzen AI. refer to the :doc:`ONNX Tools <../../onnx/tools>` to learn more!

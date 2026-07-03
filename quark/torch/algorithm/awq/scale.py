@@ -11,7 +11,7 @@ from typing import cast
 import torch
 import torch.nn as nn
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.modules.act import ScaledActivation
 from quark.torch.algorithm.utils.utils import is_attention_module
 from quark.torch.utils import (
@@ -48,7 +48,7 @@ def apply_scale(
     module: nn.Module,
     scales_list: list[tuple[str, tuple[str, ...], torch.Tensor]],
     input_feat_dict: dict[str, torch.Tensor] | None = None,
-    device: torch.device | None = torch.device("cuda"),
+    device: torch.device | None = torch.device("cuda"),  # noqa: B008
     num_attention_heads: int = 1,
     num_key_value_heads: int = 1,
 ) -> None:

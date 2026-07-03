@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from quark import torch as quark_torch
-from quark.shares.utils import log
+from quark.common.utils import log
 
 logger = log.ScreenLogger(__name__)
 

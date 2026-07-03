@@ -5,6 +5,7 @@
 
 import os
 import sys
+import uuid
 
 import torch
 import torch.nn as nn
@@ -316,9 +317,12 @@ def run(training_args, data_args, export_args):
         if training_args.gradient_checkpointing and training_args.gradient_checkpointing_kwargs is None:
             training_args.gradient_checkpointing_kwargs = {"use_reentrant": True}
 
+        import transformers
+
+        trainer_tokenizer_kwarg = "processing_class" if transformers.__version__ >= "5.0.0" else "tokenizer"
         trainer = Trainer(
             model=model,
-            tokenizer=tokenizer,
+            **{trainer_tokenizer_kwarg: tokenizer},
             args=training_args,
             compute_metrics=compute_metrics,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics,
@@ -398,5 +402,7 @@ if __name__ == "__main__":
     accelerator.print(f"\n{msg}")
 
     print_training_args(training_args)
-    metric = evaluate.load("accuracy")
+    # Use a unique experiment_id so concurrent CI jobs sharing HF_HOME don't collide
+    # on the same metrics arrow cache file (default_experiment-<num_proc>-<rank>.arrow).
+    metric = evaluate.load("accuracy", experiment_id=f"{os.getpid()}-{uuid.uuid4().hex[:8]}")
     run(training_args, data_args, export_args)

@@ -12,10 +12,10 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization import CalibrationDataReader
 
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import XINT8_CONFIG
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_data = np.array(
     [
@@ -83,7 +83,7 @@ class DataReader(CalibrationDataReader):
 
 class RemoveQDQBetweenOpsModel(nn.Module):
     def __init__(self):
-        super(RemoveQDQBetweenOpsModel, self).__init__()
+        super().__init__()
         self.conv_relu = nn.Sequential(nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1), nn.ReLU())
         self.conv_leaky_relu = nn.Sequential(
             nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=1), nn.LeakyReLU(negative_slope=0.01)

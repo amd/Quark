@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from typing import Any
@@ -17,27 +17,25 @@ All check related the model should be here
 """
 
 
-def _model_type_check(model: Any) -> bool:
-    """
-    raise ValueError(
-            "Quark graph-based quantization requires a model inheriting from torch.fx.GraphModule but the provided model is not. Please check your model and refer to https://pytorch.org/docs/stable/fx.html and https://pytorch.org/docs/stable/export.html#torch.export.ExportedProgram.module."
-    )
-    """
+def _model_type_check(model: Any) -> None:
     if not isinstance(model, torch.fx.GraphModule):
-        return False
-    return True
+        raise TypeError(
+            f"Model must be a torch.fx.GraphModule. Got {type(model).__name__}. "
+            "Use torch.fx.symbolic_trace() or model preparation APIs to convert your model first."
+        )
 
 
-def _not_contain_call_module(model: Any) -> bool:
-    return not any(node.op == "call_module" for node in model.graph.nodes)
+def _not_contain_call_module(model: Any) -> None:
+    if any(node.op == "call_module" for node in model.graph.nodes):
+        raise ValueError(
+            "Model graph contains call_module nodes that are not supported. "
+            "Ensure all submodules are traced into the FX graph."
+        )
 
 
-def _all_model_checks(model: Any) -> bool:
-    if not _model_type_check(model):
-        return False
-    if not _not_contain_call_module(model):
-        return False
-    return True
+def _all_model_checks(model: Any) -> None:
+    _model_type_check(model)
+    _not_contain_call_module(model)
 
 
 """
@@ -45,40 +43,30 @@ All check related to config should be here
 """
 
 
-def _contain_layer_quant_config(config: QConfig) -> bool:
-    """
-    raise NotImplementedError(
+def _contain_layer_quant_config(config: QConfig) -> None:
+    if len(config.layer_quant_config) > 0:
+        raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_quant_config`, got {config.layer_quant_config}. Please use eager mode quantization for now."
         )
-    """
-    if len(config.layer_quant_config) > 0:
-        return False
-    return True
 
 
-def _contain_layer_type_quant_config(config: QConfig) -> bool:
-    """
-    raise NotImplementedError(
+def _contain_layer_type_quant_config(config: QConfig) -> None:
+    if len(config.layer_type_quant_config) > 0:
+        raise NotImplementedError(
             f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_type_quant_config`, got {config.layer_type_quant_config}. Please use eager mode quantization for now."
         )
-    """
-    if len(config.layer_type_quant_config) > 0:
-        return False
-    return True
 
 
-def _all_config_checks(config: QConfig) -> bool:
-    if (not _contain_layer_quant_config(config)) or (not _contain_layer_type_quant_config(config)):
-        return False
-    return True
+def _all_config_checks(config: QConfig) -> None:
+    _contain_layer_quant_config(config)
+    _contain_layer_type_quant_config(config)
 
 
 # TODO delete this function later haoliang, merge with check_supported_model_and_config
-def pre_quant_model_and_config_checks(model: Any, config: QConfig) -> bool:
+def pre_quant_model_and_config_checks(model: Any, config: QConfig) -> None:
     model = _delete_guards_fn_if_torch_gt_290(model)
-    if (not _all_model_checks(model)) or (not _all_config_checks(config)):
-        return False
-    return True
+    _all_model_checks(model)
+    _all_config_checks(config)
 
 
 """
@@ -91,11 +79,6 @@ def check_supported_model_and_config(model: torch.fx.GraphModule, config: QConfi
     if not isinstance(model, torch.fx.GraphModule):
         raise ValueError(
             "Quark graph-based quantization requires a model inheriting from torch.fx.GraphModule but the provided model is not. Please check your model and refer to https://pytorch.org/docs/stable/fx.html and https://pytorch.org/docs/stable/export.html#torch.export.ExportedProgram.module."
-        )
-
-    if len(config.layer_quant_config) > 0:
-        raise NotImplementedError(
-            f"Quark quantization through fx.GraphModule (graph mode) currently does not support `layer_quant_config`, got {config.layer_quant_config}. Please use eager mode quantization for now."
         )
 
     if len(config.layer_type_quant_config) > 0:

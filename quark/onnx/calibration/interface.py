@@ -1,11 +1,12 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import onnx
@@ -13,8 +14,9 @@ import onnxruntime
 from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 
-from quark.onnx.utils.system_utils import Profiler, get_memory_usage
-from quark.shares.utils.log import ScreenLogger, log_errors
+from quark.common.profiler import ProfileStep, profile_scope
+from quark.common.utils.log import ScreenLogger, log_errors
+from quark.onnx.utils.system_utils import get_memory_usage
 
 from .calib_utils import save_tensor_hist_fig
 from .calibrate import calibrate_model
@@ -33,16 +35,16 @@ extra_options_keys_mapping = [
     ("Percentile", "percentile"),
     ("Scenario", "scenario"),
     ("LWPMetric", "lwp_metric"),
-    ("ActivationBitWidth", "activation_bitwidth"),
     ("PercentileCandidates", "percentile_candidates"),
     ("MinMSEModePof2Scale", "minmse_mode"),
     ("CalibOptimizeMem", "optimize_mem"),
+    ("CalibOptimizeDisk", "optimize_disk"),
     ("CalibWorkerNum", "worker_num"),
 ]
 
 
 @log_errors
-@Profiler(msg=[["calibration (collect data + compute data)"]])
+@profile_scope(ProfileStep.CALIBRATION)
 def run_calibration(
     model_input: str | Path | onnx.ModelProto,
     data_reader: CalibrationDataReader,
@@ -90,7 +92,10 @@ def run_calibration(
     }
 
     calib_data_size = calib_extra_options.get("data_size")
-    calib_data_reader = CachedDataReader(data_reader, calib_data_size)
+    calib_data_reader = data_reader
+    if not isinstance(data_reader, CachedDataReader) or calib_data_size and calib_data_size < len(data_reader):
+        calib_data_reader = CachedDataReader(data_reader, calib_data_size)
+    calib_data_reader.reset_iter()
 
     logger.info(
         f"Start running calibration on {len(calib_data_reader)} samples with extra options {calib_extra_options}..."
@@ -254,7 +259,7 @@ def fake_calibration(model_input: str | Path | onnx.ModelProto) -> TensorsData:
     """
 
     def _get_fake_tensor_range(model: onnx.ModelProto) -> dict[str, tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]]:
-        initializer_names = set(init.name for init in model.graph.initializer)
+        initializer_names = {init.name for init in model.graph.initializer}
 
         fake_tensor_range = {}
         for node in model.graph.node:

@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 import onnxruntime
 import torch
-from testing_utils import SimpleConvModel
+from onnx_testing_utils import SimpleConvModel
 
+from quark.common.utils.testing_utils import delete_directory_content, use_temporary_directory
 from quark.onnx import Int8Spec, ModelQuantizer, QConfig, QLayerConfig, UInt8Spec
 from quark.onnx.calibration import RandomDataReader
-from quark.shares.utils.testing_utils import delete_directory_content, use_temporary_directory
 
 input_tensor = np.array(
     [

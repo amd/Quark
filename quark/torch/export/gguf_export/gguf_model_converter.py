@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # Copyright (c) 2023-2024 The ggml authors
@@ -8,17 +8,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import torch
 
-from quark.shares.utils.import_utils import is_gguf_available_and_version_0_6_0
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_gguf_available_and_minimum_version
+from quark.common.utils.log import ScreenLogger
 from quark.torch.export.gguf_export.tensor_convert import build_quant_cfg, convert_from_gguf, gguf_shape
 from quark.torch.export.gguf_export.utils import inverse_permute
 
-if is_gguf_available_and_version_0_6_0():
+if is_gguf_available_and_minimum_version():
     import gguf  # type: ignore
     from gguf.constants import MODEL_ARCH, GGMLQuantizationType  # type: ignore
     from gguf.tensor_mapping import get_tensor_name_map  # type: ignore

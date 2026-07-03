@@ -6,9 +6,10 @@ import unittest
 
 import numpy as np
 import onnxruntime as ort
+from onnx_testing_utils import prepare_model_vit
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model_vit
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.quantization.config.custom_config import (
     INT8_TRANSFORMER_ACCURATE_CONFIG,
@@ -16,7 +17,6 @@ from quark.onnx.quantization.config.custom_config import (
     INT16_TRANSFORMER_ACCURATE_CONFIG,
     INT16_TRANSFORMER_DEFAULT_CONFIG,
 )
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [

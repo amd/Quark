@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -10,7 +10,7 @@ import onnx
 from onnx import numpy_helper
 from onnxslim import slim
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -184,7 +184,7 @@ def fold_quantizers_for_bias(model_path: str) -> None:
     target_bias_quant_node = []
     for node in model.graph.node:
         # if is a single QuantizeLinear, and input is a param
-        if (not node.op_type == "QuantizeLinear") or (node.input[0] not in name_to_initializer):
+        if (node.op_type != "QuantizeLinear") or (node.input[0] not in name_to_initializer):
             continue
         quant_node = node
         y_zero_point_name = quant_node.input[2]
@@ -198,7 +198,7 @@ def fold_quantizers_for_bias(model_path: str) -> None:
         # if followed by Dequantizer node
         output_node_name = quant_node.output[0]
         if (output_node_name not in input_0_to_dequnt_node) or (
-            not input_0_to_dequnt_node[output_node_name].op_type == "DequantizeLinear"
+            input_0_to_dequnt_node[output_node_name].op_type != "DequantizeLinear"
         ):
             continue
         dequant_outnode = input_0_to_dequnt_node[output_node_name]

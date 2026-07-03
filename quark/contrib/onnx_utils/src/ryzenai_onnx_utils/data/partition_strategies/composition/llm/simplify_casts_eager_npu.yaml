@@ -1,8 +1,0 @@
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
-
----
-setup: []
-passes:
-    - hybrid_llm_simplify_reshape
-cleanup:
-    - hybrid_llm_add_empty_cast_attributes

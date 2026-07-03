@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -11,7 +11,7 @@ from quark.torch.quantization.graph.torch_utils import is_dropout_node
 
 class RemoveDropoutNode(GraphTransform):
     def __init__(self) -> None:
-        super(RemoveDropoutNode, self).__init__()
+        super().__init__()
 
     def apply(self, graph_model: GraphModule) -> GraphModule:
         need_to_delete_node: list[Node] = []

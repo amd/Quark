@@ -54,101 +54,59 @@ You can see in the table there are many non integer data types that onnxruntime 
 1. Quantizing to Other Precision Levels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In addition to the INT8/UINT8, the quark.onnx supports quantizing models to other data formats, including INT16/UINT16, INT32/UINT32, Float16 and BFloat16, which can provide better accuracy or be used for experimental purposes. These new data formats are achieved by a customized version of QuantizeLinear and DequantizeLinear named "ExtendedQuantizeLinear" and "ExtendedDequantizeLinear", which expand onnxruntime's UInt8 and Int8 quantization to support UInt16, Int16, UInt32, Int32, Float16, and
-BFloat16. This customized Q/DQ was implemented by a custom operations library in quark.onnx using onnxruntime's custom operation C API.
+In addition to the INT8/UINT8, the quark.onnx supports quantizing models to other data formats, including INT16/UINT16, INT32/UINT32, Float16 and BFloat16, which can provide better accuracy or be used for experimental purposes. The code below is an example for Int16. The table below shows all data type specs.
 
-The custom operations library was developed based on Linux and Windows.
+.. code:: python
 
-To use this feature, the ``quant_format`` should be set to ExtendedQuantFormat.QDQ. You might have noticed that in both the recommended NPU_CNN and NPU_Transformer configurations, the ``quant_format`` is set to QuantFormat.QDQ. NPU targets that support acceleration for models quantized to INT8/UINT8, do not support other precision levels.
+    from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, Int16Spec
+
+    config = QConfig(global_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec()))
+    quantizer = ModelQuantizer(config)
+    quantizer.quantize_model(model_input, model_output, calibration_data_reader)
+
+
++----------------------+------------------+
+| Data Type            | Spec             |
++======================+==================+
+| Int8                 | Int8Spec         |
++----------------------+------------------+
+| UInt8                | UInt8Spec        |
++----------------------+------------------+
+| Int16                | Int16Spec        |
++----------------------+------------------+
+| UInt16               | UInt16Spec       |
++----------------------+------------------+
+| Int32                | Int32Spec        |
++----------------------+------------------+
+| UInt32               | UInt32Spec       |
++----------------------+------------------+
+| BFloat16             | BFloat16Spec     |
++----------------------+------------------+
+| BFP16                | BFP16Spec        |
++----------------------+------------------+
+| MX4                  | MX4Spec          |
++----------------------+------------------+
+| MX6                  | MX6Spec          |
++----------------------+------------------+
+| MX9                  | MX9Spec          |
++----------------------+------------------+
+| MXFP4E2M1            | MXFP4E2M1Spec    |
++----------------------+------------------+
+| MXFP6E3M2            | MXFP6E3M2Spec    |
++----------------------+------------------+
+| MXFP6E2M3            | MXFP6E2M3Spec    |
++----------------------+------------------+
+| MXFP8E5M2            | MXFP8E5M2Spec    |
++----------------------+------------------+
+| MXFP8E4M3            | MXFP8E4M3Spec    |
++----------------------+------------------+
+| MXInt8               | MXInt8Spec       |
++----------------------+------------------+
+
 
 .. note::
 
-     When the Quant_Type is Int4/UInt4, the onnxruntime version must be 1.19.0 or higher. Only the onnxruntime native "CalibrationMethod" is supported (MinMax, Percentile), and the quant_format is required to be QuantFormat.
-
-1.1 Quantizing Float32 Models to Int16 or Int32
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The quantizer supports quantizing float32 models to Int16 or Int32 data formats. To enable this, you need to set the ``activation_type`` and ``weight_type`` in the quantize_static API to the new data types. Options are ExtendedQuantType.QInt16/ExtendedQuantType.QUInt16 or ExtendedQuantType.QInt32/ExtendedQuantType.QUInt32.
-
-.. code:: python
-
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
-       activation_type=quark.onnx.ExtendedQuantType.QInt16,
-       weight_type=quark.onnx.ExtendedQuantType.QInt16,
-   )
-
-1.2 Quantizing Float32 Models to Float16 or BFloat16
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Besides integer data formats, the quantizer also supports quantizing Float32 models to Float16 or BFloat16 data formats. Set the ``activation_type`` and ``weight_type`` to ``ExtendedQuantType.QFloat16`` or ``ExtendedQuantType.QBFloat16``.
-
-.. code:: python
-
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
-       activation_type=quark.onnx.ExtendedQuantType.QFloat16,
-       weight_type=quark.onnx.ExtendedQuantType.QFloat16,
-   )
-
-1.3 Quantizing Float32 Models to BFP16
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The quantizer also supports quantizing Float32 models to BFP16 data formats. The block size can be modified by changing the ``block_size`` parameter in the ``extra_options``. The following is the configuration for BFP16 with a block size of 8.
-
-.. code:: python
-
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.NonOverflow,
-       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
-       activation_type=quark.onnx.ExtendedQuantType.QBFP,
-       weight_type=quark.onnx.ExtendedQuantType.QBFP,
-       extra_options={
-           "BFPAttributes": {
-               "bfp_method": "to_bfp",
-               "bit_width": 16,
-               "block_size": 8,
-           }
-       },
-   )
-
-1.4 Quantizing Float32 Models to MXINT8
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The quantizer also supports quantizing Float32 models to MXINT8 data formats. The block size can be modified by changing the ``block_size`` parameter in the ``extra_options``. The following is the configuration for MXINT8 with a block size of 32.
-
-.. code:: python
-
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.NonOverflow,
-       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
-       activation_type=quark.onnx.ExtendedQuantType.QMX,
-       weight_type=quark.onnx.ExtendedQuantType.QMX,
-       extra_options={
-           "MXAttributes": {
-               "element_dtype": "int8",
-               "block_size": 32,
-           }
-       },
-   )
-
-.. note::
-
-     When inference with ONNX Runtime, we need to register the custom op's so(Linux) or dll(Windows) file in the ORT session options.
+   BFP16 and MX data types use custom ops. When inference with ONNX Runtime, we need to register the custom op's so(Linux) or dll(Windows) file in the ORT session options.
 
 .. code:: python
 
@@ -168,45 +126,24 @@ The quantizer also supports quantizing Float32 models to MXINT8 data formats. Th
     sess_options.register_custom_ops_library(get_library_path(device))
     session = onnxruntime.InferenceSession(onnx_model_path, sess_options, providers=providers)
 
-1.5 Quantizing Float32 Models to Mixed Data Formats
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The quantizer even supports setting the activation and weight to different precision levels. For example, activation is Int16 while weight is Int8. This can be used when pure Int8 quantization cannot meet accuracy requirements.
-
-.. code:: python
-
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       quant_format=quark.onnx.ExtendedQuantFormat.QDQ,
-       activation_type=quark.onnx.ExtendedQuantType.QInt16,
-       weight_type=QuantType.QInt8,
-   )
-
 2. Quantizing Float16 Models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For models in Float16, we recommend setting ``convert_fp16_to_fp32`` to True. This first converts your Float16 model to a Float32 model before quantization, reducing redundant nodes such as cast in the model.
+For models in Float16, we recommend setting ``ConvertFP16ToFP32`` to True in extra_options. This first converts your Float16 model to a Float32 model before quantization, reducing redundant nodes such as cast in the model.
 
 .. code:: python
 
-   quark.onnx.quantize_static(
-       model_input,
-       model_output,
-       calibration_data_reader,
-       quant_format=QuantFormat.QDQ,
-       calibrate_method=quark.onnx.PowerOfTwoMethod.MinMSE,
-       activation_type=QuantType.QUInt8,
-       weight_type=QuantType.QInt8,
-       enable_NPU_cnn=True,
-       convert_fp16_to_fp32=True,
-       extra_options={'ActivationSymmetric':True}
-   )
+    from quark.onnx import ModelQuantizer, QConfig, QLayerConfig, Int8Spec
+
+    config = QConfig(global_config=QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec()),
+                     extra_options={"ConvertFP16ToFP32": True})
+    quantizer = ModelQuantizer(config)
+    quantizer.quantize_model(model_input, model_output, calibration_data_reader)
+
 
 .. note::
-    When using ``convert_fp16_to_fp32`` in quark.onnx, it requires onnxslim to simplify the ONNX model. Ensure that onnxslim is installed by using ``python -m pip install onnxslim``.
+
+   When using ``ConvertFP16ToFP32`` in quark.onnx, it requires onnxslim to simplify the ONNX model. Ensure that onnxslim is installed by using ``python -m pip install onnxslim``.
 
 Supported Op Type
 -----------------
@@ -215,6 +152,8 @@ Supported Op Type
 
 Summary Table
 ~~~~~~~~~~~~~
+
+**Note:** For built-in configs except those with block floating-point data types, the extra option ``ForceQuantizeNoInputCheck`` is set to ``True`` by default. In that case, ops listed below as "quantized only when input is quantized" are *always* quantized (their inputs are quantized and quantized outputs are produced). For custom configs with ``ForceQuantizeNoInputCheck=False``, those ops follow the input-dependent behavior.
 
 Table: List of Quark ONNX Supported Quantized Ops
 
@@ -225,12 +164,12 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | ArgMax                |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| AveragePool           | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| AveragePool           | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | BatchNormalization    | By default, the "optimize_model" parameter will fuse BatchNormalization to Conv/ConvTranspose/Gemm. For standalone BatchNormalization, quantization is supported only for NPU_CNN platforms by converting |
 |                       | BatchNormalization to Conv.                                                                                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Clip                  | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Clip                  | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Concat                |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -254,7 +193,7 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | InstanceNormalization |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| LayerNormalization    | Supported for opset>=17. Will be quantized only when its input is quantized.                                                                                                                              |
+| LayerNormalization    | Supported for opset>=17. Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                      |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | LeakyRelu             |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -266,7 +205,7 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Max                   | Quantization is supported only for NPU_CNN platforms.                                                                                                                                                     |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| MaxPool               | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| MaxPool               | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Mul                   |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -276,9 +215,9 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | ReduceMean            | Quantization is supported only for NPU_CNN platforms.                                                                                                                                                     |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Relu                  | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Relu                  | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Reshape               | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Reshape               | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Resize                |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -292,15 +231,15 @@ Table: List of Quark ONNX Supported Quantized Ops
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Split                 |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Squeeze               | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Squeeze               | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Sub                   | Quantization is supported only for NPU_CNN platforms.                                                                                                                                                     |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Tanh                  | Quantization is supported only for NPU_CNN platforms.                                                                                                                                                     |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Transpose             | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Transpose             | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Unsqueeze             | Will be quantized only when its input is quantized.                                                                                                                                                       |
+| Unsqueeze             | Quantized only when its input is quantized (or always when ForceQuantizeNoInputCheck=True).                                                                                                               |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Where                 |                                                                                                                                                                                                           |
 +-----------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Algorithm/Pre-Quant Optimization API for PyTorch."""
@@ -9,21 +9,24 @@ import torch.nn as nn
 from packaging import version
 from torch.utils.data import DataLoader
 
-from quark.shares.utils.import_utils import is_transformers_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_transformers_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.auto_smooth import AutoSmoothQuantProcessor
 from quark.torch.algorithm.awq.awq import AwqProcessor
 from quark.torch.algorithm.awq.smooth import SmoothQuantProcessor
+from quark.torch.algorithm.blockwise_joint_tuning.processor import BlockwiseJointTuningProcessor
 from quark.torch.algorithm.blockwise_tuning.blockwise_tuning import BlockwiseTuningProcessor
+from quark.torch.algorithm.config import BaseAlgoConfig
 from quark.torch.algorithm.depth_pruning.layer_importance import LayerImportancePrunerProcessor
 from quark.torch.algorithm.gptaq.gptaq import GptaqProcessor
 from quark.torch.algorithm.gptq.gptq import GptqProcessor
 from quark.torch.algorithm.osscar.osscar import OsscarProcessor
 from quark.torch.algorithm.qronos.qronos import QronosProcessor
 from quark.torch.algorithm.rotation.rotation import RotationProcessor
+from quark.torch.algorithm.svdquant.svdquant import SVDQuantProcessor
 from quark.torch.algorithm.utils.auto_config import add_auto_config, is_auto_config_needed
 from quark.torch.algorithm.utils.utils import get_device_map, set_device_map
-from quark.torch.pruning.config import Config as Pruning_Config
+from quark.torch.pruning.config import PConfig as Pruning_Config
 from quark.torch.quantization.config.config import QConfig
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
 
@@ -45,7 +48,9 @@ PROCESSOR_MAP = {
     "qronos": QronosProcessor,
     "osscar": OsscarProcessor,
     "blockwise_tuning": BlockwiseTuningProcessor,
+    "blockwise_joint_tuning": BlockwiseJointTuningProcessor,
     "layer_importance_depth_pruning": LayerImportancePrunerProcessor,
+    "svdquant": SVDQuantProcessor,
 }
 
 
@@ -63,7 +68,7 @@ def apply_advanced_quant_algo(
     # apply algorithms sequentially
     if config.algo_config is not None and len(config.algo_config) > 0:
         for module in model.modules():
-            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize | NonScaledFakeQuantize):
                 module.disable_fake_quant()
                 module.disable_observer()
 
@@ -139,22 +144,20 @@ def apply_advanced_pruning_algo(
 def blockwise_tuning_algo(
     fp_model: nn.Module,
     model: nn.Module,
-    config: Pruning_Config,
+    blockwise_tuning_config: BaseAlgoConfig,
     is_accelerate: bool | None,
     dataloader: DataLoader[torch.Tensor]
     | DataLoader[list[dict[str, torch.Tensor]]]
     | DataLoader[dict[str, torch.Tensor]]
     | None = None,
 ) -> nn.Module:
-    if config.blockwise_tuning_config is not None:
+    if blockwise_tuning_config is not None:
         logger.info("Blockwise tuning algorithm start.")
 
         device_map = get_device_map(model, is_accelerate)
 
-        pruner = PROCESSOR_MAP[config.blockwise_tuning_config.name](
-            fp_model, model, config.blockwise_tuning_config, dataloader
-        )
-        pruner.apply()
+        processor = PROCESSOR_MAP[blockwise_tuning_config.name](fp_model, model, blockwise_tuning_config, dataloader)
+        processor.apply()
 
         model = set_device_map(model, device_map)
 

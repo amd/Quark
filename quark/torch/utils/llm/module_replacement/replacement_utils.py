@@ -1,48 +1,65 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from types import MethodType
 from typing import TYPE_CHECKING, Any
 
-from quark.shares.utils.import_utils import (
+import torch
+import torch.nn as nn
+
+from quark.common.utils.import_utils import (
     is_accelerate_available,
-    is_torch_available,
     is_transformers_available,
     is_transformers_version_higher_or_equal,
 )
 
-if is_torch_available():
-    import torch
-    import torch.nn as nn
-
 if is_accelerate_available():
     from accelerate import init_empty_weights
-    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.hooks import add_hook_to_module
     from accelerate.utils import PrefixedDataset
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
+from quark.torch.utils.accelerate_helper import clone_align_devices_hook
 
 if is_transformers_available() and is_transformers_version_higher_or_equal("4.57.0"):
-    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextExperts
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (  # type: ignore[attr-defined]
+        Qwen3VLMoeTextExperts,
+    )
 
-if is_transformers_available():
+if is_transformers_available() and is_transformers_version_higher_or_equal("5.0.0"):
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import (  # type: ignore[attr-defined]
+        Qwen3MoeExperts,
+        Qwen3MoeMLP,
+        Qwen3MoeSparseMoeBlock,
+    )
+
+if is_transformers_available() and is_transformers_version_higher_or_equal("4.51.0"):
     from transformers.models.llama4.modeling_llama4 import (  # type: ignore[attr-defined]
-        Llama4TextConfig,
         Llama4TextExperts,
-        Llama4TextMoe,
     )
     from transformers.quantizers.base import SequentialLlama4TextExperts  # type: ignore[no-untyped-call]
 
+if is_transformers_available() and is_transformers_version_higher_or_equal("4.51.0") and TYPE_CHECKING:
+    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+    from transformers.models.llama4.modeling_llama4 import Llama4TextMoe
+
 if is_transformers_available() and is_transformers_version_higher_or_equal("4.55.1") and TYPE_CHECKING:
-    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts, GptOssTopKRouter
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts, GptOssMLP
+
+if is_transformers_available() and is_transformers_version_higher_or_equal("5.0.0") and TYPE_CHECKING:
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import (  # type: ignore[attr-defined]
+        Qwen3MoeSparseMoeBlock,
+    )
 
 
 logger = ScreenLogger(__name__)
 
 
 @torch.no_grad()
-def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Llama4TextConfig) -> None:
+def replace_llama4_experts_with_sequential(
+    moe_model: "Llama4TextMoe", config: "Llama4TextConfig", reload: bool = False
+) -> None:
     """
     Replaces the Llama4TextExperts module in a Llama4TextMoe model instance
     with a SequentialLlama4TextExperts instance, transferring weights.
@@ -50,6 +67,8 @@ def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Lla
     Args:
         moe_model: An instance of Llama4TextMoe containing Llama4TextExperts.
         config: The configuration object used to initialize the models.
+        reload: If True, only replace the module structure without transferring weights
+                (weights will be loaded from safetensors later).
 
     Returns:
         The modified moe_model instance with SequentialLlama4TextExperts.
@@ -62,12 +81,17 @@ def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Lla
     if not isinstance(moe_model.experts, Llama4TextExperts):
         raise TypeError(f"Expected moe_model.experts to be Llama4TextExperts, but got {type(moe_model.experts)}")
 
-    num_experts = config.num_local_experts
-    intermediate_size = config.intermediate_size
-
-    print("Replacing Llama4TextExperts with SequentialLlama4TextExperts...")
+    logger.info("Replacing Llama4TextExperts with SequentialLlama4TextExperts...")
     with init_empty_weights():
         new_experts = SequentialLlama4TextExperts(config)  # type: ignore[no-untyped-call]
+
+    if reload:
+        moe_model.experts = new_experts
+        logger.info("Successfully replaced experts in the model with SequentialLlama4TextExperts.")
+        return
+
+    num_experts = config.num_local_experts
+    intermediate_size = config.intermediate_size
 
     old_experts = moe_model.experts
     device = old_experts.gate_up_proj.device
@@ -117,21 +141,12 @@ def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Lla
                 dataset.all_keys.append(full_name)
                 dataset.state_dict[full_name] = layer_value[i]
 
-                quark_hook = AlignDevicesHook(
-                    execution_device=hook.execution_device,
-                    offload=hook.offload,
-                    io_same_device=hook.io_same_device,
-                    weights_map=prefixed_weights_map,
-                    offload_buffers=hook.offload_buffers,
-                    place_submodules=hook.place_submodules,
-                    skip_keys=hook.skip_keys,
-                    tied_params_map=hook.tied_params_map,
-                )
+                quark_hook = clone_align_devices_hook(hook, weights_map=prefixed_weights_map)  # pragma: no cover
                 if hasattr(mlp_expert, layer_name):
                     layer = getattr(mlp_expert, layer_name)
                     add_hook_to_module(layer, quark_hook)
                 else:
-                    print(f"Warning: Llama4TextMLP expert {i} missing {layer_name} layer during weight transfer.")
+                    logger.warning(f"Llama4TextMLP expert {i} missing {layer_name} layer during weight transfer.")
 
         else:
             if hasattr(mlp_expert, "gate_proj") and mlp_expert.gate_proj is not None:
@@ -152,7 +167,7 @@ def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Lla
 
     # Replace the experts module in the MoE model
     moe_model.experts = new_experts
-    print("Successfully replaced experts in the model with SequentialLlama4TextExperts.")
+    logger.info("Successfully replaced experts in the model with SequentialLlama4TextExperts.")
 
     # Optional: Explicitly delete the old experts object reference
     # The memory will be freed by GC if no other references exist
@@ -160,31 +175,136 @@ def replace_llama4_experts_with_sequential(moe_model: Llama4TextMoe, config: Lla
     torch.cuda.empty_cache()
 
 
-def _gptoss_router_forward(self: Any, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    hidden_states = hidden_states.reshape(-1, self.hidden_dim)
-    router_logits = self.linear(hidden_states)
+def _gptoss_mlp_forward_v4(self: Any, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Forward pass for patched GptOssMLP where self.router is an nn.Linear.
+    This is for transformers v4.x (< 5.0).
+    Adapted from transformers v4.57.6.
+    """
+    hidden_states_router = hidden_states.reshape(-1, self.hidden_dim)
+    router_logits = self.router(hidden_states_router)  # (seq_len, num_experts)
     router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=-1)  # (seq_len, top_k)
     router_top_value = torch.nn.functional.softmax(router_top_value, dim=1, dtype=router_top_value.dtype)
     router_scores = torch.zeros_like(router_logits).scatter_(1, router_indices, router_top_value)
-    return router_scores, router_indices
+
+    routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores)
+    return routed_out, router_scores
+
+
+def _gptoss_mlp_forward_v5(self: Any, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Forward pass for patched GptOssMLP where self.router is an nn.Linear.
+    This is for transformers v5.0+.
+    Adapted from transformers v5.2.0.
+    """
+    batch_size, sequence_length, hidden_dim = hidden_states.shape
+    hidden_states = hidden_states.reshape(-1, hidden_dim)
+
+    router_logits = self.router(hidden_states)  # (num_tokens, num_experts) - using nn.Linear
+    router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=-1)  # (num_tokens, top_k)
+    router_scores = torch.nn.functional.softmax(router_top_value, dim=1, dtype=router_top_value.dtype)
+
+    hidden_states_out = self.experts(hidden_states, router_indices, router_scores)
+    hidden_states_out = hidden_states_out.reshape(batch_size, sequence_length, hidden_dim)
+    return hidden_states_out, router_scores
 
 
 @torch.no_grad()
-def replace_gptoss_topkrouter_with_linear(
-    router: "GptOssTopKRouter",
+def replace_gptoss_mlp_with_linear_router(
+    mlp: "GptOssMLP",
 ) -> None:
-    router.linear = nn.Linear(router.hidden_dim, router.num_experts, bias=True)
-    router.linear.weight = router.weight
-    router.linear.bias = router.bias
+    """
+    Replace GptOssMLP.router (GptOssTopKRouter) with a direct nn.Linear layer.
+    This avoids state_dict mismatch by keeping the router as a simple linear layer.
 
-    delattr(router, "weight")
-    delattr(router, "bias")
+    The router logic is moved into the MLP's forward method.
+    """
+    # Get router configuration
+    router = mlp.router
 
-    router.forward = MethodType(_gptoss_router_forward, router)
+    # Create an nn.Linear directly to replace the router
+    linear_router = nn.Linear(
+        router.hidden_dim, router.num_experts, bias=True, dtype=router.weight.dtype, device=router.weight.device
+    )
+
+    # Copy the router weight and bias to the linear layer
+    linear_router.weight.data.copy_(router.weight.data)
+    linear_router.bias.data.copy_(router.bias.data)
+
+    # Store router config on the mlp for use in forward
+    mlp.top_k = router.top_k
+    mlp.num_experts = router.num_experts
+    mlp.hidden_dim = router.hidden_dim
+
+    # Replace the router with the linear layer
+    mlp.router = linear_router
+
+    # Replace forward method with the appropriate version based on transformers version
+    if is_transformers_version_higher_or_equal("5.0.0"):
+        mlp.forward = MethodType(_gptoss_mlp_forward_v5, mlp)
+    else:
+        mlp.forward = MethodType(_gptoss_mlp_forward_v4, mlp)
+
+
+def _qwen3moe_sparse_moe_block_forward(self: Any, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Forward pass for patched Qwen3MoeSparseMoeBlock where self.gate is an nn.Linear.
+    This incorporates the router logic directly into the MoeBlock forward.
+
+    # Adapted from https://github.com/huggingface/transformers/blob/v5.2.0/src/transformers/models/qwen3_moe/modeling_qwen3_moe.py#L266
+    """
+    batch_size, sequence_length, hidden_dim = hidden_states.shape
+    hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+
+    # Router logic (previously in Qwen3MoeTopKRouter.forward)
+    router_logits = self.gate(hidden_states_reshaped)  # (seq_len, num_experts) - using nn.Linear
+    router_logits = torch.nn.functional.softmax(router_logits, dtype=torch.float, dim=-1)
+    router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=-1)  # (seq_len, top_k)
+    if self.norm_topk_prob:
+        router_top_value /= router_top_value.sum(dim=-1, keepdim=True)
+    router_top_value = router_top_value.to(router_logits.dtype)
+    routing_weights = router_top_value
+    selected_experts = router_indices
+
+    # Expert forward
+    final_hidden_states = self.experts(hidden_states_reshaped, selected_experts, routing_weights)
+    return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
 
 @torch.no_grad()
-def replace_gptoss_experts_with_linear(experts_module: "GptOssExperts") -> None:
+def replace_qwen3moe_sparse_moe_block_with_linear_gate(
+    moe_block: "Qwen3MoeSparseMoeBlock",
+) -> None:
+    """
+    Replace Qwen3MoeSparseMoeBlock.gate (Qwen3MoeTopKRouter) with a direct nn.Linear layer.
+    This avoids state_dict mismatch by keeping the gate as a simple linear layer.
+
+    The router logic is moved into the MoeBlock's forward method.
+    """
+    # Get router configuration
+    router = moe_block.gate
+
+    # Create an nn.Linear directly to replace the router
+    linear_gate = nn.Linear(
+        router.hidden_dim, router.num_experts, bias=False, dtype=router.weight.dtype, device=router.weight.device
+    )
+
+    # Copy the router weight to the linear layer
+    linear_gate.weight.data.copy_(router.weight.data)
+
+    # Store router config on the moe_block for use in forward
+    moe_block.top_k = router.top_k
+    moe_block.norm_topk_prob = router.norm_topk_prob
+
+    # Replace the gate with the linear layer
+    moe_block.gate = linear_gate
+
+    # Replace forward method with the patched version
+    moe_block.forward = MethodType(_qwen3moe_sparse_moe_block_forward, moe_block)
+
+
+@torch.no_grad()
+def replace_gptoss_experts_with_linear(experts_module: "GptOssExperts", reload: bool = False) -> None:
     """
     Convert fused gate+up experts in `GptOssExperts` into three separate Linear layers
     per expert: `gate_up_proj` and `down_proj`.
@@ -193,12 +313,12 @@ def replace_gptoss_experts_with_linear(experts_module: "GptOssExperts") -> None:
     # ----- Resolve properties and device/dtype -----
     num_experts: int = experts_module.num_experts
     hidden_size: int = experts_module.hidden_size
-    expert_dim: int = experts_module.expert_dim
+    expert_dim: int = experts_module.intermediate_size
     original_device = experts_module.gate_up_proj.device
     original_dtype = experts_module.gate_up_proj.dtype
     is_meta: bool = getattr(experts_module.gate_up_proj, "is_meta", False) or original_device == torch.device("meta")
 
-    if is_meta:
+    if is_meta and not reload:
         experts_module._fused_gate_up = experts_module.gate_up_proj
         experts_module._fused_gate_up_bias = experts_module.gate_up_proj_bias
         experts_module._fused_down = experts_module.down_proj
@@ -216,16 +336,17 @@ def replace_gptoss_experts_with_linear(experts_module: "GptOssExperts") -> None:
         )
         setattr(experts_module, str(expert_index), expert_module)
 
-    weights_synced = _gptoss_sync_weights_to_linear(experts_module)
+    weights_synced = _moe_experts_sync_weights_to_linear(experts_module, model_type="gpt_oss")
 
     experts_module.forward = MethodType(_gptoss_forward, experts_module)
 
-    if weights_synced:
-        _gptoss_cleanup_fused(experts_module)
+    if weights_synced or reload:
+        _moe_experts_cleanup_fused(experts_module)
+        experts_module._weights_synced = True
 
 
 @torch.no_grad()
-def _gptoss_sync_weights_to_linear(module: nn.Module) -> bool:
+def _moe_experts_sync_weights_to_linear(module: nn.Module, model_type: str) -> bool:
     """
     Copy fused weights into per-expert Linear layers.
     Returns True if synced; returns False if fused weights are still on 'meta' (not materialized).
@@ -245,30 +366,64 @@ def _gptoss_sync_weights_to_linear(module: nn.Module) -> bool:
         return False
 
     # Defer if still on meta / not materialized
-    if (
-        getattr(W_gate_up, "is_meta", False)
-        or getattr(W_down, "is_meta", False)
-        or (hasattr(W_gate_up, "numel") and W_gate_up.numel() == 0)
-        or (hasattr(W_down, "numel") and W_down.numel() == 0)
-    ):
+    if W_gate_up.device.type == "meta" or W_down.device.type == "meta" or W_gate_up.numel() == 0 or W_down.numel() == 0:
         return False
 
-    try:
-        with torch.no_grad():
-            for expert_index in range(module.num_experts):
-                expert_module = getattr(module, str(expert_index))
-                expert_module.gate_up_proj.weight.data.copy_(W_gate_up[expert_index].t().to(W_gate_up.device))
+    with torch.no_grad():
+        for expert_index in range(module.num_experts):
+            # Access expert module using numeric string attribute
+            expert_module = getattr(module, str(expert_index))
+
+            # gate_up_proj.
+            expert_gate_up_proj_weight = W_gate_up[expert_index].to(W_gate_up.device)
+
+            # NOTE:
+            # gpt_oss stores gate_up_proj and down_proj as:
+            # https://github.com/huggingface/transformers/blob/v5.2.0/src/transformers/models/gpt_oss/modeling_gpt_oss.py#L75
+            # [num_experts, hidden_size, 2 * intermediate_size]
+            # while other models (e.g. qwen3_moe) store it as:
+            # [num_experts, 2 * intermediate_dim, hidden_dim]
+            # (e.g. https://github.com/huggingface/transformers/blob/v5.2.0/src/transformers/models/qwen3_moe/modeling_qwen3_moe.py#L226)
+            if model_type == "gpt_oss":
+                expert_gate_up_proj_weight = expert_gate_up_proj_weight.t()
+
+            # Check if expert module has fused gate_up_proj or separate gate_proj/up_proj
+            if hasattr(expert_module, "gate_up_proj"):
+                # Fused version (e.g., custom Module with gate_up_proj Linear)
+                expert_module.gate_up_proj.weight.data.copy_(expert_gate_up_proj_weight)
                 if b_gate_up is not None:
                     expert_module.gate_up_proj.bias.data.copy_(b_gate_up[expert_index].to(b_gate_up.device))
-                expert_module.down_proj.weight.data.copy_(W_down[expert_index].t().to(W_down.device))
-                if b_down is not None:
-                    expert_module.down_proj.bias.data.copy_(b_down[expert_index].to(W_down.device))
+            elif hasattr(expert_module, "gate_proj") and hasattr(expert_module, "up_proj"):
+                # Separate version (e.g., Qwen3MoeMLP with gate_proj and up_proj)
+                # Split the fused weight into gate and up
+                intermediate_size = expert_gate_up_proj_weight.shape[0] // 2
+                gate_weight = expert_gate_up_proj_weight[:intermediate_size, :]
+                up_weight = expert_gate_up_proj_weight[intermediate_size:, :]
 
-            module._weights_synced = True
-            return True
-    except Exception as e:
-        print(f"Warning: Failed to sync weights: {e}")
-        return False
+                expert_module.gate_proj.weight.data.copy_(gate_weight)
+                expert_module.up_proj.weight.data.copy_(up_weight)
+
+                if b_gate_up is not None:
+                    gate_bias = b_gate_up[expert_index][:intermediate_size].to(b_gate_up.device)
+                    up_bias = b_gate_up[expert_index][intermediate_size:].to(b_gate_up.device)
+                    expert_module.gate_proj.bias.data.copy_(gate_bias)
+                    expert_module.up_proj.bias.data.copy_(up_bias)
+            else:
+                raise AttributeError("Expert module has neither 'gate_up_proj' nor 'gate_proj'/'up_proj' attributes")
+
+            # down_proj.
+            expert_down_proj_weight = W_down[expert_index].to(W_down.device)
+
+            if model_type == "gpt_oss":
+                expert_down_proj_weight = expert_down_proj_weight.t()
+
+            expert_module.down_proj.weight.data.copy_(expert_down_proj_weight)
+
+            if b_down is not None:
+                expert_module.down_proj.bias.data.copy_(b_down[expert_index].to(W_down.device))
+
+        module._weights_synced = True
+        return True
 
 
 def _gptoss_forward(
@@ -277,8 +432,14 @@ def _gptoss_forward(
     router_indices: torch.Tensor | None = None,
     routing_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Forward using per-expert `gate_up_proj` and `down_proj`."""
-    synced = _gptoss_sync_weights_to_linear(self)
+    """
+    Forward using per-expert `gate_up_proj` and `down_proj`.
+
+    Compatible with both transformers v4.57 and v5.0+, falling back to 4.57 implementation.
+    - v4.57: routing_weights shape is (num_tokens, num_experts) - use as-is
+    - v5.0+: routing_weights shape is (num_tokens, top_k) - expand to (num_tokens, num_experts)
+    """
+    synced = _moe_experts_sync_weights_to_linear(self, model_type="gpt_oss")
     if not synced:
         raise RuntimeError(
             "GptOssExperts weights are on 'meta' (not materialized). "
@@ -287,48 +448,35 @@ def _gptoss_forward(
     batch_size: int = hidden_states.shape[0]
     token_states: torch.Tensor = hidden_states.reshape(-1, self.hidden_size)  # [num_tokens, hidden_size]
     num_tokens: int = token_states.shape[0]
-    expert_count: int = routing_weights.shape[1] if routing_weights is not None else self.num_experts
 
-    if self.training:
-        assert router_indices is not None and routing_weights is not None
-        next_states = torch.zeros_like(token_states, dtype=token_states.dtype, device=token_states.device)
+    assert router_indices is not None and routing_weights is not None
 
-        with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(
-                router_indices, num_classes=expert_count
-            )  # [num_tokens, top_k, num_experts]
-            expert_mask = expert_mask.permute(2, 1, 0)  # [num_experts, top_k, num_tokens]
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()  # [num_experts_hit, 1]
+    # Detect transformers version by routing_weights shape
+    # v4.57: (num_tokens, num_experts) - full expert weights
+    # v5.0+: (num_tokens, top_k) - only top-k expert weights, need to expand
+    is_v5_api = routing_weights.shape[1] != self.num_experts
 
-        for idx in expert_hit:
-            expert_index = int(idx[0].item())
-            _, token_index = torch.where(expert_mask[expert_index])  # [num_tokens_expert]
-            if token_index.numel() == 0:
-                continue
+    # NOTE: This patch simply falls back to 4.57 implementation, which may not be efficient,
+    # but at least yields the same perplexity with `transformers==4.57` and `transformers==5.2`.
+    # TODO: We need to see if we can update the forward code path here.
+    if is_v5_api:
+        # v5.0+: Expand routing_weights from (num_tokens, top_k) to (num_tokens, num_experts)
+        # by scattering the top-k weights to their respective expert positions
+        full_routing_weights = torch.zeros(
+            num_tokens, self.num_experts, device=routing_weights.device, dtype=routing_weights.dtype
+        )
+        # Use advanced indexing to scatter weights to expert positions
+        # router_indices: (num_tokens, top_k) - which experts are selected
+        # routing_weights: (num_tokens, top_k) - weights for selected experts
+        token_idx = torch.arange(num_tokens, device=routing_weights.device).unsqueeze(1).expand_as(router_indices)
+        full_routing_weights[token_idx, router_indices] = routing_weights
+        routing_weights = full_routing_weights
 
-            token_states_current = token_states.index_select(0, token_index)  # [num_tokens_expert, hidden_size]
-            expert_module = getattr(self, str(expert_index))
-
-            gate_up = expert_module.gate_up_proj(token_states_current)  # [num_tokens_expert, expert_dim]
-            gate_output, up_output = gate_up[..., ::2], gate_up[..., 1::2]
-
-            gate_output = gate_output.clamp(max=self.limit)
-            up_output = up_output.clamp(min=-self.limit, max=self.limit)
-            glu = gate_output * torch.sigmoid(gate_output * self.alpha)
-            gated_input = (up_output + 1) * glu  # [num_tokens_expert, expert_dim]
-            projected_states = expert_module.down_proj(gated_input)  # [num_tokens_expert, hidden_size]
-
-            routing_weight_current = routing_weights.index_select(0, token_index)[:, expert_index].unsqueeze(-1)
-            weighted_states = projected_states * routing_weight_current
-            next_states.index_add_(0, token_index, weighted_states.to(token_states.dtype))
-
-        return next_states.view(batch_size, -1, self.hidden_size)
-
-    # Inference
-    assert routing_weights is not None
+    # Now routing_weights has shape (num_tokens, num_experts) for both v4.57 and v5.0+
+    # Apply ALL experts to ALL tokens (inference mode)
     aggregated_states = torch.zeros(num_tokens, self.hidden_size, dtype=torch.float32, device=token_states.device)
 
-    for i in range(expert_count):
+    for i in range(self.num_experts):
         expert_module = getattr(self, str(i))
 
         gate_up = expert_module.gate_up_proj(token_states)  # [num_tokens, expert_dim * 2]
@@ -351,7 +499,7 @@ def _gptoss_forward(
 
 
 @torch.no_grad()
-def _gptoss_cleanup_fused(module: nn.Module) -> None:
+def _moe_experts_cleanup_fused(module: nn.Module) -> None:
     """Remove fused params from the module if desired."""
     for name in ["gate_up_proj", "gate_up_proj_bias", "down_proj", "down_proj_bias"]:
         if hasattr(module, name):
@@ -395,9 +543,6 @@ def replace_granite_moe_experts_with_linear(moe_module: Any) -> None:
     if not is_meta:
         moe_module._original_input_weights = moe_module.input_linear.weight.data.clone()
         moe_module._original_output_weights = moe_module.output_linear.weight.data.clone()
-    else:
-        moe_module._original_input_weights = moe_module.input_linear.weight
-        moe_module._original_output_weights = moe_module.output_linear.weight
 
     # Create separate linear layers for each expert
     target_device = device if not is_meta else torch.device("meta")
@@ -470,16 +615,19 @@ def replace_granite_moe_experts_with_linear(moe_module: Any) -> None:
     # Add custom forward propagation method
     moe_module.forward = MethodType(_granite_moe_forward, moe_module)
 
-    # Delete original fused parameters to save memory (on non-meta devices)
-    if not is_meta:
-        delattr(moe_module, "input_linear")
-        delattr(moe_module, "output_linear")
+    # Delete original fused parameters to save memory
 
-    print(f"Successfully replaced {num_experts} experts with separate linear layers")
+    delattr(moe_module, "input_linear")
+    delattr(moe_module, "output_linear")
+
+    logger.info(f"Successfully replaced {num_experts} experts with separate linear layers")
 
 
 @torch.no_grad()
-def _granite_moe_forward(self: Any, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _granite_moe_forward(
+    self: Any,
+    hidden_states: torch.Tensor,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Custom forward propagation function using separated expert linear layers for computation
 
@@ -487,8 +635,8 @@ def _granite_moe_forward(self: Any, hidden_states: torch.Tensor) -> tuple[torch.
         hidden_states: Input hidden states [batch_size, sequence_length, hidden_size]
 
     Returns:
-        Output tensor [batch_size, sequence_length, hidden_size]
-        Router logits [batch_size, sequence_length, num_experts]
+        - transformers >= 5.0: Output tensor [batch_size, sequence_length, hidden_size]
+        - transformers < 5.0: (Output tensor, Router logits [batch_size, sequence_length, num_experts])
     """
     batch_size, sequence_length, input_dim = hidden_states.shape
     num_experts = len(self.experts)
@@ -566,6 +714,8 @@ def _granite_moe_forward(self: Any, hidden_states: torch.Tensor) -> tuple[torch.
     # Restore original shape
     output_hidden_states = final_hidden_states.view(batch_size, sequence_length, input_dim)
 
+    if is_transformers_version_higher_or_equal("5.0.0"):
+        return output_hidden_states
     return output_hidden_states, router_logits
 
 
@@ -574,7 +724,7 @@ def replace_qwen3vlmoe_experts_with_linear(experts_module: "Qwen3VLMoeTextExpert
     Convert fused gate+up experts in `Qwen3VLMoeTextExperts` into three separate Linear layers
     per expert: `gate_proj`, `up_proj`, and `down_proj`.
     """
-    print("Converting Qwen3VLMoeTextExperts to use separate gate up down Linear layers...")
+    logger.info("Converting Qwen3VLMoeTextExperts to use separate gate/up/down Linear layers...")
 
     # ----- Resolve properties and device/dtype -----
     num_experts: int = experts_module.num_experts
@@ -603,6 +753,80 @@ def replace_qwen3vlmoe_experts_with_linear(experts_module: "Qwen3VLMoeTextExpert
     experts_module.forward = MethodType(_qwen3vlmoe_forward, experts_module)
     if weights_synced:
         _qwen3vlmoe_cleanup_fused(experts_module)
+
+
+@torch.no_grad()
+def replace_qwen3_moe_experts_with_linear(experts_module: "Qwen3MoeExperts", reload: bool = False) -> None:
+    """
+    Convert fused experts `gate_up_proj` and `down_proj` from 3D `nn.Parameter` to 2D:
+
+    - `gate_proj` nn.Linear.
+    - `up_proj` nn.Linear.
+    - `down_proj` nn.Linear.
+    """
+    num_experts: int = experts_module.num_experts
+    expert_dim: int = experts_module.intermediate_dim
+    original_device = experts_module.gate_up_proj.device
+    original_dtype = experts_module.gate_up_proj.dtype
+    default_dtype = torch.get_default_dtype()
+
+    # Get config from parent module if available
+    config = getattr(experts_module, "config", None)
+
+    # ----- Create per-expert modules using Qwen3MoeMLP -----
+    # Use device and dtype context managers to initialize directly on the correct device with correct dtype
+    torch.set_default_dtype(original_dtype)
+    with torch.device(original_device):
+        for expert_index in range(num_experts):
+            expert_module = Qwen3MoeMLP(config, intermediate_size=expert_dim)  # type: ignore
+            # Store experts as numeric string attributes directly on experts_module
+            # This avoids double nesting (experts.experts.0 vs experts.0)
+            setattr(experts_module, str(expert_index), expert_module)
+    torch.set_default_dtype(default_dtype)
+
+    weights_synced = _moe_experts_sync_weights_to_linear(experts_module, model_type="qwen3_moe")
+
+    experts_module.forward = MethodType(_qwen3_moe_forward, experts_module)
+
+    if weights_synced or reload:
+        _moe_experts_cleanup_fused(experts_module)
+
+
+# Adapted from https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen3_moe/modeling_qwen3_moe.py#L226
+def _qwen3_moe_forward(  # type: ignore[no-untyped-def]
+    self,
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+) -> torch.Tensor:
+    _, hidden_dim = hidden_states.shape
+
+    routing_weights = top_k_weights
+    selected_experts = top_k_index
+
+    final_hidden_states = torch.zeros_like(hidden_states)
+
+    # One hot encode the selected experts to create an expert mask
+    # this will be used to easily index which expert is going to be sollicitated
+    expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+    # Loop over all available experts in the model and perform the computation on each expert
+    expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+    for expert_idx in expert_hit:
+        expert_layer = getattr(self, str(expert_idx.item()))
+        idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+
+        # Index the correct hidden states and compute the expert hidden state for
+        # the current expert. We need to make sure to multiply the output hidden
+        # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+        current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+        current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+
+        # However `index_add_` only support torch tensors for indexing so we'll use
+        # the `top_x` tensor here.
+        final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+
+    return final_hidden_states
 
 
 @torch.no_grad()
@@ -649,16 +873,9 @@ def _qwen3vlmoe_sync_weights_to_linear(module: nn.Module) -> bool:
                         dataset.all_keys.append(full_name)
                         dataset.state_dict[full_name] = layer_value[index]
 
-                        quark_hook = AlignDevicesHook(
-                            execution_device=hook.execution_device,
-                            offload=hook.offload,
-                            io_same_device=hook.io_same_device,
-                            weights_map=prefixed_weights_map,
-                            offload_buffers=hook.offload_buffers,
-                            place_submodules=hook.place_submodules,
-                            skip_keys=hook.skip_keys,
-                            tied_params_map=hook.tied_params_map,
-                        )
+                        quark_hook = clone_align_devices_hook(
+                            hook, weights_map=prefixed_weights_map
+                        )  # pragma: no cover
                         linear_module = getattr(expert_module, layer_name)
                         add_hook_to_module(linear_module, quark_hook)
                         pass
@@ -678,7 +895,7 @@ def _qwen3vlmoe_sync_weights_to_linear(module: nn.Module) -> bool:
             module._weights_synced = True
             return True
     except Exception as e:
-        print(f"Warning: Failed to sync weights: {e}")
+        logger.warning(f"Failed to sync weights: {e}")
         return False
 
 

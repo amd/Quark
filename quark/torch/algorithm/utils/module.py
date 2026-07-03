@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 from functools import reduce
-from typing import Any, TypeVar, Union
+from typing import Any, TypeVar
 
 import torch
 import torch.nn as nn
@@ -26,11 +26,11 @@ def get_moe_layers(module: nn.Module) -> dict[str, nn.Linear]:
     return {name: m for name, m in module.named_modules() if "MoeBlock" in m.__class__.__name__}
 
 
-NestedStrListTuple = Union[
-    list[tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor]],
-    tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor],
-    object,
-]
+NestedStrListTuple = (
+    list[tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor]]
+    | tuple[str, tuple[str, ...] | torch.Tensor, torch.Tensor]
+    | object
+)
 
 
 def append_str_prefix(x: NestedStrListTuple, prefix: str) -> Any:

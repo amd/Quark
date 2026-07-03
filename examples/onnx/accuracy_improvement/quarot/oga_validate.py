@@ -28,7 +28,7 @@ WEIGHTS_NAME = "pytorch_model.bin"
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, args, block_size=512):
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         text = ""
         for i in testdata:
             text += i["text"]
@@ -63,7 +63,7 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
     from torch.nn import CrossEntropyLoss
 
     # Loop to handle MNLI double evaluation (matched, mis-matched)
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     test_data = ""
     for i in testdata:
         test_data += i["text"]
@@ -85,9 +85,7 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
     eval_loss = 0.0
     nb_eval_steps = 0
 
-    count = 0
-
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    for count, batch in enumerate(tqdm(eval_dataloader, desc="Evaluating")):
         inputs, labels = (batch, batch)
         with torch.no_grad():
             params.input_ids = inputs
@@ -104,7 +102,6 @@ def evaluate_onnx(args, model, tokenizer, prefix=""):
 
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
-        count += 1
 
     eval_loss = eval_loss / nb_eval_steps
     perplexity = torch.exp(torch.tensor(eval_loss))
@@ -183,7 +180,7 @@ def main():
         model = oga.Model(args.model_name_or_path)
 
         result = evaluate_onnx(args, model, tokenizer, prefix=prefix)
-        result = dict((k + f"_{global_step}", v) for k, v in result.items())
+        result = {k + f"_{global_step}": v for k, v in result.items()}
         results.update(result)
 
 

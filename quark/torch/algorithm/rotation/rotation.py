@@ -1,18 +1,19 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.rotation.hadamard import _get_hadamard_K, matmul_hadU
 from quark.torch.algorithm.rotation.rotation_utils import (
@@ -615,6 +616,12 @@ class RotationProcessor(BaseAlgoProcessor):
                     layer_name.replace("layer_id", str(layer_index)) for layer_name in layers_pattern["next_modules"]
                 ]
                 next_modules = resolve_star(next_modules, model)
+                for _, next_module_name in enumerate(next_modules):
+                    next_module = getattr_recursive(model, next_module_name)
+                    if not isinstance(next_module, nn.Linear):
+                        raise ValueError(
+                            f"The module {next_module_name} ({next_module}) is not an nn.Linear layer, although expected it. Are you certain your RotationConfig.scaling_layers configuration is correct?"
+                        )
             elif (r1 and not online_r1_rotation) or "r1" in smooth_positions:
                 raise ValueError(
                     f"Expected layers_pattern={layers_pattern} to contain a key `'next_modules'` when using online_r1_rotation=False, smooth_positions={smooth_positions}. Make sure the provided configuration is correct."

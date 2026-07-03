@@ -62,6 +62,8 @@ Here we only list a few important and commonly used arguments, please refer to t
 
   - **mem_opt_level**: (Int) Specifies the level of memory optimization. Options are 0, 1 and 2. Setting it to 0 disables optimization, making training faster but using more memory for caching. Setting it to 1 caches data one layer at a time, reducing memory usage at the cost of longer training times. Setting it to 2 saves layer data to a cache directory on disk and loads only one batch at a time, greatly lowering memory consumption but further increasing training time. The default value is 1.
 
+  - **use_gds**: (Bool) Specifies whether to enable GDS (GPU Direct Storage). When set to True, and when optim_device is 'cuda' and mem_opt_level is 2 on NVIDIA GPUs, a GDS pipeline is constructed to accelerate the fine-tuning process. This functionality is implemented using the NVIDIA DALI package; see https://docs.nvidia.com/deeplearning/dali/user-guide/docs/installation.html for details.
+
 AdaRound
 ~~~~~~~~
 

@@ -1,18 +1,18 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 import torch
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 from .constants import QUARK_DEBUG_NAN
 
 logger = ScreenLogger(__name__)
 
 
-def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
+def assert_no_nan(tensor: torch.Tensor | None, message: str) -> None:
     """
     Asserts that the tensor does not contain any NaN value. If it does, it will raise a `AssertionError` with the given message.
 
@@ -21,5 +21,5 @@ def assert_no_nan(tensor: torch.Tensor, message: str) -> None:
     :param torch.Tensor tensor: The tensor to check for NaNs.
     :param str message : The message to display in the ``AssertionError`` if the tensor contains NaNs.
     """
-    if QUARK_DEBUG_NAN:
+    if QUARK_DEBUG_NAN and tensor is not None:
         torch._assert_async(~torch.isnan(tensor).any(), message)

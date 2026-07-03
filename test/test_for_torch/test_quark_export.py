@@ -18,7 +18,8 @@ from torch.fx import GraphModule
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import (
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.testing_utils import (
     require_torch_higher_or_equal,
     retry_flaky_test,
     torch_device,
@@ -164,7 +165,7 @@ AWQ_CONFIG = AWQConfig(
     model_decoder_layers="model.decoder.layers",
 )
 
-EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
+EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
 sys.path.append("..")
 
 
@@ -482,7 +483,7 @@ def test_int16_onnx_export(tmpdir: str):
     for each_quant_config in [int16_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
         example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 7
@@ -511,7 +512,7 @@ def test_int16_onnx_export(tmpdir: str):
     for each_quant_config in [int16_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
         example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
 
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
@@ -547,7 +548,7 @@ def test_int32_onnx_export(tmpdir: str):
     for each_quant_config in [a8w8b32_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
         example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 7
@@ -568,7 +569,7 @@ def test_int32_onnx_export(tmpdir: str):
     for each_quant_config in [a8w8b32_quant_config]:
         float_model = Tiny_Conv_model().to(torch_device).eval()
         example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
 
         quantizer = ModelQuantizer(each_quant_config)
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])

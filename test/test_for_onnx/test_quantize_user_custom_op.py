@@ -15,10 +15,10 @@ from onnxruntime.quantization import CalibrationDataReader
 from onnxruntime_extensions import PyCustomOpDef, onnx_op
 from onnxruntime_extensions import get_library_path as ext_lib_path
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ModelQuantizer
 from quark.onnx.operators.custom_ops import _COP_DOMAIN, _COP_IN_OP_NAME, get_library_path
 from quark.onnx.quantization.config.custom_config import S16S16_MIXED_S8S8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 op_type = "MyCustomOp"
 op_domain = "ai.onnx.contrib"

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,10 +12,10 @@ from onnxruntime.transformers.fusion_gelu import FusionGelu
 from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
 from onnxruntime.transformers.onnx_model import OnnxModel
 
+from quark.common.utils.import_utils import _is_package_available
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.quantization.quant_utils import get_opset_version, load_model_with_shape_infer
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
-from quark.shares.utils.import_utils import _is_package_available
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .optimize import Optimizer
 

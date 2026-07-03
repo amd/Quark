@@ -17,8 +17,9 @@ from torch.fx import GraphModule
 import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_quant_powof2_scale as opt_after_qt_pow2_s
 import quark.torch.quantization.graph.optimization.pre_quant.opt_pass_before_quant as opt_befor_qt
 import quark.torch.quantization.graph.optimization.pre_quant.opt_pass_before_quant as opt_pre_qt_pass
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import retry_flaky_test, torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
@@ -202,7 +203,7 @@ def test_use_over_once_module_optim():
         each_fp_model(*example_inputs)
         # session 1
         # ========== test using hardware constrain ===============
-        graph_model_0 = torch.export.export_for_training(each_fp_model, example_inputs).module()
+        graph_model_0 = export_for_training(each_fp_model, example_inputs).module()
         graph_model = trans_opsfunc_2_quant_module(graph_model_0)
         graph_model = opt_instance(graph_model)
         out_fp32 = each_fp_model.eval()(*example_inputs)
@@ -210,13 +211,11 @@ def test_use_over_once_module_optim():
         for module in graph_model.modules():
             if isinstance(
                 module,
-                (
-                    QuantizedConvBatchNorm2d,
-                    QuantConvTransposeBatchNorm2d,
-                    QuantConv2d,
-                    QuantConvTranspose2d,
-                    QuantLinear,
-                ),
+                QuantizedConvBatchNorm2d
+                | QuantConvTransposeBatchNorm2d
+                | QuantConv2d
+                | QuantConvTranspose2d
+                | QuantLinear,
             ):
                 module.freeze_bn_stats() if isinstance(module, QUANT_CONV_WITH_BN) else None
                 count_QuantizeModule += 1
@@ -228,20 +227,18 @@ def test_use_over_once_module_optim():
         assert torch.allclose(out_fp32[1], out_opt_fx_graph[1], atol=ABSOLUTE_TOL)
 
         # session 2 not using hw constrain, will not copy another QuantModule instance
-        graph_model = torch.export.export_for_training(each_fp_model, example_inputs).module()
+        graph_model = export_for_training(each_fp_model, example_inputs).module()
         graph_model = trans_opsfunc_2_quant_module(graph_model)
         out_fp32 = each_fp_model.eval()(*example_inputs)
         count_QuantizeModule = 0
         for module in graph_model.modules():
             if isinstance(
                 module,
-                (
-                    QuantizedConvBatchNorm2d,
-                    QuantConvTransposeBatchNorm2d,
-                    QuantConv2d,
-                    QuantConvTranspose2d,
-                    QuantLinear,
-                ),
+                QuantizedConvBatchNorm2d
+                | QuantConvTransposeBatchNorm2d
+                | QuantConv2d
+                | QuantConvTranspose2d
+                | QuantLinear,
             ):
                 module.freeze_bn_stats() if isinstance(module, QUANT_CONV_WITH_BN) else None
                 count_QuantizeModule += 1
@@ -349,7 +346,7 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
     example_inputs = (torch.rand(1, 3, 15, 15).to(torch_device),)
     # session 1
     # ========== test using hardware constrain ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = trans_opsfunc_2_quant_module(graph_model)  # default op
     opt_instance = opt_pre_qt_pass.SplitQuantModuleCalledOverOnce()
     graph_model = opt_instance(graph_model)
@@ -366,7 +363,7 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
     assert fx_contain_module_num(graph_model, QuantConvTransposeBatchNorm2d) == 3
     assert torch.allclose(out_fp32, out_opt_fx_graph)
     # ========== test not using hardware constrain ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     opt_fx_before_qt = trans_opsfunc_2_quant_module(graph_model)  # default op
     out_fp32 = float_model.eval()(example_inputs[0])
     for module in graph_model.modules():
@@ -384,7 +381,7 @@ def test_torch_module_used_over_once_optim_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [mse_pow2_config, emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -437,7 +434,7 @@ def test_torch_sg_bn2d_to_conv2d_optim_strategy():
     example_inputs = (torch.rand(1, 3, 64, 64).to(torch_device),)
     # session 1
     # ========== test using hardware constrain ===============
-    graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model_2 = export_for_training(float_model, example_inputs).module()
     opt_graph_module = trans_opsfunc_2_quant_module(graph_model_2)  # default op
     opt_instance = opt_pre_qt_pass.ConvertBn2D2ConvQOPass()
     opt_graph_module = opt_instance(opt_graph_module)
@@ -448,7 +445,7 @@ def test_torch_sg_bn2d_to_conv2d_optim_strategy():
     assert torch.allclose(out_fp32, out_fx_graph, atol=ABSOLUTE_TOL)
 
     # ========== test quant pipeline==========
-    graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model_2 = export_for_training(float_model, example_inputs).module()
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(
         graph_model_2, [torch.rand(4, 3, 32, 32).to(torch_device) for _ in range(3)]
@@ -469,7 +466,7 @@ After quantization, conver a clip operation to Relu (with restriction, need to c
 
 class Tiny_Convert_Clip_To_Relu(nn.Module):
     def __init__(self):
-        super(Tiny_Convert_Clip_To_Relu, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1, bias=True)
         self.relu = nn.ReLU(inplace=True)
 
@@ -494,13 +491,13 @@ def test_torch_clip_2_relu_optim_strategy(tmpdir: str):
     float_model = Tiny_Convert_Clip_To_Relu().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 16, 16).to(torch_device),)
     # ========== test using hardware constrain ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     opt_graph_module = opt_after_qt_pow2_s.ConvertClip2ReLUQOPass()(graph_model)
     assert fx_contains_op_num(opt_graph_module, is_relu_act_node) == 1
     assert fx_contains_op_num(opt_graph_module, is_clip_node) == 4
     # ========== test quant pipeline===============
     quantizer = ModelQuantizer(quant_config)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
     _ = quantized_model.eval()(*example_inputs)
     assert fx_contains_op_num(quantized_model, is_relu_act_node) == 1
@@ -525,7 +522,7 @@ Before quantization, conver a mean to GAP (with restriction, need to check mean 
 
 class TinyMean2GAP(nn.Module):
     def __init__(self):
-        super(TinyMean2GAP, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(3, 8, 3, bias=True)
         self.pool1 = nn.AdaptiveAvgPool2d(1)
         self.pool2 = nn.AdaptiveAvgPool2d((2, 2))
@@ -579,7 +576,7 @@ def test_mean_2_pooling_strategy(tmpdir: str):
     quant_inputs = {"x" + str(index): value for index, value in enumerate(example_inputs)}
     fp_out = float_model(*example_inputs)
     # ========== test using hardware constrain ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_mean_node) == 4
     assert fx_contains_op_num(graph_model, is_adaptive_avg_pool2d_node) == 3
@@ -593,7 +590,7 @@ def test_mean_2_pooling_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [quant_inputs])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -626,7 +623,7 @@ convert split to slice:
 
 class TinyConvertSplit2Slice(nn.Module):
     def __init__(self):
-        super(TinyConvertSplit2Slice, self).__init__()
+        super().__init__()
         self.conv = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1, bias=True)
 
     def forward(self, x):
@@ -662,7 +659,7 @@ def test_torch_convert_split_2_slice_strategy(tmpdir: str):
     example_inputs = (torch.rand(1, 16, 28, 28).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit test ConvertSplit2SliceQOPass ===============
-    graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model_2 = export_for_training(float_model, example_inputs).module()
     for graph_model in [graph_model_2]:
         assert fx_contains_op_num(graph_model, _is_split_with_size_node) == 2
         assert fx_contains_op_num(graph_model, _is_sample_split_node) == 2
@@ -676,7 +673,7 @@ def test_torch_convert_split_2_slice_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(example_inputs[0])
         if each_quant_config == emp_quant_config:
@@ -778,7 +775,7 @@ def test_torch_fold_bn_after_concat_strategy(tmpdir: str):
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit fold_bn_after_concat ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = fold_bn_after_concat(graph_model)
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(example_inputs[0])
@@ -790,7 +787,7 @@ def test_torch_fold_bn_after_concat_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [quant_config, emp_quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(example_inputs[0])
         if each_quant_config == emp_quant_config:
@@ -858,7 +855,7 @@ def test_not_fold_bn_after_concat_strategy(tmpdir: str):
     example_inputs = (torch.rand(1, 16, 28, 28).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit fold_bn_after_concat ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = fold_bn_after_concat(graph_model)
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(example_inputs[0])
@@ -869,7 +866,7 @@ def test_not_fold_bn_after_concat_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(example_inputs[0])
         if each_quant_config == emp_quant_config:
@@ -919,7 +916,7 @@ def test_torch_layerNorm_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(example_inputs[0])
         if each_quant_config == emp_quant_config:
@@ -956,13 +953,13 @@ def test_torch_fuse_gelu_strategy(tmpdir: str):
     float_model = Tiny_Fuse_Gelu_Model().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     out = float_model(example_inputs[0])
-    # graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    # graph_model = export_for_training(float_model, example_inputs).module()
     # ========== test quant pipeline===============
     emp_config = QLayerConfig()
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
 
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         out_2 = quantized_model.eval()(example_inputs[0])
@@ -1006,7 +1003,7 @@ def test_torch_split_large_kernel_pool_strategy(tmpdir: str):
     example_inputs = (torch.rand(1, 3, 64, 100).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit SplitLargeKernelPoolQOPass ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(example_inputs[0])
     # checkt avgpooling num
@@ -1023,7 +1020,7 @@ def test_torch_split_large_kernel_pool_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
 
         quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
         quantized_model.eval()(example_inputs[0])  # out_2 =
@@ -1076,7 +1073,7 @@ def test_torch_delete_slice_strategy(tmpdir: str):
     quant_inputs = {"x" + str(index): value for index, value in enumerate(example_inputs)}
 
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_slice_node) in [11, 6]  # NOTE in torch2.9 this bug fixed
     opt_model = opt_befor_qt.ConvertDeleteRedundantSliceQOPass()(graph_model)
@@ -1089,7 +1086,7 @@ def test_torch_delete_slice_strategy(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, quant_config]:
         quantizer = ModelQuantizer(each_quant_config)
-        graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model = export_for_training(float_model, example_inputs).module()
         quantized_model = quantizer.quantize_model(graph_model, [quant_inputs])
         out_2 = quantized_model.eval()(*example_inputs)
         if each_quant_config == emp_quant_config:
@@ -1130,7 +1127,7 @@ def test_torch_sigmoid_2_hardsigmoid_strategy(tmpdir: str):
     torch.cuda.empty_cache()
     float_model = Tiny_Sigmoid_2_Hardsigmoid_Model().to(torch_device).eval()
     example_inputs = (torch.rand(8, 16).to(torch_device),)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_sigmoid_node) == 1
     opt_model = opt_befor_qt.ConvertSigmoid2HardSigmoidQOPass()(graph_model)
@@ -1144,7 +1141,7 @@ def test_torch_sigmoid_2_hardsigmoid_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1192,7 +1189,7 @@ def test_torch_silu_2_hardswish_strategy(tmpdir: str):
     float_model = Tiny_Silu_2_Hardsigmoid_Model().to(torch_device).eval()
     example_inputs = (torch.rand(8, 16).to(torch_device),)
     float_model(example_inputs[0])
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     # graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     assert fx_contains_op_num(graph_model, is_silu_node) == 1
     opt_model = opt_befor_qt.ConvertSilu2HardswishQOPass()(graph_model)
@@ -1206,7 +1203,7 @@ def test_torch_silu_2_hardswish_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1279,7 +1276,7 @@ def test_torch_adaptiveavgpool2d_2_qtadaptiveavgpool2d_strategy(tmpdir: str):
     )
     quant_inputs = {"x" + str(index + 1): value for index, value in enumerate(example_inputs)}
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
 
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     gp_out = graph_model(*example_inputs)
@@ -1294,7 +1291,7 @@ def test_torch_adaptiveavgpool2d_2_qtadaptiveavgpool2d_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1358,7 +1355,7 @@ def test_torch_avgpool2d_2_qtavgpool2d_strategy(tmpdir: str):
     float_model = TinyAveragePool2QuantQveragePool().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert all([torch.allclose(x[0], x[1]) for x in zip(fp_out, gp_out, strict=False)]) is True
     opt_graph = opt_befor_qt.ConverAvgpool2d2QuantAvgPool2dQOPass()(graph_model)
@@ -1371,7 +1368,7 @@ def test_torch_avgpool2d_2_qtavgpool2d_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1418,7 +1415,7 @@ def test_torch_leakyrelu_2_qtleakyrelu_strategy(tmpdir: str):
     float_model = TinyLeakyReluModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_befor_qt.ConvertLeakyReLu2QuantLeakyReLuQOPass()(graph_model)
@@ -1431,7 +1428,7 @@ def test_torch_leakyrelu_2_qtleakyrelu_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1480,7 +1477,7 @@ def test_torch_postquant_concat_strategy(tmpdir: str):
     float_model = TinyConcatModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.ApplyConstrain2ConcatQOPass()(graph_model)  # skip
@@ -1491,7 +1488,7 @@ def test_torch_postquant_concat_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1548,7 +1545,7 @@ def test_torch_align_single_in_out_strategy(tmpdir: str):
     float_model = TinySingleInOutModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.AlignSingleInOutOpScaleQOPass([torch.ops.aten.sigmoid.default])(graph_model)  # skip
@@ -1560,7 +1557,7 @@ def test_torch_align_single_in_out_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1625,7 +1622,7 @@ def test_torch_align_single_in_out_module_strategy(tmpdir: str):
     float_model = TinySingleInOutAvgpool2dModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -1636,7 +1633,7 @@ def test_torch_align_single_in_out_module_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1695,7 +1692,7 @@ def test_torch_adjust_shift_read_strategy(tmpdir: str):
     float_model = TinyAddModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -1706,7 +1703,7 @@ def test_torch_adjust_shift_read_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1771,7 +1768,7 @@ def test_torch_adjust_shift_write_strategy(tmpdir: str):
     float_model = TinyAddMULAdjustWriteModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -1782,7 +1779,7 @@ def test_torch_adjust_shift_write_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1852,7 +1849,7 @@ def test_torch_adjust_shift_cut_strategy(tmpdir: str):
     float_model = TinyAdjustShiftCutModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -1863,7 +1860,7 @@ def test_torch_adjust_shift_cut_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1925,7 +1922,7 @@ def test_torch_adjust_shift_bias_strategy(tmpdir: str):
     float_model = TinyAdjustShiftBiasModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -1936,7 +1933,7 @@ def test_torch_adjust_shift_bias_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -1992,7 +1989,7 @@ def test_torch_adjust_hard_sigmoid_strategy(tmpdir: str):
     float_model = TinyAdjustHardSigmoidModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -2003,7 +2000,7 @@ def test_torch_adjust_hard_sigmoid_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -2062,7 +2059,7 @@ def test_torch_adjust_shift_swishd_strategy(tmpdir: str):
     float_model = TinyAdjustShiftSwishModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -2073,7 +2070,7 @@ def test_torch_adjust_shift_swishd_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -2135,7 +2132,7 @@ def test_torch_convert_hard_sigmoid_dpu_strategy(tmpdir: str):
     float_model = TinySigmoidModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph = opt_after_qt_pow2_s.ConvertHardSigmoidDpuVersionQOPass()(graph_model)  # skip
@@ -2147,7 +2144,7 @@ def test_torch_convert_hard_sigmoid_dpu_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -2197,7 +2194,7 @@ def test_torch_convert_silu_strategy(tmpdir: str):
     float_model = TinySiLUModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_graph_model = replace_silu_node(graph_model)
@@ -2210,7 +2207,7 @@ def test_torch_convert_silu_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -2259,7 +2256,7 @@ def test_torch_delete_dropout_strategy(tmpdir: str):
     float_model = TinyDropoutModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_model_func = RemoveDropoutNode()
@@ -2270,7 +2267,7 @@ def test_torch_delete_dropout_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -2340,7 +2337,7 @@ def test_torch_bias_int32_strategy(tmpdir: str):
     float_model = TinyCONVModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     opt_model_func = AdjustBiasScaleQOPass()
@@ -2351,7 +2348,7 @@ def test_torch_bias_int32_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)

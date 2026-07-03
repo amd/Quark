@@ -1,13 +1,14 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassBase
 from quark.torch.quantization.graph.optimization.utils import is_quantizer_node
 from quark.torch.quantization.graph.torch_utils import (

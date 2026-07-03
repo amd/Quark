@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -12,10 +12,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 if TYPE_CHECKING:
-    from quark.torch.pruning.config import BlockwiseTuningConfig
+    from quark.torch.algorithm.config import BlockwiseTuningConfig
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward, blockwise_training
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, move_to_device
@@ -66,7 +66,7 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
         layer_inputs = [inp.detach().requires_grad_(False) for inp in self.inps]
         layer_outputs: list[torch.Tensor] = []
 
-        fp_layer_inputs = [inputs for inputs in layer_inputs]
+        fp_layer_inputs = list(layer_inputs)  # pragma: no cover
         fp_layer_outputs: list[torch.Tensor] = []
 
         forward_pass_use_cache = self.model.config.use_cache

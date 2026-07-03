@@ -17,7 +17,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.scale import apply_scale
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, get_named_linears, move_to_device
@@ -129,7 +129,7 @@ class SmoothQuantProcessor(BaseAlgoProcessor):
     ) -> tuple[dict[str, list[torch.Tensor]], dict[str, torch.Tensor]]:
         act_scales: dict[str, torch.Tensor] = {}
         num_batches = len(self.inps)
-        layer_inputs = [inp for inp in self.inps]
+        layer_inputs = list(self.inps)
         cur_layer_device = get_device(layer)
         layer_outputs = []
         cache_examples_on_gpu = True

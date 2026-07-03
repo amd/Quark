@@ -6,11 +6,10 @@
 #include "cu_utils.h"
 
 __global__ static void _tqt_backward_kernel(
-    const int N, float *x, float *scale,
-    float *quant_min, float *quant_max,
-    float *grad_logt, float *grad_output){
-
-  QUARK_KERNEL_LOOP(idx, N){
+  const int N, float *x, float *scale, float *quant_min, float *quant_max,
+  float *grad_logt, float *grad_output
+) {
+  QUARK_KERNEL_LOOP(idx, N) {
     float scaled_x = x[idx] / *scale;
     float rounded_scaled_x = 0.0;
     if (scaled_x - floorf(scaled_x) == 0.5) {
@@ -32,10 +31,10 @@ __global__ static void _tqt_backward_kernel(
 }
 
 void tqt_backward_kernel(
-    const int N, float *x, float *scale,
-    float *quant_min, float *quant_max,
-    float *grad_logt, float *grad_output){
-  _tqt_backward_kernel<<<QUARK_GET_BLOCKS(N),QUARK_CUDA_NUM_THREADS>>>(
+  const int N, float *x, float *scale, float *quant_min, float *quant_max,
+  float *grad_logt, float *grad_output
+) {
+  _tqt_backward_kernel<<<QUARK_GET_BLOCKS(N), QUARK_CUDA_NUM_THREADS>>>(
     N, x, scale, quant_min, quant_max, grad_logt, grad_output
   );
 }

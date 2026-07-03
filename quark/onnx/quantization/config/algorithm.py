@@ -1,20 +1,27 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Quark Quantization Algorithm Config API for ONNX"""
 
-from abc import ABC
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
+
+from .utils import config_to_dict
 
 logger = ScreenLogger(__name__)
 
 
 class AlgoConfig(ABC):
+    @abstractmethod
     def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError()
+
+    def to_dict(self) -> dict[str, Any]:
+        return config_to_dict(self)
 
 
 class SmoothQuantConfig(AlgoConfig):
@@ -410,6 +417,7 @@ class AdaRoundConfig(AlgoConfig):
                             - >0 enables multi-process data loading, which can significantly speed up data pipeline when dataset and transforms are heavy.
                             Note: Using multiple workers increases CPU usage and may require careful handling of worker-safe code.
     :param bool pin_memory: If True, the DataLoader will copy tensors into CUDA pinned memory before returning them.
+    :param bool use_gds: If True, with optim_device equals to 'cuda' and mem_opt_level equals to 2  on special GPU, the GDS (GPU Direct Storage) pipeline will be built to speedup the fine tuning process.
     """
 
     def __init__(
@@ -449,6 +457,7 @@ class AdaRoundConfig(AlgoConfig):
         select_max_mem_layer: bool = False,
         num_workers: int = 1,
         pin_memory: bool = False,
+        use_gds: bool = False,
     ) -> None:
         self.name: str = "adaround"
         self.optim_device = optim_device
@@ -479,6 +488,7 @@ class AdaRoundConfig(AlgoConfig):
         self.select_max_mem_layer = select_max_mem_layer
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.use_gds = use_gds
 
     def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
         adaround_config: dict[str, Any] = dict()
@@ -529,6 +539,8 @@ class AdaRoundConfig(AlgoConfig):
             adaround_config["FastFinetune"]["NumWorkers"] = self.num_workers
         if "PinMemory" not in extra_options["FastFinetune"]:
             adaround_config["FastFinetune"]["PinMemory"] = self.pin_memory
+        if "UseGDS" not in extra_options["FastFinetune"]:
+            adaround_config["FastFinetune"]["UseGDS"] = self.use_gds
         return adaround_config
 
 
@@ -588,6 +600,7 @@ class AdaQuantConfig(AlgoConfig):
                             - >0 enables multi-process data loading, which can significantly speed up data pipeline when dataset and transforms are heavy.
                             Note: Using multiple workers increases CPU usage and may require careful handling of worker-safe code.
     :param bool pin_memory: If True, the DataLoader will copy tensors into CUDA pinned memory before returning them.
+    :param bool use_gds: If True, with optim_device equals to 'cuda' and mem_opt_level equals to 2  on special GPU, the GDS (GPU Direct Storage) pipeline will be built to speedup the fine tuning process.
     """
 
     def __init__(
@@ -627,6 +640,7 @@ class AdaQuantConfig(AlgoConfig):
         select_max_mem_layer: bool = False,
         num_workers: int = 1,
         pin_memory: bool = False,
+        use_gds: bool = False,
     ) -> None:
         self.name: str = "adaquant"
         self.optim_device = optim_device
@@ -657,6 +671,7 @@ class AdaQuantConfig(AlgoConfig):
         self.select_max_mem_layer = select_max_mem_layer
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.use_gds = use_gds
 
     def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
         adaquant_config: dict[str, Any] = dict()
@@ -707,6 +722,8 @@ class AdaQuantConfig(AlgoConfig):
             adaquant_config["FastFinetune"]["NumWorkers"] = self.num_workers
         if "PinMemory" not in extra_options["FastFinetune"]:
             adaquant_config["FastFinetune"]["PinMemory"] = self.pin_memory
+        if "UseGDS" not in extra_options["FastFinetune"]:
+            adaquant_config["FastFinetune"]["UseGDS"] = self.use_gds
         return adaquant_config
 
 
@@ -764,7 +781,7 @@ def _resolove_algo_conflict(algorithms: list[AlgoConfig]) -> list[AlgoConfig]:
     new_algorithms = set()
     ada_count = 0
     for algo in algorithms:
-        if isinstance(algo, AdaRoundConfig) or isinstance(algo, AdaQuantConfig):
+        if isinstance(algo, AdaRoundConfig | AdaQuantConfig):
             ada_count += 1
         if ada_count >= 2:
             logger.warning(f"Only one of the AdaRound and AdaQuant can be selected. {algo.name} has been removed.")  # type: ignore
@@ -772,3 +789,50 @@ def _resolove_algo_conflict(algorithms: list[AlgoConfig]) -> list[AlgoConfig]:
             continue
         new_algorithms.add(algo)
     return list(new_algorithms)
+
+
+ALGO_NAME_TO_CLASS = {
+    "smooth_quant": SmoothQuantConfig,
+    "cle": CLEConfig,
+    "bias_correction": BiasCorrectionConfig,
+    "gptq": GPTQConfig,
+    "auto_mixprecision": AutoMixprecisionConfig,
+    "adaround": AdaRoundConfig,
+    "adaquant": AdaQuantConfig,
+    "quarot": QuarotConfig,
+}
+
+
+def from_dict(d: dict[str, Any]) -> AlgoConfig:
+    """
+    Convert a dictionary into an algorithm configuration object.
+
+    The dictionary must contain a valid algorithm name that maps
+    to a supported algorithm configuration class.
+
+    :param dict[str, Any] d: Dictionary representation of an algorithm config.
+    :return: Constructed AlgoConfig instance.
+    :raises ValueError: If the algorithm name is missing or unknown.
+    """
+    if "name" not in d:
+        raise ValueError("Algo config dict must contain field 'name'.")
+
+    name = d["name"]
+
+    if name not in ALGO_NAME_TO_CLASS:
+        raise ValueError(f"Unknown algo name: {name}")
+
+    Cls = ALGO_NAME_TO_CLASS[name]
+
+    kwargs = {k: v for k, v in d.items() if k != "name"}
+
+    return Cls(**kwargs)
+
+
+def add_method_to_subclasses(base_cls: type[AlgoConfig], method_name: str, method: Callable[..., Any]) -> None:
+    for cls in base_cls.__subclasses__():
+        setattr(cls, method_name, method)
+        add_method_to_subclasses(cls, method_name, method)
+
+
+add_method_to_subclasses(AlgoConfig, "from_dict", from_dict)  # type: ignore[type-abstract]

@@ -7,12 +7,12 @@ import unittest
 import numpy as np
 import onnx
 import onnxruntime
-from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
+from onnx_testing_utils import prepare_model
+from onnxruntime.quantization import CalibrationDataReader, QuantType
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod
 from quark.onnx.quantization.config import get_default_config
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -144,6 +144,9 @@ class DataReader(CalibrationDataReader):
             return input_dict
         return None
 
+    def __len__(self):
+        return len(self.data)
+
     def rewind(self):
         self.index = 0
 
@@ -251,6 +254,152 @@ def tensor_quantize(output_dir, quant_config):
     return output
 
 
+class TestComputeMinmseFromHistogram(unittest.TestCase):
+    def test_matches_raw_minmse_on_known_data(self):
+        """Histogram MSE worker must select same scale as raw-data worker on uniform data."""
+        from quark.onnx import PowerOfTwoMethod
+        from quark.onnx.calibration.collectors import compute_minmse_from_histogram, compute_minmse_worker
+        from quark.onnx.quantization.quant_utils import get_tensor_type_from_qType
+
+        rng = np.random.default_rng(42)
+        data = rng.uniform(-1.0, 1.0, size=10000).astype(np.float32)
+
+        num_bins = 2048
+        hist, edges = np.histogram(data, bins=num_bins)
+        rmin = np.array(data.min(), dtype=np.float32)
+        rmax = np.array(data.max(), dtype=np.float32)
+        histogram = (hist, edges.astype(np.float32), rmin, rmax)
+
+        act_type = get_tensor_type_from_qType(QuantType.QInt8)
+        name, (thresh_min, thresh_max) = compute_minmse_from_histogram(
+            tensor_name="test_tensor",
+            histogram=histogram,
+            quantized_tensor_type={},
+            activation_qType=act_type,
+            symmetric=True,
+        )
+
+        _, (ref_thresh_min, ref_thresh_max) = compute_minmse_worker(
+            "test_tensor", [data], {}, "All", act_type, True, PowerOfTwoMethod.MinMSE, 99.999
+        )
+
+        self.assertEqual(name, "test_tensor")
+        self.assertAlmostEqual(float(thresh_min), -float(thresh_max), places=4)
+        self.assertTrue(
+            np.isclose(float(thresh_max), float(ref_thresh_max)),
+            f"Histogram result {float(thresh_max)} does not match reference worker {float(ref_thresh_max)}",
+        )
+
+    def test_quantized_tensor_type_override(self):
+        """quantized_tensor_type override must change act_type used for candidate search."""
+        from quark.onnx.calibration.collectors import compute_minmse_from_histogram
+        from quark.onnx.quantization.quant_utils import get_tensor_type_from_qType
+
+        rng = np.random.default_rng(7)
+        data = rng.uniform(-0.5, 0.5, size=5000).astype(np.float32)
+        hist, edges = np.histogram(data, bins=512)
+        rmin = np.array(data.min(), dtype=np.float32)
+        rmax = np.array(data.max(), dtype=np.float32)
+        histogram = (hist, edges.astype(np.float32), rmin, rmax)
+
+        act_type_int8 = get_tensor_type_from_qType(QuantType.QInt8)
+
+        _, (min8, max8) = compute_minmse_from_histogram("t", histogram, {}, act_type_int8, symmetric=True)
+        _, (min16, max16) = compute_minmse_from_histogram(
+            "t", histogram, {"t": QuantType.QInt16}, act_type_int8, symmetric=True
+        )
+        self.assertNotEqual(float(max8), float(max16), "INT16 override should produce a different threshold than INT8")
+
+
+class TestPowOfTwoCollectorHistogram(unittest.TestCase):
+    def _make_collector(self, num_bins=64):
+        from quark.onnx.calibration.collectors import PowOfTwoCollector
+        from quark.onnx.calibration.methods import PowerOfTwoMethod
+
+        return PowOfTwoCollector(
+            activation_type=QuantType.QInt8,
+            method=PowerOfTwoMethod.MinMSE,
+            symmetric=True,
+            minmse_mode="All",
+            num_bins=num_bins,
+        )
+
+    def test_single_batch_creates_histogram(self):
+        """A single call to collect_histogram_value should create a histogram entry with the correct shape and counts."""
+        collector = self._make_collector()
+        data = np.linspace(-1.0, 1.0, 200, dtype=np.float32)
+        collector.collect_histogram_value({"t": [data]})
+        self.assertIn("t", collector.histogram_dict)
+        hist, edges, rmin, rmax = collector.histogram_dict["t"]
+        self.assertEqual(len(hist), 64)
+        self.assertEqual(len(edges), 65)
+        self.assertAlmostEqual(float(rmin), -1.0, places=4)
+        self.assertAlmostEqual(float(rmax), 1.0, places=4)
+        self.assertEqual(int(hist.sum()), 200)
+
+    def test_two_batches_same_range_counts_merge(self):
+        """Two batches with identical range should accumulate counts without expanding the histogram."""
+        collector = self._make_collector()
+        data = np.linspace(-1.0, 1.0, 100, dtype=np.float32)
+        collector.collect_histogram_value({"t": [data]})
+        collector.collect_histogram_value({"t": [data]})
+        hist, _, _, _ = collector.histogram_dict["t"]
+        self.assertEqual(int(hist.sum()), 200)
+
+    def test_expanding_range_preserves_all_counts(self):
+        """A batch that exceeds the current range should expand the histogram while preserving all sample counts."""
+        collector = self._make_collector()
+        batch1 = np.linspace(-1.0, 1.0, 100, dtype=np.float32)
+        batch2 = np.linspace(-2.0, 2.0, 100, dtype=np.float32)
+        collector.collect_histogram_value({"t": [batch1]})
+        collector.collect_histogram_value({"t": [batch2]})
+        hist, edges, rmin, rmax = collector.histogram_dict["t"]
+        self.assertEqual(int(hist.sum()), 200)
+        self.assertLessEqual(float(edges[0]), -2.0)
+        self.assertGreaterEqual(float(edges[-1]), 2.0)
+        self.assertAlmostEqual(float(rmin), -2.0, places=4)
+        self.assertAlmostEqual(float(rmax), 2.0, places=4)
+
+
+class TestPowOfTwoCollectorComputeMinmse(unittest.TestCase):
+    def test_compute_collection_result_uses_histogram_when_available(self):
+        """compute_collection_result should return symmetric thresholds derived from the accumulated histogram."""
+        from quark.onnx.calibration.collectors import PowOfTwoCollector
+        from quark.onnx.calibration.methods import PowerOfTwoMethod
+
+        collector = PowOfTwoCollector(
+            activation_type=QuantType.QInt8,
+            method=PowerOfTwoMethod.MinMSE,
+            symmetric=True,
+            minmse_mode="All",
+            num_bins=256,
+        )
+        rng = np.random.default_rng(0)
+        data = rng.uniform(-0.8, 0.8, 2000).astype(np.float32)
+        collector.collect_histogram_value({"act": [data[:1000]]})
+        collector.collect_histogram_value({"act": [data[1000:]]})
+
+        result = collector.compute_collection_result()
+        self.assertIn("act", result)
+        lo, hi = result["act"]
+        self.assertLess(float(lo), 0.0)
+        self.assertGreater(float(hi), 0.0)
+        self.assertAlmostEqual(float(lo), -float(hi), places=3)
+
+    def test_compute_collection_result_raises_when_no_data(self):
+        """compute_collection_result should raise ValueError when neither histogram nor raw data has been collected."""
+        from quark.onnx.calibration.collectors import PowOfTwoCollector
+        from quark.onnx.calibration.methods import PowerOfTwoMethod
+
+        collector = PowOfTwoCollector(
+            activation_type=QuantType.QInt8,
+            method=PowerOfTwoMethod.MinMSE,
+            symmetric=True,
+        )
+        with self.assertRaises(ValueError):
+            collector.compute_collection_result()
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_tensor_quantize_minmse_all_multiple_workers(self, tmpdir: str):
@@ -314,6 +463,60 @@ class TestTensorQuantize(unittest.TestCase):
         output = tensor_quantize(tmpdir, quant_config)
         comp_equal = np.allclose(output, output_tensor_distribution, atol=1e-1)
         self.assertEqual(np.all(comp_equal), True)
+
+
+class TestMinMSEHistogramMode(unittest.TestCase):
+    @use_temporary_directory
+    def test_histogram_mode_no_disk_writes(self, tmpdir: str):
+        """Histogram mode must not write .npystream files."""
+        import glob
+        import os
+
+        from quark.onnx.calibration.calibrators import PowOfTwoCalibrater
+        from quark.onnx.calibration.methods import PowerOfTwoMethod as Pof2
+
+        # Build the tiny test model
+        input_model_path, _ = prepare_model(tmpdir)
+        augmented_path = os.path.join(tmpdir, "augmented.onnx")
+
+        calibrator = PowOfTwoCalibrater(
+            model_input=input_model_path,
+            augmented_model_path=augmented_path,
+            method=Pof2.MinMSE,
+            minmse_mode="All",
+            symmetric=True,
+            num_bins=2048,
+        )
+        calibrator.augment_graph()
+        calibrator.execution_providers = ["CPUExecutionProvider"]
+        calibrator.create_inference_session()
+        calibrator.collect_data(DataReader(input_tensor))
+
+        npystream_files = glob.glob(os.path.join(tmpdir, "*.npystream"))
+        self.assertEqual(len(npystream_files), 0, f"Unexpected disk files: {npystream_files}")
+        result = calibrator.compute_data()
+        self.assertIsNotNone(result)
+
+
+class TestMinMSENumBinsOption(unittest.TestCase):
+    @use_temporary_directory
+    def test_custom_num_bins_accepted(self, tmpdir: str):
+        """MinMSENumBins extra_option is forwarded to PowOfTwoCalibrater via create_calibrator_power_of_two."""
+        import os
+
+        from quark.onnx.calibration.calibrators import create_calibrator_power_of_two
+        from quark.onnx.calibration.methods import PowerOfTwoMethod as Pof2
+
+        input_model_path, _ = prepare_model(tmpdir)
+        augmented_path = os.path.join(tmpdir, "augmented.onnx")
+
+        calibrator = create_calibrator_power_of_two(
+            model_input=input_model_path,
+            augmented_model_path=augmented_path,
+            calibrate_method=Pof2.MinMSE,
+            extra_options={"minmse_mode": "All", "num_bins": 512},
+        )
+        self.assertEqual(calibrator.num_bins, 512)
 
 
 if __name__ == "__main__":

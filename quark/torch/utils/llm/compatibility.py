@@ -14,7 +14,7 @@ import torch.nn as nn
 import transformers
 from packaging import version
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -56,7 +56,19 @@ class TransformersCompatibilityChecker:
         """Check model compatibility with current Transformers version."""
         self.issues = []
         self._check_deprecated_api_usage(model)
-        self._dry_run_check(model)
+
+        if hasattr(model, "config") and getattr(model.config, "quantization_config", None) is not None:
+            logger.info(
+                "Skipping dry-run forward pass: the model is a "
+                "pre-quantized model. A dry-run forward would trigger "
+                "in-place weight decompression in compressed modules "
+                "(e.g. compressed-tensors quantized linear), which would irreversibly change "
+                "the original pre-quantized weights from low-precision "
+                "(e.g. FP8) to high-precision (e.g. bfloat16) in-place"
+            )
+        else:
+            self._dry_run_check(model)
+
         return self.issues
 
     def _check_deprecated_api_usage(self, model: nn.Module) -> None:

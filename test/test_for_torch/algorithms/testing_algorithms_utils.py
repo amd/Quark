@@ -6,10 +6,10 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, Mxfp4Config
 
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import FROM_PRETRAINED_KWARGS, torch_device
 from quark.torch.quantization.api import ModelQuantizer
 from quark.torch.quantization.config.config import AlgoConfig, QConfig, QLayerConfig
-from quark.torch.utils.llm import prepare_for_moe_quant
+from quark.torch.utils.llm import preprocess_for_quantization
 
 
 def assert_non_destructive_transform(algo_config: AlgoConfig, model_id: str):
@@ -17,7 +17,7 @@ def assert_non_destructive_transform(algo_config: AlgoConfig, model_id: str):
     if "gpt-oss" in model_id or "gptoss" in model_id or "gpt_oss" in model_id:
         kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
 
-    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    model = AutoModelForCausalLM.from_pretrained(model_id, **FROM_PRETRAINED_KWARGS, **kwargs)
     model = model.eval()
     model = model.to(torch_device)
 
@@ -31,8 +31,8 @@ def assert_non_destructive_transform(algo_config: AlgoConfig, model_id: str):
     with torch.no_grad():
         res_ref = model(**inp).logits
 
-    if model.config.model_type == "gpt_oss":
-        prepare_for_moe_quant(model)
+    if model.config.model_type in ["gpt_oss", "qwen3_moe"]:
+        preprocess_for_quantization(model)
 
         with torch.no_grad():
             res_prepared_moe = model(**inp).logits

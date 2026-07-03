@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
@@ -26,8 +26,8 @@ def test_normal_int_config():
             round_method=RoundType.half_even,
             is_dynamic=False,
         )
-    except Exception:
-        raise ValueError("This unittest should not throw a error")
+    except Exception as e:
+        raise ValueError("This unittest should not throw a error") from e
     else:
         logger.info("Finish Test normal int quant config")
 
@@ -163,8 +163,8 @@ def test_normal_int_per_channel_config():
             ch_axis=0,
             is_dynamic=False,
         )
-    except Exception:
-        raise ValueError("This unittest should not throw a error")
+    except Exception as e:
+        raise ValueError("This unittest should not throw a error") from e
     else:
         logger.info("Finish Test normal int quant config")
 
@@ -218,8 +218,8 @@ def test_normal_int_per_group_config():
             group_size=64,
             is_dynamic=False,
         )
-    except Exception:
-        raise ValueError("This unittest should not throw a error")
+    except Exception as e:
+        raise ValueError("This unittest should not throw a error") from e
     else:
         logger.info("Finish Test normal int quant config")
 
@@ -265,8 +265,8 @@ def test_int_per_group_lack_group_size():
 def test_mx_quant_type():
     try:
         _ = QTensorConfig(dtype=Dtype.mx6, ch_axis=-1, group_size=64)
-    except Exception:
-        raise ValueError("This unittest should not throw a error")
+    except Exception as e:
+        raise ValueError("This unittest should not throw a error") from e
     else:
         logger.info("This is a norm mx quant config.")
 

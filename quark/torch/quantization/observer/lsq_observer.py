@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 from __future__ import annotations
@@ -11,7 +11,7 @@ import torch
 
 if TYPE_CHECKING:
     from quark.torch.quantization.config.config import QTensorConfig
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.observer.observer import UniformScalingObserver
 from quark.torch.quantization.utils import calculate_qmin_qmax, get_num_bits
 

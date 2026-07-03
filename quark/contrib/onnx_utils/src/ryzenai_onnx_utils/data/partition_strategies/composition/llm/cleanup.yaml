@@ -1,9 +1,0 @@
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
-
----
-setup: []
-passes:
-    - remove_dangling_nodes
-    - remove_unused_io
-    - sort_graph_io
-cleanup: []

@@ -1,26 +1,34 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
+from __future__ import annotations
+
 import math
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from quark.shares.utils.import_utils import is_accelerate_available
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import is_accelerate_available
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.config.type import QSchemeType
+
+if TYPE_CHECKING:
+    from accelerate.hooks import AlignDevicesHook
+
+    from quark.torch.quantization.inverse_quantizer import InverseWeightQuantizer
 
 from .mixin import QuantMixin
 
 if is_accelerate_available():
-    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.hooks import add_hook_to_module
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase, SequentialQuantize
+from quark.torch.utils.accelerate_helper import clone_align_devices_hook
 
 logger = ScreenLogger(__name__)
 
@@ -28,7 +36,20 @@ __all__ = ["QuantLinear", "QLoRaQuantLinear"]
 
 
 class QuantLinear(nn.Linear, QuantMixin):
-    """Quantized version of nn.Linear"""
+    """Quantized version of nn.Linear.
+
+    Supports two modes:
+    1. Standard quantization: Created from nn.Linear via `from_float()`
+    2. Re-quantization: Created from pre-quantized models (FP8Linear, compressed-tensors quantized linear) via `||``from_prequantized()``
+
+    Memory Efficiency Design (for pre-quantized models):
+    - Weights are stored in original dtype as self.weight
+    - get_quant_weight(self.weight) dequantizes on-the-fly before F.linear
+    - Dequantized float weights are temporary (not stored)
+    """
+
+    # Type hint for inverse quantizer (imported lazily to avoid circular imports)
+    _weight_quantizer_inv: InverseWeightQuantizer | None
 
     def __init__(
         self,
@@ -39,38 +60,85 @@ class QuantLinear(nn.Linear, QuantMixin):
         quant_config: QLayerConfig,
         **kwargs: Any,
     ) -> None:
-        super(QuantLinear, self).__init__(in_features, out_features, bias)
+        super().__init__(in_features, out_features, bias)
         if not bias:
-            # if bias is None Modify user settings
             quant_config.bias = None
         self.init_quantizer(quant_config, device, **kwargs)
+        self._weight_quantizer_inv = None
+
+    # ==================== Forward Methods ====================
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
         return self.forward_with_weight(*args, **kwargs, weight=self.weight, bias=self.bias)
 
     def forward_with_weight(
-        self, *args: Any, weight: torch.Tensor, bias: torch.Tensor | None, **kwargs: Any
+        self, *args: Any, weight: torch.Tensor | None, bias: torch.Tensor | None, **kwargs: Any
     ) -> torch.Tensor:
-        """
-        Allows to call `QuantLinear` forward with an arbitrary weight.
-
-        For example, it can be the original ``self.weight`` that has been transformed by a learnable orthogonal matrix, while we do not want to override ``self.weight``.
-        """
+        """Forward pass with explicit weight tensor."""
         quant_input = self.get_quant_input(args[0])
         quant_weight = self.get_quant_weight(weight)
         quant_bias = self.get_quant_bias(bias)
+
+        # Ensure dtype compatibility for F.linear
+        if quant_weight.dtype != quant_input.dtype:
+            quant_weight = quant_weight.to(quant_input.dtype)
+
         output = F.linear(quant_input, quant_weight, bias=quant_bias)
-        quant_output: torch.Tensor = self.get_quant_output(output)
+        return self.get_quant_output(output)
 
-        return quant_output
-
-    # In the original __init__ function of torch.nn.Linear,
-    # the reset_parameters function is called, which takes up a lot of time.
-    # This is the reason why inplace ops replacement is slow.
-    # Therefore, overload this function in this class to skip the parameter
-    # allocation operation, reducing the time of inplace ops replacement.
     def reset_parameters(self) -> None:
+        """Skip parameter initialization for faster layer replacement."""
         pass
+
+    @property
+    def is_prequantized(self) -> bool:
+        """Check if this QuantLinear was created from a pre-quantized model."""
+        return getattr(self, "_weight_quantizer_inv", None) is not None
+
+    def get_quant_weight(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Get quantized weight for forward pass.
+
+        Args:
+            x: Weight tensor (self.weight for both normal and pre-quantized models).
+
+        For pre-quantized models:
+            1. Dequantize from original format → float (temporary)
+            2. Apply new quantization → fake-quantized float
+            3. Return result (NOT stored in self.weight)
+
+        For normal models:
+            - If frozen: return self.weight directly
+            - Otherwise: apply quantization and return
+        """
+        # Case 1: Pre-quantized model
+        if self._weight_quantizer_inv is not None:
+            return self._get_requantized_weight(x)
+
+        # Case 2: Normal model
+        return self._get_normal_quant_weight(x)
+
+    def _get_requantized_weight(self, x: torch.Tensor) -> torch.Tensor:
+        """Dequantize and re-quantize weight for pre-quantized models."""
+        # Step 1: Dequantize to float (temporary)
+        dequant_weight = self._weight_quantizer_inv.dequantize(x)  # type: ignore[union-attr]
+
+        # Step 2: Apply new quantization
+        if self._weight_quantizer is not None:
+            return self._weight_quantizer(dequant_weight)
+        return dequant_weight
+
+    def _get_normal_quant_weight(self, x: torch.Tensor) -> torch.Tensor:
+        """Get quantized weight for normal (non-prequantized) models."""
+        # After freeze, self.weight contains final fake-quantized values
+        if self._weight_quantizer is not None and self._weight_quantizer.frozen_params:
+            return x
+
+        # Apply quantization
+        if self._weight_quantizer is not None:
+            x = self._weight_quantizer(x)
+            assert isinstance(x, torch.Tensor)
+        return x
 
     @classmethod
     def from_float(
@@ -98,20 +166,11 @@ class QuantLinear(nn.Linear, QuantMixin):
             # So get the buffer to the right device in the first place.
             hook = float_module._hf_hook
             # Default of hook.offload_buffers is False, we can't actually offload scale and zero, which would cause their values to be lost, unless you write them in weight_map.
-            quark_hook = AlignDevicesHook(
-                execution_device=hook.execution_device,
-                offload=hook.offload,
-                io_same_device=hook.io_same_device,
-                weights_map=hook.weights_map,
-                offload_buffers=hook.offload_buffers,
-                place_submodules=hook.place_submodules,
-                skip_keys=hook.skip_keys,
-                tied_params_map=hook.tied_params_map,
-            )
+            quark_hook = clone_align_devices_hook(hook)
             if buffer_device == torch.device("meta"):
                 buffer_device = float_module._hf_hook.execution_device
 
-        bias = False if (float_module.bias is None) and (reload is False or bias_tensor is None) else True
+        bias = not (float_module.bias is None and (reload is False or bias_tensor is None))
         quant_linear = cls(
             float_module.in_features, float_module.out_features, buffer_device, bias, layer_quant_config, reload=reload
         )
@@ -129,6 +188,114 @@ class QuantLinear(nn.Linear, QuantMixin):
             add_hook_to_module(quant_linear, quark_hook)
         return quant_linear
 
+    @classmethod
+    def from_prequantized(
+        cls,
+        prequant_module: nn.Module,
+        layer_quant_config: QLayerConfig,
+        device: torch.device | None = None,
+    ) -> QuantLinear:
+        """
+        Create QuantLinear from a pre-quantized module (FP8Linear, compressed-tensors quantized linear).
+
+        Memory Efficiency:
+        - Pre-quantized weights stored directly as self.weight (original dtype)
+        - Dequantized weights are temporary (only during forward pass)
+        """
+        from quark.torch.quantization.inverse_quantizer import create_inverse_quantizer
+
+        # Resolve device
+        device, buffer_device, quark_hook = cls._resolve_device_and_hook(prequant_module, device)
+
+        # Create QuantLinear
+        quant_linear = cls(
+            prequant_module.in_features,
+            prequant_module.out_features,
+            buffer_device,
+            bias=prequant_module.bias is not None,
+            quant_config=layer_quant_config,
+        )
+
+        # Store inverse quantizer BEFORE clearing original weights
+        quant_linear._weight_quantizer_inv = create_inverse_quantizer(prequant_module)
+
+        # Copy bias if present
+        if prequant_module.bias is not None:
+            quant_linear.bias = prequant_module.bias
+
+        # Setup weight storage and clear original module (memory-efficient)
+        # This must be done AFTER create_inverse_quantizer
+        cls._setup_prequant_weight(quant_linear, prequant_module)
+
+        # Handle multi-device hook
+        if quark_hook is not None:
+            add_hook_to_module(quant_linear, quark_hook)
+
+        return quant_linear
+
+    @classmethod
+    def _resolve_device_and_hook(
+        cls, prequant_module: nn.Module, device: torch.device | None
+    ) -> tuple[torch.device, torch.device, AlignDevicesHook | None]:
+        """Resolve device and accelerate hook from pre-quantized module."""
+        # Determine device from module attributes
+        if device is None:
+            for attr in ["weight", "weight_packed", "weight_scale_inv"]:
+                if hasattr(prequant_module, attr) and getattr(prequant_module, attr) is not None:
+                    device = getattr(prequant_module, attr).device
+                    break
+            else:
+                device = torch.device("cpu")
+
+        buffer_device = device
+        quark_hook = None
+
+        # Handle accelerate offloading
+        if hasattr(prequant_module, "_hf_hook"):
+            hook = prequant_module._hf_hook
+            quark_hook = clone_align_devices_hook(hook)  # pragma: no cover
+            if buffer_device == torch.device("meta"):
+                buffer_device = hook.execution_device
+
+        return device, buffer_device, quark_hook
+
+    @classmethod
+    def _setup_prequant_weight(cls, quant_linear: QuantLinear, prequant_module: nn.Module) -> None:
+        """Setup weight storage for pre-quantized module (memory-efficient).
+
+        Transfers weight ownership from prequant_module to quant_linear's self.weight,
+        then clears the original module to free memory.
+        """
+        has_packed = hasattr(prequant_module, "weight_packed") and prequant_module.weight_packed is not None
+
+        if has_packed:
+            # INT4 packed in INT32: store directly as self.weight
+            quant_linear.weight = nn.Parameter(prequant_module.weight_packed.detach(), requires_grad=False)
+            prequant_module.weight_packed = None
+        elif hasattr(prequant_module, "weight") and prequant_module.weight is not None:
+            # FP8 / INT8 / other: store directly as self.weight
+            quant_linear.weight = nn.Parameter(prequant_module.weight.detach(), requires_grad=False)
+            prequant_module.weight = None
+
+        # Clear remaining tensors from original module to free memory
+        # (already copied into InverseWeightQuantizer by create_inverse_quantizer)
+        for attr in (
+            "weight_scale",
+            "weight_zero_point",
+            "weight_shape",
+            "weight_global_scale",
+            "weight_scale_inv",
+            "weight_g_idx",
+        ):
+            if hasattr(prequant_module, attr):
+                setattr(prequant_module, attr, None)
+
+    def get_dequantized_weight(self) -> torch.Tensor:
+        """Get dequantized weight tensor (for debugging or export)."""
+        if self._weight_quantizer_inv is not None:
+            return self._weight_quantizer_inv.dequantize(self.weight)
+        return self.weight
+
     def state_dict(self, *args: Any, destination: Any = None, prefix: str = "", keep_vars: bool = False) -> Any:
         # Save scale, zeropoint of realquantizer directly at the qparamlinear level.
         # Since the recursive call of `state_dict`, Overloading `_save_to_state_dict` can not prevent real_quantizer from calling its `_save_to_state_dict`.
@@ -136,7 +303,7 @@ class QuantLinear(nn.Linear, QuantMixin):
         # In export or import flow, we need to modify the scale and zero_point to the right format, such as "_weight_quantizer.scale" -> "weight_scale",
         # "_weight_quantizer.zero_point" -> "weight_zero_point". However, in quantization flow, we need to get the state_dict as the original format, so we
         # add the "exported_enabled" flag to control whether we need to modify the state_dict format.
-        if not hasattr(self, "export_enabled") or not self.export_enabled.item() == 1:
+        if not hasattr(self, "export_enabled") or self.export_enabled.item() != 1:
             return super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
         destination = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
         params_names = [
@@ -254,7 +421,7 @@ class QLoRaQuantLinear(QuantLinear):
         quant_config: QLayerConfig,
         **kwargs: Any,
     ) -> None:
-        super(QLoRaQuantLinear, self).__init__(
+        super().__init__(
             in_features=in_features,
             out_features=out_features,
             device=device,

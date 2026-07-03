@@ -10,12 +10,12 @@ import numpy as np
 import onnxruntime
 import torch
 import torch.nn as nn
+from onnx_testing_utils import prepare_model
 from onnxruntime.quantization import CalibrationDataReader
-from testing_utils import prepare_model
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import Config, ExtendedCalibrationMethod, ModelQuantizer, get_library_path
 from quark.onnx.quantization.config.custom_config import A8W8_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -150,16 +150,16 @@ golden_output_7 = np.array(
 golden_output_8 = np.array(
     [
         [
-            -0.14297572,
-            -0.38560116,
-            -0.04332598,
-            0.00866519,
-            -0.4852509,
-            0.08231935,
-            0.11698013,
-            0.55023986,
-            -0.42459455,
-            -0.38126856,
+            0.5477523,
+            -0.05606913,
+            -0.16389439,
+            -0.19839847,
+            0.31916276,
+            -0.00431301,
+            0.19839847,
+            -0.25015458,
+            0.10351224,
+            0.03881709,
         ]
     ]
 ).astype(np.float32)
@@ -229,12 +229,12 @@ def tensor_quantize(config, output_dir):
 class SimpleConvModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.pad = nn.ZeroPad2d((2046, 2046, 2046, 2046))
+        self.pad = nn.ZeroPad2d((126, 126, 126, 126))
 
         self.conv = nn.Conv2d(
             in_channels=3,
             out_channels=3,
-            kernel_size=4096,
+            kernel_size=256,
             stride=1,
             padding=0,
             bias=False,

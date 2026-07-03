@@ -11,141 +11,60 @@ This topic outlines the best practice for Post-Training Quantization (PTQ) in AM
 
    **Figure 1. Best Practices for Quark ONNX Quantization**
 
-Pip Requirements
-----------------
+The flowchart above outlines the recommended step-by-step strategy for achieving your
+target accuracy. Follow these steps in order, moving to the next only when the current
+configuration does not meet your accuracy requirement.
 
-Install the necessary python packages:
+Step 1 — Start with XINT8
+--------------------------
 
-.. code-block:: bash
+Begin with XINT8, which uses symmetric INT8 quantization with power-of-two scales for
+both activations and weights. XINT8 is the native format for the Ryzen AI NPU and
+delivers the best inference performance. Many models meet their accuracy target at this
+step with no further tuning required.
 
-   python -m pip install -r requirements.txt
+Step 2 — Apply accuracy improvement algorithms (CLE, ADAROUND, ADAQUANT)
+--------------------------------------------------------------------------
 
-Prepare model
--------------
+If XINT8 alone does not meet your target, apply accuracy-improvement algorithms before
+switching to a higher-precision format. Try them in the following order:
 
-Download the ONNX float model from the `onnx/models <https://github.com/onnx/models>`__ repo directly:
+- **CLE (Cross Layer Equalization):** Try this first. CLE rescales weights across
+  adjacent layers to reduce quantization error. It adds no calibration overhead and is
+  the lowest-cost option to improve accuracy.
+- **ADAROUND (Adaptive Rounding):** If CLE is insufficient, ADAROUND optimizes the
+  rounding direction of each weight to minimize output reconstruction error. It requires
+  a small calibration set and a short optimization pass.
+- **ADAQUANT (Adaptive Quantization):** The most powerful of the three. ADAQUANT
+  minimizes layer-wise reconstruction error by jointly tuning quantization parameters.
+  It is more compute-intensive than ADAROUND but can recover accuracy in difficult cases.
 
-.. code-block:: bash
+Step 3 — Switch to a higher-precision format (A8W8, A16W8, BFP16, BF16)
+-------------------------------------------------------------------------
 
-   wget -P models https://github.com/onnx/models/raw/new-models/vision/classification/resnet/model/resnet50-v1-12.onnx
+If accuracy-improvement algorithms do not close the gap, consider switching to a format
+with greater numerical range or precision:
 
-Prepare Calibration Data
-------------------------
+- **A8W8:** Uses float scales instead of power-of-two scales. This relaxes the scale
+  constraint and often recovers accuracy lost in XINT8 without changing the INT8
+  bit-width.
+- **A16W8:** Uses INT16 activations with INT8 weights. The wider activation range makes
+  this a good choice when activation distributions are difficult to represent at INT8
+  precision.
+- **BF16 / BFP16:** Floating-point formats that preserve a wide dynamic range. Use these
+  when INT8-based formats consistently fall short, or when the model contains layers with
+  extreme outlier values.
 
-You can provide a folder containing PNG or JPG files as calibration data folder. For example, you can download images from https://github.com/microsoft/onnxruntime-inference-examples/tree/main/quantization/image_classification/cpu/test_images as a quick start. Specifically, you can provide the preprocessing code at line 63 in ``quantize_quark.py``
+After switching format, re-apply CLE, ADAROUND, or ADAQUANT if the new format still does
+not meet the target.
 
-.. code-block:: bash
+Step 4 — Exclude sensitive nodes
+---------------------------------
 
-    mkdir calib_data
-    wget -O calib_data/daisy.jpg https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification/cpu/test_images/daisy.jpg?raw=true
+As a final tuning step, identify layers that contribute disproportionately to accuracy
+loss and exclude them from quantization, leaving them in their original floating-point
+precision. This is most useful when a small number of layers are outliers that are
+difficult to quantize regardless of format. Because excluding nodes increases model size
+and may reduce NPU utilization, apply this selectively.
 
-
-Quantization
-------------
-
-- **XINT8**
-
-XINT8 uses symmetric INT8 input_tensors and weights quantization with power-of-two scales. Typically, the calibration method uses MinMSE. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config XINT8
-
-- **A8W8**
-
-A8W8 uses symmetric INT8 input_tensors and weights quantization with float scales. Typically, the calibration method uses MinMax. Refer to the following sections, such as **ADAROUND** and **ADAQUANT**, for methods to improve quantization accuracy based on this configuration.
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config A8W8
-
-- **A16W8**
-
-A16W8 uses symmetric INT16 input_tensors and symmetric INT8 weights quantization with float scales. Typically, the calibration method uses MinMax.
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config A16W8
-
-- **BF16**
-
-BFLOAT16 (BF16) is a 16-bit floating-point format designed for machine learning. It has the same exponent size as FP32, allowing a wide dynamic range, but with reduced precision to save memory and speed up computations.
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config BF16
-
-- **BFP16**
-
-Block Floating Point (BFP) quantization reduces computational complexity by grouping numbers to share a common exponent, thereby preserving accuracy efficiently. BFP offers both reduced storage requirements and high quantization precision.
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config BFP16
-
-- **CLE**
-
-The CLE (Cross Layer Equalization) algorithm is a quantization technique that balances weights across layers by scaling them proportionally, aiming to reduce accuracy loss and improve robustness in low-bit quantized neural networks. Consider XINT8 as the example:
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config XINT8 \
-                             --cle
-
-- **ADAROUND**
-
-ADAROUND (Adaptive Rounding) is a quantization algorithm that optimizes the rounding of weights by minimizing the reconstruction error, ensuring better accuracy retention for neural networks in post-training quantization. Consider XINT8 as the example:
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config XINT8 \
-                             --adaround \
-                             --learning_rate 0.1 \
-                             --num_iters 3000
-
-- **ADAQUANT**
-
-ADAQUANT (Adaptive Quantization) is a post-training quantization algorithm that optimizes quantization parameters by minimizing layer-wise reconstruction errors, enabling improved accuracy for low-bit quantized neural networks. Consider XINT8 as the example:
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config XINT8 \
-                             --adaquant \
-                             --learning_rate 0.00001 \
-                             --num_iters 10000
-
-- **Exclude Nodes**
-
-Excluding some nodes means that these nodes are quantized. The method can improve quantization accuracy. Consider XINT8 as the example:
-
-.. code-block:: bash
-
-   python quantize_quark.py  --input_model_path models/resnet50-v1-12.onnx \
-                             --calib_data_path calib_data \
-                             --output_model_path models/resnet50-v1-12_quantized.onnx \
-                             --config XINT8 \
-                             --exclude_nodes "resnetv17_conv0_fwd; resnetv17_stage1_conv0_fwd"
+**See also:** :doc:`Ryzen AI-Specific Tutorials <../../tutorial_onnx_ryzenai_specific_toc>`

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -8,14 +8,23 @@ import subprocess
 
 import torch
 
+from quark.common.utils.import_utils import is_transformers_available, is_transformers_version_higher_or_equal
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.type import Dtype
+
+logger = ScreenLogger(__name__)
+
+if is_transformers_available() and is_transformers_version_higher_or_equal("4.99"):
+    from transformers.core_model_loading import WeightRenaming
+else:
+    WeightRenaming = None  # type: ignore
 
 AWQ_QUANT_DTYPES = [Dtype.int4, Dtype.uint4, Dtype.int8, Dtype.uint8]
 AWQ_LOAD_MAP = {
-    "qweight": "weight",
-    "bias": "bias",
     "scales": "weight_quantizer.scale",
     "qzeros": "weight_quantizer.zero_point",
+    "qweight": "weight",
+    "bias": "bias",
 }
 LOAD_MAP = {
     "weight_scale": "weight_quantizer.scale",
@@ -36,6 +45,14 @@ LOAD_MAP_MULTI = {
     "input_zero_point": "input_quantizer.0.zero_point",
     "output_scale": "output_quantizer.0.scale",
     "output_zero_point": "output_quantizer.0.zero_point",
+    "weight_scale_2": "weight_quantizer.1.scale",
+    "weight_zero_point_2": "weight_quantizer.1.zero_point",
+    "bias_scale_2": "bias_quantizer.1.scale",
+    "bias_zero_point_2": "bias_quantizer.1.zero_point",
+    "input_scale_2": "input_quantizer.1.scale",
+    "input_zero_point_2": "input_quantizer.1.zero_point",
+    "output_scale_2": "output_quantizer.1.scale",
+    "output_zero_point_2": "output_quantizer.1.zero_point",
 }
 REVERSE_AWQ_LOAD_MAP = {
     "weight": "qweight",
@@ -124,11 +141,30 @@ def _check_scaled_mm_available_dev() -> str | None:
                 scaled_mm_available_dev = None
                 break
         if scaled_mm_available_dev == "hip":
-            print(
-                "[Warning] When the dtype of your model is float32 and custom_mode = 'fp8', a version of torch (rocm) lower than 2.4.0 will result in calculation errors of 'torch._scaled_mm', \n"
+            logger.warning(
+                "When the dtype of your model is float32 and custom_mode = 'fp8', a version of torch (rocm) lower than 2.4.0 will result in calculation errors of 'torch._scaled_mm'. "
                 "If you find that the ppl value is large, try to increase the version of torch. Besides, you should ensure your torch version matches your rocm to prevent errors."
             )
     return scaled_mm_available_dev
 
 
 SCALED_MM_AVAILABLE_DEV = _check_scaled_mm_available_dev()
+
+
+if is_transformers_available() and is_transformers_version_higher_or_equal("4.99"):
+    # Single-level quantization mappings (e.g., weight_scale -> weight_quantizer.scale), i.e. non-sequential.
+    QUARK_WEIGHT_CONVERSIONS = [
+        WeightRenaming(source_patterns=key, target_patterns=value) for key, value in LOAD_MAP.items()
+    ]
+
+    # Sequential quantization mappings (e.g. weight_scale -> weight_quantizer.0.scale, weight_scale_2 -> weight_quantizer.1.scale)
+    QUARK_WEIGHT_CONVERSIONS.extend(
+        [WeightRenaming(source_patterns=key, target_patterns=value) for key, value in LOAD_MAP_MULTI.items()]
+    )
+
+    QUARK_AWQ_WEIGHT_CONVERSIONS = [
+        WeightRenaming(source_patterns=key, target_patterns=value) for key, value in AWQ_LOAD_MAP.items()
+    ]
+else:
+    QUARK_WEIGHT_CONVERSIONS = []
+    QUARK_AWQ_WEIGHT_CONVERSIONS = []

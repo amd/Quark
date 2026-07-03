@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -16,9 +16,12 @@ from torch.nn.modules.utils import _pair
 from torch.nn.parameter import Parameter
 from typing_extensions import Self
 
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 
 from .mixin import QuantMixin
+
+logger = ScreenLogger(__name__)
 
 __all__ = [
     "QuantizedConvBatchNorm2d",
@@ -57,8 +60,10 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant args
-        quant_config: QLayerConfig = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
     ):
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         nn.modules.conv._ConvNd.__init__(
             self,
             in_channels,
@@ -167,7 +172,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
         return batch_mean, batch_var
 
     def reset_parameters(self) -> None:
-        super(_ConvBnNd, self).reset_parameters()
+        super().reset_parameters()
 
     def merge_bn_to_conv(self) -> None:
         with torch.no_grad():
@@ -218,7 +223,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd, QuantMixin):
 
     def clear_non_native_bias(self) -> None:
         if self.bias is None:
-            print("[WARNING] No bias to unmerge")
+            logger.warning("No bias to unmerge")
             return
 
         with torch.no_grad():
@@ -418,13 +423,14 @@ class QuantizedConvBatchNorm2d(_ConvBnNd, nn.Conv2d):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QLayerConfig | None = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
     ) -> None:
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
-        quant_config = QLayerConfig() if quant_config is None else quant_config
         _ConvBnNd.__init__(
             self,
             in_channels,
@@ -486,8 +492,10 @@ class _ConvTransposeBnNd(_ConvBnNd, nn.modules.conv._ConvTransposeNd):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QLayerConfig = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
     ):
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         super().__init__(
             in_channels,
             out_channels,
@@ -593,15 +601,16 @@ class QuantConvTransposeBatchNorm2d(_ConvTransposeBnNd):
         momentum: float = 0.1,
         freeze_bn_stats: bool = False,
         # quant config
-        quant_config: QLayerConfig | None = QLayerConfig(),
+        quant_config: QLayerConfig | None = None,
     ) -> None:
+        if quant_config is None:  # pragma: no cover
+            quant_config = QLayerConfig()
         kernel_size = _pair(kernel_size)
         stride = _pair(stride)
         padding = _pair(padding)
         dilation = _pair(dilation)
         output_padding = _pair(output_padding)
-        quant_config = QLayerConfig() if quant_config is None else quant_config
-        super(QuantConvTransposeBatchNorm2d, self).__init__(
+        super().__init__(
             in_channels,
             out_channels,
             kernel_size,

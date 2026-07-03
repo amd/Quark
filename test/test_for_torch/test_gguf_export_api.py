@@ -59,7 +59,9 @@ def generate_llama_json():
             "architectures": ["LlamaForCausalLM"],
             "bos_token_id": 1,
             "eos_token_id": 2,
-            "_name_or_path": "/group/ossmodelzoo/quark_torch/huggingface_pretrained_models/meta-llama/Llama-2-7b-hf",
+            "_name_or_path": os.path.join(
+                os.environ.get("HF_HOME", "/tmp"), "pretrained_models", "meta-llama", "Llama-2-7b-hf"
+            ),
             "transformers_version": "4.37.2",
             "model_type": "llama",
         },

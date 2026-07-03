@@ -1,17 +1,18 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import operator
 
 import torch
-from torch.ao.quantization.pt2e.utils import _get_tensor_constant_from_node
 from torch.fx import GraphModule, Node
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import _get_tensor_constant_from_node
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig
 from quark.torch.quantization.graph.optimization.utils import (
     _copy_node_meta_info,
+    get_node_original_module_name,
     is_all_nodes_save_parameters,
     replace_ops_module_name_suffix,
 )
@@ -35,7 +36,7 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
         required: [input, weight]
         optional: [bias, running_mean, running_var, training]
     """
-    device = [module for module in m.parameters()][0].device  # cpu/gpu
+    device = list(m.parameters())[0].device  # cpu/gpu
     count_replace_num = 0  # used for track
     recognized_but_not_optimized = 0
     quant_module_id_2_name: dict[str, str] = {}
@@ -53,7 +54,8 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             recognized_but_not_optimized += 1
             logger.warning(f"Conv Node: {conv_node.name} have multi users, skip replace to QuantizedConvBatchNorm2d.")
             continue
-
+        org_bn_name = get_node_original_module_name(bn_node)
+        org_conv_name = get_node_original_module_name(conv_node)
         # get all need param
         conv_weight_node = conv_node.args[1]
         conv_bias_node = conv_node.args[2] if len(conv_node.args) > 2 else None
@@ -72,7 +74,7 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             )
         ) or (not is_all_nodes_save_parameters(m, need_check_node)):
             logger.warning(
-                f"Skip replace node: {conv_node.name} and {bn_node.name} to QuantizedConvBatchNorm2d, bacause not all args (Nodes): {need_check_node} save Parameters."
+                f"Skip replace node: {conv_node.name} and {bn_node.name} to QuantizedConvBatchNorm2d, because not all args (Nodes): {need_check_node} save Parameters."
             )
 
             recognized_but_not_optimized += 1
@@ -177,6 +179,10 @@ def replace_conv2dbn_quantizedconv_module(m: GraphModule) -> GraphModule:
             convbn_node = m.graph.create_node("call_module", convbn_name, (input_activation_node,), {})
             # NOTE modify the node's meta info
             _copy_node_meta_info(org_node=conv_node, target_node=convbn_node)
+            assert not hasattr(convbn_node.meta, "org_module_name")
+            convbn_node.meta["org_module_name"] = (
+                org_conv_name + "_" + org_bn_name if (org_conv_name is not None and org_bn_name is not None) else None
+            )
             # NOTE to compatable with different ops.aten.bn version
             # <built-in function getitem> (batchnorm followed by getitem)
             if isinstance(bn_node.next.target, type(operator.getitem)):

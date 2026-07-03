@@ -14,26 +14,26 @@ from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from quark.torch.pruning.config import Config, LayerImportancePruneConfig
+from quark.torch.pruning.config import LayerImportancePruneConfig, PConfig
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from quark.contrib.llm_eval import eval_model
 from quark.torch.utils.llm import get_model, save_model, set_seed
 
 
-def get_config(args: argparse.Namespace, model_type: str) -> Config:
+def get_config(args: argparse.Namespace, model_type: str) -> PConfig:
     algo_config_file = "models/" + model_type + "/layer_importance_config.json"
     with open(algo_config_file) as file:
         algo_config_info = json.load(file)
     pruning_algo_config = LayerImportancePruneConfig.from_dict(algo_config_info)
     blockwise_tuning_config = None
 
-    pruning_config = Config(algo_config=pruning_algo_config, blockwise_tuning_config=blockwise_tuning_config)
+    pruning_config = PConfig(algo_config=pruning_algo_config, blockwise_tuning_config=blockwise_tuning_config)
     return pruning_config
 
 
 def get_wikitext_dataset(model_dir: str, dev: torch.device, **kwargs: Any):
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     tokenizer = AutoTokenizer.from_pretrained(
         model_dir,
         trust_remote_code=True,

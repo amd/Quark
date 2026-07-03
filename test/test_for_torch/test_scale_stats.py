@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from quark.shares.utils.testing_utils import torch_device
+from quark.common.utils.testing_utils import torch_device
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import Int8PerTensorSpec, QConfig, QLayerConfig
 
@@ -37,6 +37,7 @@ tempdir = tempfile.TemporaryDirectory()
 
 
 @patch("quark.torch.quantization.debug.SCALE_DEBUG_DIR", tempdir.name)
+@patch("quark.torch.quantization.api.QUARK_CHECK_SCALE", True)
 def test_smoke_check_scale_stats():
     model = TestModel()
     model = model.to(torch.float16).to(torch_device)
@@ -47,13 +48,10 @@ def test_smoke_check_scale_stats():
     quantizer = ModelQuantizer(config)
     dataloader = DataLoader([torch.rand((12, 12), dtype=torch.float16).to(torch_device)] * 2)
 
-    os.environ["QUARK_CHECK_SCALE"] = "1"
-
     try:
         quantizer.quantize_model(model, dataloader=dataloader)
     except BaseException as e:
         assert isinstance(e, SystemExit)
-    del os.environ["QUARK_CHECK_SCALE"]
 
     files = os.listdir(tempdir.name)
     assert "scale_stats.json" in files

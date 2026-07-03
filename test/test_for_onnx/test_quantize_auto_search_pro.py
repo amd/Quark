@@ -16,10 +16,10 @@ import onnxruntime
 import torch
 import torch.nn as nn
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import AutoSearchPro, generate_all_configs, get_auto_search_config
 from quark.onnx.quantization.auto_search.auto_search_pro import replace_keys, validate_keys
 from quark.onnx.quantization.output_eval import calculate_l1_distance, calculate_ssim
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 input_tensor = np.array(
     [
@@ -121,7 +121,7 @@ class DataReader:
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)

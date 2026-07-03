@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 # from packaging import version
@@ -11,7 +11,8 @@ from onnxruntime.quantization.onnx_model import ONNXModel
 from torch.fx import GraphModule
 from torch.nn import Module
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -75,9 +76,7 @@ class TorchModuleImporter(GraphImporter):
         if not self._pre_check(model, args, kwargs):
             raise ValueError("This torch.nn.Module is not supported please check")
         graph_module: GraphModule
-        graph_module = torch.export.export_for_training(
-            mod=model, args=args, kwargs=kwargs, dynamic_shapes=dynamic_shapes
-        ).module()  # type: ignore
+        graph_module = export_for_training(mod=model, args=args, kwargs=kwargs, dynamic_shapes=dynamic_shapes).module()  # type: ignore
         return graph_module
 
 

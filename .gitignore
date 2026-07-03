@@ -149,6 +149,7 @@ quantized_info.csv
 # document generation
 _docs_build
 /docs/_docs
+/docs/source/tutorials # Copied from /tutorials during doc build
 
 # Build files
 *_hip.cc
@@ -164,3 +165,7 @@ dataset_cache/
 
 # Debian packages
 *.deb
+
+# Claude Code
+.claude/settings.local.json
+CLAUDE.local.md

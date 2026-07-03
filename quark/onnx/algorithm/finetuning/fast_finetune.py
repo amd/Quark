@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import os
@@ -9,11 +9,16 @@ from typing import Any
 
 import numpy as np
 import onnx
+import torch
 from tqdm import tqdm
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.algorithm.finetuning.torch_utils import estimate_largest_mem_layer
-from quark.onnx.utils.file_utils import save_quantized_info
-from quark.shares.utils.log import ScreenLogger
+from quark.onnx.utils.file_utils import (
+    load_model_layers_to_finetune,
+    save_model_layers_to_finetune,
+    save_quantized_info,
+)
 
 from .onnx_evaluate import average_L2, inference_model
 from .onnx_subgraph import Subgraph
@@ -70,10 +75,18 @@ def fast_finetune(
     )
 
     # Memory profiling to find the estimated peak memory layer
-    selected_fastft_layers = [i for i in range(len(sg.subgraph_qmodel_list))]
+    selected_fastft_layers = list(range(len(sg.subgraph_qmodel_list)))
     if extra_options.get("FastFinetune", {}).get("SelectMaxMemLayer", False):
         selected_fastft_layers = estimate_largest_mem_layer(sg)
         logger.info(f"The largest estimated memory usage layer index is: {selected_fastft_layers}")
+
+    save_and_restore = extra_options.get("SaveAndRestore")
+    if save_and_restore and os.path.exists(save_and_restore):
+        saved_model, saved_layers = load_model_layers_to_finetune(save_and_restore)
+        if saved_model:
+            quant_model = saved_model
+        if saved_layers:
+            selected_fastft_layers = saved_layers
 
     onnx_inference_time = 0.0
     torch_training_time = 0.0
@@ -83,6 +96,11 @@ def fast_finetune(
     for i, module in tqdm(enumerate(sg.subgraph_qmodel_list), total=len(sg.subgraph_qmodel_list)):
         if i not in selected_fastft_layers:
             continue
+        if save_and_restore is not None:
+            save_model_layers_to_finetune(
+                save_and_restore, idx=i, sg=sg, use_external_data_format=use_external_data_format
+            )
+
         # Prepare input and output data for the training
         got_data_flag: bool = False
         start_time = time.perf_counter()
@@ -150,8 +168,21 @@ def fast_finetune(
         start_time = time.perf_counter()
 
         try:
+            use_gds = extra_options.get("FastFinetune", {}).get("UseGDS", False)
+            mem_opt_level = extra_options.get("FastFinetune", {}).get("MemOptLevel", 1)
+            gpu_is_available = (
+                extra_options.get("FastFinetune", {}).get("OptimDevice", "cpu").startswith("cuda")
+                and torch.cuda.is_available()
+            )
+            if use_gds and mem_opt_level != 2:
+                logger.warning("GDS works only when 'mem_opt_level' equals to 2 and GDS will be disabled!")
+                use_gds = False
+            if use_gds and not gpu_is_available:
+                logger.warning("Please check if GPU is available for GDS and it will be disabled!")
+                use_gds = False
+            gds_info = {"use_gds": use_gds}
             opt_weight, opt_bias = optimize_module(
-                module, f_weight, f_bias, q_input_data, f_input_data, f_output_data, extra_options
+                module, f_weight, f_bias, q_input_data, f_input_data, f_output_data, extra_options, gds_info
             )
             optimized_module_flag = True
 

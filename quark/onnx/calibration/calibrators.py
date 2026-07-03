@@ -10,16 +10,19 @@
 # --------------------------------------------------------------------------
 
 import copy
+import math
 import os
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import onnx
 import onnxruntime
 from joblib import Parallel, delayed  # type: ignore
+from numpy.typing import NDArray
 from onnx import numpy_helper
 from onnxruntime.quantization.calibrate import CalibraterBase, CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.calibrate import HistogramCalibrater as OrtHistogramCalibrater
@@ -27,18 +30,109 @@ from onnxruntime.quantization.calibrate import MinMaxCalibrater as OrtMinMaxCali
 from onnxruntime.quantization.quant_utils import QuantType
 from tqdm import tqdm
 
-from quark.onnx.quantization.quant_utils import ExtendedQuantType
+from quark.common.utils.log import ScreenLogger, log_errors
+from quark.onnx.quantization.quant_utils import ExtendedQuantType, get_qmin_qmax_for_qType, get_tensor_type_from_qType
 from quark.onnx.utils.file_utils import save_quantized_info
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model, sanitize_model_outputs
-from quark.shares.utils.log import ScreenLogger, log_errors
 
-from .collectors import LoadingDataFromDisk, OverridedHistogramCollector, PowOfTwoCollector
+from .collectors import OverridedHistogramCollector, PowOfTwoCollector, loading_data_from_disk
 from .methods import LayerWiseMethod, PowerOfTwoMethod
 
 logger = ScreenLogger(__name__)
 
 
-def GenerateAnEmptyOnnxModel(model_path: str) -> None:
+# Per-method calibrator-internal default keys (lowercase, matching what
+# create_calibrator_* constructors expect). These mirror the inline `x = default
+# if "x" not in extra_options else extra_options["x"]` blocks that used to live
+# in create_calibrator_power_of_two / create_calibrator_float_scale.
+_CALIB_METHOD_DEFAULTS: dict[Any, dict[str, Any]] = {
+    PowerOfTwoMethod.NonOverflow: {
+        "symmetric": True,
+        "moving_average": False,
+        "averaging_constant": 0.01,
+        "optimize_mem": True,
+    },
+    PowerOfTwoMethod.MinMSE: {
+        "symmetric": True,
+        "minmse_mode": "All",
+        "num_bins": 2048,
+        "percentile": 99.999,
+        "optimize_mem": True,
+        "worker_num": 1,
+    },
+    CalibrationMethod.MinMax: {
+        "symmetric": False,
+        "moving_average": False,
+        "averaging_constant": 0.01,
+        "optimize_mem": True,
+    },
+    CalibrationMethod.Entropy: {
+        "num_bins": 128,
+        "num_quantized_bins": 128,
+        "symmetric": False,
+        "optimize_mem": True,
+        "worker_num": 1,
+    },
+    CalibrationMethod.Percentile: {
+        "num_bins": 2048,
+        "percentile": 99.999,
+        "symmetric": True,
+        "optimize_mem": True,
+        "worker_num": 1,
+    },
+    CalibrationMethod.Distribution: {
+        "num_bins": 2048,
+        "scenario": "same",
+        "optimize_mem": True,
+        "worker_num": 1,
+    },
+    LayerWiseMethod.LayerWisePercentile: {
+        "num_bins": 2048,
+        "percentile": 99.999,
+        "symmetric": True,
+        "optimize_disk": True,
+        "optimize_mem": False,
+        "worker_num": 1,
+        "lwp_metric": "mae",
+        "percentile_candidates": [99.99, 99.999, 99.99999],
+    },
+}
+
+
+def resolve_calibrator_extra_defaults(
+    calibrate_method: Any,
+    extra_options: dict[str, Any],
+    *,
+    emit_warnings: bool = True,
+) -> dict[str, Any]:
+    """Return the effective ``{lowercase_key: value}`` overlay for the given
+    ``calibrate_method`` based on user-provided ``extra_options`` and built-in
+    per-method defaults.
+
+    Single source of truth for calibrator-internal defaults. Used by both the
+    calibrator factories in this module and the effective-config summary
+    printer in :mod:`quark.onnx.utils.print_utils` so the two never drift.
+
+    For :data:`LayerWiseMethod.LayerWisePercentile`, applies the
+    ``optimize_disk`` / ``optimize_mem`` mutex (when both are True the latter
+    is forced to False). Pass ``emit_warnings=False`` from the summary path
+    to avoid duplicate warnings.
+    """
+    defaults = _CALIB_METHOD_DEFAULTS.get(calibrate_method)
+    if defaults is None:
+        return {}
+    resolved = {k: extra_options.get(k, v) for k, v in defaults.items()}
+    if calibrate_method == LayerWiseMethod.LayerWisePercentile:
+        if resolved["optimize_disk"] and resolved["optimize_mem"]:
+            resolved["optimize_mem"] = False
+            if emit_warnings:
+                logger.warning(
+                    "CalibOptimizeDisk will also optimize memory usage, here CalibOptimizeMem is forced to be False."
+                )
+    return resolved
+
+
+def generate_an_empty_onnx_model(model_path: str) -> None:
     """
     This function is used to generate an empty onnx model based on
     the provided path for the initialization of calibrators.
@@ -48,8 +142,8 @@ def GenerateAnEmptyOnnxModel(model_path: str) -> None:
     onnx.save(model, model_path)
 
 
-def CachingDataOnDisk(
-    session: onnxruntime.InferenceSession, inputs: dict[str, Any], cache_dir: str, to_append: bool
+def caching_data_on_disk(
+    session: onnxruntime.InferenceSession, inputs: dict[str, Any], cache_dir: str, append_mode: bool
 ) -> tuple[list[str], int]:
     """
     Execute a session run and save the outputs to the caching directory.
@@ -59,7 +153,7 @@ def CachingDataOnDisk(
     :param onnxruntime.InferenceSession session: the session to run
     :param dict[str, Any] inputs: the input data for the run
     :param str cache_dir: the caching directory to store the files
-    :param str to_append: to append the data to existing file or not
+    :param bool append_mode: append the data to existing file or not
     :return: The list of saved file paths and the number of bytes it saved
     """
     outputs = session.run(None, inputs)
@@ -69,15 +163,17 @@ def CachingDataOnDisk(
     cached_nbytes = 0
 
     for output_index, output in enumerate(outputs):
-        if to_append:
+        dtype = output.dtype.name
+        if append_mode:
             # For append mode, the data is stored in float16 to save disk space
-            nbytes = output.nbytes / 2 if output.dtype == np.float32 else output.nbytes
-            file_path = os.path.join(cache_dir, f"output{output_index}_data.npz")
+            output_fp16 = output.astype(np.float16)
+            nbytes = output_fp16.nbytes
+            file_path = os.path.join(cache_dir, f"output{output_index}_data_{dtype}.npystream")
             with open(file_path, "ab") as f:
-                np.save(f, output.astype(np.float16))
+                np.save(f, output_fp16)
         else:
             nbytes = output.nbytes
-            file_path = os.path.join(cache_dir, f"output{output_index}_data.npy")
+            file_path = os.path.join(cache_dir, f"output{output_index}_data_{dtype}.npy")
             with open(file_path, "wb") as f:
                 np.save(f, output)
 
@@ -87,7 +183,7 @@ def CachingDataOnDisk(
     return file_list, cached_nbytes
 
 
-def GetCleanMergedDict(
+def get_clean_merged_dict(
     intermediate_outputs: list[list[Any]], output_names: list[str], tensors_to_calibrate: list[str] | None
 ) -> dict[str, list[list[Any]]]:
     """
@@ -145,7 +241,7 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
         optimize_mem: bool = True,
     ):
         if isinstance(model_input, onnx.ModelProto):
-            GenerateAnEmptyOnnxModel(augmented_model_path)
+            generate_an_empty_onnx_model(augmented_model_path)
             model_path = augmented_model_path  # Generate an empty model for the base class to load
         else:
             model_path = model_input.as_posix() if isinstance(model_input, Path) else model_input
@@ -230,8 +326,8 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
         """
         try:
             data_size = len(data_reader)
-        except NotImplementedError:
-            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
+        except NotImplementedError as e:  # pragma: no cover
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.") from e
 
         for _ in tqdm(range(data_size)):
             inputs = data_reader.get_next()
@@ -252,6 +348,7 @@ class OverridedMinMaxCalibrater(OrtMinMaxCalibrater):  # type: ignore
         t = self.compute_data()
         if not isinstance(t, TensorsData):
             raise TypeError(f"compute_data must return a TensorsData not {type(t)}.")
+        self.clear_collected_data()
 
     def create_inference_session(self) -> None:
         """
@@ -295,7 +392,6 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         the algorithm weights and float 8 follow the same distribution,
         if ``scenario="p3"``, it assumes the weights follow
         a gaussian law and float 8 ~ X^3 where X is a gaussian law. Defaults to ``"same"``.
-    :param bool layer_wise: Whether to work on layerwise percentile mode. Default is False.
     :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
@@ -312,12 +408,11 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
         num_quantized_bins: int = 2048,
         percentile: float = 99.999,
         scenario: str = "same",
-        layer_wise: bool = False,
         optimize_mem: bool = True,
         worker_num: int = 1,
     ):
         if isinstance(model_input, onnx.ModelProto):
-            GenerateAnEmptyOnnxModel(augmented_model_path)
+            generate_an_empty_onnx_model(augmented_model_path)
             model_path = augmented_model_path  # Generate an empty model for the base class to load
         else:
             model_path = model_input.as_posix() if isinstance(model_input, Path) else model_input
@@ -340,7 +435,6 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             # The copy is to avoid modifying the input model.
             self.model = copy.deepcopy(model_input)
 
-        self.layer_wise = layer_wise
         self.clean_merged_dict: dict[str, list[list[Any]]] = {}  # Only for layerwise percentile
 
         self.optimize_mem = optimize_mem
@@ -384,7 +478,7 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
                 providers=self.execution_providers,
             )
 
-    def collect_data(self, data_reader: CalibrationDataReader) -> None:
+    def collect_data(self, data_reader: CalibrationDataReader, layer_wise: bool = False) -> None:
         """
         Calibrator collects activation tensors.
         """
@@ -400,6 +494,7 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
                 scenario=self.scenario,
                 optimize_mem=self.optimize_mem,
                 worker_num=self.worker_num,
+                layer_wise=layer_wise,
             )
 
         input_names_set = {node_arg.name for node_arg in self.infer_session.get_inputs()}
@@ -407,8 +502,8 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
 
         try:
             data_size = len(data_reader)
-        except NotImplementedError:
-            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
+        except NotImplementedError as e:  # pragma: no cover
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.") from e
 
         cache_dir = os.path.dirname(self.augmented_model_path)  # For caching tensors
         cache_capacity = 0
@@ -426,8 +521,8 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             fixed_outputs: list[str | np.ndarray[Any, Any]] = []
 
             if self.optimize_mem:
-                to_append = self.method == "percentile" and self.layer_wise
-                fixed_outputs, cached_nbytes = CachingDataOnDisk(self.infer_session, inputs, cache_dir, to_append)  # type: ignore
+                append_mode = self.collector.layerwise_percentile
+                fixed_outputs, cached_nbytes = caching_data_on_disk(self.infer_session, inputs, cache_dir, append_mode)  # type: ignore
             else:
                 outputs = self.infer_session.run(None, inputs)
                 sanitize_model_outputs(outputs)
@@ -444,15 +539,21 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
 
             collect_data_onnx_infer_time = time.perf_counter()
 
-            clean_merged_dict = GetCleanMergedDict([fixed_outputs], output_names, self.tensors_to_calibrate)
-
-            if self.method == "percentile" and self.layer_wise:
+            if layer_wise:
                 self.intermediate_outputs.append(fixed_outputs)
                 cache_capacity += cached_nbytes
             else:
                 cache_capacity = cached_nbytes
 
             collect_data_acquired_data_time = time.perf_counter()
+            if len(self.intermediate_outputs) and self.optimize_mem:
+                # The purpose of using self.intermediate_outputs to get clean merged dict is
+                # to enable layerwise percentile to load the last array from caching files
+                clean_merged_dict = get_clean_merged_dict(
+                    self.intermediate_outputs, output_names, self.tensors_to_calibrate
+                )
+            else:
+                clean_merged_dict = get_clean_merged_dict([fixed_outputs], output_names, self.tensors_to_calibrate)
             self.collector.collect(clean_merged_dict)
             collect_data_end_time = time.perf_counter()
 
@@ -478,9 +579,12 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             f"Quark_latency_profiler: calibration collect data (numpy statistics) time consumed: {numpy_stat_time_sum:1f}"
         )
 
-        if len(self.intermediate_outputs):
-            # For layer-wise percentile, all data may be used
-            self.clean_merged_dict = GetCleanMergedDict(
+        if self.collector.layerwise_percentile:
+            if len(self.intermediate_outputs) == 0:
+                raise ValueError("No data is collected.")
+
+            # This clean merged dict is used for subsequent choosing optimal percentile
+            self.clean_merged_dict = get_clean_merged_dict(
                 self.intermediate_outputs, output_names, self.tensors_to_calibrate
             )
 
@@ -607,7 +711,6 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
     :param bool symmetric: Whether to make the range of tensor symmetric (central point is 0). Default is ``False``.
     :param int num_bins: Number of bins to create a new histogram for collecting tensor values. Default is ``2048``.
     :param float percentile: Percentile value for calibration, a float between [0, 100]. Default is ``99.999``.
-    :param bool layer_wise: Whether to work on layerwise percentile mode. Default is False.
     :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     """
@@ -622,7 +725,6 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
         symmetric: bool = False,
         num_bins: int = 2048,
         percentile: float = 99.999,
-        layer_wise: bool = False,
         optimize_mem: bool = True,
         worker_num: int = 1,
     ):
@@ -635,7 +737,6 @@ class PercentileCalibrater(OverridedHistogramCalibrater):
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
-            layer_wise=layer_wise,
             optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
@@ -699,6 +800,7 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
     :param PowerOfTwoMethod method: Calibration method. Default is ``PowerOfTwoMethod.MinMSE``.
     :param bool symmetric: Whether to make the range of tensor symmetric (central point is 0). Default is ``True``.
     :param str minmse_mode: Mode for the MinMSE method. Default is ``"All"``.
+    :param int num_bins: Number of histogram bins for histogram-based MSE computation. Default is 2048.
     :param float percentile: Percentile value for calibration, a float between 0 and 100. Default is ``99.999``.
     :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
@@ -715,20 +817,19 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         method: PowerOfTwoMethod = PowerOfTwoMethod.MinMSE,
         symmetric: bool = True,
         minmse_mode: str = "All",
+        num_bins: int = 2048,
         percentile: float = 99.999,
         optimize_mem: bool = True,
         worker_num: int = 1,
         quantized_tensor_type: dict[Any, Any] = {},
     ) -> None:
         if isinstance(model_input, onnx.ModelProto):
-            GenerateAnEmptyOnnxModel(augmented_model_path)
+            generate_an_empty_onnx_model(augmented_model_path)
             model_path = augmented_model_path  # Generate an empty model for the base class to load
         else:
             model_path = model_input.as_posix() if isinstance(model_input, Path) else model_input
 
-        super(PowOfTwoCalibrater, self).__init__(
-            model_path, op_types_to_calibrate, augmented_model_path, symmetric, use_external_data_format
-        )
+        super().__init__(model_path, op_types_to_calibrate, augmented_model_path, symmetric, use_external_data_format)
 
         if isinstance(model_input, onnx.ModelProto):
             # Replace the empty model with the real input model.
@@ -738,7 +839,7 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         self.intermediate_outputs: list[Any] = []
         self.calibrate_tensors_range = None
         self.num_model_outputs = len(self.model.graph.output)
-        self.model_original_outputs = set(output.name for output in self.model.graph.output)
+        self.model_original_outputs = {output.name for output in self.model.graph.output}
         self.collector: PowOfTwoCollector | None = None
         self.method = method
         self.symmetric = symmetric
@@ -746,6 +847,7 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
         self.activation_type = activation_type
         self.use_external_data_format = use_external_data_format
         self.minmse_mode = minmse_mode
+        self.num_bins = num_bins
         self.percentile = percentile
         self.optimize_mem = optimize_mem
         self.worker_num = worker_num
@@ -784,6 +886,7 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
                 method=self.method,
                 symmetric=self.symmetric,
                 minmse_mode=self.minmse_mode,
+                num_bins=self.num_bins,
                 percentile=self.percentile,
                 optimize_mem=self.optimize_mem,
                 worker_num=self.worker_num,
@@ -795,11 +898,13 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
 
         try:
             data_size = len(data_reader)
-        except NotImplementedError:
-            raise ValueError("The data reader should implement the '__len__' method to provide the data size.")
+        except NotImplementedError as e:  # pragma: no cover
+            raise ValueError("The data reader should implement the '__len__' method to provide the data size.") from e
 
         cache_dir = os.path.dirname(self.augmented_model_path)  # For caching tensors
         cache_capacity = 0
+
+        per_batch_process = self.collector.all_with_histogram or self.collector.mostcommon_minmse
 
         pbar = tqdm(range(data_size))
         for _ in pbar:
@@ -810,13 +915,13 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
             fixed_outputs: list[str | np.ndarray[Any, Any]] = []
 
             if self.optimize_mem:
-                to_append = not (self.collector and self.collector.optimized_mostcommon)
-                fixed_outputs, cached_nbytes = CachingDataOnDisk(self.infer_session, inputs, cache_dir, to_append)  # type: ignore
-                cache_capacity = cache_capacity + cached_nbytes if to_append else cached_nbytes
+                fixed_outputs, cached_nbytes = caching_data_on_disk(  # type: ignore
+                    self.infer_session, inputs, cache_dir, not per_batch_process
+                )
             else:
                 outputs = self.infer_session.run(None, inputs)
                 sanitize_model_outputs(outputs)
-
+                cached_nbytes = 0
                 for output_index, output in enumerate(outputs):
                     # Copy np.ndarray only for graph outputs that are also graph inputs to workaround bug:
                     # https://github.com/microsoft/onnxruntime/issues/21922
@@ -824,25 +929,33 @@ class PowOfTwoCalibrater(CalibraterBase):  # type: ignore
                         fixed_outputs.append(copy.copy(output))
                     else:
                         fixed_outputs.append(output)
-                    cache_capacity += output.nbytes
+                    cached_nbytes += output.nbytes
 
-            if self.collector and self.collector.optimized_mostcommon:
-                clean_merged_dict = GetCleanMergedDict([fixed_outputs], output_names, self.tensors_to_calibrate)
-                self.collector.collect(clean_merged_dict)
-            else:
+            if not per_batch_process:
                 self.intermediate_outputs.append(fixed_outputs)
+                cache_capacity += cached_nbytes
+            else:
+                clean_merged_dict = get_clean_merged_dict([fixed_outputs], output_names, self.tensors_to_calibrate)
+                self.collector.collect(clean_merged_dict)
+                cache_capacity = cached_nbytes
 
             pbar.set_description(
                 f"Cached {cache_capacity / (1024**3):.2f}GB on {'disk' if self.optimize_mem else 'memory'}"
             )
 
-        if self.collector.optimized_mostcommon:
+        # To prevent the accumulation of RSS during subsequent computations,
+        # explicitly release the session that will no longer be used
+        del self.infer_session
+
+        if per_batch_process:
+            # For most common and histogram modes, data is processed per-batch;
+            # no need to call self.clear_collected_data() and just return directly
             return None
 
         if len(self.intermediate_outputs) == 0:
             raise ValueError("No data is collected.")
 
-        clean_merged_dict = GetCleanMergedDict(self.intermediate_outputs, output_names, self.tensors_to_calibrate)
+        clean_merged_dict = get_clean_merged_dict(self.intermediate_outputs, output_names, self.tensors_to_calibrate)
 
         self.collector.collect(clean_merged_dict)
 
@@ -896,9 +1009,10 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
     :param float percentile: A float number between [0, 100]. Default 99.99.
     :param int worker_num: Number of workers to do the data collection. Default is 1.
     :param str lwp_mtric: A str value which is use to judge the percentile's metric. One of ['mae', 'mse']. Defaults to ``"mae"``.
-    :param int activation_bitwidth: Bitwidth for activations. Defaults to ``8``.
-    :param List[float] percentile_candidates: Percentile candidates. Defaults to ``[99.99, 99.999, 99.9999]``.
-    :param bool optimize_mem: Whether to optimize memory consumption. Default is True.
+    :param int activation_type: Bitwidth setting for activations.QuantType.QInt8.
+    :param List[float] percentile_candidates: Percentile candidates. Defaults to ``[99.99, 99.999, 99.99999]``.
+    :param bool optimize_mem: Whether to optimize memory consumption. Default is False.
+    :param bool optimize_disk: Whether to optimize disk usage. Default is True.
     """
 
     def __init__(
@@ -911,11 +1025,12 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         symmetric: bool = False,
         num_bins: int = 2048,
         percentile: float = 99.999,
-        optimize_mem: bool = True,
+        optimize_mem: bool = False,
+        optimize_disk: bool = True,
         worker_num: int = 1,
         lwp_metric: str = "mae",
-        activation_bitwidth: int = 8,
-        percentile_candidates: list[float] = [99.99, 99.999, 99.9999],
+        activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
+        percentile_candidates: list[float] = [99.99, 99.999, 99.99999],
     ):
         super().__init__(
             model_input,
@@ -926,22 +1041,69 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             symmetric=symmetric,
             num_bins=num_bins,
             percentile=percentile,
-            layer_wise=True,
             optimize_mem=optimize_mem,
             worker_num=worker_num,
         )
         self.minmax_dict: dict[str, float] = {}
         self.percentile_dict: dict[str, float] = {}
         self.lwp_metric = lwp_metric
-        self.activation_bitwidth = activation_bitwidth
-        self.q_min = 0
-        self.q_max = 2**self.activation_bitwidth - 1
+        self.activation_qType = get_tensor_type_from_qType(activation_type)
+        self.q_min, self.q_max = get_qmin_qmax_for_qType(self.activation_qType, reduce_range=False)
         self.percentile_candidates = percentile_candidates
+        self.optimize_disk = optimize_disk
 
-    def collect_data(self, data_reader: CalibrationDataReader) -> None:
+    def cal_one_layer_metric(self, input_tensor: list[Any], temp_scale: float, temp_zp: int) -> float:
+        """
+        Compute the quantization error metric for a single layer tensor.
+
+        The procedure is:
+            1. Quantize:
+                q = round(input_tensor / temp_scale - temp_zp)
+                q = clip(q, self.q_min, self.q_max)
+            2. Dequantize:
+                dq = (q + temp_zp) * temp_scale
+            3. Compute error between input_tensor and dq.
+
+        :param list[Any] input_tensor: Input tensor values to evaluate. Must be broadcast-compatible with NumPy operations.
+        :param float temp_scale: Quantization scale factor.
+        :param int temp_zp: Quantization zero-point.
+
+        :return float: The computed quantization error for the tensor.
+        """
+
+        buffer = np.empty_like(input_tensor)
+
+        # quantize tensor
+        np.divide(input_tensor, temp_scale, out=buffer)
+        buffer -= temp_zp
+        np.round(buffer, out=buffer)
+        np.clip(buffer, self.q_min, self.q_max, out=buffer)
+
+        # dequantize
+        buffer += temp_zp
+        buffer *= temp_scale
+
+        chunk_diff = input_tensor - buffer
+        if self.lwp_metric == "mse":
+            temp_metric = float(np.mean(chunk_diff * chunk_diff))
+        else:
+            temp_metric = float(np.mean(np.abs(chunk_diff)))
+
+        return temp_metric
+
+    def collect_data(
+        self,
+        data_reader: CalibrationDataReader,
+        layer_wise: bool = False,
+    ) -> None:
         # Call the parent class method to calculate the histogram
-        super().collect_data(data_reader)
-        assert self.clean_merged_dict, "No data for the layerwise percentile"
+
+        if self.optimize_disk:
+            super().collect_data(data_reader, layer_wise=False)
+        else:
+            super().collect_data(data_reader, layer_wise=True)
+            assert self.clean_merged_dict, "No data for the layerwise percentile"
+            del self.infer_session
 
         # Assign different percentiles to compute the tensors range. Note that the list
         # stores dictionaries that the key is tensor name and the value is the range
@@ -962,39 +1124,128 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             minmax_dict and percentile_dict with the best values found.
             :param key: The tensor name/key to compute min-max values for.
             """
-            min_metric_value = 1000000.0
-            for idx in range(len(tensors_ranges_percentiles)):
-                temp_value = tensors_ranges_percentiles[idx][key]
-                q_min, q_max = self.q_min, self.q_max
 
-                data_arr = self.clean_merged_dict[key]
-                assert isinstance(data_arr, list), "The value should be a list"
-                data_list = LoadingDataFromDisk(data_arr)
-                temp_tensor = np.asarray(data_list).reshape(-1)
+            data_arr = self.clean_merged_dict[key]
+            assert isinstance(data_arr, list)
+            chunk_metrics = np.zeros(len(tensors_ranges_percentiles))
 
-                temp_scale = (temp_value[1] - temp_value[0]) / (q_max - q_min)
-                # Preventing spills of scale value
-                temp_scale = temp_scale + 1e-6
-                temp_zp = np.round(temp_value[0] / temp_scale - q_min)
-                q_temp_tensor = np.clip(np.round(temp_tensor / temp_scale - temp_zp), q_min, q_max)
-                qdq_temp_tensor = (q_temp_tensor + temp_zp) * temp_scale
-                if self.lwp_metric == "mse":
-                    temp_metric_value = np.mean((temp_tensor - qdq_temp_tensor) ** 2)
-                else:
-                    temp_metric_value = np.mean(np.abs(temp_tensor - qdq_temp_tensor))
+            if self.worker_num <= 1:
+                chunk_size = 1
+                for chunk_idx in range(math.ceil(len(data_arr) / chunk_size)):
+                    start_idx = chunk_idx * chunk_size
+                    end_idx = start_idx + chunk_size
+                    data_list = loading_data_from_disk(data_arr, start_idx, end_idx)
+                    temp_tensor = np.asarray(data_list, dtype=np.float32).reshape(-1)
 
-                if temp_metric_value < min_metric_value:
-                    min_metric_value = temp_metric_value
-                    self.minmax_dict[key] = temp_value
-                    self.percentile_dict[key] = self.percentile_candidates[idx]
+                    for percentile_idx in range(len(tensors_ranges_percentiles)):
+                        temp_value = tensors_ranges_percentiles[percentile_idx][key]
+                        temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
+                        # Preventing spills of scale value
+                        temp_scale = temp_scale + 1e-6
+                        temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
+                        chunk_metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
+            else:
+                # Parallel can only include less than one 'for' loop
+                data_list = loading_data_from_disk(data_arr, 0, len(data_arr))
+                temp_tensor = np.asarray(data_list, dtype=np.float32).reshape(-1)
 
-        if self.worker_num > 1:
+                for percentile_idx in range(len(tensors_ranges_percentiles)):
+                    temp_value = tensors_ranges_percentiles[percentile_idx][key]
+                    temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
+                    # Preventing spills of scale value
+                    temp_scale = temp_scale + 1e-6
+                    temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
+                    chunk_metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
+
+            min_metric_index = np.argmin(chunk_metrics)
+            self.percentile_dict[key] = self.percentile_candidates[min_metric_index]
+            self.minmax_dict[key] = tensors_ranges_percentiles[min_metric_index][key]
+
+            return None
+
+        if self.optimize_disk:
+            self.compute_data_online(data_reader, tensors_ranges_percentiles, baseline_tensors_range)
+
+        elif self.worker_num > 1:
             Parallel(n_jobs=self.worker_num, backend="threading")(
                 delayed(cal_layers_minmax)(key) for key in tqdm(baseline_tensors_range)
             )
         else:
             for key in tqdm(baseline_tensors_range):
                 cal_layers_minmax(key)
+
+    def compute_data_online(
+        self,
+        data_reader: CalibrationDataReader,
+        tensors_ranges_percentiles: list[Any],
+        baseline_tensors_range: dict[str, tuple[NDArray[Any], NDArray[Any]]],
+    ) -> None:
+        """
+        Compute calibration metrics for multiple tensors across percentile-based quantization ranges
+        using an online inference pass over a dataset.
+
+        The procedure is:
+            1. Reset the data reader and determine dataset size.
+            2. Iterate over calibration samples:
+                a. Fetch input batch from data_reader.
+                b. Run model inference using self.infer_session.
+                c. Sanitize and merge model outputs into a clean tensor dictionary.
+            3. For each tensor in the merged outputs:
+                a. For each candidate percentile range:
+                    i. Derive quantization parameters:
+                        scale = (max_val - min_val) / (q_max - q_min) + 1e-6
+                        zero_point = round(min_val / scale - q_min)
+                    ii. Compute quantization error metric using cal_one_layer_metric.
+            4. Accumulate metrics across all data samples.
+            5. For each tensor in baseline_tensors_range:
+                a. Select the percentile configuration with the minimum accumulated metric.
+                b. Store the best percentile and corresponding min/max range.
+
+        :param CalibrationDataReader data_reader:
+            Iterator-like object providing calibration input batches. Must support reset_iter(), get_next(), and len().
+
+        :param list[Any] tensors_ranges_percentiles:
+            List of candidate percentile-based min/max ranges for each tensor. Each element is a dictionary mapping tensor names to (min, max) tuples.
+
+        :param dict[str, tuple[NDArray[Any], NDArray[Any]]] baseline_tensors_range:
+            Baseline tensor range dictionary used to determine which tensors to optimize and to store final selected percentile ranges.
+
+        :return None:
+            This function updates self.percentile_dict and self.minmax_dict in-place with the best calibration configuration per tensor.
+        """
+        data_reader.reset_iter()
+        data_size = len(data_reader)
+
+        output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
+        pbar = tqdm(range(data_size))
+        metrics: dict[str, Any] = {}
+        for _ in pbar:
+            inputs = data_reader.get_next()
+
+            outputs = self.infer_session.run(None, inputs)
+            sanitize_model_outputs(outputs)
+
+            clean_merged_dict = get_clean_merged_dict([outputs], output_names, self.tensors_to_calibrate)
+
+            for node_key, node_value in clean_merged_dict.items():
+                chunk_metrics = np.zeros(len(tensors_ranges_percentiles))
+                node_output = node_value[0]
+                for percentile_idx in range(len(tensors_ranges_percentiles)):
+                    temp_value = tensors_ranges_percentiles[percentile_idx][node_key]
+                    temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
+                    # Preventing spills of scale value
+                    temp_scale = temp_scale + 1e-6
+                    temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
+                    chunk_metrics[percentile_idx] += self.cal_one_layer_metric(node_output, temp_scale, temp_zp)
+                if node_key not in list(metrics.keys()):
+                    metrics[node_key] = copy.deepcopy(chunk_metrics)
+                else:
+                    metrics[node_key] = metrics[node_key] + copy.deepcopy(chunk_metrics)
+
+        for key in tqdm(baseline_tensors_range):
+            min_metric_index = np.argmin(metrics[key])
+            self.percentile_dict[key] = self.percentile_candidates[min_metric_index]
+            self.minmax_dict[key] = tensors_ranges_percentiles[min_metric_index][key]
 
     def compute_data(self) -> TensorsData:
         """
@@ -1038,27 +1289,19 @@ def create_calibrator_power_of_two(
     """
     calibrator = None
 
+    overlay = resolve_calibrator_extra_defaults(calibrate_method, extra_options)
     if calibrate_method == PowerOfTwoMethod.NonOverflow:
-        symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
-        moving_average = False if "moving_average" not in extra_options else extra_options["moving_average"]
-        averaging_constant = 0.01 if "averaging_constant" not in extra_options else extra_options["averaging_constant"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = MinMaxCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            symmetric=symmetric,
-            moving_average=moving_average,
-            averaging_constant=averaging_constant,
-            optimize_mem=optimize_mem,
+            symmetric=overlay["symmetric"],
+            moving_average=overlay["moving_average"],
+            averaging_constant=overlay["averaging_constant"],
+            optimize_mem=overlay["optimize_mem"],
         )
     elif calibrate_method == PowerOfTwoMethod.MinMSE:
-        symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
-        minmse_mode = "All" if "minmse_mode" not in extra_options else extra_options["minmse_mode"]
-        percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
-        worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = PowOfTwoCalibrater(
             model_input,
             op_types_to_calibrate,
@@ -1066,11 +1309,12 @@ def create_calibrator_power_of_two(
             use_external_data_format=use_external_data_format,
             activation_type=activation_type,
             method=calibrate_method,
-            symmetric=symmetric,
-            minmse_mode=minmse_mode,
-            percentile=percentile,
-            optimize_mem=optimize_mem,
-            worker_num=worker_num,
+            symmetric=overlay["symmetric"],
+            minmse_mode=overlay["minmse_mode"],
+            num_bins=overlay["num_bins"],
+            percentile=overlay["percentile"],
+            optimize_mem=overlay["optimize_mem"],
+            worker_num=overlay["worker_num"],
             quantized_tensor_type=quantized_tensor_type,
         )
 
@@ -1088,6 +1332,7 @@ def create_calibrator_float_scale(
     model_input: str | Path | onnx.ModelProto,
     op_types_to_calibrate: Sequence[str] | None = None,
     augmented_model_path: str = "augmented_model.onnx",
+    activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
     calibrate_method: CalibrationMethod | LayerWiseMethod = CalibrationMethod.MinMax,
     use_external_data_format: bool = False,
     execution_providers: list[str] | None = ["CPUExecutionProvider"],
@@ -1107,103 +1352,69 @@ def create_calibrator_float_scale(
     :return: Initialized calibrator object.
     """
     calibrator = None
+    overlay = resolve_calibrator_extra_defaults(calibrate_method, extra_options)
 
     if calibrate_method == CalibrationMethod.MinMax:
-        # default settings for min-max algorithm
-        symmetric = False if "symmetric" not in extra_options else extra_options["symmetric"]
-        moving_average = False if "moving_average" not in extra_options else extra_options["moving_average"]
-        averaging_constant = 0.01 if "averaging_constant" not in extra_options else extra_options["averaging_constant"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = MinMaxCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            symmetric=symmetric,
-            moving_average=moving_average,
-            averaging_constant=averaging_constant,
-            optimize_mem=optimize_mem,
+            symmetric=overlay["symmetric"],
+            moving_average=overlay["moving_average"],
+            averaging_constant=overlay["averaging_constant"],
+            optimize_mem=overlay["optimize_mem"],
         )
     elif calibrate_method == CalibrationMethod.Entropy:
-        # default settings for entropy algorithm
-        num_bins = 128 if "num_bins" not in extra_options else extra_options["num_bins"]
-        num_quantized_bins = 128 if "num_quantized_bins" not in extra_options else extra_options["num_quantized_bins"]
-        symmetric = False if "symmetric" not in extra_options else extra_options["symmetric"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
-        worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = EntropyCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            symmetric=symmetric,
-            num_bins=num_bins,
-            num_quantized_bins=num_quantized_bins,
-            optimize_mem=optimize_mem,
-            worker_num=worker_num,
+            symmetric=overlay["symmetric"],
+            num_bins=overlay["num_bins"],
+            num_quantized_bins=overlay["num_quantized_bins"],
+            optimize_mem=overlay["optimize_mem"],
+            worker_num=overlay["worker_num"],
         )
     elif calibrate_method == CalibrationMethod.Percentile:
-        # default settings for percentile algorithm
-        num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
-        percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
-        symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
-        worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = PercentileCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            symmetric=symmetric,
-            num_bins=num_bins,
-            percentile=percentile,
-            optimize_mem=optimize_mem,
-            worker_num=worker_num,
+            symmetric=overlay["symmetric"],
+            num_bins=overlay["num_bins"],
+            percentile=overlay["percentile"],
+            optimize_mem=overlay["optimize_mem"],
+            worker_num=overlay["worker_num"],
         )
     elif calibrate_method == CalibrationMethod.Distribution:
-        # default settings for distribution algorithm
-        num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
-        scenario = "same" if "scenario" not in extra_options else extra_options["scenario"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
-        worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
         calibrator = DistributionCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            num_bins=num_bins,
-            scenario=scenario,
-            optimize_mem=optimize_mem,
-            worker_num=worker_num,
+            num_bins=overlay["num_bins"],
+            scenario=overlay["scenario"],
+            optimize_mem=overlay["optimize_mem"],
+            worker_num=overlay["worker_num"],
         )
     elif calibrate_method == LayerWiseMethod.LayerWisePercentile:
-        # default settings for layerwise percentile algorithm
-        num_bins = 2048 if "num_bins" not in extra_options else extra_options["num_bins"]
-        percentile = 99.999 if "percentile" not in extra_options else extra_options["percentile"]
-        symmetric = True if "symmetric" not in extra_options else extra_options["symmetric"]
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
-        worker_num = 1 if "worker_num" not in extra_options else extra_options["worker_num"]
-        lwp_metric = "mae" if "lwp_metric" not in extra_options else extra_options["lwp_metric"]
-        activation_bitwidth = 8 if "activation_bitwidth" not in extra_options else extra_options["activation_bitwidth"]
-        percentile_candidates = (
-            [99.99, 99.999, 99.99999]
-            if "percentile_candidates" not in extra_options
-            else extra_options["percentile_candidates"]
-        )
-        optimize_mem = True if "optimize_mem" not in extra_options else extra_options["optimize_mem"]
         calibrator = LayerWisePercentileCalibrater(
             model_input,
             op_types_to_calibrate,
             augmented_model_path,
             use_external_data_format=use_external_data_format,
-            symmetric=symmetric,
-            num_bins=num_bins,
-            percentile=percentile,
-            optimize_mem=optimize_mem,
-            worker_num=worker_num,
-            lwp_metric=lwp_metric,
-            activation_bitwidth=activation_bitwidth,
-            percentile_candidates=percentile_candidates,
+            symmetric=overlay["symmetric"],
+            num_bins=overlay["num_bins"],
+            percentile=overlay["percentile"],
+            optimize_mem=overlay["optimize_mem"],
+            optimize_disk=overlay["optimize_disk"],
+            worker_num=overlay["worker_num"],
+            lwp_metric=overlay["lwp_metric"],
+            activation_type=activation_type,
+            percentile_candidates=overlay["percentile_candidates"],
         )
 
     if calibrator:

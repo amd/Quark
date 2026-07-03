@@ -11,12 +11,13 @@
 # This code is originally from: https://github.com/JunLi-Galios/Optimization-on-Stiefel-Manifold-via-Cayley-Transform/blob/master/stiefel_optimizer.py
 
 import random
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch.optim.optimizer import Iterable, Optimizer
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -109,10 +110,10 @@ class SGDG(Optimizer):
         )
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
-        super(SGDG, self).__init__(params, defaults)
+        super().__init__(params, defaults)
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        super(SGDG, self).__setstate__(state)
+        super().__setstate__(state)
         for group in self.param_groups:
             group.setdefault("nesterov", False)
 

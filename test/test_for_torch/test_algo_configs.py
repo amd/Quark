@@ -12,6 +12,7 @@ from quark.torch.quantization.config.algo_configs import (
     ROTATION_MAP,
     SQ_MAP,
     get_algo_config,
+    get_supported_algorithm_types,
 )
 from quark.torch.quantization.config.config import (
     AutoSmoothQuantConfig,
@@ -165,6 +166,19 @@ def test_get_algo_config_invalid_type():
         get_algo_config("invalid_algo", "llama")
 
 
+def test_get_supported_algorithm_types():
+    """Test listing supported algorithm type names."""
+    supported_algorithm_types = get_supported_algorithm_types()
+
+    assert "awq" in supported_algorithm_types
+    assert "gptq" in supported_algorithm_types
+    assert "gptaq" in supported_algorithm_types
+    assert "qronos" in supported_algorithm_types
+    assert "smoothquant" in supported_algorithm_types
+    assert "autosmoothquant" in supported_algorithm_types
+    assert "rotation" in supported_algorithm_types
+
+
 def test_config_structure_validation():
     """Test that configurations have expected structure"""
     # Test AWQ config structure
@@ -184,7 +198,7 @@ def test_config_structure_validation():
 
     # Test SQ config structure
     sq_config = SQ_MAP["llama"]
-    assert isinstance(sq_config.alpha, (int, float))
+    assert isinstance(sq_config.alpha, int | float)
     assert sq_config.alpha > 0
     assert isinstance(sq_config.scale_clamp_min, float)
     assert sq_config.scale_clamp_min > 0
@@ -216,7 +230,7 @@ def test_error_message():
     with pytest.raises(ValueError) as exc_info:
         get_algo_config("invalid", "llama")
     assert "Unsupported algorithm type: invalid" in str(exc_info.value)
-    assert "Supported types: awq, gptq, smoothquant, autosmoothquant, rotation" in str(exc_info.value)
+    assert "Supported types: awq, gptq, gptaq, qronos, smoothquant, autosmoothquant, rotation" in str(exc_info.value)
 
 
 def test_config_consistency_across_maps():

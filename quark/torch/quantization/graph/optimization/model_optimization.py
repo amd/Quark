@@ -1,8 +1,9 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import cast
 
 import torch.fx
 
@@ -10,7 +11,7 @@ import quark.torch.quantization.graph.optimization.post_calib as opt_post_calib_
 import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_quant_float_scale as opt_post_qt_fs_pass
 import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_quant_powof2_scale as opt_post_qt_pow2_pass
 import quark.torch.quantization.graph.optimization.pre_quant.opt_pass_before_quant as opt_pre_qt_pass
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.graph.optimization.opt_pass_manager import OptPassManager
 from quark.torch.quantization.graph.optimization.pre_quant.convert_scalars_to_attrs import convert_scalars_to_attrs
@@ -96,7 +97,7 @@ def apply_pre_hw_constrain_passes(model: torch.fx.GraphModule) -> torch.fx.Graph
     # 2. transfer single bn to conv2d layer
     pass_manager.add_pass(opt_pre_qt_pass.ConvertBn2D2ConvQOPass())
 
-    # 3. transfer mean bn to globalavgpooling(adaptive_avg_pool2d) layer if appliable
+    # 3. transfer mean bn to globalavgpooling(adaptive_avg_pool2d) layer if applicable
     pass_manager.add_pass(opt_pre_qt_pass.ConvertReduceMean2GapQOPass())
     # 4. split large global average pooling to smaler two pooling layer
     pass_manager.add_pass(opt_pre_qt_pass.SplitLargeKernelPoolQOPass())

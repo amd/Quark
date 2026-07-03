@@ -27,6 +27,7 @@ from onnxruntime.quantization.quant_utils import (
     find_by_name,
 )
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.postprocess import adjust_quantize_info, simulate_transforms
 from quark.onnx.quantization.quant_utils import (
     __producer__,
@@ -36,7 +37,6 @@ from quark.onnx.quantization.quant_utils import (
     modified_annotate_input,
     remove_nodes,
 )
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 from .qdq_quantizer import BaseExtendedQDQQuantizer
 from .registry import CreateNPUCnnQDQQuantizer

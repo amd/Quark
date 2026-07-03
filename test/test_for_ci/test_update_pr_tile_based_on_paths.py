@@ -150,10 +150,10 @@ class TestUpdateTitle(TestUpdatePR):
     def test_no_change_if_prefixes_are_correct_with_lower_case_prefix(self):
         env = {
             "MODIFIED_FILES": "docs/source/index.rst pyproject.toml quark/experimental/cli/main.py quark/experimental/cli/requirements.txt",
-            "PR_TITLE": "[CLI][docs][feat][onnx] Add first pass for quark onnx adapter",
+            "PR_TITLE": "[CLI][docs][feat][onnx] Add first pass for quark Shapeshifter",
         }
         new_title = self._update_pr_title_with_mocks(env, "config_yaml_content")
-        self.assertEqual(new_title, "[docs] [CLI][feat][onnx] Add first pass for quark onnx adapter")
+        self.assertEqual(new_title, "[docs] [CLI][feat][onnx] Add first pass for quark Shapeshifter")
         new_labels = self._update_pr_labels_with_mocks(env, "config_yaml_content")
         self.assertEqual(new_labels, "documentation")
 
@@ -206,6 +206,28 @@ class TestUpdateTitle(TestUpdatePR):
         self.assertEqual(new_title, "[FE][docs] Full stack feature")
         new_labels = self._update_pr_labels_with_mocks(env, "config_yaml_content")
         self.assertEqual(new_labels, "documentation,frontend")
+
+    def test_title_with_single_quote(self):
+        """Handles titles containing single quotes correctly."""
+        env = {
+            "MODIFIED_FILES": "src/backend/exception_handler.py",
+            "PR_TITLE": "Add exception chaining with 'raise...from e'",
+        }
+        new_title = self._update_pr_title_with_mocks(env, "config_yaml_content")
+        self.assertEqual(new_title, "[BE] Add exception chaining with 'raise...from e'")
+        new_labels = self._update_pr_labels_with_mocks(env, "config_yaml_content")
+        self.assertEqual(new_labels, "backend")
+
+    def test_title_with_multiple_special_characters(self):
+        """Handles titles with various special characters (quotes, apostrophes, etc.)."""
+        env = {
+            "MODIFIED_FILES": "docs/guide.md",
+            "PR_TITLE": "Fix \"bug\" in User's API: don't break 'legacy' code",
+        }
+        new_title = self._update_pr_title_with_mocks(env, "config_yaml_content")
+        self.assertEqual(new_title, "[docs] Fix \"bug\" in User's API: don't break 'legacy' code")
+        new_labels = self._update_pr_labels_with_mocks(env, "config_yaml_content")
+        self.assertEqual(new_labels, "documentation")
 
 
 if __name__ == "__main__":

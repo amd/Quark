@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import copy
@@ -498,7 +498,7 @@ class SearchSpace:
 
     def build_search_space(self, space_dict: dict[str, Any]) -> list[int | list[int]]:
         values = space_dict.values()
-        values_lengths = [[i for i in range(len(item))] for item in values]
+        values_lengths = [list(range(len(item))) for item in values]
         assemble_idxs_ins = AssembleIdxs(values_lengths)
         space_result = assemble_idxs_ins.run()
         del assemble_idxs_ins
@@ -569,9 +569,7 @@ class SearchSpace:
                         self.level2_space_config[level2_keys[level2_idx]][temp_level2_space[level2_idx]]
                         for level2_idx in range(len(temp_level2_space))
                     ]
-                    temp_level2_config = {
-                        key_item: val_item for key_item, val_item in zip(level2_keys, temp_level2_vals, strict=False)
-                    }
+                    temp_level2_config = dict(zip(level2_keys, temp_level2_vals, strict=False))
                     one_config["extra_options"] = temp_level2_config
                     if len(level3_keys) > 0:
                         level3_loc_idx = 2
@@ -585,9 +583,7 @@ class SearchSpace:
                         self.level2_space_config[level2_keys[level2_idx]][temp_level2_space[level2_idx]]
                         for level2_idx in range(len(temp_level2_space))
                     ]
-                    temp_level2_config = {
-                        key_item: val_item for key_item, val_item in zip(level2_keys, temp_level2_vals, strict=False)
-                    }
+                    temp_level2_config = dict(zip(level2_keys, temp_level2_vals, strict=False))  # pragma: no cover
                     one_config["extra_options"] = temp_level2_config
                     if len(level3_keys) > 0:
                         level3_loc_idx = 1
@@ -601,9 +597,7 @@ class SearchSpace:
                     self.level3_space_config[level3_keys[level3_idx]][temp_level3_space[level3_idx]]
                     for level3_idx in range(len(temp_level3_space))
                 ]
-                temp_level3_config = {
-                    key_item: val_item for key_item, val_item in zip(level3_keys, temp_level3_vals, strict=False)
-                }
+                temp_level3_config = dict(zip(level3_keys, temp_level3_vals, strict=False))
 
                 one_config["extra_options"]["FastFinetune"] = temp_level3_config
 
@@ -1055,8 +1049,8 @@ class AutoSearch:
     def optimize_parallel(self, quant_one_param: list[Any] = [[0, -1]]) -> Any:
         try:
             import optuna  # type: ignore
-        except Exception:
-            self.logger.warning("Please install optuna before using advanced_fastft_search!")
+        except Exception as e:
+            self.logger.warning(f"Please install optuna before using advanced_fastft_search! Error: {e}")
         # TODO apply pruner to speedup the process
         sampler_algo = self.auto_search_config.advanced_fastft_params.get("sampler_algo", "TPE")
         direction = self.auto_search_config.advanced_fastft_params.get("direction", "minimize")

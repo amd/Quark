@@ -9,7 +9,7 @@ import pytest
 import torch
 from gguf import GGMLQuantizationType
 
-from quark.shares.utils.testing_utils import require_torch_higher_or_equal, torch_device, use_temporary_directory
+from quark.common.utils.testing_utils import require_torch_higher_or_equal, torch_device, use_temporary_directory
 from quark.torch import export_gguf
 from quark.torch.export.gguf_export.tensor_convert import convert_from_gguf, convert_to_gguf
 from quark.torch.quantization import QConfig, QLayerConfig, Uint4PerGroupSpec

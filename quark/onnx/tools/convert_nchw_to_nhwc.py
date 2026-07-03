@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """
@@ -13,8 +13,8 @@ from argparse import ArgumentParser, Namespace
 
 import onnx
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.utils.model_utils import convert_nchw_to_nhwc, create_infer_session_for_onnx_model
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     try:
         ort_session = create_infer_session_for_onnx_model(args.input, providers=["CPUExecutionProvider"])
     except Exception as e:
-        raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime error: \n{e}")
+        raise RuntimeError(f"Invalid input model got, please check the input model. ONNX Runtime error: \n{e}") from e
     input_model = onnx.load(args.input)
     output_model = convert_nchw_to_nhwc(input_model)
     onnx.save_model(output_model, args.output)

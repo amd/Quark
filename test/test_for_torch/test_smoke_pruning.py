@@ -14,11 +14,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from quark.shares.utils.testing_utils import torch_device
-from quark.testing import skip_if_no_gpu, slow_test
+from quark.common.utils.testing_utils import skip_if_no_gpu, slow_test, torch_device
 from quark.torch import ModelPruner
+from quark.torch.algorithm.config import BlockwiseTuningConfig
 from quark.torch.algorithm.utils.module import get_dtype
-from quark.torch.pruning.config import BlockwiseTuningConfig, Config, LayerImportancePruneConfig, OSSCARConfig
+from quark.torch.pruning.config import LayerImportancePruneConfig, OSSCARConfig, PConfig
 from quark.torch.pruning.model_transformation import prune_layer
 
 sys.path.append("..")
@@ -112,7 +112,7 @@ def test_smoke_osscar(dtype):
 
     assert pruned_layer.out_features == int(intermediate_size * 0.75) * 2
 
-    pruning_config = Config()
+    pruning_config = PConfig()
 
     pruning_config.algo_config = OSSCARConfig()
 
@@ -163,7 +163,7 @@ def get_llm_model(model_name="facebook/opt-125m", multi_gpu=False):
 
 
 def get_wikitext_dataset(model_name: str = "facebook/opt-125m", dev: torch.device = None) -> list[torch.Tensor]:
-    testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    testdata = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
@@ -211,7 +211,7 @@ def test_smoke_depth_wise_pruning(dtype):
     if not torch.cuda.is_available() and dtype in (torch.float16, torch.bfloat16):
         pytest.skip(f"This test with dtype {dtype} requires GPU support!")
 
-    pruning_config = Config()
+    pruning_config = PConfig()
 
     pruning_config.algo_config = LayerImportancePruneConfig()
     # NOTE the config may change, as the API may be refactored.

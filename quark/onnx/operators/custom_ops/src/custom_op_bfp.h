@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 #pragma once
@@ -17,6 +17,8 @@ struct Buffer {
  private:
   char* data_;
 };
+
+int64_t HandleNegativeBlockAxis(int64_t axis, int64_t tensor_rank);
 
 struct BFPFixNeuronKernel {
   BFPFixNeuronKernel(
@@ -51,6 +53,9 @@ struct BFPFixNeuronKernel {
 
   Ort::Value do_bfp(Ort::Value& input);
 
+  Ort::Value cast_to_fp32(OrtKernelContext* context, Ort::Value& input);
+  Ort::Value cast_to_fp16(OrtKernelContext* context, Ort::Value& input);
+
  private:
   const OrtApi& ort_;
   Ort::KernelInfo info_copy_{nullptr};
@@ -60,6 +65,11 @@ struct BFPFixNeuronKernel {
   bool op_pad_init_ = false;
   Ort::Op op_slice_{nullptr};
   bool op_slice_init_ = false;
+  Ort::Op op_cast_to_fp32_{nullptr};
+  bool op_cast_to_fp32_init_ = false;
+  Ort::Op op_cast_to_fp16_{nullptr};
+  bool op_cast_to_fp16_init_ = false;
+  bool is_fp16_input_ = false;
   std::vector<Buffer> tmp_buffers_;
 
   std::string bfp_method_ = "to_bfp";
@@ -167,12 +177,12 @@ struct BFPFixNeuron
 
   size_t GetInputTypeCount() const { return 1; };
   ONNXTensorElementDataType GetInputType(size_t /*index*/) const {
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
   };
 
   size_t GetOutputTypeCount() const { return 1; };
   ONNXTensorElementDataType GetOutputType(size_t /*index*/) const {
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
   };
 
 #if ORT_API_VERSION >= 17

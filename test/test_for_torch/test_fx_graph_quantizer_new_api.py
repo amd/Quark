@@ -11,8 +11,9 @@ import torch
 import torch.nn as nn
 from torch.fx import GraphModule
 
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device, use_temporary_directory
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
 from quark.torch.quantization.graph.graph_modelquantizer import FxGraphQuantizer
@@ -149,7 +150,7 @@ def test_fx_model_quantizer(tmpdir: str):
     emp_quant_config = QConfig(global_quant_config=emp_config, quant_mode=QuantizationMode.fx_graph_mode)
     for each_quant_config in [emp_quant_config, fp_scale_quant_config]:
         fx_quantizer = FxGraphQuantizer(each_quant_config)
-        graph_model_2 = torch.export.export_for_training(float_model, example_inputs).module()
+        graph_model_2 = export_for_training(float_model, example_inputs).module()
         for model in [float_model, graph_model_2]:
             quantized_model = fx_quantizer.quantize_model(model, example_inputs, calibdata=example_inputs)  # only PTQ
             _ = quantized_model.eval()(example_inputs[0])
@@ -198,7 +199,7 @@ def test_fold_bn_2_linear_after_concat_strategy(tmpdir: str):
     example_inputs = (torch.rand(2, 16).to(torch_device),)
     out = float_model(example_inputs[0])
     # ========== unit fold_bn_after_concat ===============
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     graph_model = fold_bn_after_concat(graph_model)
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     out1 = graph_model.eval()(example_inputs[0])

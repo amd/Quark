@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 import itertools
@@ -14,6 +14,7 @@ from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.utils.log import ScreenLogger
 from quark.onnx.calibration import CachedDataReader, PowerOfTwoMethod
 from quark.onnx.quantization.quant_utils import (
     ExtendedQuantType,
@@ -26,7 +27,6 @@ from quark.onnx.quantization.quant_utils import (
     save_and_reload_model_with_shape_infer,
 )
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model
-from quark.shares.utils.log import ScreenLogger
 
 logger = ScreenLogger(__name__)
 
@@ -78,7 +78,7 @@ class BiasCorrection:
         model = self.quant_model
 
         tensors_to_calibrate, value_infos = self.select_tensors_to_calibrate(model)
-        model_original_outputs = set(output.name for output in model.graph.output)
+        model_original_outputs = {output.name for output in model.graph.output}
         linear_and_quant_node_type = ["Relu", "Clip", "QuantizeLinear", "DequantizeLinear"]
         all_sub_model_in_out = []
         for node in model.graph.node:
@@ -151,7 +151,7 @@ class BiasCorrection:
             for k, v in d.items():
                 merged_dict.setdefault(k, []).append(v)
 
-        clean_merged_dict = dict((i, merged_dict[i]) for i in merged_dict)
+        clean_merged_dict = {i: merged_dict[i] for i in merged_dict}
         #                         if i in tensors_to_bc)
         return clean_merged_dict, intermediate_outputs
 

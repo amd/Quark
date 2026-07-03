@@ -1,8 +1,10 @@
+# LLM Post Training Quantization (PTQ) Examples
+
 ## Usage
 
 Please refer to https://quark.docs.amd.com/latest/pytorch/example_quark_torch_llm_ptq.html.
 
-# Quantization schemes examples (`--quant_scheme`)
+### Quantization schemes examples (`--quant_scheme`)
 
 The previously supported `--quant_scheme` arguments have been renamed in Quark 0.11. The previous names are replaced as follows:
 

@@ -66,6 +66,7 @@ extensions = [
     'myst_nb',
     'notfound.extension',
     'quark_version_substitution',
+    'sphinx_design',
     'sphinx.ext.autodoc',
     'sphinx.ext.coverage',
     'sphinx.ext.doctest',
@@ -138,7 +139,7 @@ def fix_signature(app, what, name, obj, options, signature, return_annotation):
 nitpick_ignore_regex = [(r'py:class', r'.*')]
 
 # TODO: Remove once https://github.com/sphinx-doc/sphinx/issues/4961 is addressed.
-# Bypass `WARNING: more than one target found for cross-reference 'Config': quark.onnx.quantization.config.config.Config, quark.torch.pruning.config.Config, quark.torch.quantization.config.config.Config`, etc.
+# Bypass `WARNING: more than one target found for cross-reference 'Config': quark.onnx.quantization.config.config.Config, quark.torch.pruning.config.PConfig, quark.torch.quantization.config.config.Config`, etc.
 suppress_warnings = [
     'ref.python',
     'autoapi.python_import_resolution'

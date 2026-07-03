@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import functools
 import math
-import os
 from collections import defaultdict
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from typing import Any, Callable, Generator, cast
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.scale import apply_clip, apply_scale
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import append_str_prefix, get_moe_layers, get_named_quant_linears
@@ -34,7 +34,10 @@ from quark.torch.algorithm.utils.prepare import (
 from quark.torch.algorithm.utils.utils import clear_memory, get_num_attn_heads_from_model, is_attention_module
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
 from quark.torch.utils import (
+    QUARK_ACTIVATION_SCALES_FILENAME,
     QUARK_ALGO_DEBUG,
+    QUARK_AWQ_MEMORY_OPTIMIZATION,
+    QUARK_SAVE_ACTIVATION_SCALES,
     LossError,
     assert_no_nan,
     get_op_name,
@@ -54,10 +57,6 @@ class AwqProcessor(BaseAlgoProcessor):
         # If accelerate is used, the model will have the attribute _hf_hook
         self.using_accelerate = hasattr(self.model, "_hf_hook")
         self.recover_attn_implementation = self.model.config._attn_implementation
-        # The `QUARK_AWQ_MEMORY_OPTIMIZATION` flag is intended for use in memory-constrained environments.
-        # When enabled, it can significantly reduce GPU memory usage.
-        # By default, this optimization is disabled.
-        QUARK_AWQ_MEMORY_OPTIMIZATION = os.environ.get("QUARK_AWQ_MEMORY_OPTIMIZATION", None) == "1"
         if QUARK_AWQ_MEMORY_OPTIMIZATION:
             self.model.config._attn_implementation = "sdpa"
         self.device = model.device
@@ -117,7 +116,7 @@ class AwqProcessor(BaseAlgoProcessor):
                 num_key_value_heads=self.num_key_value_heads,
             )
             scales_list = append_str_prefix(scales_list, get_op_name(self.model, self.modules[i]) + ".")
-            if os.environ.get("QUARK_SAVE_ACTIVATION_SCALES", "None") == "true":
+            if QUARK_SAVE_ACTIVATION_SCALES:
                 self.global_scales_list.extend(scales_list)
 
             # [STEP 3]: Compute and apply clipping list
@@ -133,10 +132,9 @@ class AwqProcessor(BaseAlgoProcessor):
         # recover model attention config
         self.model.config._attn_implementation = self.recover_attn_implementation
 
-        if os.environ.get("QUARK_SAVE_ACTIVATION_SCALES", "None") == "true":
-            filename = os.environ.get("QUARK_ACTIVATION_SCALES_FILENAME", "activation_scales_awq.pt")
-            torch.save(self.global_scales_list, filename)
-            logger.info(f"AWQ Activation Scales Successfully Saved to {filename}")
+        if QUARK_SAVE_ACTIVATION_SCALES:
+            torch.save(self.global_scales_list, QUARK_ACTIVATION_SCALES_FILENAME)
+            logger.info(f"AWQ Activation Scales Successfully Saved to {QUARK_ACTIVATION_SCALES_FILENAME}")
 
     @torch.no_grad()
     def _search_best_scale(
@@ -451,7 +449,7 @@ class AwqProcessor(BaseAlgoProcessor):
         self, w: torch.Tensor, linear_layer: nn.Linear, get_scale_zp: bool = False
     ) -> torch.Tensor:
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize | NonScaledFakeQuantize):
                 module.enable_observer()
                 module.enable_fake_quant()
 
@@ -473,7 +471,7 @@ class AwqProcessor(BaseAlgoProcessor):
         if not self.using_accelerate:
             linear_layer._weight_quantizer.observer.to(self.device)
         for module in linear_layer.modules():
-            if isinstance(module, ScaledFakeQuantize) or isinstance(module, NonScaledFakeQuantize):
+            if isinstance(module, ScaledFakeQuantize | NonScaledFakeQuantize):
                 module.disable_observer()
                 module.disable_fake_quant()
 

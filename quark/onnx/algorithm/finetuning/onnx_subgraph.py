@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -16,6 +16,7 @@ from numpy.typing import NDArray
 from onnx import NodeProto, TensorProto, numpy_helper
 from onnxruntime.quantization.onnx_model import ONNXModel
 
+from quark.common.utils.log import ScreenLogger, log_errors
 from quark.onnx.quantization.quant_utils import (
     extract_sub_model,
     get_batch_size,
@@ -26,7 +27,6 @@ from quark.onnx.quantization.quant_utils import (
 )
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model, register_custom_ops_library
 from quark.onnx.utils.system_utils import create_tmp_dir
-from quark.shares.utils.log import ScreenLogger, log_errors
 
 logger = ScreenLogger(__name__)
 
@@ -137,7 +137,7 @@ class Subgraph:
 
             # If users only filled in 'cuda', then there is no need to specify the device id
             if len(self.ort_infer_device) > 5:
-                decive_ids = [i for i in self.ort_infer_device[5:].split(",")]
+                decive_ids = list(self.ort_infer_device[5:].split(","))
                 for ids in decive_ids:
                     if isinstance(provider_options, list):
                         provider_options.append({"device_id": ids})
@@ -232,6 +232,29 @@ class Subgraph:
             # ensure the weight was quantized
             if not (isinstance(inp_1_node, NodeProto) and inp_1_node.op_type in DQ + FN):
                 return []
+            else:
+                # however, if the weight is dynamic (not an initializer but determined by a subgraph),
+                # it cannot be updated and included in submodel list
+                dq_node = inp_1_node
+                dq_inp_1 = dq_node.input[0]
+                dq_inp_1_node = self.q_tensor_to_producer[dq_inp_1]
+                if isinstance(dq_inp_1_node, NodeProto):
+                    if dq_node.op_type in FN:
+                        # the producer of FN should be an initializer
+                        logger.warning(f"The weight of node {node.name} is not an initializer, skipped")
+                        return []
+                    elif dq_node.op_type in DQ and dq_inp_1_node.op_type in Q:
+                        q_node = dq_inp_1_node
+                        q_inp_1 = q_node.input[0]
+                        q_inp_1_node = self.q_tensor_to_producer[q_inp_1]
+                        if not isinstance(q_inp_1_node, TensorProto):
+                            # the producer of Q should be an initializer
+                            logger.warning(f"The weight of node {node.name} is not an initializer, skipped")
+                            return []
+                    else:
+                        # this is an abnormal case
+                        logger.warning(f"Unexpected quantized weight of node {node.name}, skipped")
+                        return []
 
             # find the input tensor as a start
             if inp_0_node.op_type in DQ:
@@ -344,7 +367,7 @@ class Subgraph:
     def get_f_input_output_data_single_pass(
         self,
     ) -> tuple[dict[int, list[NDArray[Any]] | NDArray[Any]], dict[int, list[NDArray[Any]] | NDArray[Any]]]:
-        model_original_outputs = set(output.name for output in self.fmodel.graph.output)
+        model_original_outputs = {output.name for output in self.fmodel.graph.output}
         for f_in in self.fsubgraph_input_tensor_list:
             if f_in not in model_original_outputs:
                 model_original_outputs.add(f_in)
@@ -398,7 +421,7 @@ class Subgraph:
     ) -> tuple[NDArray[Any] | list[Any], NDArray[Any] | list[Any]]:
         aug_model = copy.deepcopy(self.fmodel)
         model_original_inputs = [n.name for n in aug_model.graph.input]
-        model_original_outputs = set(output.name for output in aug_model.graph.output)
+        model_original_outputs = {output.name for output in aug_model.graph.output}
 
         f_out = self.fsubgraph_output_tensor_list[index]
         assert isinstance(f_out, str), f"Invalid tensor name {f_out} for float subgraph"
@@ -458,7 +481,7 @@ class Subgraph:
 
     def get_q_input_data_in_parallel(self) -> dict[int, NDArray[Any] | list[NDArray[Any]]]:
         aug_model = copy.deepcopy(self.qmodel)
-        model_original_outputs = set(output.name for output in aug_model.graph.output)
+        model_original_outputs = {output.name for output in aug_model.graph.output}  # pragma: no cover
         for q_in in self.qsubgraph_input_tensor_list:
             if q_in not in model_original_outputs:
                 model_original_outputs.add(q_in)
@@ -618,12 +641,13 @@ class Subgraph:
 
         return q_input_data, f_input_data, f_output_data
 
-    def get_all_input(self) -> tuple[dict[str, list[NDArray[Any]]], int]:
+    def get_all_input(self) -> tuple[dict[str, NDArray[Any]], int]:
         n = 1
         self.data_reader.reset_iter()
         all_inputs = self.data_reader.get_next()
-        if all_inputs is not None:
-            concat_dict = {key: [value] for key, value in all_inputs.items()}
+        if all_inputs is None:
+            return {}, 0
+        concat_dict: dict[str, list[NDArray[Any]]] = {key: [np.asarray(value)] for key, value in all_inputs.items()}
 
         while True:
             inputs = self.data_reader.get_next()
@@ -632,12 +656,13 @@ class Subgraph:
                 break
 
             for key in inputs:
-                concat_dict[key].append(inputs[key])
+                concat_dict[key].append(np.asarray(inputs[key]))
 
+        result_dict: dict[str, NDArray[Any]] = {}
         for key in concat_dict:
-            concat_dict[key] = np.concatenate(concat_dict[key], axis=0)
+            result_dict[key] = np.concatenate(concat_dict[key], axis=0)
 
-        return concat_dict, n - 1
+        return result_dict, n - 1
 
     @log_errors
     def extract_submodel_weight(

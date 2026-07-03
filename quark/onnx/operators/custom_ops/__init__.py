@@ -1,9 +1,12 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
-from .build_custom_ops import compile_library, get_library_path
+from .build_custom_ops import (
+    get_legacy_torch_library_path,
+    get_library_path,
+)
 
 # ORT custom ops defined in custom_op_library.cc
 _COP_DOMAIN = "com.amd.quark"
@@ -18,7 +21,7 @@ _COP_VERSION = 1
 
 __all__ = [
     "get_library_path",
-    "compile_library",
+    "get_legacy_torch_library_path",
     "_COP_DOMAIN",
     "_COP_QUANT_OP_NAME",
     "_COP_DEQUANT_OP_NAME",

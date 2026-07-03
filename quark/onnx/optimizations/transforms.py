@@ -1,11 +1,12 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 """Defines core classes for expressing onnx model transformations."""
 
 import abc
-from typing import Any, OrderedDict
+from collections import OrderedDict  # pragma: no cover
+from typing import Any  # pragma: no cover
 
 import six
 from onnx import NodeProto, TensorProto

@@ -14,8 +14,9 @@ import torch.nn.functional as F
 from torch.fx import GraphModule
 
 import quark.torch.quantization.graph.optimization.post_quant.opt_pass_after_quant_float_scale as opt_after_qt_fs
-from quark.shares.utils.log import ScreenLogger
-from quark.shares.utils.testing_utils import torch_device, use_temporary_directory
+from quark.common.utils.import_utils import export_for_training
+from quark.common.utils.log import ScreenLogger
+from quark.common.utils.testing_utils import torch_device, use_temporary_directory
 from quark.torch import ModelQuantizer
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode, RoundType, ScaleType
@@ -80,7 +81,7 @@ def test_torch_align_concat_strategy(tmpdir: str):
     float_model = TinyAlignConcatModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -91,7 +92,7 @@ def test_torch_align_concat_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -145,7 +146,7 @@ def test_torch_align_pool_strategy(tmpdir: str):
     float_model = TinyAlignPoolModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -156,7 +157,7 @@ def test_torch_align_pool_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -213,7 +214,7 @@ def test_torch_align_pad_strategy(tmpdir: str):
     float_model = TinyAlignPadModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -224,7 +225,7 @@ def test_torch_align_pad_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -272,7 +273,7 @@ def test_torch_align_slice_strategy(tmpdir: str):
     float_model = TinyAlignSliceModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -283,7 +284,7 @@ def test_torch_align_slice_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -341,7 +342,7 @@ def test_torch_align_transpose_strategy(tmpdir: str):
     float_model = TinyAlignTransposeModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -352,7 +353,7 @@ def test_torch_align_transpose_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -404,7 +405,7 @@ def test_torch_align_reshape_strategy(tmpdir: str):
     float_model = TinyAlignReshapeModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -415,7 +416,7 @@ def test_torch_align_reshape_strategy(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [fx_quantizer, unify_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)
@@ -511,7 +512,7 @@ def test_torch_a8w8_a16w8(tmpdir: str):
     float_model = TinyCONVModel().to(torch_device).eval()
     example_inputs = (torch.rand(1, 3, 28, 28).to(torch_device),)
     fp_out = float_model(*example_inputs)
-    graph_model = torch.export.export_for_training(float_model, example_inputs).module()
+    graph_model = export_for_training(float_model, example_inputs).module()
     gp_out = graph_model(*example_inputs)
     assert torch.allclose(fp_out, gp_out)
     # ========== test quant pipeline===============
@@ -521,7 +522,7 @@ def test_torch_a8w8_a16w8(tmpdir: str):
         unify_quantizer = ModelQuantizer(each_quant_config)
         fx_quantizer = FxGraphQuantizer(each_quant_config)
         for quantizer in [unify_quantizer, fx_quantizer]:
-            graph_model_1 = torch.export.export_for_training(float_model, example_inputs).module()
+            graph_model_1 = export_for_training(float_model, example_inputs).module()
             input_models = [graph_model_1]
             if isinstance(quantizer, FxGraphQuantizer):
                 input_models.append(float_model)

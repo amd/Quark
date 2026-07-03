@@ -1,12 +1,12 @@
 #
-# Copyright (C) 2023 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
 from dataclasses import fields
 from typing import Any
 
-from quark.shares.utils.log import ScreenLogger
+from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType
 
@@ -69,9 +69,11 @@ def _check_is_weight_only(config: QLayerConfig) -> bool:
 
 
 def _check_tensors_dynamic(tensors: QTensorConfig | list[Any] | None) -> bool:
-    """Check if all tensors are dynamic."""
+    """Check if tensor quantization stages are dynamic."""
     specs = _get_tensor_specs(tensors)
-    return all(spec.is_dynamic for spec in specs) if specs else True
+    tensor_specs = [spec for spec in specs if spec.is_scale_quant is False]
+    effective_specs = tensor_specs if tensor_specs else specs
+    return all(spec.is_dynamic for spec in effective_specs) if effective_specs else True
 
 
 def _check_tensors_has_per_tensor_scale(tensors: QTensorConfig | list[Any] | None) -> bool:
@@ -122,17 +124,6 @@ class ConfigVerifier:
         self._is_act_dynamic = True
         self._is_act_contain_scale_per_tensor = False
 
-    def _update_flags(self, quantization_config: QLayerConfig) -> None:
-        """Update internal flags based on a single QLayerConfig."""
-        is_dynamic, is_weight_only, is_act_dynamic, is_act_contain_scale_per_tensor = init_quantization_config(
-            quantization_config
-        )
-        self._is_all_dynamic = is_dynamic and self._is_all_dynamic
-        self._is_weight_only = is_weight_only and self._is_weight_only
-        self._is_act_dynamic = is_act_dynamic and self._is_act_dynamic
-        self._is_act_contain_scale_per_tensor = is_act_contain_scale_per_tensor or self._is_act_contain_scale_per_tensor
-
-    def verify_config(self) -> None:
         """Verify and analyze the quantization configuration."""
         # Process global config
         if self.config.global_quant_config is not None:
@@ -147,6 +138,16 @@ class ConfigVerifier:
         if self.config.layer_quant_config:
             for quantization_config in self.config.layer_quant_config.values():
                 self._update_flags(quantization_config)
+
+    def _update_flags(self, quantization_config: QLayerConfig) -> None:
+        """Update internal flags based on a single QLayerConfig."""
+        is_dynamic, is_weight_only, is_act_dynamic, is_act_contain_scale_per_tensor = init_quantization_config(
+            quantization_config
+        )
+        self._is_all_dynamic = is_dynamic and self._is_all_dynamic
+        self._is_weight_only = is_weight_only and self._is_weight_only
+        self._is_act_dynamic = is_act_dynamic and self._is_act_dynamic
+        self._is_act_contain_scale_per_tensor = is_act_contain_scale_per_tensor or self._is_act_contain_scale_per_tensor
 
     @property
     def is_all_dynamic(self) -> bool:

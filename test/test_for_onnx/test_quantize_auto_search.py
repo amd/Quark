@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 from onnxruntime.quantization.quant_utils import QuantType
 
+from quark.common.utils.testing_utils import use_temporary_directory
 from quark.onnx import CalibrationMethod, Config, ModelQuantizer, PowerOfTwoMethod
 from quark.onnx.quantization.auto_search.auto_search_v1 import (
     AutoSearch,
@@ -31,7 +32,6 @@ from quark.onnx.quantization.auto_search.auto_search_v1 import (
     ssim_metric,
 )
 from quark.onnx.quantization.config.custom_config import U8S8_AAWS_CONFIG
-from quark.shares.utils.testing_utils import use_temporary_directory
 
 auto_search_config = AutoSearchConfig()
 # level1
@@ -102,7 +102,7 @@ class DataReader:
 
 class DoubleConvModel(nn.Module):
     def __init__(self):
-        super(DoubleConvModel, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
