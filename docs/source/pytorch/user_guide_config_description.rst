@@ -5,6 +5,14 @@ Configuring PyTorch Quantization
 
 This topic describes the steps on how to set the quantization configuration in AMD Quark for PyTorch.
 
+.. note::
+
+   The configuration objects described here (``QTensorConfig``, ``QLayerConfig``,
+   ``QConfig``) are model-agnostic and apply to diffusion model submodules
+   (UNet, transformer) exactly as they do to LLMs.  For diffusion-specific
+   examples and calibration, see
+   :doc:`Quantizing Diffusion Models with Quark <example_quark_torch_diffusers>`.
+
 Configuration of quantization in ``AMD Quark for PyTorch`` is set using Python ``dataclass`` because it is rigorous and helps you avoid typos. The class ``Config`` in ``quark.torch.quantization.config.config`` is provided for configuration. There are several steps to set up the configuration:
 
 - **Step 1**: Configure :py:class:`.QTensorConfig` for ``torch.Tensors``. Specify attributes such as ``dtype``, ``observer_cls``, etc.

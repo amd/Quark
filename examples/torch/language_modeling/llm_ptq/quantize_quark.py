@@ -84,27 +84,6 @@ if "CUDA_VISIBLE_DEVICES" not in os.environ:
 # LLMTemplate.register_scheme("int8_wo", config=int8_wo_scheme)
 # print(f"[INFO]: Registered quantization scheme 'int8_wo'")
 
-# --- DeepSeek V4 Template ---
-# Registers layer-name patterns for DeepSeek-V4 (e.g., DeepSeek-V4-Flash).
-# Use with --quant_scheme mxfp4 --file2file_quantization when quantizing
-# from an FP8 SGLang checkpoint; Quark's recovery path handles both the
-# standard DeepSeek-V3 "_scale_inv" and the V4 ".scale" sibling-scale format.
-deepseek_v4_template = LLMTemplate(
-    model_type="deepseek_v4",
-    kv_layers_name=["*wkv"],
-    q_layer_name=["*wq_a", "*wq_b"],
-    exclude_layers_name=[
-        "embed",
-        "head",
-        "*attn*",
-        "*ffn.gate*",
-        "hc_*",
-        "mtp.*",
-    ],
-)
-LLMTemplate.register_template(deepseek_v4_template)
-logger.info(f"Registered template '{deepseek_v4_template.model_type}'")
-
 
 def _get_hf_model_config(model_dir: str) -> dict:
     """Read config.json from the model directory without loading the model."""
@@ -186,6 +165,7 @@ def main(args: argparse.Namespace) -> None:
                 pretrained_model_path=args.model_dir,
                 save_path=args.output_dir,
                 weight_converters=weight_converters,
+                keep_excluded_layers_as_original_model_state=args.keep_excluded_layers_as_original_model_state,
             )
 
         print(f"[INFO]: File-to-file quantization output saved to {args.output_dir}")
@@ -603,6 +583,14 @@ if __name__ == "__main__":
         help="Force dequantization of excluded pre-quantized layers to bf16/fp16 on export. "
         "By default (flag omitted), such layers are preserved in their original quantized format "
         "(converted to Quark format); unsupported formats fall back to dequantization with a warning.",
+    )
+    parser.add_argument(
+        "--keep_excluded_layers_as_original_model_state",
+        action="store_true",
+        help="File-to-file mode only: keep already-quantized excluded layers (e.g. FP8 attention "
+        "in the official DeepSeek-V4 checkpoint) in their original on-disk format instead of "
+        "dequantizing them to bf16/fp16. Off by default; only enable for source checkpoints whose "
+        "quantization_config declares the excluded layers' format.",
     )
 
     # Argument for saving

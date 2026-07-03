@@ -345,6 +345,44 @@ def fp4_act_quant(x, block_size, inplace=False):
     return x
 
 
+def quant_dequant_nvfp4_act(x: torch.Tensor, input_scale: torch.Tensor, group_size: int = 16) -> torch.Tensor:
+    """Fused quant+dequant of an activation to NVFP4 (returns the same dtype as ``x``).
+
+    NVFP4 activation quantization is two-level and symmetric to the weight side
+    (:func:`dequant_nvfp4_weight`, where ``eff_scale = wscale_fp8 * wscale2``):
+
+    * a **dynamic per-group** (``group_size`` = 16) micro-scale stored in FP8-E4M3
+      — the activation counterpart of ``wscale_fp8``; and
+    * a **static per-tensor** F32 global scale ``input_scale`` (calibrated in
+      Stage 2) — the counterpart of ``wscale2``.
+
+    For each group the effective scale is ``fp8(group_amax / 6 / input_scale) *
+    input_scale``; values are rounded onto the FP4 (e2m1) grid against it and
+    dequantized back. This is what an actual NVFP4 inference does to activations.
+
+    :param torch.Tensor x: Activation, ``[..., in]`` with ``in % group_size == 0``.
+    :param torch.Tensor input_scale: F32 per-tensor scale (scalar).
+    :param int group_size: FP4 group size (16 for NVFP4).
+
+    :return: ``x`` fake-quantized to NVFP4, cast back to ``x.dtype``.
+    """
+    fp4_max = 6.0
+    fp8_max = 448.0
+    n = x.size(-1)
+    if n % group_size != 0:
+        raise ValueError(f"activation inner dim {n} not divisible by group_size {group_size}")
+    s2 = input_scale.float().to(x.device).clamp_min(1e-30)
+    blocks = x.float().unflatten(-1, (n // group_size, group_size))
+    amax = blocks.abs().amax(dim=-1, keepdim=True)
+    # Dynamic per-group micro-scale, expressed relative to the global scale and
+    # quantized to FP8-E4M3 (clamp before the cast: e4m3fn has no inf, max 448).
+    group_scale = torch.clamp(amax / fp4_max / s2, max=fp8_max)
+    group_scale_fp8 = group_scale.to(torch.float8_e4m3fn).float()
+    eff = (group_scale_fp8 * s2).clamp_min(1e-30)  # [..., in/16, 1]
+    code = _round_to_fp4_e2m1(torch.clamp(blocks / eff, -fp4_max, fp4_max))
+    return (code * eff).flatten(-2).to(x.dtype)
+
+
 def fp8_gemm(x, x_scale, weight, w_scale, scale_dtype):
     """C = A_fp8 @ B_fp8^T with per-128 block scaling on both, FP32 accumulation.
 

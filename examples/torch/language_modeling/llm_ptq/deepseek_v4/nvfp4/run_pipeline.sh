@@ -72,7 +72,7 @@ python "$HERE/stage2_calibrate_input_scale.py" \
 echo "### [3/4] Stage 3 — merge input_scale"
 python "$HERE/stage3_merge.py" --checkpoint-path "$OUT" --input-scale-path "$INPUT_SCALE"
 
-echo "### [4/4] Stage 4 — weight-only PPL eval"
+echo "### [4/4] Stage 4 — NVFP4 PPL eval"
 [[ -e "$OUT/inference" ]] || ln -s "$SRC/inference" "$OUT/inference"  # Stage 1 doesn't copy model code
 PPL_ARGS=(--model-dir "$OUT" --batch-size "$PPL_BATCH")
 [[ -n "$N_BLOCKS" ]] && PPL_ARGS+=(--n-blocks "$N_BLOCKS" --seqlen "$CALIB_SEQLEN")

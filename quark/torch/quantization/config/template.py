@@ -705,6 +705,7 @@ class LLMTemplate:
             - deepseek_v2
             - deepseek_v3
             - deepseek_v32
+            - deepseek_v4
             - deepseek_vl_v2
             - gemma2
             - gemma3
@@ -722,6 +723,7 @@ class LLMTemplate:
             - llama
             - llama4
             - minimax_m2
+            - minimax_m3_vl
             - mistral
             - mixtral
             - mllama
@@ -941,8 +943,11 @@ class LLMTemplate:
                 )
 
             if effective_algo_config[algorithm_name] is None:
-                raise ValueError(
-                    f"Requested the algorithm {algorithm_name}, but no default configuration is available for this algorithm for {self.model_type} architecture and no custom configuration was found in the provided `algo_configs: dict[str, AlgoConfig]` (algo_configs={algo_configs}). Consider using the argument `algo_configs` in `LLMTemplate.get_config` or open an issue."
+                raise NotImplementedError(
+                    f"No built-in {algorithm_name} configuration is available for the '{self.model_type}' architecture. "
+                    f"Pass a custom configuration via `algo_configs={{'{algorithm_name}': <your AlgoConfig>}}` "
+                    f"to `LLMTemplate.get_config()`. "
+                    f"See the Quark documentation for details."
                 )
 
             config.algo_config.append(effective_algo_config[algorithm_name])
@@ -1058,6 +1063,18 @@ DEFAULT_TEMPLATES = {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
         "exclude_layers_name": ["lm_head", "*mlp.gate", "*mlp.gate.linear", "model.layers.61.*", "*self_attn*"],
+    },
+    "deepseek_v4": {
+        "kv_layers_name": ["*wkv"],
+        "q_layer_name": ["*wq_a", "*wq_b"],
+        "exclude_layers_name": [
+            "*attn*",
+            "embed",
+            "head",
+            "*ffn.gate*",
+            "hc_*",
+            "mtp.*",
+        ],
     },
     "deepseek_vl_v2": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1189,6 +1206,18 @@ DEFAULT_TEMPLATES = {
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["lm_head", "*block_sparse_moe.gate*", "*self_attn*"],
         "gate_up_layers_name": ["w1", "w3"],
+    },
+    "minimax_m3_vl": {
+        "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
+        "q_layer_name": "*language_model.*q_proj",
+        "exclude_layers_name": [
+            "*lm_head",
+            "*vision_tower*",
+            "*multi_modal_projector*",
+            "*patch_merge_mlp*",
+            "*block_sparse_moe.gate",
+            "*self_attn*",
+        ],
     },
     "mistral": {
         "kv_layers_name": ["*k_proj", "*v_proj"],

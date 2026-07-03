@@ -12,7 +12,6 @@ from quark.common.data_type import (
     BaseBFP16,
     BaseDataType,
     BaseFloat16,
-    BaseInt4,
     BaseInt8,
     BaseInt16,
     BaseInt32,
@@ -25,7 +24,6 @@ from quark.common.data_type import (
     BaseMXFP8_E4M3,
     BaseMXFP8_E5M2,
     BaseMXInt8,
-    BaseUInt4,
     BaseUInt8,
     BaseUInt16,
     BaseUInt32,
@@ -43,20 +41,6 @@ class DataType(BaseDataType):
 
     # Mapping to ONNX Runtime quantization type.
     map_onnx_format: ExtendedQuantType | QuantType
-
-
-class Int4(BaseInt4):
-    """Signed 4-bit integer quark onnx quantization data type."""
-
-    onnx_proto_dtype: TensorProto.INT4  # type: ignore
-    map_onnx_format = ExtendedQuantType.QInt4
-
-
-class UInt4(BaseUInt4):
-    """Unsigned 4-bit integer quark onnx quantization data type."""
-
-    onnx_proto_dtype = TensorProto.UINT4
-    map_onnx_format = ExtendedQuantType.QUInt4
 
 
 class Int8(BaseInt8):
@@ -186,8 +170,6 @@ class MXInt8(BaseMXInt8):
 
 
 dt_name_map = {
-    Int4: "Int4",
-    UInt4: "UInt4",
     Int8: "Int8",
     UInt8: "UInt8",
     Int16: "Int16",

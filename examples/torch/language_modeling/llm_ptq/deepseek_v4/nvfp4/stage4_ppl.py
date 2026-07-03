@@ -7,18 +7,21 @@
 #
 
 """
-Stage 4: weight-only NVFP4 PPL evaluation for a DeepSeek-V4-Pro checkpoint
-produced by this pipeline (Stage 1 ``stage1_quantize_weight.py`` + Stage 3
-``stage3_merge.py``).
+Stage 4: NVFP4 PPL evaluation for a DeepSeek-V4-Pro checkpoint produced by this
+pipeline (Stage 1 ``stage1_quantize_weight.py`` + Stage 3 ``stage3_merge.py``).
 
-Unlike an on-the-fly fake-quant evaluation, this script loads an *already*
-NVFP4-quantized checkpoint and measures the true effect of the NVFP4 **weights**.
+Loads an *already* NVFP4-quantized checkpoint and measures its PPL. Both weights
+and activations are quantized to NVFP4 (per-group-16 FP4 + per-tensor
+``input_scale``), matching real NVFP4 inference; this requires the merged
+``input_scale`` from Stages 2-3. Pass ``--no-quant-act`` to keep activations in
+BF16 instead.
+
 On-disk layout per quantized expert weight ``<w>``:
 
     <w>             U8       packed FP4 nibbles (2 codes / byte, inner dim / 2)
     <w>_scale       F8_E4M3  per-group(16) block scale (the scale, in FP8)
     <w>_scale_2     F32      per-tensor global scale (scale-of-scale)
-    <w>.input_scale F32      activation scale (unused in weight-only eval)
+    <w>.input_scale F32      per-tensor activation scale
 
 and the kept (non-expert) linears stay in the source FP8 layout:
 
@@ -27,10 +30,10 @@ and the kept (non-expert) linears stay in the source FP8 layout:
 
 Evaluation strategy (BF16-dequant path):
   Each quantized weight is dequantized to BF16 on the GPU transiently and the
-  GEMM runs as a plain ``F.linear``. This measures the weight-only NVFP4 PPL;
-  activations stay BF16. The non-GEMM ops (attention, indexer) use the
-  triton/PyTorch kernels in ``kernels`` (which replace the checkpoint's
-  tilelang kernels on import).
+  GEMM runs as a plain ``F.linear``. The activation is fake-quantized to NVFP4
+  just before the GEMM (unless ``--no-quant-act``). The non-GEMM ops (attention,
+  indexer) use the triton/PyTorch kernels in ``kernels`` (which replace the
+  checkpoint's tilelang kernels on import).
 
 Memory: the compact quantized weights live in CPU RAM; one decoder block is
 moved to GPU per forward, where ``DequantLinear`` expands its weights to BF16
@@ -86,8 +89,8 @@ from dsv4_common import (  # noqa: E402
 def parse_args():
     p = argparse.ArgumentParser(
         description=(
-            "Stage 4: weight-only NVFP4 PPL evaluation on wikitext-2 for a checkpoint produced "
-            "by this pipeline (dequantizes each weight to BF16 on the fly; activations stay BF16)."
+            "Stage 4: NVFP4 PPL evaluation on wikitext-2 for a checkpoint produced by this "
+            "pipeline (weights and activations quantized to NVFP4; pass --no-quant-act for BF16 acts)."
         )
     )
     p.add_argument(
@@ -119,6 +122,14 @@ def parse_args():
         default=None,
         help="Evaluate only the first N chunks for a quick (less accurate) result (default: all chunks).",
     )
+    p.add_argument(
+        "--quant-act",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quantize activations to NVFP4 (per-group-16 FP4 + per-tensor input_scale) for the full "
+        "NVFP4 PPL; requires the merged input_scale (Stages 2-3). Pass --no-quant-act to keep "
+        "activations in BF16 (default: %(default)s).",
+    )
     return p.parse_args()
 
 
@@ -127,13 +138,15 @@ def main():
     device = torch.device(args.device)
     model_dir = Path(args.model_dir)
 
+    eval_mode = "NVFP4 (weights + activations)" if args.quant_act else "NVFP4 weights, BF16 activations"
     header = (
         "NVFP4 PPL — DeepSeek-V4-Pro (Quark f2f checkpoint, BF16-dequant path)\n"
         f"  model_dir    : {model_dir}\n"
         f"  device       : {device}\n"
         f"  batch_size   : {args.batch_size}\n"
         f"  seqlen       : {args.seqlen}\n"
-        f"  n_gpu_blocks : {args.n_gpu_blocks}"
+        f"  n_gpu_blocks : {args.n_gpu_blocks}\n"
+        f"  eval mode    : {eval_mode}"
     )
     if args.n_blocks:
         header += f"\n  n_blocks     : {args.n_blocks} (smoke-test)"
@@ -172,7 +185,7 @@ def main():
     model.eval()
 
     logger.info("[3] Loading + wrapping weights (dequant on forward) …")
-    load_and_wrap(model, str(model_dir), "nvfp4")
+    load_and_wrap(model, str(model_dir), "nvfp4", quant_act=args.quant_act)
 
     logger.info("[4] Installing per-block GPU offload …")
     # Move only NON-block params/buffers to GPU (embed / head / norm / freqs_cis).

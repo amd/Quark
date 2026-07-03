@@ -13,10 +13,11 @@ from typing import Any
 import numpy as np
 import onnx
 import onnx.numpy_helper
-import onnxruntime
 from onnx import ModelProto, TensorProto
 from onnx import onnx_pb as onnx_proto
 from onnxruntime.quantization.base_quantizer import QuantizationParams, to_array_extended
+from onnxruntime.quantization.calibrate import TensorData
+from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 from onnxruntime.quantization.qdq_quantizer import (
     QDQBiasQuantInfo,
     QDQScaleZpInitializers,
@@ -41,14 +42,6 @@ from onnxruntime.quantization.quant_utils import (
     normalize_axis,
     quantize_nparray,
 )
-
-from quark.onnx.quantization.quant_utils import is_version_below
-
-if not is_version_below(onnxruntime, "1.19.0"):
-    from onnxruntime.quantization.quant_utils import pack_bytes_to_4bit
-
-from onnxruntime.quantization.calibrate import TensorData
-from onnxruntime.quantization.onnx_quantizer import tensor_proto_to_array
 
 from quark.common.utils.log import ScreenLogger
 from quark.onnx.quantization.quant_utils import (
@@ -633,9 +626,9 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
 
         # The ONNX spec did not support 16-bit Q/DQ ops before opset 21.
         # So, may have to override the Q/DQ op domain to 'com.microsoft' if the activation or weight types
-        # are 16-bit or 4-bit integers.
+        # are 16-bit integers.
         if self.opset_version < 21:
-            opset21_types = (TensorProto.UINT16, TensorProto.INT16, TensorProto.UINT4, TensorProto.INT4)
+            opset21_types = (TensorProto.UINT16, TensorProto.INT16)
             overrides_have_opset21_types = any(
                 t.tensor_type in opset21_types for t in self.tensor_quant_override_qtypes
             )
@@ -646,7 +639,7 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             ):
                 logger.warning(
                     "ONNX QuantizeLinear and DequantizeLinear operators do not support "
-                    "16-bit/4-bit integer quantization types prior to opset 21. "
+                    "16-bit integer quantization types prior to opset 21. "
                     f"The domain of QuantizeLinear and DequantizeLinear operators will be set to '{ms_domain}' to "
                     "enable support."
                 )
@@ -1039,22 +1032,6 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                             f"{q_weight_data.tobytes()[:10]}, got {check.tobytes()[:10]} and shape={weight.shape}"
                             f"\nraw={str(q_weight_initializer)[:200]}."
                         )
-            elif qType in (onnx.TensorProto.INT4, onnx.TensorProto.UINT4):
-                if is_version_below(onnxruntime, "1.19.0"):
-                    raise RuntimeError(f"onnxruntime version >= 1.19 is required to support {qType} quantization.")
-
-                if is_version_below(onnx, "1.19.0"):
-                    if q_weight_data.dtype not in (np.int8, np.uint8):
-                        raise RuntimeError(
-                            f"Quantized weights for {q_weight_name} must be 8-bit before packing as 4-bit values."
-                        )
-
-                # We do not use onnx.helper.pack_float32_to_4bit() due to performance.
-                # This can be the difference between a large model taking 30 minutes to quantize vs 5 minutes.
-                packed_data = bytes(pack_bytes_to_4bit(q_weight_data.tobytes()))
-
-                # We only use onnx.helper.make_tensor with raw data due to bug: https://github.com/onnx/onnx/pull/6161
-                q_weight_initializer = onnx.helper.make_tensor(q_weight_name, qType, weight.dims, packed_data, raw=True)
             elif qType in ONNX_FP_QTYPES_LIST:
                 q_weight_initializer = onnx.TensorProto()
                 q_weight_initializer.data_type = qType
@@ -1197,28 +1174,12 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
         self.model.initializer_extend([scale_initializer, zero_initializer])
 
         if not keep_float_weight:
-            if weight_qType in (onnx.TensorProto.INT4, onnx.TensorProto.UINT4):
-                if quantized_weights.dtype not in (np.int8, np.uint8):
-                    raise RuntimeError(
-                        f"Quantized weights for {q_weight_name} must be 8-bit before packing as 4-bit values."
-                    )
-
-                # We do not use onnx.helper.pack_float32_to_4bit() due to performance.
-                # This can be the difference between a large model taking 30 minutes to quantize vs 5 minutes.
-                packed_data = bytes(pack_bytes_to_4bit(quantized_weights.tobytes()))
-
-                # We only use onnx.helper.make_tensor with raw data due to bug: https://github.com/onnx/onnx/pull/6161
-                q_weight_initializer = onnx.helper.make_tensor(
-                    q_weight_name, weight_qType, weights_shape, packed_data, raw=True
-                )
-                self.model.initializer_extend([q_weight_initializer])
-            else:
-                quantized_weights = np.asarray(
-                    quantized_weights,
-                    dtype=onnx.helper.tensor_dtype_to_np_dtype(weight_qType),
-                ).reshape(initializer.dims)
-                q_weight_initializer = onnx.numpy_helper.from_array(quantized_weights, q_weight_name)
-                self.model.initializer_extend([q_weight_initializer])
+            quantized_weights = np.asarray(
+                quantized_weights,
+                dtype=onnx.helper.tensor_dtype_to_np_dtype(weight_qType),
+            ).reshape(initializer.dims)
+            q_weight_initializer = onnx.numpy_helper.from_array(quantized_weights, q_weight_name)
+            self.model.initializer_extend([q_weight_initializer])
 
         return q_weight_name, zp_name, scale_name
 

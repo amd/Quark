@@ -18,7 +18,7 @@ This script:
      tensor layout:
         layers.<L>.ffn.experts.<E>.<wK>.input_scale          (routed, F32 scalar)
         layers.<L>.ffn.shared_experts.<wK>.input_scale       (shared, F32 scalar)
-     so it can be merged (Stage 3) with the weight-only NVFP4 result (Stage 1).
+     so it can be merged (Stage 3) into the NVFP4 weights from Stage 1.
 
 Missing experts: with few calibration tokens some routed experts never fire.
 Each missing (layer, projection) is filled with the MAX input_scale over the
@@ -55,13 +55,8 @@ from tqdm import tqdm
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import (
-    FP4PerGroupSpec,
-    FP8E4M3PerTensorSpec,
-    QConfig,
-    QLayerConfig,
-    ScaleQuantSpec,
-)
+from quark.torch.quantization.config.config import QConfig, QLayerConfig
+from quark.torch.quantization.config.template import QuantizationSchemeCollection
 from quark.torch.quantization.nn.modules.quantize_linear import QuantMixin
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 from quark.torch.utils.per_block_runner.lazy_loader import prepare
@@ -80,6 +75,9 @@ from dsv4_collect import build_input_scale_tensors, collect_input_minmax  # noqa
 from dsv4_common import load_model_module, load_tokenizer, reset_kv_cache  # noqa: E402
 from dsv4_native_linear import NativeLinear, load_all_weights_native, wrap_native_linears  # noqa: E402
 from dsv4_offload import install_disk_offload_hooks  # noqa: E402
+
+# Input spec from Quark's built-in nvfp4 scheme (no model-specific template needed).
+_NVFP4_INPUT_SPEC = QuantizationSchemeCollection().get_scheme("nvfp4").config.input_tensors
 
 
 def parse_args():
@@ -228,7 +226,7 @@ def main():
     # ------------------------------------------------------------------
     logger.info("[5] Quark: replace proxy nn.Linear -> QuantLinear (NVFp4 input observer) …")
 
-    # NVFp4 input quantization config (unchanged from the W4A4 recipe):
+    # NVFp4 input quantization config:
     #   first_stage : FP4PerGroup(group_size=16, dynamic) — per-group micro-scale
     #   second_stage: FP8E4M3PerTensor(static, min_max)   — per-tensor global scale
     # We quantize the INPUT only; weight=None (no weight quant → saves GPU mem).
@@ -237,11 +235,6 @@ def main():
     # Only routed experts (ffn.experts.*.w{1,2,3}) are wrapped with NativeLinear,
     # so only their proxies are nn.Linear → QuantLinear. No exclude list needed:
     # DS-V4's other linears inherit nn.Module, invisible to Quark.
-    input_spec = ScaleQuantSpec(
-        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=True, scale_type="float32"),
-        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
-    ).to_quantization_spec()
-
     # Sanity check (log only, not used by the quantization): count how many expert
     # projections got wrapped as NativeLinear — i.e. how many will be calibrated.
     # n_proxies is the total; n_shared is the subset whose module name contains
@@ -255,7 +248,7 @@ def main():
 
     quant_config = QConfig(
         global_quant_config=QLayerConfig(
-            input_tensors=input_spec,
+            input_tensors=_NVFP4_INPUT_SPEC,
             output_tensors=None,
             weight=None,
         ),

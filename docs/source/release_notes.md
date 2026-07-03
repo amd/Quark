@@ -12,23 +12,20 @@ AMD Quark 0.12 is tested against PyTorch 2.10 and 2.11, and compatible with upst
 
 - Support for Python 3.11 up to 3.13
 - Bumped the minimum required `numpy` to `>= 2.0` across the ONNX and PyTorch flows.
+- **Pre-built wheels** are now published for PyTorch 2.10+ on the **AMD package index** (CPU, CUDA 12.8, ROCm 7.1, ROCm 7.2; Linux/Windows; Python 3.11–3.13). They ship pre-compiled C++ extensions, so no C++ compiler is needed and the first `import quark` no longer triggers a one-time kernel/custom-op build. To fetch a pre-built wheel, point `pip` at the matching index:
+
+  ```bash
+  pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cpu/simple    # CPU
+  pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cu128/simple  # CUDA 12.8
+  pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm71/simple # ROCm 7.1 (Linux only)
+  pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm72/simple # ROCm 7.2 (Linux only)
+  ```
 
 #### Deprecations and breaking changes
 
 - The `quark.testing` module has been deprecated and removed. All testing utilities have been consolidated into `quark.common.utils.testing_utils`. Update your imports as follows:
   - `from quark.testing import skip_if_no_gpu, slow_test, slow_test_if` → `from quark.common.utils.testing_utils import skip_if_no_gpu, slow_test, slow_test_if`
   - `from quark.testing.common_utils import TestCase` → `from quark.common.utils.testing_utils import TestCase`
-
-#### Packaging
-
-**Pre-built wheels** are now published for PyTorch 2.10 and newer, hosted on the [AMD package index](https://pypi.amd.com/simple/). They ship pre-compiled C++ extensions, which means:
-
-- **No C++ compiler is needed** — no `g++` / `build-essential`, Visual Studio, `nvcc`, or `hipcc` required.
-- **No first-run compilation** — the first `import quark` no longer triggers a one-time build of the fast quantization kernels and ONNX custom operators library.
-
-Pre-built wheels are available for CPU, CUDA 12.8, ROCm 7.1, and ROCm 7.2 on Linux and Windows for Python 3.11–3.13.
-
-The **universal wheel** remains the default on [PyPI](https://pypi.org/project/amd-quark/): a plain `pip install amd-quark` still pulls it, and it stays the safe, portable choice for any OS / Python / PyTorch combination. It ships no pre-compiled extensions, so the kernels and custom-op library are built on first import (C++ compiler required). To get a pre-built wheel instead, point `pip` at the AMD package index.
 
 ### Quark Shapeshifter (formerly Quark ONNX Adapter)
 
@@ -47,18 +44,30 @@ The **universal wheel** remains the default on [PyPI](https://pypi.org/project/a
 #### New Features
 
 - Support for Python 3.11 up to 3.13
-- Support NVFP4 quantization
+- Support NVFP4 quantization (scheme: `nvfp4`).
+- Support FP4 quantization with E5M3 per-block scales, called AMDFP4 quantization (`amdfp4`, `amdfp4_g32`).
+- Support FP4 quantization with E5M3 per-block scales and a global FP32 scale (schemes: `amdfp4_global16`, `amdfp4_global32`).
 - Support native inference for xDiT and Diffusers workflows
+- Pre-quantized layers excluded from quantization (`FP8Linear`, compressed-tensors, HF-dequantized MXFP4) are now preserved in their original format on export instead of being dequantized to bf16/fp16.
+- Support for `compressed-tensors==0.15` in PyTorch export/import and file-to-file quantization flows.
 
 #### Model Support
 
 Supported out-of-box model architectures:
 
 - DeepSeek-V4-Pro, DeepSeek-V4-Flash
-- GLM-5, GLM-5.1
-- Kimi-K2.6
-- Minimax-M2.5, Minimax-M2.7
+- GLM-5, GLM-5.1, GLM-5.2
+- Kimi-K2.5, Kimi-K2.6 ([Reference](https://quark.docs.amd.com/latest/pytorch/quantizing_large_models.html))
+- MiniMax-M2.5, MiniMax-M2.7, MiniMax-M3
 - Qwen3.5-397B-A17B, Qwen3.5-35B-A3B
+
+#### Bug fixes and minor improvements
+
+- Fixed MXFP4 dequantization kernel failures for large tensor shapes.
+- Fixed E5M3 Triton kernel dispatch on correct device in multi-device setting.
+- Fixed `LLMTemplate` validation to raise a clear error when a required algorithm configuration is missing.
+- Fixed a bug where MOE calibration diagnostics was not warning when static activation quantizers were not receiving calibration tokens.
+- Fixed AWQ scaling for Qwen3.5-style RMSNorm.
 
 #### Diffusion model quantization and Hugging Face Diffusers integration
 
@@ -83,6 +92,23 @@ Supported out-of-box model architectures:
 - A **calibration / grid-search helper**, `examples/torch/diffusers/svdquant_calibrate.py`, sweeps the smoothing alpha, GPTQ on/off, and the number of calibration samples, scoring each configuration by reference-image quality (PSNR / MSE, plus `lpips` when installed) or quantized-submodule MSE, and reports the best.
 - On FLUX.1-dev, SVDQuant in W4A4 / MXFP4 / NVFP4 nearly matches the FP16 CLIP score.
 - **Native inference**: SVDQuant-MXFP4 models can run with real low-bit `aiter` GEMM kernels (ROCm) via `quark.torch.enable_native_inference` — the MXFP4 residual GEMM plus the low-rank correction branch — replacing the emulation/QDQ path for faster, lower-memory inference.
+
+#### Agent Skills
+
+Added a Claude Code skill suite for the PyTorch flow, auto-discovered from `.claude/skills/` and routed by file type (HuggingFace / safetensors / PyTorch checkpoints → Torch skills, never silently mixed with the ONNX flow):
+
+- `quark-torch-ptq` — end-to-end PTQ pipeline for HF / safetensors models (FP8, INT4, MXFP4, etc.), stopping at the quantized output.
+- `quark-torch-llm-ptq-eval` — PTQ plus validation and perplexity evaluation in one flow.
+- `quark-torch-file2file-quantization` — file-to-file quantization for ultra-large models.
+- `quark-torch-model-intake` — inspects a model and assesses quantization support.
+- `quark-torch-export` — exports quantized models (e.g. GGUF, ONNX).
+- `quark-torch-install` / `quark-torch-debug` — set up the matching PyTorch build and diagnose failed PTQ runs.
+
+The backend-neutral `quark-env-preflight` and `quark-install` skills apply to both the Torch and ONNX flows.
+
+#### vLLM Online Quantization
+
+Added `quark.online_quantization.vllm` (tested against vLLM 0.21), bringing Quark's powerful online quantization flow into vLLM at load time. It extends vLLM's built-in online quantization and is designed to map Quark online quantization configs rather than being limited to a fixed list of schemes. The current release supports three schemas: per-channel FP8 (`ptpc_fp8`), MXFP4 (`mxfp4`), and a mixed linear-FP8/MoE-MXFP4 scheme (`linear_ptpc_fp8_moe_mxfp4`). It also supports re-quantizing offline-quantized checkpoints (e.g., DeepSeek-R1 FP8 block-scale) to a different online scheme at load time. Online versions of more Quark quantization algorithms are planned for future updates. See [the runnable example](../../examples/online_quantization/vllm_online_quantization.py).
 
 ### AMD Quark for ONNX
 

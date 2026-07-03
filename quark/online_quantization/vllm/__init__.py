@@ -11,9 +11,10 @@ Supports both:
 
 from .hf_quantization_configs import (
     HF_QUANTIZATION_CONFIGS,
-    hf_quantization_config_fp8_ptpc,
-    hf_quantization_config_linear_fp8_ptpc_moe_mxfp4,
+    hf_quantization_config_linear_ptpc_fp8_moe_mxfp4,
     hf_quantization_config_mxfp4,
+    hf_quantization_config_ptpc_fp8,
+    online_quant_config_to_quark,
     online_quant_overrides,
 )
 from .quant_method.linear import (
@@ -29,8 +30,9 @@ __all__ = [
     "QuarkVllmOnlineMxfp4Method",
     "OnlineRequantMethod",
     "HF_QUANTIZATION_CONFIGS",
-    "hf_quantization_config_fp8_ptpc",
+    "hf_quantization_config_ptpc_fp8",
     "hf_quantization_config_mxfp4",
-    "hf_quantization_config_linear_fp8_ptpc_moe_mxfp4",
+    "hf_quantization_config_linear_ptpc_fp8_moe_mxfp4",
     "online_quant_overrides",
+    "online_quant_config_to_quark",
 ]

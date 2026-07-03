@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import onnx
-import onnxruntime
 from onnxruntime.quantization.calibrate import CalibrationMethod
 from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
@@ -20,7 +19,6 @@ from quark.onnx.quantization.quant_utils import (
     QUANT_OP_TYPES,
     ExtendedQuantFormat,
     ExtendedQuantType,
-    is_version_below,
 )
 
 logger = ScreenLogger(__name__)
@@ -66,14 +64,6 @@ def check_static_quant_arguments(
     ) and quant_format != ExtendedQuantFormat.QDQ:
         raise ValueError("Only ExtendedQuantFormat.QDQ supports wide bits quantization types.")
 
-    ort_int4_types = [] if is_version_below(onnxruntime, "1.19.0") else [QuantType.QInt4, QuantType.QUInt4]
-    if (activation_type in ort_int4_types or weight_type in ort_int4_types) and (
-        not isinstance(calibrate_method, CalibrationMethod) or not isinstance(quant_format, QuantFormat)
-    ):
-        raise ValueError(
-            "Only the ORT official CalibrationMethod and QuantFormat can be used for int4/uint4 quantization."
-        )
-
     quark_fp_types = [
         ExtendedQuantType.QFloat16,
         ExtendedQuantType.QBFloat16,
@@ -113,10 +103,6 @@ def check_fast_fintune_arguments(
     weight_type: QuantType | ExtendedQuantType,
     extra_options: dict[str, Any],
 ) -> None:
-    ort_int4_types = [] if is_version_below(onnxruntime, "1.19.0") else [QuantType.QInt4, QuantType.QUInt4]
-    if activation_type in ort_int4_types or weight_type in ort_int4_types:
-        raise ValueError("Fast finetune does not support int4 or uint4.")
-
     if weight_type in [ExtendedQuantType.QFloat16, ExtendedQuantType.QBFloat16]:
         if "AddQDQPairToWeight" in extra_options and not extra_options["AddQDQPairToWeight"]:
             logger.warning(
@@ -150,7 +136,9 @@ def check_crypto_mode_arguments(
     if extra_options.get("EncryptionAlgorithm", "") == "AES-256":
         if not _is_package_available("cryptography")[0]:
             raise ImportError(
-                "The 'cryptography' is required but not installed. Please install it via 'pip install cryptography'."
+                "The 'cryptography' package is required for crypto mode but not installed. "
+                "Please install it via 'pip install \"amd-quark[crypto]\"' (pins the patched "
+                "cryptography>=48.0.1 floor)."
             )
 
     if extra_options.get("FastFinetune", {}).get("MemOptLevel", 1) == 2:

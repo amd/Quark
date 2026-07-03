@@ -4,7 +4,7 @@
 #
 
 import math
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import torch
@@ -14,7 +14,6 @@ from torch.nn import init
 from torch.nn.common_types import _size_2_t
 from torch.nn.modules.utils import _pair
 from torch.nn.parameter import Parameter
-from typing_extensions import Self
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch.quantization.config.config import QLayerConfig

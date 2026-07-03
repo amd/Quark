@@ -21,6 +21,7 @@ from quark.onnx import (
     A16W8_QCONFIG,
     BF16_QCONFIG,
     BFP16_QCONFIG,
+    VINT8_QCONFIG,
     XINT8_ADAQUANT_QCONFIG,
     XINT8_ADAROUND_QCONFIG,
     XINT8_QCONFIG,
@@ -58,6 +59,8 @@ xint8_output_golden = np.array([[-0.46484375]], dtype=np.float32)
 xint8_adaround_output_golden = np.array([[-0.46484375]], dtype=np.float32)
 
 xint8_adaquant_output_golden = np.array([[-0.46484375]], dtype=np.float32)
+
+vint8_output_golden = np.array([[-0.46484375]], dtype=np.float32)
 
 a8w8_output_golden = np.array([[-0.46397364]], dtype=np.float32)
 
@@ -195,6 +198,13 @@ class TestTensorQuantize(unittest.TestCase):
         quant_config = XINT8_ADAQUANT_QCONFIG
         output = tensor_quantize(quant_config, tmpdir)
         comp_equal = np.allclose(output, xint8_adaquant_output_golden, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_vint8(self, tmpdir: str):
+        quant_config = VINT8_QCONFIG
+        output = tensor_quantize(quant_config, tmpdir)
+        comp_equal = np.allclose(output, vint8_output_golden, atol=1e-1)
         self.assertEqual(comp_equal, True)
 
     @use_temporary_directory

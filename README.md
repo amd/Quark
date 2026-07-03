@@ -55,8 +55,19 @@ Official releases of AMD Quark are available on PyPI https://pypi.org/project/am
 pip install amd-quark
 ```
 
+This pulls the **universal wheel** from PyPI, the recommended default for most users. AMD Quark also publishes optional **pre-built wheels** (for PyTorch 2.10+, Python 3.11–3.13) on the AMD package index, which ship pre-compiled C++ extensions so no C++ compiler or first-run kernel compilation is needed. To install one, point `pip` at the matching index:
+
+```shell
+pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cpu/simple     # CPU (Linux, Windows)
+pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cu128/simple   # CUDA 12.8 (Linux, Windows)
+pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm71/simple  # ROCm 7.1 (Linux only)
+pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm72/simple  # ROCm 7.2 (Linux only)
+```
+
 > [!NOTE]\
-> For full instructions to install AMD Quark from Python wheels or ZIP files, refer to our [🛠️Installation Guide](https://quark.docs.amd.com/latest/install.html). The Installation Guide also contains verification steps that apply to building from source.
+> For full instructions to install AMD Quark from Python wheels (universal or pre-built) or ZIP files, refer to our [🛠️Installation Guide](https://quark.docs.amd.com/latest/install.html). The Installation Guide also contains verification steps that apply to building from source.
+>
+> Not sure which command to run for your OS, Python, PyTorch, and accelerator? Use the interactive [Quick Install Selector](https://quark.docs.amd.com/latest/install.html#qk-selector) to generate the exact `pip install` command.
 
 ### Installing from Source
 

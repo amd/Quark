@@ -120,7 +120,8 @@ def scale_ln_fcs(ln: nn.Module, fcs: list[nn.Module], scales: torch.Tensor) -> N
     with OffloadParameter(ln):
         if hasattr(ln, "weight") and ln.weight is not None:
             scales = scales.to(ln.weight.device)
-            if "gemma" in str(ln.__class__).lower():
+            norm_class_name = str(ln.__class__).lower()
+            if "gemma" in norm_class_name or "qwen3_5" in norm_class_name:
                 ln.weight.data = (ln.weight.data + 1.0) / scales.to(ln.weight.device) - 1.0
             else:
                 ln.weight.div_(scales.to(ln.weight.device))

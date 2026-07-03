@@ -99,6 +99,10 @@ class QADTrainer(Trainer):
                 self.optimizer.train()
 
             inputs = self._prepare_inputs(inputs)
+            # KD distillation needs raw `logits`, not the model's internal loss. Drop `labels`
+            # so the forward materializes `logits`; TRL's loss path (e.g. chunked NLL) otherwise
+            # returns logits=None when labels are present.
+            inputs.pop("labels", None)
             with self.compute_loss_context_manager():  # type: ignore[no-untyped-call]
                 with torch.no_grad():
                     teacher_outputs = model.teacher(**inputs)

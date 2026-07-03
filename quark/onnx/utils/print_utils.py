@@ -321,8 +321,6 @@ def print_quantized_info(
             18: "FP8E4M3UZ",
             19: "FP8E5M2",
             20: "FP8E5M2UZ",
-            21: "UINT4",
-            22: "INT4",
             23: "FP4E2M1",
             40: "BFP",
             41: "MX",

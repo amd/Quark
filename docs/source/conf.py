@@ -169,6 +169,9 @@ templates_path = ['_templates']
 # Expand/Collapse functionality
 def setup(app):
     app.add_css_file('custom.css')
+    # Assets for the interactive "Quick Install Selector" on the install page.
+    app.add_css_file('qk-install-selector.css')
+    app.add_js_file('qk-install-selector.js')
     app.connect("autodoc-process-signature", fix_signature)
 
 # The master toctree document.

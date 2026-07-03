@@ -596,9 +596,10 @@ def test_algorithm_config_missing_raises_error():
         # No algorithm configs provided
     )
 
-    # Test that missing Qronos config raises error
+    # Test that missing Qronos config raises NotImplementedError
     with pytest.raises(
-        ValueError, match="no default configuration is available for this algorithm for test_missing_configs"
+        NotImplementedError,
+        match="No built-in qronos configuration is available for the 'test_missing_configs' architecture",
     ):
         template.get_config("int4_wo_128", algorithm="qronos")
 
@@ -890,6 +891,7 @@ def test_builtin_templates_exist():
         "deepseek_v2",
         "deepseek_v3",
         "deepseek_v32",
+        "deepseek_v4",
         "deepseek_vl_v2",
         "gemma2",
         "gemma3",
@@ -907,6 +909,7 @@ def test_builtin_templates_exist():
         "llama",
         "llama4",
         "minimax_m2",
+        "minimax_m3_vl",
         "mistral",
         "mixtral",
         "mllama",

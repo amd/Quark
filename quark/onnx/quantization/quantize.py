@@ -87,6 +87,7 @@ from .quant_utils import (
     get_exclude_nodes,
     get_matmul_nodes_without_weights,
     get_pre_defined_preprocess_config,
+    model_size_exceeds,
     skip_node_with_inf_tensor,
 )
 
@@ -281,10 +282,9 @@ def quantize_static(
         engine.initialize()
         float_model = engine.run(float_model=float_model)  # type: ignore
 
-    if not use_external_data_format:
-        if float_model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
-            use_external_data_format = True
-            logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
+    if not use_external_data_format and model_size_exceeds(float_model):
+        use_external_data_format = True
+        logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
 
     check_static_quant_arguments(
         float_model, quant_format, activation_type, weight_type, calibrate_method, extra_options
@@ -383,7 +383,7 @@ def quantize_static(
             extra_options,
         )
 
-    check_onnx_model(float_model)
+    check_onnx_model(float_model, use_external_data_format)
     check_shared_initializers(float_model)
 
     fp32_nodes_dict = fp32_nodes(float_model)
@@ -518,7 +518,7 @@ def quantize_static(
         skip_calibration = True
     else:
         try:
-            run_onnx_model(float_model, cached_data_reader)
+            run_onnx_model(float_model, use_external_data_format, cached_data_reader)
             cached_data_reader.reset_iter()
         except Exception as e:
             logger.error(f"Run the float model failed due to an error: {e}, please check your model and data reader.")
@@ -745,10 +745,9 @@ def quantize_dynamic(
     float_model: onnx.ModelProto = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
     quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
 
-    if not use_external_data_format:
-        if float_model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
-            use_external_data_format = True
-            logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
+    if not use_external_data_format and model_size_exceeds(float_model):
+        use_external_data_format = True
+        logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
 
     if crypto_mode:
         check_crypto_mode_arguments(model_input, use_external_data_format, extra_options)

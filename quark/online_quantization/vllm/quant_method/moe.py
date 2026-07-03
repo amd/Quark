@@ -36,8 +36,26 @@ from vllm.model_executor.model_loader.reload.layerwise import (
 from vllm.platforms import current_platform
 
 from ..dequant import dequant_fp8_block_per_expert
-from ..utils import quark_aligned_fp8_per_channel_quant
+from ..utils import (
+    quant_gathered_along,
+    quark_aligned_fp8_per_channel_quant,
+)
 from .linear import _quant_to_ocp_mxfp4
+
+
+def _moe_tp_split(layer: RoutedExperts) -> tuple[bool, int, int]:
+    """Return ``(w2_needs_gather, tp_size, tp_rank)``: w2 needs a gather only
+    under pure TP (its reduce dim is split); under EP experts are whole."""
+    pcfg = getattr(layer, "moe_parallel_config", None)
+    if pcfg is None:
+        return False, 1, 0
+    tp_size = int(getattr(pcfg, "tp_size", 1))
+    tp_rank = int(getattr(pcfg, "tp_rank", 0))
+    use_ep = bool(getattr(pcfg, "use_ep", False))
+    if use_ep or tp_size <= 1:
+        return False, tp_size, tp_rank
+    return True, tp_size, tp_rank
+
 
 # ---------------------------------------------------------------------------
 # Mixin: replaces a Quark MoE method's create_weights with a bf16-on-meta
@@ -173,6 +191,8 @@ def _per_expert_fp8_quant_into_layer(layer: RoutedExperts) -> None:
     num_experts = w13_bf16.shape[0]
     device = w13_bf16.device
 
+    w2_gather, tp_size, tp_rank = _moe_tp_split(layer)
+
     # Quant always emits e4m3fn; on ROCm/MI300 we then convert to fnuz so
     # the downstream FP8 MoE kernel gets the dtype it expects.
     w13_fp8 = torch.empty_like(w13_bf16, dtype=torch.float8_e4m3fn)
@@ -183,7 +203,13 @@ def _per_expert_fp8_quant_into_layer(layer: RoutedExperts) -> None:
         qw, sc = quark_aligned_fp8_per_channel_quant(w13_bf16[e])
         w13_fp8[e] = qw
         w13_scale[e] = sc.view(-1)
-        qw, sc = quark_aligned_fp8_per_channel_quant(w2_bf16[e])
+        qw, sc = quant_gathered_along(
+            w2_bf16[e],
+            quark_aligned_fp8_per_channel_quant,
+            dim=1,
+            tp_size=tp_size if w2_gather else 1,
+            tp_rank=tp_rank,
+        )
         w2_fp8[e] = qw
         w2_scale[e] = sc.view(-1)
 

@@ -88,7 +88,8 @@ Required characteristics:
 Examples:
 
 - `quark-onnx-autosearch-pro` (ONNX AutoSearchPro recipe — composes the ONNX PTQ workflow with Optuna-driven hyperparameter search and built-in presets such as `ADVANCED_SEARCH`, `XINT8_SEARCH`, `A8W8_SEARCH`, `A16W8_SEARCH`)
-- (Torch-side recipe slot still open — first deployment-targeted recipe will land here, e.g. `quark-torch-inferencemax-ptq-recipe`)
+- `quark-torch-llm-ptq-eval` (Torch LLM PTQ lifecycle recipe — composes the `quark-torch-ptq` workflow with `quark-torch-result-validator` (mandatory) and `quark-torch-llm-eval` (opt-in) for a quantize → validate → evaluate run)
+- (Deployment-targeted Torch recipe slot still open — e.g. `quark-torch-inferencemax-ptq-recipe`)
 
 ### Meta (orthogonal to L0-L3)
 

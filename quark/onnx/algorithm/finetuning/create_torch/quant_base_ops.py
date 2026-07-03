@@ -14,8 +14,6 @@ from .base_fn_quantizers import BFPQuantizer, MXQuantizer
 from .base_qdq_quantizers import FPQuantizer, INTQuantizer
 
 map_onnx_dtype_to_torch = {
-    onnx_proto.TensorProto.UINT4: torch.uint8,  # Note: torch does not have a uint4 type
-    onnx_proto.TensorProto.INT4: torch.int8,  # Note: torch does not have a int4 type
     onnx_proto.TensorProto.UINT8: torch.uint8,
     onnx_proto.TensorProto.INT8: torch.int8,
     onnx_proto.TensorProto.UINT16: torch.int16,  # Note: torch does not have a uint16 type

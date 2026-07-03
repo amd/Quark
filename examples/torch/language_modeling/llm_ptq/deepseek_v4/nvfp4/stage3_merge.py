@@ -57,8 +57,17 @@ import struct
 import sys
 
 from quark.common.utils.log import ScreenLogger
+from quark.torch.quantization.config.config import QConfig
+from quark.torch.quantization.config.template import QuantizationSchemeCollection
 
 logger = ScreenLogger(__name__)
+
+
+# Input tensors dict from Quark's built-in nvfp4 scheme (no model-specific template needed).
+def _nvfp4_input_tensors_dict() -> list:
+    scheme = QuantizationSchemeCollection().get_scheme("nvfp4")
+    return QConfig(global_quant_config=scheme.config).to_dict()["global_quant_config"]["input_tensors"]
+
 
 SIDECAR_NAME = "input_scale.safetensors"
 
@@ -152,6 +161,31 @@ def main(args: argparse.Namespace) -> None:
         json.dump(index, f, indent=2)
 
     logger.info(f"Done. Wired {len(to_wire)} input_scale tensors -> {args.sidecar_name}.\nUpdated index: {index_path}")
+
+    # Update config.json to reflect that input activations are now quantized.
+    # Stage 1 exports input_tensors=null because activation scales are not yet
+    # available. After Stage 2+3 attach the per-expert input_scale tensors, the
+    # config must be updated so that loaders (vLLM, etc.) know activation
+    # quantization is present.
+    #
+    # Use the shared NVFP4_INPUT_SPEC from nvfp4_config to produce the input_tensors
+    # value. This guarantees Stage 3's config.json update is always in sync with
+    # Stage 2's calibration config — change it once in nvfp4_config.py, both stages update.
+    config_path = os.path.join(ckpt, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            model_config = json.load(f)
+
+        qc = model_config.get("quantization_config")
+        if qc is not None:
+            gqc = qc.get("global_quant_config")
+            if gqc is not None and gqc.get("input_tensors") is None:
+                gqc["input_tensors"] = _nvfp4_input_tensors_dict()
+                with open(config_path, "w") as f:
+                    json.dump(model_config, f, indent=2)
+                logger.info(f"Updated quantization_config.global_quant_config.input_tensors in {config_path}")
+            else:
+                logger.info("config.json input_tensors already set; skipping update.")
 
 
 def parse_args() -> argparse.Namespace:

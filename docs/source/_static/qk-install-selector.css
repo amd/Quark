@@ -1,0 +1,74 @@
+/* Styles for the interactive "Quick Install Selector" widget on the install page.
+   Kept in a static asset (loaded only by the Sphinx build) rather than inline in
+   install.rst, because Git hosts such as GitHub render the text content of inline
+   <style>/<script> blocks as visible junk. */
+
+/* Hide the static fallback table only once the script has successfully built the
+   interactive selector (it adds `qk-js-ready` to <html>). This way the table still
+   shows on hosts that don't load these assets, AND on the docs site if the script
+   fails to load or errors -- so the install commands are never completely hidden. */
+.qk-js-ready .qk-static-fallback { display: none; }
+
+.qk-selector {
+  border: 1px solid var(--bs-border-color, #d0d7de);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 1em 0 1.5em 0;
+  font-size: 0.95em;
+}
+.qk-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  border-bottom: 1px solid var(--bs-border-color, #d0d7de);
+}
+.qk-row:last-child { border-bottom: none; }
+.qk-label {
+  flex: 0 0 170px;
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  font-weight: 600;
+  background: var(--bs-tertiary-bg, #f6f8fa);
+  border-right: 1px solid var(--bs-border-color, #d0d7de);
+}
+.qk-options {
+  flex: 1 1 320px;
+  display: flex;
+  flex-wrap: wrap;
+}
+.qk-opt {
+  flex: 1 1 0;
+  min-width: 72px;
+  padding: 10px 14px;
+  border: none;
+  border-right: 1px solid var(--bs-border-color, #d0d7de);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+  transition: background 0.12s ease;
+}
+.qk-opt:last-child { border-right: none; }
+.qk-opt:hover:not(.qk-disabled) { background: rgba(127,127,127,0.12); }
+.qk-opt.qk-active {
+  background: #ee4c2c;
+  color: #fff;
+  font-weight: 600;
+}
+.qk-opt.qk-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.qk-cmd-row .qk-label { align-items: flex-start; }
+.qk-cmd { flex: 1 1 320px; padding: 0; }
+.qk-cmd pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bs-tertiary-bg, #f6f8fa);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+.qk-cmd code { background: transparent; border: none; padding: 0; }

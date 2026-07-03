@@ -647,8 +647,6 @@ class ExtendedQDQQuantizer(BaseExtendedQDQQuantizer):
         }
         OpDomain = ms_domain
         OpQuantType = (
-            onnx.TensorProto.INT4,
-            onnx.TensorProto.UINT4,
             onnx.TensorProto.INT8,
             onnx.TensorProto.UINT8,
             onnx.TensorProto.INT16,

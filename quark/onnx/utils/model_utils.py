@@ -583,14 +583,15 @@ def save_model(model: ModelProto, path: str, as_text: bool = False) -> None:
 
 
 @log_errors
-def run_onnx_model(model_input: str | Path | onnx.ModelProto, data_reader: Any) -> None:
+def run_onnx_model(model_input: str | Path | onnx.ModelProto, use_external_data_format: bool, data_reader: Any) -> None:
     """
     Check if the input ONNX can run successfully
     :param model_input: the model path or a ModelProto
+    :param use_external_data_format: usr external data format or not
     :param data_reader: the data reader for feeding data
     """
     try:
-        sess = create_infer_session_for_onnx_model(model_input)
+        sess = create_infer_session_for_onnx_model(model_input, use_external_data_format=use_external_data_format)
         inputs = data_reader.get_next()
         output = sess.run(None, inputs)
         if output:
@@ -604,13 +605,14 @@ def run_onnx_model(model_input: str | Path | onnx.ModelProto, data_reader: Any) 
 
 
 @log_errors
-def check_onnx_model(model_input: str | Path | onnx.ModelProto) -> None:
+def check_onnx_model(model_input: str | Path | onnx.ModelProto, use_external_data_format: bool = False) -> None:
     """
     Check if the input ONNX can create InferenceSession successfully
     :param model_input: the model path or a ModelProto
+    :param use_external_data_format: usr external data format or not
     """
     try:
-        create_infer_session_for_onnx_model(model_input)
+        create_infer_session_for_onnx_model(model_input, use_external_data_format=use_external_data_format)
         logger.info("The input ONNX model can create InferenceSession successfully")
 
     except Exception as e:
@@ -820,9 +822,7 @@ def create_infer_session_for_onnx_model(
         except Exception as e:
             raise RuntimeError(f"Failed to create inference session, due to an unexpected error: {e}") from e
 
-    if isinstance(model_input, onnx.ModelProto) and (
-        use_external_data_format or model_input.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF
-    ):
+    if isinstance(model_input, onnx.ModelProto) and use_external_data_format:
         with create_tmp_dir(prefix="quark_onnx.utils.") as temp_dir:
             temp_path = Path(temp_dir).joinpath("infer_model.onnx").as_posix()
             save_onnx_model_with_external_data(copy.deepcopy(model_input), temp_path, True)

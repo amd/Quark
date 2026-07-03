@@ -107,8 +107,13 @@ Ort::Value BFPFixNeuronKernel::cast_to_fp32(
     int64_t to = static_cast<int64_t>(ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
     Ort::OpAttr attr =
       Ort::OpAttr("to", &to, 1, OrtOpAttrType::ORT_OP_ATTR_INT);
+    const char* type_constraint_names[] = {"T1", "T2"};
+    ONNXTensorElementDataType type_constraint_values[] = {
+      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+    };
     op_cast_to_fp32_ = Ort::Op::Create(
-      info_copy_, "Cast", "", 13, nullptr, nullptr, 0, &attr, 1, 1, 1
+      info_copy_, "Cast", "", 13, type_constraint_names, type_constraint_values,
+      2, &attr, 1, 1, 1
     );
     op_cast_to_fp32_init_ = true;
   }
@@ -140,8 +145,13 @@ Ort::Value BFPFixNeuronKernel::cast_to_fp16(
     int64_t to = static_cast<int64_t>(ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16);
     Ort::OpAttr attr =
       Ort::OpAttr("to", &to, 1, OrtOpAttrType::ORT_OP_ATTR_INT);
+    const char* type_constraint_names[] = {"T1", "T2"};
+    ONNXTensorElementDataType type_constraint_values[] = {
+      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
+    };
     op_cast_to_fp16_ = Ort::Op::Create(
-      info_copy_, "Cast", "", 13, nullptr, nullptr, 0, &attr, 1, 1, 1
+      info_copy_, "Cast", "", 13, type_constraint_names, type_constraint_values,
+      2, &attr, 1, 1, 1
     );
     op_cast_to_fp16_init_ = true;
   }

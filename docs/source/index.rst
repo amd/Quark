@@ -50,7 +50,7 @@ Key Features
 * **Comprehensive Quantization Support**:
    - **Post-Training Quantization (PTQ):** Quantize pre-trained models without the need for retraining data.
    - **Flexible Quantization Strategies:** Choose from symmetric/asymmetric, weight-only/static/dynamic quantization, and various quantization levels (per tensor/channel) to fine-tune performance and accuracy trade-offs.
-   - **Extensive Data Type Support:** Quantize models using a wide range of data types, including `uint32`, `int32`, `float16`, `bfloat16`, `int16`, `uint16`, `int8`, `uint8`, `int4` `uint4`, `int3`, Block Floating Point (typical `BFP16`), and `Microscaling (MX)` data types with `int8`, `fp8_e4m3fn`, `fp8_e5m2`, `fp4`, `fp6_e3m2`, and `fp6_e2m3` elements.
+   - **Extensive Data Type Support:** Quantize models using a wide range of data types, including `uint32`, `int32`, `float16`, `bfloat16`, `int16`, `uint16`, `int8`, `uint8`, Block Floating Point (typical `BFP16`), and `Microscaling (MX)` data types with `int8`, `fp8_e4m3fn`, `fp8_e5m2`, `fp4`, `fp6_e3m2`, and `fp6_e2m3` elements.
    - **Configurable Calibration Methods:** Optimize quantization accuracy with `MinMax`, `Entropy`, `Distribution`, `Percentile`, `MinMSE` and `LayerwisePercentile` calibration methods.
 * **Advanced Capabilities:**
    - **Multiple Deployment Targets:** Target a variety of hardware platforms, including `NPU_CNN`, `NPU_Transformer`, and `CPU`.
@@ -110,6 +110,8 @@ Key Features
    Extensions <pytorch/extensions>
    Using MX (Microscaling) <pytorch/adv_mx>
    Two Level Quantization Formats <pytorch/adv_two_level>
+   Using Quark Agent Skills (Claude Code) <pytorch/agent_skills_torch>
+   Using Quark Agent Skills (Claude Code) <onnx/agent_skills_onnx>
 
 .. _advanced-quark-features-onnx:
 .. toctree::
@@ -138,6 +140,7 @@ Key Features
 
    Quark CLI <quark_cli>
    Mix Precision Auto-Search <mix_precision>
+   Blockwise Joint Tuning <pytorch/blockwise_joint_tuning>
    Built-in Profiling <builtin_profiling>
    ONNX Examples <onnx/onnx_examples>
 

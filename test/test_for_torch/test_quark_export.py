@@ -586,17 +586,8 @@ def test_int32_onnx_export(tmpdir: str):
     torch.cuda.empty_cache()
 
 
-def test_copy_missing_aux_files(tmp_path):
-    """
-    Test the copy_missing_aux_files utility function.
-    This test validates that copy_missing_aux_files correctly:
-    - Copies only missing auxiliary files from source to destination
-    - Does not overwrite existing files in the destination
-    - Handles edge cases like same directory, missing source, and copy failures
-    Args:
-        tmp_path: pytest fixture providing a temporary directory path for testing
-    """
-    from quark.torch.export.utils import copy_missing_aux_files
+def test_restore_aux_files(tmp_path):
+    from quark.torch.export.utils import restore_aux_files
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -619,22 +610,24 @@ def test_copy_missing_aux_files(tmp_path):
     (src / ".cache").mkdir()
     (src / ".cache" / "junk").write_text("noise")
 
-    # dst already has its own exported config/tokenizer + shard index that must be preserved
-    # (these are what export_hf_model / save_pretrained wrote before the restore runs).
+    # dst already has its own exported config + shard index that must be preserved,
+    # and a re-serialized tokenizer.json that must be overwritten with the original.
     (dst / "config.json").write_text('{"exported": true}')
     (dst / "tokenizer.json").write_text('{"exported": true}')
     (dst / "model.safetensors.index.json").write_text('{"weight_map": {"a": "b"}}')
 
-    restored = copy_missing_aux_files(src, dst)
+    restored = restore_aux_files(src, dst)
 
-    assert set(restored) == {"merges.txt", "vocab.json", ".gitattributes"}
+    # tokenizer.json is always overwritten; merges.txt, vocab.json, .gitattributes were missing.
+    assert set(restored) == {"tokenizer.json", "merges.txt", "vocab.json", ".gitattributes"}
+    # Tokenizer file overwritten with source content.
+    assert (dst / "tokenizer.json").read_text() == "{}"
     # Restored files have source content.
     assert (dst / "merges.txt").read_text() == "a b"
     assert (dst / "vocab.json").read_text() == "{}"
     assert (dst / ".gitattributes").read_text() == "*.safetensors filter=lfs"
-    # Existing files were not overwritten.
+    # Non-tokenizer existing files were not overwritten.
     assert (dst / "config.json").read_text() == '{"exported": true}'
-    assert (dst / "tokenizer.json").read_text() == '{"exported": true}'
     assert (dst / "model.safetensors.index.json").read_text() == '{"weight_map": {"a": "b"}}'
     # Skipped files were not copied.
     assert not (dst / "model-00001-of-00002.safetensors").exists()
@@ -642,19 +635,19 @@ def test_copy_missing_aux_files(tmp_path):
     assert not (dst / ".cache").exists()
 
     # Same dir or missing source is a no-op.
-    assert copy_missing_aux_files(src, src) == []
-    assert copy_missing_aux_files(None, dst) == []
-    assert copy_missing_aux_files(tmp_path / "does_not_exist", dst) == []
+    assert restore_aux_files(src, src) == []
+    assert restore_aux_files(None, dst) == []
+    assert restore_aux_files(tmp_path / "does_not_exist", dst) == []
 
-    # Nothing missing to restore: every source file already exists in dst -> empty list.
+    # Tokenizer files are always overwritten even when they already exist in dst.
     src2 = tmp_path / "src2"
     dst2 = tmp_path / "dst2"
     src2.mkdir()
     dst2.mkdir()
     (src2 / "merges.txt").write_text("a b")
     (dst2 / "merges.txt").write_text("already here")
-    assert copy_missing_aux_files(src2, dst2) == []
-    assert (dst2 / "merges.txt").read_text() == "already here"
+    assert restore_aux_files(src2, dst2) == ["merges.txt"]
+    assert (dst2 / "merges.txt").read_text() == "a b"
 
     # Copy failures are best-effort: an error during copy is swallowed (logged), not raised,
     # and the partial result is returned without the failed file.
@@ -663,5 +656,5 @@ def test_copy_missing_aux_files(tmp_path):
     dst3 = tmp_path / "dst3"
     dst3.mkdir()
     with mock.patch("quark.torch.export.utils.shutil.copy2", side_effect=OSError("disk full")):
-        assert copy_missing_aux_files(src2, dst3) == []
+        assert restore_aux_files(src2, dst3) == []
     assert not (dst3 / "merges.txt").exists()

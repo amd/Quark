@@ -1,6 +1,9 @@
 """Utility functions for vLLM online quantization."""
 
+from collections.abc import Callable
+
 import torch
+from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 
 FP8_E4M3_MAX = 448.0
 
@@ -36,6 +39,27 @@ def quark_aligned_fp8_per_channel_quant(
     )
     qweight = (weight.to(inputs_dtype) / safe_scale).clamp(-fp8_max, fp8_max).to(fp8_dtype)
     return qweight, scale_inputs.squeeze(-1).to(torch.float32)
+
+
+def quant_gathered_along(
+    weight: torch.Tensor,
+    quant_fn: Callable[[torch.Tensor], tuple[torch.Tensor, torch.Tensor]],
+    dim: int,
+    tp_size: int,
+    tp_rank: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize a row-parallel weight as if unpartitioned: all-gather the full
+    weight along its (TP-split) reduce ``dim``, run ``quant_fn``, then narrow the
+    quantized weight back to this rank's shard. The returned per-output-channel
+    scale is not sharded. No-op gather/shard when ``tp_size <= 1``.
+    """
+    if tp_size > 1:
+        weight = tensor_model_parallel_all_gather(weight, dim=dim)
+    qweight, scale = quant_fn(weight)
+    if tp_size > 1:
+        shard = qweight.shape[dim] // tp_size
+        qweight = qweight.narrow(dim, tp_rank * shard, shard).contiguous()
+    return qweight, scale
 
 
 def materialize_meta_weight_(layer: torch.nn.Module) -> None:

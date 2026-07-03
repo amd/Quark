@@ -7,16 +7,15 @@
 #
 
 """
-Weight-only PPL evaluation for the *original* (un-quantized) DeepSeek-V4-Pro
-checkpoint — a same-recipe BF16-dequant baseline to compare against the NVFP4
-result from ``stage4_ppl.py``.
+Compute the BF16 PPL baseline for the *original* (un-quantized) DeepSeek-V4-Pro
+checkpoint. This is a same-recipe BF16-dequant reference for comparison against
+the NVFP4 result from ``stage4_ppl.py``.
 
 The original checkpoint already ships in a compact quantized wire format; this
 script dequantizes every weight to BF16 on the fly and runs the GEMMs as plain
-``F.linear`` (activations stay BF16), exactly like the NVFP4 PPL script. Using
-the same evaluation path on both checkpoints makes the two perplexities directly
-comparable. The non-GEMM ops (attention, indexer) use the triton/PyTorch kernels
-in ``kernels`` (no tilelang).
+``F.linear``. It shares the per-block BF16-dequant eval path with the NVFP4
+script, so the two perplexities are directly comparable. The non-GEMM ops
+(attention, indexer) use the triton/PyTorch kernels in ``kernels`` (no tilelang).
 
 On-disk layout of the original checkpoint:
 

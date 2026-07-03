@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from argparse import Namespace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -102,7 +102,7 @@ def build_experiment_dict(args: Namespace) -> dict[str, Any]:
             ],
         )
     )
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    timestamp = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     return {
         "name": name,
         "model": model,

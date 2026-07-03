@@ -86,7 +86,7 @@ class QParamsLinear(torch.nn.Linear, QparamsOperator, QuarkLinearBase):
     def can_use_fp8_kernel(self) -> bool:
         """check use_fp8_kernel or not"""
         # pertensor only now, w and inp should be quantized
-        if SCALED_MM_AVAILABLE_DEV is None:
+        if SCALED_MM_AVAILABLE_DEV != "hip":
             return False
 
         if not (self.input_quantizer and self.weight_quantizer):

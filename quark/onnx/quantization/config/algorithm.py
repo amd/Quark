@@ -745,7 +745,7 @@ class QuarotConfig(AlgoConfig):
 
     By leveraging the structure of the weight distribution and introducing minimal
     additional overhead, Quarot significantly improves quantization performance—especially
-    in low-bit regimes such as INT4. It’s particularly effective for transformer-based
+    in low-bit regimes. It’s particularly effective for transformer-based
     models or MLPs, where preserving fine-grained relationships between weights is
     crucial for maintaining performance.
 

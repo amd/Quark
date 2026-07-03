@@ -85,8 +85,18 @@ cli = [
   "transformers>5,<5.3",
 ]
 
+# Optional ONNX crypto mode (AES-256 model encryption). Floor pinned to
+# 48.0.1 for GHSA-537c-gmf6-5ccf (vulnerable OpenSSL bundled in older wheels).
+crypto = [
+  "cryptography>=48.0.1",
+]
+
 [project.scripts]
 quark-cli = "quark.experimental.cli.main:main"
+
+[project.entry-points."vllm.general_plugins"]
+# ATOM-style CLI for Quark online quant; disable with QUARK_DISABLE_VLLM_PLUGIN=1.
+quark_online_quant = "quark.online_quantization.vllm.plugin:register"
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
@@ -100,7 +110,7 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 exclude = [
   "setup.py",
   "docs/source/conf.py",

@@ -223,6 +223,118 @@ image = pipe(
 image.save("flux_svdquant_w4a16.png")
 ```
 
+> **FP4 schemes:** SVDQuant also supports the FP4 data types via the same
+> flow — just swap the mode passed to `build_quant_layer_config`:
+> `"mxfp4"` (OCP Microscaling FP4 weights + dynamic FP4 activations) and
+> `"nvfp4"` (FP4 block-16 weights + dynamic FP4 activations). Everything else
+> (calibration, `SVDQuantConfig`, exclude patterns) stays the same. For example,
+> `global_quant_config=build_quant_layer_config("mxfp4")` quantizes the SD3/Flux
+> transformer with MXFP4 instead of INT4. `testSVDQuant.py` exercises
+> `w4a16`, `w4a4`, and `mxfp4` by default.
+
+### Native inference (MXFP4, AMD GPUs)
+
+By default a quantized model runs through the fake-quant / dequantize (QDQ)
+emulation path. On AMD GPUs (ROCm) with [AITER](https://github.com/ROCm/aiter)
+installed, an **MXFP4** SVDQuant model can instead run with real low-bit GEMM
+kernels via `quark.torch.enable_native_inference`:
+
+```python
+from quark.torch import enable_native_inference, disable_native_inference
+from quark.torch.quantization.utils import RuntimeOptions
+
+# pipe.transformer was quantized with build_quant_layer_config("mxfp4") + SVDQuantConfig
+enable_native_inference(
+    pipe.transformer,
+    runtime_options=RuntimeOptions(
+        native_linear_mode="mxfp4",
+        svdquant_overlap_streams=False,  # True: overlap the low-rank correction on a side CUDA stream
+    ),
+)
+
+image = pipe("A cat on a windowsill", num_inference_steps=30).images[0]
+
+disable_native_inference(pipe.transformer)  # revert to the export-format layers
+```
+
+`enable_native_inference` detects SVDQuant `ErrorCorrectedModule` wrappers and
+fuses the **MXFP4 residual GEMM** (AITER kernels) with the high-precision
+**low-rank correction** branch; bare MXFP4 `QParamsLinear` layers convert to the
+plain MXFP4 native linear. Save the canonical checkpoint *before* enabling
+native inference — `testSVDQuant.py --native_inference` shows the full flow.
+
+> **Note:** Native inference currently supports an MXFP4 residual only for
+> SVDQuant (FP4 per-group, `group_size=32`); other residuals stay on the eager
+> path.
+
+---
+
+## SVDQuant calibration & grid search
+
+`svdquant_calibrate.py` helps you pick the SVDQuant settings that most affect
+quality by sweeping them and scoring each configuration: the per-layer smoothing
+**alpha** (searched or fixed), **GPTQ** on/off for the residual weights, and the
+**number of calibration samples**. Each `(gptq, n_samples)` cell uses the same
+flow as the other diffusers examples — `SVDQuantProcessor.apply()` followed by
+`ModelQuantizer.quantize_model()`.
+
+> **Note:** In practice GPTQ on the residual weights mainly helps for `nvfp4`;
+> for `w4a4` and `mxfp4` it does not reliably improve over round-to-nearest
+> (RTN). Enable GPTQ (`--gptq on`) for NVFP4, and prefer plain RTN (`--gptq off`)
+> as a good default for the other modes.
+
+How it works:
+
+1. Collect one master calibration pool (`--n_calib_prompts` x `--n_steps`).
+2. Generate a high-precision reference (for the `ref_image` metric).
+3. For each `(gptq, n_samples)` cell: apply SVDQuant + quantize on a fresh pipeline, then evaluate and score.
+4. Write `results.json` + `summary.txt` (ranked) and report the best config.
+
+`SVDQuantProcessor` already searches the per-layer alpha on a small number of
+activations (`--alpha_search_max_samples`) while using the full calibration set
+for the smoothing statistics and GPTQ Hessian matrices — so "search the alpha on a few
+samples, then continue with the full calibration" is the built-in behavior of
+`--search_alpha`.
+
+```bash
+# FLUX.1-dev w4a16: per-layer alpha search, compare GPTQ off vs on at 128 samples
+python svdquant_calibrate.py \
+    --model_id black-forest-labs/FLUX.1-dev --mode w4a16 \
+    --gptq both --n_calib_samples 128 --eval_metric ref_image
+
+# SDXL mxfp4: sweep the number of calibration samples (GPTQ off)
+python svdquant_calibrate.py \
+    --model_id stabilityai/stable-diffusion-xl-base-1.0 --mode mxfp4 \
+    --gptq off --n_calib_samples 64 128 256
+
+# Fast proxy (no image generation): rank configs by submodule output MSE
+python svdquant_calibrate.py --gptq both --eval_metric module_mse
+```
+
+Key options:
+
+| Flag | Meaning |
+|------|---------|
+| `--gptq {off,on,both}` | residual GPTQ; `both` runs each cell twice to compare |
+| `--n_calib_samples N [N ...]` | calibration-sample sweep (slices the master pool) |
+| `--search_alpha / --no-search_alpha` | search per-layer alpha vs use a fixed `--smooth_alpha` |
+| `--alpha_search_max_samples K` | samples used for the per-layer alpha search |
+| `--alpha_candidates A [A ...]` | per-layer alpha search grid |
+| `--eval_metric {ref_image,module_mse,none}` | how cells are scored/ranked |
+
+Metrics: `ref_image` (default) scores generated images against a high-precision
+reference (PSNR/MSE, plus `LPIPS` if the `lpips` package is installed);
+`module_mse` compares quantized vs reference submodule outputs on held-out
+calibration inputs (no image generation — fastest); `none` just generates and
+saves images per cell.
+
+Outputs land in `--output_dir`: `reference/`, per-cell image folders,
+`results.json`, and `summary.txt`.
+
+> **Cost note:** each grid cell reloads a fresh pipeline (quantization is
+> destructive) and runs its own alpha search, so keep grids small for large
+> models like FLUX.
+
 ---
 
 ## Quick Reference
@@ -320,8 +432,8 @@ dataloader = get_calib_dataloader(pipe, pipe.unet, prompts, n_steps=20, guidance
 | INT8 w8a8 | INT8 per-tensor | INT8 per-tensor static | same as above | manual `QLayerConfig(weight=..., input_tensors=...)` |
 | SVDQuant w4a16 | INT4 per-group | fp16/bf16 | per-group min/max (fixed) | `build_quant_layer_config("w4a16")` |
 | SVDQuant w4a4 | INT4 per-group | INT4 per-group dynamic | per-group min/max (fixed) | `build_quant_layer_config("w4a4")` |
-| MXFP4 | MXFP4 | fp16/bf16 | — | `build_quant_layer_config("mxfp4")` |
-| NVFP4 | FP4 block-16 | FP4 block-16 dynamic | — | `build_quant_layer_config("nvfp4")` |
+| SVDQuant MXFP4 | MXFP4 (OCP Microscaling) | MXFP4 dynamic | — | `build_quant_layer_config("mxfp4")` |
+| SVDQuant NVFP4 | FP4 block-16 | FP4 block-16 dynamic | — | `build_quant_layer_config("nvfp4")` |
 
 For observer-based methods (INT8), the observer determines how
 quantization scales are computed from calibration data.  Pass the

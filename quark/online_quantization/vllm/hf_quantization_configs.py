@@ -6,10 +6,12 @@ so they can coexist with an offline ``quantization_config`` that the input
 checkpoint may already carry (e.g. DeepSeek-R1 with ``quant_method: "fp8"``).
 """
 
+import copy
 from collections.abc import Callable
+from fnmatch import translate as fnmatch_translate
 from typing import Any
 
-hf_quantization_config_fp8_ptpc: dict[str, Any] = {
+hf_quantization_config_ptpc_fp8: dict[str, Any] = {
     "algo_config": None,
     "exclude": ["lm_head"],
     "export": {
@@ -117,7 +119,7 @@ hf_quantization_config_mxfp4: dict[str, Any] = {
 }
 
 
-hf_quantization_config_linear_fp8_ptpc_moe_mxfp4: dict[str, Any] = {
+hf_quantization_config_linear_ptpc_fp8_moe_mxfp4: dict[str, Any] = {
     "algo_config": None,
     "exclude": ["lm_head"],
     "export": {
@@ -137,8 +139,8 @@ hf_quantization_config_linear_fp8_ptpc_moe_mxfp4: dict[str, Any] = {
     # resolves the override per-layer at dispatch time via fnmatch.
     "layer_quant_config": {
         "*self_attn*": {
-            "weight": hf_quantization_config_fp8_ptpc["global_quant_config"]["weight"],
-            "input_tensors": hf_quantization_config_fp8_ptpc["global_quant_config"]["input_tensors"],
+            "weight": hf_quantization_config_ptpc_fp8["global_quant_config"]["weight"],
+            "input_tensors": hf_quantization_config_ptpc_fp8["global_quant_config"]["input_tensors"],
         },
     },
     "layer_type_quant_config": {},
@@ -204,7 +206,114 @@ def online_quant_overrides(online_quant_cfg: dict[str, Any]) -> Callable[[Any], 
 
 
 HF_QUANTIZATION_CONFIGS: dict[str, Callable[[Any], Any]] = {
-    "fp8_ptpc": online_quant_overrides(hf_quantization_config_fp8_ptpc),
+    "ptpc_fp8": online_quant_overrides(hf_quantization_config_ptpc_fp8),
     "mxfp4": online_quant_overrides(hf_quantization_config_mxfp4),
-    "linear_fp8_ptpc_moe_mxfp4": online_quant_overrides(hf_quantization_config_linear_fp8_ptpc_moe_mxfp4),
+    "linear_ptpc_fp8_moe_mxfp4": online_quant_overrides(hf_quantization_config_linear_ptpc_fp8_moe_mxfp4),
 }
+
+
+# -- ATOM-style config adapter ---------------------------------------------
+# Converts ``online_quant_config`` to Quark's verbose ``online_quant`` dict.
+# Input:
+#   {"global_quant_config": "ptpc_fp8",
+#    "layer_quant_config": {"*self_attn*": "ptpc_fp8"},  # optional
+#    "exclude_layer": ["lm_head"]}                        # optional, str or list
+
+_FORMAT_TO_GLOBAL_QUANT_CONFIG: dict[str, dict[str, Any]] = {
+    "ptpc_fp8": hf_quantization_config_ptpc_fp8["global_quant_config"],
+    "mxfp4": hf_quantization_config_mxfp4["global_quant_config"],
+}
+
+# Envelope = the verbose dict minus the quant blocks, filled in per call.
+_QUARK_ONLINE_ENVELOPE: dict[str, Any] = {
+    "algo_config": None,
+    "export": hf_quantization_config_ptpc_fp8["export"],
+    "layer_type_quant_config": {},
+    "quant_method": "quark_online",
+    "quant_mode": "eager_mode",
+    "softmax_quant_spec": None,
+    "version": hf_quantization_config_ptpc_fp8["version"],
+}
+
+
+def _resolve_format(fmt: str) -> dict[str, Any]:
+    """Resolve an ATOM format name to a Quark global quantization config.
+
+    Args:
+        fmt: Format string to look up, such as ``"ptpc_fp8"`` or ``"mxfp4"``.
+
+    Returns:
+        The matching Quark ``global_quant_config`` dictionary.
+
+    Raises:
+        ValueError: If the format string is not supported.
+    """
+    key = fmt.strip().lower()
+    block = _FORMAT_TO_GLOBAL_QUANT_CONFIG.get(key)
+    if block is None:
+        raise ValueError(
+            f"Unsupported online quant format: {fmt!r}. Supported: {sorted(_FORMAT_TO_GLOBAL_QUANT_CONFIG)}."
+        )
+    return block
+
+
+def _normalize_exclude_pattern(pattern: str) -> str:
+    """Normalize an ATOM exclude pattern for Quark layer-ignore matching.
+
+    Args:
+        pattern: Exact, glob-style, or ``re:``-prefixed exclude pattern.
+
+    Returns:
+        A normalized pattern string, preserving exact and ``re:`` patterns and
+        converting glob-style patterns to ``re:`` regex entries.
+    """
+    p = pattern.strip()
+    if not p:
+        return ""
+    if p.startswith("re:"):
+        return p
+    if "*" in p or "?" in p:
+        # vLLM Quark's should_ignore_layer supports exact strings or "re:" regex
+        # entries. Convert ATOM-style globs to anchored regex for compatibility.
+        return "re:" + fnmatch_translate(p)
+    return p
+
+
+def online_quant_config_to_quark(online_quant_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Convert an ATOM-style ``online_quant_config`` to Quark's verbose
+    ``online_quant`` dict (the shape consumed by ``QuarkVllmOnlineConfig``).
+    """
+    if not isinstance(online_quant_cfg, dict):
+        raise TypeError("online_quant_config must be a dict parsed from JSON.")
+
+    global_fmt = online_quant_cfg.get("global_quant_config")
+    if not global_fmt:
+        raise ValueError("online_quant_config requires a 'global_quant_config' format string.")
+
+    out: dict[str, Any] = copy.deepcopy(_QUARK_ONLINE_ENVELOPE)
+    out["global_quant_config"] = copy.deepcopy(_resolve_format(global_fmt))
+
+    layer_cfg = online_quant_cfg.get("layer_quant_config") or {}
+    if not isinstance(layer_cfg, dict):
+        raise TypeError("online_quant_config.layer_quant_config must be a dict of pattern -> format.")
+    resolved_layers: dict[str, Any] = {}
+    for pattern, fmt in layer_cfg.items():
+        block = copy.deepcopy(_resolve_format(fmt))
+        resolved_layers[pattern] = {
+            "weight": block["weight"],
+            "input_tensors": block["input_tensors"],
+        }
+    out["layer_quant_config"] = resolved_layers
+
+    exclude = online_quant_cfg.get("exclude_layer", ["lm_head"])
+    if isinstance(exclude, str):
+        exclude = [exclude] if exclude else []
+    elif not isinstance(exclude, list):
+        exclude = []
+    out["exclude"] = [
+        normalized
+        for normalized in (_normalize_exclude_pattern(item) for item in exclude if isinstance(item, str))
+        if normalized
+    ]
+
+    return out

@@ -528,41 +528,92 @@ def _needs_qkv_proj_for_kv_cache(config: QConfig) -> bool:
     )
 
 
+def _vllm_gate_up_exclude_pattern(entry: str) -> str:
+    """Rewrite an HF ``gate_proj``/``up_proj`` exclude entry to the merged vLLM ``gate_up_proj`` name.
+
+    vLLM merges ``gate_proj`` + ``up_proj`` into a single ``gate_up_proj`` module, so an exclude
+    written against the HF names (e.g. ``aaa.gate_proj``) never matches at runtime; it must become
+    ``aaa.gate_up_proj``. Replace the proj token in place and keep the original path — do NOT add
+    wildcards. A blanket ``*...gate_up_proj`` over-matches: e.g. ``*experts*gate_up_proj`` would
+    also hit ``_shared_experts.gate_up_proj`` (the ``*`` swallows ``._shared_experts.``), wrongly
+    excluding the shared expert that the caller controls independently.
+
+    Shared-expert entries are skipped by the caller (handled via ``*shared_expert*`` pattern).
+    """
+    if "gate_up_proj" in entry:
+        return entry
+    if "gate_proj" in entry:
+        return entry.replace("gate_proj", "gate_up_proj")
+    if "up_proj" in entry:
+        return entry.replace("up_proj", "gate_up_proj")
+    return entry
+
+
 def _adapt_exclude_patterns_for_vllm(config: QConfig) -> None:
-    # HF uses separate projections while vLLM merges some of them.
+    # HF uses separate projections while vLLM merges / renames some of them.
     # - q/k/v_proj -> qkv_proj (self_attn)
     # - q_a_proj/kv_a_proj_with_mqa -> fused_qkv_a_proj (DeepSeek MLA)
-    # - gate_proj/up_proj -> gate_up_proj (dense MLP only)
+    # - gate_proj/up_proj -> gate_up_proj (in-place token rewrite, see _vllm_gate_up_exclude_pattern)
+    # - *shared_expert* covers all vLLM versions:
+    #     v0.16-v0.19: mlp.experts._shared_experts.* (SharedFusedMoE)
+    #     v0.23+:      runner._shared_experts.* (FusedMoE with runner)
+    #     HF:          mlp.shared_expert.* (matched by fnmatch * covering the leading _)
     # Do NOT append *experts* here: vLLM fused MoE module is named ``...mlp.experts`` and excluding
     # it would disable the entire MoE wrapper, not just a sub-projection.
     if not config.exclude:
         return
 
     added: list[str] = []
-    needs_qkv_proj = any(any(p in e for p in ("q_proj", "k_proj", "v_proj")) for e in config.exclude)
+    original_excludes = list(config.exclude)
+
+    def _append(pattern: str) -> None:
+        """Append a unique pattern to the exclude list.
+
+        Args:
+            pattern: The pattern string to add to config.exclude if not already present.
+        """
+        if pattern not in config.exclude:
+            config.exclude.append(pattern)
+            added.append(pattern)
+
+    needs_qkv_proj = any(any(p in e for p in ("q_proj", "k_proj", "v_proj")) for e in original_excludes)
     if needs_qkv_proj and "*qkv_proj*" not in config.exclude:
         if _needs_qkv_proj_for_kv_cache(config):
             logger.info(
                 "[QUARK] Skip adding *qkv_proj* to exclude because kv_cache_quant_config needs qkv_proj for KV observer."
             )
         else:
-            config.exclude.append("*qkv_proj*")
-            added.append("*qkv_proj*")
+            _append("*qkv_proj*")
 
     needs_fused_qkv_a_proj = any(
-        any(p in e for p in ("q_a_proj", "kv_a_proj_with_mqa", "fused_qkv_a_proj")) for e in config.exclude
+        any(p in e for p in ("q_a_proj", "kv_a_proj_with_mqa", "fused_qkv_a_proj")) for e in original_excludes
     )
-    if needs_fused_qkv_a_proj and "*fused_qkv_a_proj*" not in config.exclude:
-        config.exclude.append("*fused_qkv_a_proj*")
-        added.append("*fused_qkv_a_proj*")
+    if needs_fused_qkv_a_proj:
+        _append("*fused_qkv_a_proj*")
 
-    needs_gate_up_proj = any(any(p in e for p in ("gate_proj", "up_proj")) for e in config.exclude)
-    if needs_gate_up_proj and "*gate_up_proj*" not in config.exclude:
-        config.exclude.append("*gate_up_proj*")
-        added.append("*gate_up_proj*")
+    # gate_proj/up_proj -> gate_up_proj, in-place rewrite preserving the original path.
+    # Shared-expert entries are skipped here; they are handled below via the *shared_expert* pattern.
+    for entry in original_excludes:
+        if "shared_expert" in entry:
+            continue
+        if any(p in entry for p in ("gate_proj", "up_proj")):
+            _append(_vllm_gate_up_exclude_pattern(entry))
+
+    # HF uses ``mlp.shared_expert.*`` while vLLM (0.16-0.19) nests shared experts under
+    # ``mlp.experts._shared_experts.*`` (SharedFusedMoE) and vLLM >= 0.23 uses
+    # ``runner._shared_experts.*`` (FusedMoE with runner).
+    # The pattern ``*shared_expert*`` matches ALL of these because fnmatch ``*`` covers the
+    # leading underscore and trailing path components.
+    # Trigger condition: the user's exclude entry contains ``.shared_expert.`` as a substring,
+    # meaning they are targeting sub-modules of the shared expert (e.g. ``*.shared_expert.*``,
+    # ``*.shared_expert.gate_proj``). This naturally excludes ``shared_expert_gate`` (which
+    # contains ``shared_expert_gate``, not ``.shared_expert.``) from triggering the remap.
+    has_shared_expert_submodule = any(".shared_expert." in e for e in original_excludes)
+    if has_shared_expert_submodule:
+        _append("*shared_expert*")
 
     if added:
-        logger.info("[QUARK] Added vLLM exclude patterns for merged layers: %s", added)
+        logger.info("[QUARK] Added vLLM exclude patterns for merged/renamed layers: %s", added)
 
 
 def _restrict_to_explicit_vllm_layers(config: QConfig, layer_names: list[str]) -> None:
@@ -992,6 +1043,8 @@ class QuarkFakeQuantWorker(BaseWorker):
 
         quantizer = VLLMModelQuantizer(quark_config)
         model = quantizer._prepare_model(model)
+        # Log module tree with live quantizer state now that quantizers are attached.
+        self._log_model_structure(model)
         proxy = _VllmCalibrationProxy(self, model)
         self._calib_step_idx = 0
         logger.info("[QUARK] Calibration start.")
@@ -1047,6 +1100,80 @@ class QuarkFakeQuantWorker(BaseWorker):
         model = self._get_base_model()
         with disable_compilation(model):
             return super().determine_available_memory()
+
+    def _log_model_structure(self, model: torch.nn.Module) -> None:
+        """Log the vLLM model's named module tree as a single atomic INFO message.
+
+        Must be called after _prepare_model so quantizers are already attached.
+        Reads quantizer state directly from each module — no QConfig pattern matching.
+        Only TP rank 0 prints to avoid duplicate output in multi-GPU runs.
+        """
+        try:
+            from vllm.distributed import get_tensor_model_parallel_rank
+
+            if get_tensor_model_parallel_rank() != 0:
+                return
+        except Exception:
+            pass
+
+        def _quantizer_dtype(q: Any) -> str:
+            """Extract dtype string from a FakeQuantizeBase / ScaledFakeQuantize."""
+            if q is None:
+                return ""
+            spec = getattr(q, "quant_spec", None)
+            dtype = getattr(spec, "dtype", None)
+            return getattr(dtype, "value", str(dtype)) if dtype is not None else ""
+
+        def _module_quant_label(module: torch.nn.Module) -> str:
+            """Return a compact quantization label for a module by inspecting its live quantizers."""
+            # QuantVLLMFusedMoE / QuantVLLMSharedFusedMoE: routed w13/w2 + a1/a2
+            if hasattr(module, "_get_moe_quantizers"):
+                try:
+                    a1_q, _a2_q, w13_q, _w2_q = module._get_moe_quantizers()
+                    w_dt = _quantizer_dtype(w13_q)
+                    a_dt = _quantizer_dtype(a1_q)
+                    if not w_dt and not a_dt:
+                        return "unquantized"
+                    if w_dt == a_dt:
+                        return w_dt
+                    parts = []
+                    if w_dt:
+                        parts.append(f"w={w_dt}")
+                    if a_dt:
+                        parts.append(f"a={a_dt}")
+                    return " ".join(parts)
+                except Exception:
+                    pass
+            # QuantVLLMParallelLinearBase: standard _weight_quantizer / _input_quantizer from QuantMixin
+            w_q = getattr(module, "_weight_quantizer", None)
+            in_q = getattr(module, "_input_quantizer", None)
+            w_dt = _quantizer_dtype(w_q)
+            a_dt = _quantizer_dtype(in_q)
+            if not w_dt and not a_dt:
+                return ""
+            if w_dt == a_dt:
+                return w_dt
+            parts = []
+            if w_dt:
+                parts.append(f"w={w_dt}")
+            if a_dt:
+                parts.append(f"a={a_dt}")
+            return " ".join(parts)
+
+        # Walk with remove_duplicate=False; keep LAST path per object id so the vLLM
+        # runtime path (mlp.experts._shared_experts.*) wins over the HF alias (mlp.shared_expert.*).
+        last_seen: dict[int, tuple[str, torch.nn.Module]] = {}
+        for name, module in model.named_modules(remove_duplicate=False):
+            last_seen[id(module)] = (name, module)
+
+        lines = ["=== vLLM model module tree ==="]
+        for name, module in last_seen.values():
+            display_name = name or "(root)"
+            cls_name = type(module).__name__
+            label = _module_quant_label(module)
+            lines.append(f"  {display_name:<80}  {cls_name:<45}  {label}")
+        lines.append("=== end of module tree ===")
+        logger.debug("[QUARK]\n%s", "\n".join(lines))
 
     def compile_or_warm_up_model(self) -> Any:
         register_vllm_quantization_plugins()

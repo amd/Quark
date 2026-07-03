@@ -67,19 +67,8 @@ if is_version_below(onnx, "1.19.0"):
         from onnx.reference.custom_element_types import float8e4m3fn  # type: ignore
     except ImportError:
         float8e4m3fn = None  # type: ignore
-
-    # INT4 np.dtypes added in ONNX 1.16. These map to np.int8/np.uint8 because numpy
-    # does not support sub-byte types.
-    try:
-        from onnx.reference import custom_element_types  # type: ignore
-        from onnx.reference.custom_element_types import int4, uint4  # type: ignore
-    except ImportError:
-        int4 = None  # type: ignore
-        uint4 = None  # type: ignore
 else:
-    import ml_dtypes
     from ml_dtypes import float8_e4m3fn as float8e4m3fn
-    from ml_dtypes import int4, uint4
 
 logger = ScreenLogger(__name__)
 
@@ -213,14 +202,12 @@ class ExtendedQuantType(Enum):
     QUInt8 = 2
     QInt16 = 3
     QUInt16 = 4
-    QInt4 = 5
-    QUInt4 = 6
-    QInt32 = 7
-    QUInt32 = 8
-    QFloat16 = 9
-    QBFloat16 = 10
-    QBFP = 11
-    QMX = 12
+    QInt32 = 5
+    QUInt32 = 6
+    QFloat16 = 7
+    QBFloat16 = 8
+    QBFP = 9
+    QMX = 10
 
     def __str__(self) -> str:
         return self.name
@@ -261,14 +248,12 @@ class VitisQuantType(Enum):
     QUInt8 = 2
     QInt16 = 3
     QUInt16 = 4
-    QInt4 = 5
-    QUInt4 = 6
-    QInt32 = 7
-    QUInt32 = 8
-    QFloat16 = 9
-    QBFloat16 = 10
-    QBFP = 11
-    QMX = 12
+    QInt32 = 5
+    QUInt32 = 6
+    QFloat16 = 7
+    QBFloat16 = 8
+    QBFP = 9
+    QMX = 10
 
     def __str__(self) -> str:
         return self.name
@@ -337,8 +322,6 @@ ONNX_TYPE_TO_NP_TYPE: dict[int, DType | None] = {
     # numpy does not support yet
     onnx_proto.TensorProto.BFLOAT16: np.dtype("float16"),
     onnx_proto.TensorProto.FLOAT8E4M3FN: float8e4m3fn,  # type ignore
-    onnx_proto.TensorProto.INT4: int4,  # type ignore
-    onnx_proto.TensorProto.UINT4: uint4,  # type ignore
     # This is for the new data types BFP and MX
     onnx_proto.TensorProto.UNDEFINED: np.dtype("float32"),  # type ignore
 }
@@ -349,13 +332,7 @@ def create_range_dict(dtype_ranges: dict[str, tuple[int, int]]) -> Any:
     for dtype, range_pair in dtype_ranges.items():
         tensor_proto_dtype = getattr(onnx_proto.TensorProto, dtype)
 
-        if dtype.lower() not in ["int4", "uint4"]:
-            np_dtype = getattr(np, dtype.lower())
-        else:
-            if is_version_below(onnx, "1.19.0"):
-                np_dtype = getattr(custom_element_types, dtype.lower())
-            else:
-                np_dtype = getattr(ml_dtypes, dtype.lower())
+        np_dtype = getattr(np, dtype.lower())
 
         array_pair = (np.array(range_pair[0], dtype=np_dtype), np.array(range_pair[1], dtype=np_dtype))
         result[tensor_proto_dtype] = array_pair
@@ -367,8 +344,6 @@ dtype_ranges = {
     "INT8": (-128, 127),
     "UINT16": (0, 65535),
     "INT16": (-32768, 32767),
-    "UINT4": (0, 15),
-    "INT4": (-8, 7),
     "UINT32": (0, 2**32 - 1),
     "INT32": (-(2**31), 2**31 - 1),
 }
@@ -384,8 +359,6 @@ reduced_ranges = {
     "INT8": (-64, 64),
     "UINT16": (0, 32767),
     "INT16": (-16384, 16384),
-    "UINT4": (0, 7),
-    "INT4": (-4, 3),
     "UINT32": (0, 2**31 - 1),
     "INT32": (-(2**30), 2**30),
 }
@@ -481,9 +454,7 @@ def get_qmin_qmax_for_qType(qType: int, reduce_range: bool = False, symmetric: b
         qrange = ONNX_INT_TYPE_RANGE.get(qType)
 
     if not qrange:
-        raise ValueError(
-            f"Unexpected data type {qType} requested. Only INT4, UINT4, INT8, UINT8, INT16, and UINT16 are supported."
-        )
+        raise ValueError(f"Unexpected data type {qType} requested. Only INT8, UINT8, INT16, and UINT16 are supported.")
 
     return qrange
 
@@ -510,7 +481,7 @@ def quantize_nparray(
         return arr
 
     assert qType in ONNX_TYPE_TO_NP_TYPE, (
-        f"Unexpected data type {qType} requested. Only INT4, UINT4, INT8, UINT8, INT16, UINT16, FLOAT16, and BFLOAT16 are supported."
+        f"Unexpected data type {qType} requested. Only INT8, UINT8, INT16, UINT16, FLOAT16, and BFLOAT16 are supported."
     )
 
     if qType in ONNX_FP_QTYPES_LIST:
@@ -553,12 +524,29 @@ def save_and_reload_model_with_shape_infer(model: ModelProto) -> ModelProto:
     return load_model_with_shape_infer(model_path)
 
 
+def model_size_exceeds(model: ModelProto) -> bool:
+    """
+    :param model: the model proto
+    :return: whether the model size is bigger than the maximum of protobuf
+    """
+    exceed_flag = False
+    try:
+        if model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
+            exceed_flag = True
+    except Exception as e:
+        if "Failed to serialize proto" in str(e):
+            exceed_flag = True
+        else:
+            logger.warning(f"Failed to get the model size due to '{e}'")
+    return exceed_flag
+
+
 def infer_shape(model: ModelProto) -> ModelProto:
     """
     :param model: the source model
     :return: the target model contains inferred shape
     """
-    if model.ByteSize() > onnx.checker.MAXIMUM_PROTOBUF:
+    if model_size_exceeds(model):
         inferred_model = save_and_reload_model_with_shape_infer(model)
     else:
         inferred_model = shape_inference.infer_shapes(model)
@@ -1594,7 +1582,7 @@ def inference_sub_model_with_data(
         end_node = node_name_map[end_node_name]
         end_node_tensor.append(end_node.output[0])
 
-    if input_model.ByteSize() < onnx.checker.MAXIMUM_PROTOBUF:
+    if not model_size_exceeds(input_model):
         extractor = onnx.utils.Extractor(input_model)
         sub_model = extractor.extract_model(start_node_tensor, end_node_tensor)
         session = create_infer_session_for_onnx_model(sub_model)
@@ -1622,7 +1610,7 @@ def extract_sub_model(
 ) -> onnx.ModelProto:
     if isinstance(input_model, ModelProto):
         model = input_model
-        if input_model.ByteSize() < onnx.checker.MAXIMUM_PROTOBUF:
+        if not model_size_exceeds(input_model):
             model = onnx.shape_inference.infer_shapes(input_model)
         extractor = onnx.utils.Extractor(model)
         sub_model = extractor.extract_model(start_tensors, end_tensors)

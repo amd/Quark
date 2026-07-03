@@ -249,7 +249,7 @@ flavors, hosted on **different package indexes**:
   *ONNX custom operators library* are compiled the first time they are imported, which requires a C++
   compiler (and ``nvcc`` / ``hipcc`` for GPU builds) on your machine — see *Install a C++ Compiler* above.
 * The **pre-built wheels** are an optional optimization for PyTorch 2.10 and newer, and are hosted on
-  the `AMD package index <https://pypi.amd.com/simple/>`__ rather than PyPI. They ship pre-compiled C++ extensions, which means:
+  the **AMD package index** rather than PyPI. They ship pre-compiled C++ extensions, which means:
 
   * **No C++ compiler is needed** — you can skip the *Install a C++ Compiler* step entirely, with no
     ``g++`` / ``build-essential``, Visual Studio, ``nvcc``, or ``hipcc`` required.
@@ -257,207 +257,53 @@ flavors, hosted on **different package indexes**:
     so the *Compile Fast Quantization Kernels* and *Compile Custom Operators Library* steps below are
     unnecessary.
 
-  Pre-built wheels are published for CPU, CUDA, ROCm 7.1, and ROCm 7.2 on Linux and Windows for Python 3.11–3.13.
+  Pre-built CPU and CUDA wheels are published for both Linux and Windows; ROCm 7.1 and ROCm 7.2 wheels
+  are Linux-only. All pre-built wheels target Python 3.11–3.13.
 
 Because the two flavors live on different indexes, the one you get depends on which index you install
 from. A plain ``pip install amd-quark`` pulls the universal wheel from PyPI. To get a pre-built wheel,
 point ``pip`` at the AMD package index. When in doubt, the universal wheel from PyPI is
 the safe, preferred choice.
 
-.. <!-- spellcheck-disable -->
+.. The container below is a static fallback for renderers that strip the interactive
+   ``raw:: html`` widget (e.g. GitHub's file viewer, which sanitizes embedded HTML/CSS/JS).
+   In the Sphinx-built docs it is hidden once qk-install-selector.js builds the selector
+   (the script adds a ``qk-js-ready`` class that the stylesheet keys off), so it stays
+   visible if those assets fail to load.
+
+.. container:: qk-static-fallback
+
+   If the interactive selector below does not appear (for example, when viewing this file
+   on a Git host that strips embedded HTML), use the commands in this table directly:
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 30 70
+
+      * - Wheel / compute platform
+        - Command
+      * - Universal (PyPI) — recommended, any OS / Python / accelerator
+        - ``pip install amd-quark``
+      * - Pre-built, CPU
+        - ``pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cpu/simple``
+      * - Pre-built, CUDA 12.8
+        - ``pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cu128/simple``
+      * - Pre-built, ROCm 7.1 (Linux only)
+        - ``pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm71/simple``
+      * - Pre-built, ROCm 7.2 (Linux only)
+        - ``pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm72/simple``
+
+   Pre-built wheels require PyTorch 2.10+ and Python 3.11–3.13; otherwise use the universal
+   wheel.
 
 .. raw:: html
 
-   <div class="qk-selector" id="qk-selector">
-     <div class="qk-row">
-       <div class="qk-label">Quark Wheel</div>
-       <div class="qk-options" data-group="wheel">
-         <button type="button" class="qk-opt qk-active" data-value="universal">Universal (PyPI)</button>
-         <button type="button" class="qk-opt" data-value="prebuilt">Pre-built (AMD index)</button>
-       </div>
-     </div>
-     <div class="qk-row">
-       <div class="qk-label">Your OS</div>
-       <div class="qk-options" data-group="os">
-         <button type="button" class="qk-opt qk-active" data-value="linux">Linux</button>
-         <button type="button" class="qk-opt" data-value="windows">Windows</button>
-       </div>
-     </div>
-     <div class="qk-row">
-       <div class="qk-label">PyTorch</div>
-       <div class="qk-options" data-group="torch">
-         <button type="button" class="qk-opt qk-active" data-value="2.2-2.9">2.2 &ndash; 2.9</button>
-         <button type="button" class="qk-opt" data-value="2.10+">2.10+</button>
-       </div>
-     </div>
-     <div class="qk-row">
-       <div class="qk-label">Python</div>
-       <div class="qk-options" data-group="python">
-         <button type="button" class="qk-opt" data-value="3.11">3.11</button>
-         <button type="button" class="qk-opt" data-value="3.12">3.12</button>
-         <button type="button" class="qk-opt qk-active" data-value="3.13">3.13</button>
-       </div>
-     </div>
-     <div class="qk-row">
-       <div class="qk-label">Compute Platform</div>
-       <div class="qk-options" data-group="platform">
-         <button type="button" class="qk-opt qk-active" data-value="cpu">CPU</button>
-         <button type="button" class="qk-opt" data-value="cu128">CUDA 12.8</button>
-         <button type="button" class="qk-opt" data-value="rocm71">ROCm 7.1</button>
-         <button type="button" class="qk-opt" data-value="rocm72">ROCm 7.2</button>
-       </div>
-     </div>
-     <div class="qk-row qk-cmd-row">
-       <div class="qk-label">Run this Command</div>
-       <div class="qk-cmd">
-         <pre><code id="qk-cmd-out"></code></pre>
-       </div>
-     </div>
-   </div>
-
-   <style>
-   .qk-selector {
-     border: 1px solid var(--bs-border-color, #d0d7de);
-     border-radius: 8px;
-     overflow: hidden;
-     margin: 1em 0 1.5em 0;
-     font-size: 0.95em;
-   }
-   .qk-row {
-     display: flex;
-     flex-wrap: wrap;
-     align-items: stretch;
-     border-bottom: 1px solid var(--bs-border-color, #d0d7de);
-   }
-   .qk-row:last-child { border-bottom: none; }
-   .qk-label {
-     flex: 0 0 170px;
-     display: flex;
-     align-items: center;
-     padding: 10px 14px;
-     font-weight: 600;
-     background: var(--bs-tertiary-bg, #f6f8fa);
-     border-right: 1px solid var(--bs-border-color, #d0d7de);
-   }
-   .qk-options {
-     flex: 1 1 320px;
-     display: flex;
-     flex-wrap: wrap;
-   }
-   .qk-opt {
-     flex: 1 1 0;
-     min-width: 72px;
-     padding: 10px 14px;
-     border: none;
-     border-right: 1px solid var(--bs-border-color, #d0d7de);
-     background: transparent;
-     color: inherit;
-     cursor: pointer;
-     font: inherit;
-     text-align: center;
-     transition: background 0.12s ease;
-   }
-   .qk-opt:last-child { border-right: none; }
-   .qk-opt:hover:not(.qk-disabled) { background: rgba(127,127,127,0.12); }
-   .qk-opt.qk-active {
-     background: #ee4c2c;
-     color: #fff;
-     font-weight: 600;
-   }
-   .qk-opt.qk-disabled {
-     opacity: 0.4;
-     cursor: not-allowed;
-   }
-   .qk-cmd-row .qk-label { align-items: flex-start; }
-   .qk-cmd { flex: 1 1 320px; padding: 0; }
-   .qk-cmd pre {
-     margin: 0;
-     padding: 12px 14px;
-     background: var(--bs-tertiary-bg, #f6f8fa);
-     white-space: pre-wrap;
-     word-break: break-all;
-     overflow-x: auto;
-   }
-   .qk-cmd code { background: transparent; border: none; padding: 0; }
-   </style>
-
-   <script>
-   (function () {
-     function selected(root, group) {
-       var el = root.querySelector('[data-group="' + group + '"] .qk-active:not(.qk-disabled)');
-       return el ? el.getAttribute("data-value") : null;
-     }
-
-     function setActive(btn) {
-       var group = btn.parentNode;
-       group.querySelectorAll(".qk-opt").forEach(function (b) { b.classList.remove("qk-active"); });
-       btn.classList.add("qk-active");
-     }
-
-     var PREBUILT_PY = ["3.11", "3.12", "3.13"];
-
-     function applyConstraints(root) {
-       var os = selected(root, "os");
-       var python = selected(root, "python");
-       var platBtns = root.querySelectorAll('[data-group="platform"] .qk-opt');
-
-       // ROCm builds are Linux-only.
-       platBtns.forEach(function (b) {
-         var v = b.getAttribute("data-value");
-         var disabled = (os === "windows" && (v === "rocm71" || v === "rocm72"));
-         b.classList.toggle("qk-disabled", disabled);
-         if (disabled && b.classList.contains("qk-active")) {
-           b.classList.remove("qk-active");
-           root.querySelector('[data-group="platform"] [data-value="cpu"]').classList.add("qk-active");
-         }
-       });
-
-       // Pre-built wheels need PyTorch 2.10+ and Python 3.11-3.13; otherwise fall back to universal.
-       var torch = selected(root, "torch");
-       var prebuiltBtn = root.querySelector('[data-group="wheel"] [data-value="prebuilt"]');
-       var prebuiltDisabled = (torch !== "2.10+") || (PREBUILT_PY.indexOf(python) === -1);
-       prebuiltBtn.classList.toggle("qk-disabled", prebuiltDisabled);
-       if (prebuiltDisabled && prebuiltBtn.classList.contains("qk-active")) {
-         prebuiltBtn.classList.remove("qk-active");
-         root.querySelector('[data-group="wheel"] [data-value="universal"]').classList.add("qk-active");
-       }
-     }
-
-     function render(root) {
-       applyConstraints(root);
-       var wheel = selected(root, "wheel");
-       var platform = selected(root, "platform");
-       var outEl = root.querySelector("#qk-cmd-out");
-
-       if (wheel === "prebuilt") {
-         outEl.textContent = "pip install amd-quark --extra-index-url https://pypi.amd.com/simple/" + platform + "/";
-       } else {
-         outEl.textContent = "pip install amd-quark";
-       }
-     }
-
-     function init() {
-       var root = document.getElementById("qk-selector");
-       if (!root) return;
-       root.querySelectorAll(".qk-opt").forEach(function (btn) {
-         btn.addEventListener("click", function () {
-           if (btn.classList.contains("qk-disabled")) return;
-           setActive(btn);
-           render(root);
-         });
-       });
-       render(root);
-     }
-
-     if (document.readyState === "loading") {
-       document.addEventListener("DOMContentLoaded", init);
-     } else {
-       init();
-     }
-   })();
-   </script>
-
-.. <!-- spellcheck-enable -->
+   <!-- The interactive "Quick Install Selector" mounts here. Its markup, styles,
+        and behaviour live in docs/source/_static/qk-install-selector.{css,js},
+        loaded only by the Sphinx build (see conf.py setup()). Renderers that do
+        not load those assets (e.g. GitHub's file viewer) show only the static
+        fallback table above, instead of unstyled markup or raw CSS/JS text. -->
+   <div class="qk-selector" id="qk-selector"></div>
 
 
 Install Quark + Quark Examples from Download

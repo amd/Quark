@@ -84,8 +84,6 @@ class ONNXModelParser:
     def _dtype_to_qrange(self) -> dict[Any, tuple[int | float, int | float]]:
         """Range of different integer data types quantization"""
         dtype_to_qrange = {
-            onnx_proto.TensorProto.UINT4: (0, 15),
-            onnx_proto.TensorProto.INT4: (-8, 7),
             onnx_proto.TensorProto.UINT8: (0, 255),
             onnx_proto.TensorProto.INT8: (-128, 127),
             onnx_proto.TensorProto.UINT16: (0, 65535),

@@ -61,3 +61,18 @@ Example of Loading in FX-graph Mode
 
    from quark.torch import load_params
    model = load_params(pth_path=model_file_path, quant_mode=QuantizationMode.fx_graph_mode)
+
+Diffusers Models
+----------------
+
+Diffusion models use a different save/load path that integrates with
+HuggingFace Diffusers.  After quantizing a submodule (for example
+``pipe.unet`` or ``pipe.transformer``), export it with
+``quark.torch.export_safetensors``, which writes a
+``diffusion_pytorch_model.safetensors`` plus a ``config.json`` carrying the
+quantization metadata.  The exported directory then reloads through
+``DiffusionPipeline.from_pretrained`` / ``ModelMixin.from_pretrained`` with no
+per-layer setup.
+
+See :doc:`Using Quark-Quantized Diffusion Models with HuggingFace Diffusers <example_quark_torch_huggingface_diffusers>`
+for the end-to-end quantize → export → reload workflow.

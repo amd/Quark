@@ -71,7 +71,7 @@ __all__ = [
     "get_state_dict_for_export",
     "apply_export_state_dict_mappings",
     "fix_loaded_state_dict_mismatch",
-    "copy_missing_aux_files",
+    "restore_aux_files",
 ]
 
 # Top-level files that should never be copied from the source model directory into an
@@ -79,24 +79,41 @@ __all__ = [
 # intentionally excluded (consistent with the file2file flow).
 _AUX_SKIP_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".onnx")
 
+# Tokenizer files are always overwritten from the source to ensure the original format is
+# preserved. Tools such as maybe_save_preprocessors may write re-serialized versions via
+# AutoTokenizer.save_pretrained which can silently change the tokenizer class (e.g.
+# LlamaTokenizer -> TokenizersBackend) and drop fields like added_tokens_decoder and
+# chat_template.
+_TOKENIZER_FILENAMES = frozenset(
+    {
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "tokenizer.model",
+        "vocab.json",
+        "vocab.txt",
+        "merges.txt",
+        "added_tokens.json",
+        "spiece.model",
+        "sentencepiece.bpe.model",
+    }
+)
 
-def copy_missing_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> list[str]:
+
+def restore_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> list[str]:
     """
     Restore auxiliary files that exist in the source model directory but are missing from an
-    export directory (e.g. ``merges.txt``, ``vocab.json``, ``preprocessor_config.json``,
-    ``LICENSE``). The standard safetensors export only writes the files that
-    ``tokenizer.save_pretrained`` / ``processor.save_pretrained`` re-serialize, so other
-    auxiliary files present in the original checkpoint would otherwise be dropped.
+    export directory (e.g. ``preprocessor_config.json``, ``LICENSE``).
 
-    Only top-level files that are *missing* from ``dst_dir`` are copied; existing files (such
-    as the freshly-exported ``config.json``, tokenizer files, and shard index) are never
-    overwritten. Weight/artifact files, ``*.index.json``, and README markdown files are
-    skipped. Directories are not recursed into (avoids copying ``.cache`` and similar).
+    Tokenizer files (``tokenizer.json``, ``tokenizer_config.json``, etc.) are always
+    overwritten from the source to preserve the original format.  Other auxiliary files are
+    only copied when absent from ``dst_dir``.  Weight/artifact files, ``*.index.json``, and
+    README markdown files are never copied.  Directories are not recursed into.
 
     Restoring auxiliary files is best-effort: any error is logged as a warning and never
     propagated, so it can never fail an otherwise-successful export.
 
-    :param Union[str, Path, None] src_dir: Source model directory to copy missing files from.
+    :param Union[str, Path, None] src_dir: Source model directory to copy files from.
         If ``None``, not an existing directory, or equal to ``dst_dir``, nothing is copied.
     :param Union[str, Path] dst_dir: Export directory to restore files into.
 
@@ -123,7 +140,7 @@ def copy_missing_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> l
             if lower.endswith(".md") and "readme" in lower:
                 continue
             dst_path = dst / filename
-            if dst_path.exists():
+            if dst_path.exists() and filename not in _TOKENIZER_FILENAMES:
                 continue
             shutil.copy2(src_path, dst_path)
             restored.append(filename)

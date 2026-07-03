@@ -721,8 +721,19 @@ class QuantVLLMParallelLinearBase(QuantMixin):
 
 
 class QuantVLLMFusedMoE(QuantMixin):
-    """Wrapper for vLLM FusedMoE that applies fake quant to w13_weight and w2_weight.
-    Extends QuantMixin, custom freeze() handles _w13_weight_quantizer / _w2_weight_quantizer."""
+    """Wrapper for vLLM FusedMoE that applies fake quant to w13_weight, w2_weight, a1, and a2.
+
+    Extends QuantMixin; custom freeze() handles _w13_weight_quantizer / _w2_weight_quantizer.
+
+    Shared expert handling
+    ----------------------
+    FusedMoE / SharedFusedMoE passes the same ``hidden_states`` to both routed and shared experts.
+    The routed a1 input quantizer must NOT reach the shared expert: regardless of whether the
+    shared expert is quantized or not, its input quantization is handled by its own Linear wrappers
+    (e.g. ``_shared_experts.gate_up_proj`` → ``QuantVLLMMergedColumnParallelLinear``). At forward
+    time this class patches the shared expert's ``.forward`` to always receive the original
+    (unquantized) ``hidden_states``.
+    """
 
     def __init__(
         self,
@@ -996,13 +1007,36 @@ class QuantVLLMFusedMoE(QuantMixin):
         w2 = mods.get("_w2_weight_quantizer") or d.get("_w2_weight_quantizer")
         return a1, a2, w13, w2
 
+    def _get_shared_expert_module(self) -> torch.nn.Module | None:
+        """Locate the shared expert MLP module across vLLM versions.
+
+        - v0.16-v0.19 (SharedFusedMoE): ``self._inner._shared_experts``
+        - v0.23+      (FusedMoE+runner): ``self._inner.shared_experts._layer``
+          via the ``FusedMoE.shared_experts`` property → ``SharedExperts._layer``
+        Returns None if the inner module has no shared expert.
+        """
+        # v0.16-v0.19: _shared_experts is a direct attribute of SharedFusedMoE
+        se = getattr(self._inner, "_shared_experts", None)
+        if se is not None:
+            return se
+        # v0.23+: accessible via FusedMoE.shared_experts property → SharedExperts._layer
+        runner_se = getattr(self._inner, "shared_experts", None)
+        if runner_se is not None:
+            return getattr(runner_se, "_layer", runner_se)
+        return None
+
     def _apply_fake_quant_and_forward(
         self,
         fn: str,
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """Apply fake quant to input/w13/w2 then call inner's fn (forward or forward_impl)."""
+        """Apply fake quant to input/w13/w2 then call inner's fn (forward or forward_impl).
+
+        Shared expert input isolation: the shared expert's forward is patched to always receive
+        the original (pre-a1-quant) ``hidden_states``. Its own Linear wrappers handle input
+        quantization independently, so the MoE-level a1 quantizer must not reach it.
+        """
         self._init_moe_quantizers()
         a1_quant, a2_quant, w13_quant, w2_quant = self._get_moe_quantizers()
         orig_w13 = self._inner.w13_weight
@@ -1016,14 +1050,27 @@ class QuantVLLMFusedMoE(QuantMixin):
             self._w2_weight_quantizer_inv.dequantize(orig_w2) if self._w2_weight_quantizer_inv is not None else orig_w2
         )
 
-        if a1_quant is not None:
-            hidden_states = a1_quant(hidden_states)
-
+        # Shared expert input isolation: save original hidden_states and patch shared expert
+        # forward before a1_quant is applied, so the shared expert always gets the original input.
+        shared_expert = self._get_shared_expert_module()
+        original_hidden_states = hidden_states
+        original_se_forward: Any = None
         a2_token = None
-        if a2_quant is not None:
-            a2_token = _quark_moe_a2_ctx.set(a2_quant)
-
         try:
+            if shared_expert is not None:
+                original_se_forward = shared_expert.forward
+
+                def _se_forward_with_original(_ignored: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+                    return original_se_forward(original_hidden_states, *args, **kwargs)
+
+                shared_expert.forward = _se_forward_with_original
+
+            if a1_quant is not None:
+                hidden_states = a1_quant(hidden_states)
+
+            if a2_quant is not None:
+                a2_token = _quark_moe_a2_ctx.set(a2_quant)
+
             if self._w13_weight_quantizer_inv is not None or (
                 w13_quant is not None and not getattr(w13_quant, "frozen_params", False)
             ):
@@ -1065,6 +1112,8 @@ class QuantVLLMFusedMoE(QuantMixin):
             _set_module_attr_allow_non_parameter(self._inner, "w2_weight", orig_w2)
             if a2_token is not None:
                 _quark_moe_a2_ctx.reset(a2_token)
+            if original_se_forward is not None and shared_expert is not None:
+                shared_expert.forward = original_se_forward
 
     def forward(
         self,
@@ -1854,15 +1903,12 @@ if VLLM_AVAILABLE:
             return quant_layer
 
     class QuantVLLMSharedFusedMoE(QuantVLLMFusedMoE):
-        """Wrapper for vLLM SharedFusedMoE (same as FusedMoE with shared experts)."""
+        """Wrapper for vLLM SharedFusedMoE (v0.16-v0.19).
 
-        def __init__(
-            self,
-            inner: vllm_shared_fused_moe.SharedFusedMoE,
-            layer_quant_config: QLayerConfig,
-            device: torch.device | None = None,
-        ) -> None:
-            super().__init__(inner=inner, layer_quant_config=layer_quant_config, device=device)
+        All shared expert input isolation logic is inherited from ``QuantVLLMFusedMoE``, which
+        uses ``_get_shared_expert_module()`` to locate the shared expert across vLLM versions and
+        ``_exclude`` (propagated by the worker) to decide input quantization behavior.
+        """
 
         @classmethod
         def from_float(
@@ -1876,7 +1922,6 @@ if VLLM_AVAILABLE:
                 return cls.from_prequantized(float_module, layer_quant_config, device=device, **kwargs)
             if device is None:
                 device = float_module.w13_weight.device if hasattr(float_module, "w13_weight") else torch.device("cuda")
-            # Same as linear: use layer_quant_config from setup_config_per_layer (layer > type > global)
             return cls(
                 inner=float_module,
                 layer_quant_config=layer_quant_config,

@@ -56,7 +56,10 @@ uses round-to-nearest (RTN).  Setting ``use_gptq=True`` instead quantizes the
 residual with GPTQ -- a Hessian-based, column-wise method that compensates for
 quantization error using activation statistics.  GPTQ is more expensive (it
 collects and inverts Hessian information) but typically improves quality at very
-low bit-widths.  The ``gptq_*`` parameters control the GPTQ pass.
+low bit-widths.  The ``gptq_*`` parameters control the GPTQ pass.  In practice,
+GPTQ mainly helps for **NVFP4**; for ``w4a4`` and ``mxfp4`` it does not reliably
+improve over RTN (see the FLUX.1-dev benchmark below), so GPTQ is recommended
+only for NVFP4 and plain RTN is a good default otherwise.
 
 **Smoothing strength: fixed alpha vs per-layer search.**  The smoothing strength
 ``alpha`` balances quantization difficulty between activations and weights.  With
@@ -66,6 +69,9 @@ each layer, choosing the value that minimizes the post-SVD layer-output MSE on
 calibration data (matching the original paper).  The search is more accurate but
 adds calibration compute; ``alpha_candidates`` and ``alpha_search_max_samples``
 tune its cost.
+
+To choose between these options empirically for a given model and data type, see
+:ref:`svdquant-calibration` below.
 
 Configuring SVDQuant
 ~~~~~~~~~~~~~~~~~~~~
@@ -202,6 +208,62 @@ on a second CUDA stream so it overlaps the residual GEMM.
    calling ``enable_native_inference`` -- the kernel-format weights live in
    non-persistent buffers, so export/reload always uses the standard Quark
    format regardless of whether native inference is active.
+
+.. _svdquant-calibration:
+
+Calibrating and tuning SVDQuant
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The choices above -- smoothing ``alpha``, RTN versus GPTQ, and how many
+calibration samples to use -- interact, and the best combination depends on the
+model and the target data type.  Quark ships a calibration / grid-search
+example, ``examples/torch/diffusers/svdquant_calibrate.py``, to pick them
+empirically.  It can:
+
+- search the per-layer ``alpha`` over a candidate grid (``alpha_candidates``);
+- toggle GPTQ for the residual weights (``--gptq off|on|both``);
+- sweep the number of calibration samples (``--n_calib_samples``).
+
+Each ``(gptq, n_samples)`` cell uses the same flow as the other diffusers
+examples -- ``SVDQuantProcessor.apply()`` followed by
+``ModelQuantizer.quantize_model()`` -- on a fresh pipeline, then scores the
+result; the script writes a ranked ``results.json`` and ``summary.txt`` and
+reports the best configuration.
+
+``SVDQuantProcessor`` already searches the per-layer ``alpha`` on a small number
+of activations (``alpha_search_max_samples``) while using the full calibration
+set for the smoothing statistics and GPTQ Hessian matrices, so searching the ``alpha`` on
+a few samples and then continuing with the full calibration is the built-in
+behavior of ``--search_alpha``.
+
+The scoring metric is selected with ``--eval_metric``:
+
+- ``ref_image`` (default) compares generated images against a high-precision
+  reference (PSNR / MSE, plus ``LPIPS`` when the ``lpips`` package is installed);
+- ``module_mse`` compares the quantized submodule outputs against the reference
+  outputs on held-out calibration inputs (no image generation, so it is the
+  fastest);
+- ``none`` only generates and saves one image per configuration.
+
+.. code-block:: bash
+
+    # FLUX.1-dev, w4a16: staged alpha, compare GPTQ off vs on at 128 samples
+    python examples/torch/diffusers/svdquant_calibrate.py \
+        --model_id black-forest-labs/FLUX.1-dev --mode w4a16 \
+        --gptq both --n_calib_samples 128 --eval_metric ref_image
+
+    # SDXL, mxfp4: sweep the number of calibration samples
+    python examples/torch/diffusers/svdquant_calibrate.py \
+        --model_id stabilityai/stable-diffusion-xl-base-1.0 --mode mxfp4 \
+        --gptq off --n_calib_samples 64 128 256
+
+See ``examples/torch/diffusers/README.md`` for the complete option list.
+
+.. note::
+
+   Each grid cell reloads a fresh pipeline (quantization is destructive) and runs
+   its own per-layer ``alpha`` search, so keep grids small for large models such
+   as FLUX.
 
 Benchmark results
 ~~~~~~~~~~~~~~~~~

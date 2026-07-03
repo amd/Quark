@@ -35,7 +35,13 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dsv4_kernels import dequant_fp8_block_weight, dequant_mxfp4_weight, dequant_nvfp4_weight, sparse_attn
+from dsv4_kernels import (
+    dequant_fp8_block_weight,
+    dequant_mxfp4_weight,
+    dequant_nvfp4_weight,
+    quant_dequant_nvfp4_act,
+    sparse_attn,
+)
 from safetensors.torch import safe_open
 from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
@@ -294,7 +300,7 @@ class DequantLinear(nn.Module):
       "bf16"  : qweight BF16 [out,in], no scale
     """
 
-    def __init__(self, fmt, qweight, wscale, wscale2, out_features, in_features, bias, row_parallel):
+    def __init__(self, fmt, qweight, wscale, wscale2, out_features, in_features, bias, row_parallel, input_scale=None):
         super().__init__()
         self.fmt = fmt
         self.out_features = out_features
@@ -303,6 +309,13 @@ class DequantLinear(nn.Module):
         self.register_buffer("qweight", qweight, persistent=True)
         self.register_buffer("wscale", wscale, persistent=True)
         self.register_buffer("wscale2", wscale2, persistent=True)
+        # Per-tensor NVFP4 activation scale (Stage 2). Present only for nvfp4
+        # experts and only when activation quantization is on; ``None`` means the
+        # activation stays BF16.
+        if input_scale is not None:
+            self.register_buffer("input_scale", input_scale.to(torch.float32), persistent=True)
+        else:
+            self.input_scale = None
         if bias is not None:
             self.register_buffer("bias", bias.to(torch.bfloat16), persistent=True)
         else:
@@ -326,7 +339,13 @@ class DequantLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         device = x.device
         w = self._dequant(device)
-        y = F.linear(x.to(torch.bfloat16), w)
+        xb = x.to(torch.bfloat16)
+        # NVFP4: quantize the activation too (per-group-16 FP4 + per-tensor
+        # input_scale), matching real NVFP4 inference. When input_scale is None
+        # the activation stays BF16.
+        if self.fmt == "nvfp4" and self.input_scale is not None:
+            xb = quant_dequant_nvfp4_act(xb, self.input_scale.to(device))
+        y = F.linear(xb, w)
         # DeepSeek-V4-Pro builds every Linear with bias=False (inference/model.py's
         # `linear()` asserts `bias is None`), so only the row-parallel reduce path
         # ever carries a bias here; a non-row-parallel bias would be dropped, but
@@ -342,7 +361,7 @@ class DequantLinear(nn.Module):
         return y.to(torch.bfloat16)
 
 
-def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int]:
+def load_and_wrap(model: nn.Module, hf_path: str, scheme: str, quant_act: bool = False) -> tuple[int, int]:
     """Replace every Linear-family module with a DequantLinear holding the matching
     compact quantized tensors read from the checkpoint. Non-linear params/buffers
     (norms, embed, head, gate, attn_sink, freqs, etc.) are loaded directly as
@@ -352,11 +371,15 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
     :param str hf_path: Path to the checkpoint directory.
     :param str scheme: ``"nvfp4"`` (this pipeline's output: ``weight_scale`` +
         ``weight_scale_2``) or ``"mxfp4"`` (the original checkpoint: ``scale``).
+    :param bool quant_act: When True (nvfp4 only), also load each expert's
+        ``input_scale`` and quantize activations to NVFP4 on forward. When False,
+        the activation stays BF16.
 
     :return: ``(n_wrapped_linears, n_assigned_non_linear)``.
     """
     if scheme not in ("nvfp4", "mxfp4"):
         raise ValueError(f"scheme must be 'nvfp4' or 'mxfp4', got {scheme!r}")
+    quant_act = quant_act and scheme == "nvfp4"
     # NVFP4 weights are stored U8 with two scales (per-group weight_scale + global
     # weight_scale_2); the original MXFP4 weights are I8 (or float4_e2m1fn_x2) with
     # a single per-group scale named just "scale".
@@ -379,6 +402,8 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
             ks.append(f"{name}.{scale_key}")
         if scheme == "nvfp4" and f"{name}.{scale2_key}" in weight_map:
             ks.append(f"{name}.{scale2_key}")
+        if quant_act and f"{name}.input_scale" in weight_map:
+            ks.append(f"{name}.input_scale")
         if f"{name}.bias" in weight_map:
             ks.append(f"{name}.bias")
         return ks
@@ -405,6 +430,7 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
                     loaded[k] = f.get_tensor(k)
 
     n_wrapped = 0
+    n_act_quant = 0
     for name in sorted(linear_names):
         m = modules[name]
         wkey = f"{name}.weight"
@@ -413,6 +439,7 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
         w = loaded[wkey]
         wscale = loaded.get(f"{name}.{scale_key}")
         wscale2 = loaded.get(f"{name}.{scale2_key}")
+        input_scale = loaded.get(f"{name}.input_scale") if quant_act else None
         bias = loaded.get(f"{name}.bias")
         out_features = getattr(m, "out_features", w.shape[0])
         in_features = getattr(m, "in_features", w.shape[1] if w.dim() > 1 else 1)
@@ -424,16 +451,22 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
         elif w.dtype == torch.float8_e4m3fn:
             fmt = "fp8"
             wscale2 = torch.tensor(0.0)
+            input_scale = None  # activation quant only defined for nvfp4 experts
         else:
             fmt = "bf16"
             w = w.to(torch.bfloat16)
             wscale = torch.tensor(0.0)
             wscale2 = torch.tensor(0.0)
+            input_scale = None
         if wscale is None:
             wscale = torch.tensor(0.0)
 
         row_parallel = type(m).__name__ == "RowParallelLinear"
-        wrapper = DequantLinear(fmt, w, wscale, wscale2, out_features, in_features, bias, row_parallel)
+        wrapper = DequantLinear(
+            fmt, w, wscale, wscale2, out_features, in_features, bias, row_parallel, input_scale=input_scale
+        )
+        if input_scale is not None:
+            n_act_quant += 1
 
         parent_name, _, child = name.rpartition(".")
         parent = modules[parent_name] if parent_name else model
@@ -470,4 +503,11 @@ def load_and_wrap(model: nn.Module, hf_path: str, scheme: str) -> tuple[int, int
             mod._buffers[attr] = tensor
             n_assigned += 1
     logger.info(f"wrapped {n_wrapped} linears; assigned {n_assigned} non-linear tensors")
+    if quant_act:
+        if n_act_quant == 0:
+            raise ValueError(
+                "activation quantization requested but no expert input_scale found in the checkpoint; "
+                "run Stage 2 (calibrate) + Stage 3 (merge) first, or pass --no-quant-act."
+            )
+        logger.info(f"activation NVFP4 quant ON for {n_act_quant} expert linears (input_scale applied)")
     return n_wrapped, n_assigned

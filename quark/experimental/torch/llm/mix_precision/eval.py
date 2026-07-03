@@ -16,7 +16,6 @@ import time
 from collections.abc import Generator
 from typing import Any, cast
 
-import numpy as np
 import requests
 
 from quark.common.utils.import_utils import is_datasets_available, is_vllm_available
@@ -88,8 +87,8 @@ Answer: Olivia had 23 dollars. 5 bagels for 3 dollars each will be 5 x 3 = 15 do
 
 Question: """
 
-# Stop strings for GSM8K generation (aligned with lm-evaluation-harness)
-GSM8K_STOP_STRINGS = ["Question:", "Q:", "</s>", "<|im_end|>", "<|endoftext|>", "Human:", "\n\n\n"]
+# Stop strings for GSM8K generation, matching lm-evaluation-harness gsm8k.yaml `until`.
+GSM8K_STOP_STRINGS = ["Question:", "</s>", "<|im_end|>"]
 
 
 def _clean_text(text: str) -> str:
@@ -255,10 +254,10 @@ def _get_answer_value(answer_str: str) -> int:
 def _build_gsm8k_prompts(
     num_questions: int = 1319,
     num_shots: int = 5,
-) -> tuple[list[str], list[int]]:
-    """Build few-shot GSM8K prompts and corresponding integer ground-truth labels."""
+) -> tuple[list[str], list[int], list[str]]:
+    """Build few-shot GSM8K prompts, integer ground-truth labels, and raw reference answers."""
     if num_questions == 0:
-        return [], []
+        return [], [], []
     train_data, test_data = _load_gsm8k_data()
     num_questions = min(num_questions, len(test_data))
 
@@ -268,27 +267,36 @@ def _build_gsm8k_prompts(
 
     prompts = []
     labels = []
+    references = []
     for i in range(num_questions):
         prompts.append(few_shot_examples + f"Question: {test_data[i]['question']}\nAnswer:")
         labels.append(_get_answer_value(test_data[i]["answer"]))
+        references.append(test_data[i]["answer"])
 
     assert all(label != INVALID for label in labels), "Some ground-truth answers could not be parsed"
-    return prompts, labels
+    return prompts, labels, references
 
 
 def _score_gsm8k(
     states: list[str],
     output_tokens: list[int],
     labels: list[int],
+    references: list[str],
     num_shots: int,
     max_tokens: int,
     latency: float,
 ) -> dict[str, float | int]:
-    """Score GSM8K generations and return a results dict with accuracy, latency, etc."""
+    """Score GSM8K generations and return a results dict with accuracy, latency, etc.
+
+    Accuracy uses the lm-evaluation-harness flexible-extract filter (last numeric
+    match, with thousands-separator / dollar-sign / trailing-period normalization)
+    so results align with `lm_eval --model vllm --tasks gsm8k` (flexible-extract).
+    """
     num_questions = len(labels)
-    preds = [_get_answer_value(state) for state in states]
-    accuracy = np.mean(np.array(preds) == np.array(labels))
-    invalid_rate = np.mean(np.array(preds) == INVALID)
+    correct_count, _ = _gsm8k_evaluate_outputs(states, references, verbose=False)
+    accuracy = correct_count / num_questions if num_questions else 0.0
+    invalid_count = sum(1 for state in states if extract_flexible(state) is None)
+    invalid_rate = invalid_count / num_questions if num_questions else 0.0
     total_output_tokens = sum(output_tokens)
     tokens_per_second = total_output_tokens / latency if latency > 0 else 0.0
 
@@ -320,12 +328,12 @@ def evaluate_gsm8k_offline(
 
     Returns dict with accuracy, invalid_rate, latency, etc.
     """
-    prompts, labels = _build_gsm8k_prompts(num_questions, num_shots)
+    prompts, labels, references = _build_gsm8k_prompts(num_questions, num_shots)
 
     sampling_params = SamplingParams(
         temperature=temperature,
         max_tokens=max_tokens,
-        stop=["Question", "Assistant:", "<|separator|>"],
+        stop=GSM8K_STOP_STRINGS,
     )
 
     logger.info(f"Running offline GSM8K evaluation: {len(prompts)} questions, {num_shots}-shot")
@@ -340,7 +348,7 @@ def evaluate_gsm8k_offline(
     states = [o.outputs[0].text for o in outputs]
     output_tokens = [len(o.outputs[0].token_ids) for o in outputs]
 
-    return _score_gsm8k(states, output_tokens, labels, num_shots, max_tokens, latency)
+    return _score_gsm8k(states, output_tokens, labels, references, num_shots, max_tokens, latency)
 
 
 def evaluate_ppl_offline(

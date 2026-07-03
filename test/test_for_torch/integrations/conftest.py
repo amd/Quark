@@ -31,18 +31,26 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _VLLM_STUB_SENTINEL = "_quark_test_vllm_stub"
+_REQUIRED_VLLM_MODULES = (
+    "vllm",
+    "vllm.distributed.communication_op",
+)
+
+
+def _module_spec_exists(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _vllm_real_available() -> bool:
-    spec = importlib.util.find_spec("vllm")
-    if spec is None:
-        return False
     # If we already installed our stub, ``find_spec`` would still see a
     # module — distinguish via the sentinel.
     mod = sys.modules.get("vllm")
     if mod is not None and getattr(mod, _VLLM_STUB_SENTINEL, False):
         return False
-    return True
+    return all(_module_spec_exists(module_name) for module_name in _REQUIRED_VLLM_MODULES)
 
 
 def _vllm_is_mocked() -> bool:
@@ -150,6 +158,15 @@ def _install_vllm_stubs() -> None:
         return out, scale
 
     _install_module("vllm._custom_ops", {"scaled_fp8_quant": _scaled_fp8_quant})
+
+    # ------------------------------------------------------------------
+    # vllm.distributed.communication_op
+    # ------------------------------------------------------------------
+    _install_module("vllm.distributed", {})
+    _install_module(
+        "vllm.distributed.communication_op",
+        {"tensor_model_parallel_all_gather": lambda x, *args, **kwargs: x},
+    )
 
     # ------------------------------------------------------------------
     # vllm.config (set_current_vllm_config + VllmConfig stubs)

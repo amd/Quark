@@ -34,7 +34,8 @@ Run:
 
 import copy
 import pickle
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -53,9 +54,9 @@ from quark.online_quantization.vllm import (  # noqa: E402
     QuarkVllmOnlineConfig,
     QuarkVllmOnlineFp8Method,
     QuarkVllmOnlineMxfp4Method,
-    hf_quantization_config_fp8_ptpc,
-    hf_quantization_config_linear_fp8_ptpc_moe_mxfp4,
+    hf_quantization_config_linear_ptpc_fp8_moe_mxfp4,
     hf_quantization_config_mxfp4,
+    hf_quantization_config_ptpc_fp8,
     online_quant_overrides,
 )
 from quark.online_quantization.vllm.dequant import (  # noqa: E402
@@ -240,7 +241,7 @@ class TestPresets:
     @pytest.mark.parametrize(
         "preset, expected_weight_dtype",
         [
-            (hf_quantization_config_fp8_ptpc, "fp8_e4m3"),
+            (hf_quantization_config_ptpc_fp8, "fp8_e4m3"),
             (hf_quantization_config_mxfp4, "fp4"),
         ],
     )
@@ -261,7 +262,7 @@ class TestPresets:
         # Current preset shape: global=MXFP4 (everything defaults to it),
         # ``*self_attn*`` overrides to FP8 per-channel. Matches the
         # checkpoint shape the preset is meant to emulate at load time.
-        cfg = hf_quantization_config_linear_fp8_ptpc_moe_mxfp4
+        cfg = hf_quantization_config_linear_ptpc_fp8_moe_mxfp4
         assert cfg["global_quant_config"]["weight"]["dtype"] == "fp4"
         assert "*self_attn*" in cfg["layer_quant_config"]
         override = cfg["layer_quant_config"]["*self_attn*"]
@@ -272,7 +273,7 @@ class TestPresets:
 class TestOverridesCallable:
     def test_class_is_picklable(self):
         # vLLM's spawn engine pickles hf_overrides; closures break, classes don't.
-        cb = HF_QUANTIZATION_CONFIGS["fp8_ptpc"]
+        cb = HF_QUANTIZATION_CONFIGS["ptpc_fp8"]
         assert isinstance(cb, _OnlineQuantHfOverride)
         # Round-trip
         cb2 = pickle.loads(pickle.dumps(cb))
@@ -280,7 +281,7 @@ class TestOverridesCallable:
         assert cb2._online_quant_cfg["quant_method"] == "quark_online"
 
     def test_scenario_a_no_offline(self):
-        cb = online_quant_overrides(hf_quantization_config_fp8_ptpc)
+        cb = online_quant_overrides(hf_quantization_config_ptpc_fp8)
         fake = SimpleNamespace(quantization_config=None)
         cb(fake)
         qc = fake.quantization_config
@@ -322,9 +323,9 @@ class TestOverridesCallable:
 
     def test_registry_has_expected_keys(self):
         assert set(HF_QUANTIZATION_CONFIGS.keys()) == {
-            "fp8_ptpc",
+            "ptpc_fp8",
             "mxfp4",
-            "linear_fp8_ptpc_moe_mxfp4",
+            "linear_ptpc_fp8_moe_mxfp4",
         }
 
 
@@ -342,7 +343,7 @@ def _make_merged_cfg(online_dict, offline_dict=None):
 
 class TestQuarkVllmOnlineConfig:
     def test_from_config_scenario_a(self):
-        qc = QuarkVllmOnlineConfig.from_config(_make_merged_cfg(hf_quantization_config_fp8_ptpc))
+        qc = QuarkVllmOnlineConfig.from_config(_make_merged_cfg(hf_quantization_config_ptpc_fp8))
         assert qc._online_quant_config is not None
         assert qc._offline_quant_config is None
 
@@ -384,7 +385,7 @@ class TestQuarkVllmOnlineConfig:
     def test_packed_modules_mapping_setter_propagates_to_inner(self):
         qc = QuarkVllmOnlineConfig.from_config(
             _make_merged_cfg(
-                hf_quantization_config_fp8_ptpc,
+                hf_quantization_config_ptpc_fp8,
                 offline_dict={
                     "quant_method": "fp8",
                     "fmt": "e4m3",
@@ -417,7 +418,7 @@ class TestQuarkVllmOnlineConfig:
         mapper = _RecordingMapper()
         qc = QuarkVllmOnlineConfig.from_config(
             _make_merged_cfg(
-                hf_quantization_config_fp8_ptpc,
+                hf_quantization_config_ptpc_fp8,
                 offline_dict={
                     "quant_method": "fp8",
                     "fmt": "e4m3",
@@ -435,7 +436,7 @@ class TestQuarkVllmOnlineConfig:
         # unknown names → we should still terminate without exception.
         qc = QuarkVllmOnlineConfig.from_config(
             _make_merged_cfg(
-                hf_quantization_config_fp8_ptpc,
+                hf_quantization_config_ptpc_fp8,
                 offline_dict={
                     "quant_method": "fp8",
                     "fmt": "e4m3",
@@ -470,14 +471,14 @@ class TestQuarkVllmOnlineFp8Method:
         # drive the parent to pick ``kFp8StaticTokenSym`` (per-channel) over
         # the default ``kFp8StaticTensorSym``.
         from quark.online_quantization.vllm.quant_method.linear import (
-            _FP8_PTPC_INPUT_CFG,
-            _FP8_PTPC_WEIGHT_CFG,
+            _PTPC_FP8_INPUT_CFG,
+            _PTPC_FP8_WEIGHT_CFG,
         )
 
-        assert _FP8_PTPC_WEIGHT_CFG["qscheme"] == "per_channel"
-        assert _FP8_PTPC_WEIGHT_CFG["dtype"] == "fp8_e4m3"
-        assert _FP8_PTPC_INPUT_CFG["qscheme"] == "per_channel"
-        assert _FP8_PTPC_INPUT_CFG["is_dynamic"] is True
+        assert _PTPC_FP8_WEIGHT_CFG["qscheme"] == "per_channel"
+        assert _PTPC_FP8_WEIGHT_CFG["dtype"] == "fp8_e4m3"
+        assert _PTPC_FP8_INPUT_CFG["qscheme"] == "per_channel"
+        assert _PTPC_FP8_INPUT_CFG["is_dynamic"] is True
 
 
 class TestQuarkVllmOnlineMxfp4Method:
@@ -751,7 +752,7 @@ def _online_plus_fp8_block_qc(preset):
 class TestBuildOnlineMethod:
     def test_picks_fp8_for_fp8_dtype(self):
         with _vllm_ctx():
-            qc = _online_only_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_only_qc(hf_quantization_config_ptpc_fp8)
             matched = {"weight": {"dtype": "fp8_e4m3"}}
             m = qc._build_online_method(matched)
         assert isinstance(m, QuarkVllmOnlineFp8Method)
@@ -765,7 +766,7 @@ class TestBuildOnlineMethod:
 
     def test_defaults_to_fp8_for_unknown_dtype(self):
         with _vllm_ctx():
-            qc = _online_only_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_only_qc(hf_quantization_config_ptpc_fp8)
             matched = {"weight": {"dtype": "made-up"}}
             m = qc._build_online_method(matched)
         assert isinstance(m, QuarkVllmOnlineFp8Method)
@@ -780,7 +781,7 @@ class TestOfflineDictHelper:
         assert d.get("quant_method") == "fp8"
 
     def test_offline_dict_none_when_no_offline(self):
-        qc = _online_only_qc(hf_quantization_config_fp8_ptpc)
+        qc = _online_only_qc(hf_quantization_config_ptpc_fp8)
         assert qc._offline_dict() is None
 
 
@@ -790,7 +791,7 @@ class TestGetQuantMethodDispatch:
         from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 
         with _vllm_ctx():
-            qc = _online_only_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_only_qc(hf_quantization_config_ptpc_fp8)
             layer = _FakeLinearBase()
             # "lm_head" is in the preset's exclude list.
             out = qc.get_quant_method(layer, "lm_head")
@@ -798,14 +799,14 @@ class TestGetQuantMethodDispatch:
 
     def test_linear_scenario_a_returns_online_method(self):
         with _vllm_ctx():
-            qc = _online_only_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_only_qc(hf_quantization_config_ptpc_fp8)
             layer = _FakeLinearBase()
             out = qc.get_quant_method(layer, "model.layers.0.self_attn.q_proj")
         assert isinstance(out, QuarkVllmOnlineFp8Method)
 
     def test_linear_scenario_b_returns_requant(self):
         with _vllm_ctx():
-            qc = _online_plus_fp8_block_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_plus_fp8_block_qc(hf_quantization_config_ptpc_fp8)
             layer = _FakeLinearBase()
             out = qc.get_quant_method(layer, "model.layers.0.self_attn.q_proj")
         assert isinstance(out, OnlineRequantMethod)
@@ -818,7 +819,7 @@ class TestGetQuantMethodDispatch:
         # requant wrapper. Whether that's Unquantized or Fp8LinearMethod
         # depends on the offline config; the key invariant is no wrapping.
         with _vllm_ctx():
-            qc = _online_plus_fp8_block_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_plus_fp8_block_qc(hf_quantization_config_ptpc_fp8)
             layer = _FakeLinearBase()
             out = qc.get_quant_method(layer, "lm_head")
         assert not isinstance(out, OnlineRequantMethod)
@@ -830,7 +831,7 @@ class TestGetQuantMethodDispatch:
         # An arbitrary nn.Module (not LinearBase, not FusedMoE). Dispatch
         # should fall through to "return offline_method" without wrapping.
         with _vllm_ctx():
-            qc = _online_plus_fp8_block_qc(hf_quantization_config_fp8_ptpc)
+            qc = _online_plus_fp8_block_qc(hf_quantization_config_ptpc_fp8)
 
             class _Other(torch.nn.Module):
                 pass
@@ -923,12 +924,252 @@ class TestGetCacheScale:
     def test_returns_offline_value_when_offline_has_mapping(self):
         # Build a config + monkey-patch the offline's get_cache_scale to
         # return a known value; proxy must surface it.
-        qc = _online_plus_fp8_block_qc(hf_quantization_config_fp8_ptpc)
+        qc = _online_plus_fp8_block_qc(hf_quantization_config_ptpc_fp8)
         qc._offline_quant_config.get_cache_scale = lambda name: (
             "remapped.k_scale" if name.endswith(".kv_scale") else None
         )
         assert qc.get_cache_scale("model.layers.0.kv_scale") == "remapped.k_scale"
         assert qc.get_cache_scale("nothing.matches") is None
+
+
+# ---------------------------------------------------------------------------
+# hf_quantization_configs.py — ATOM-style thin schema adapter
+# ---------------------------------------------------------------------------
+
+
+from quark.online_quantization.vllm.hf_quantization_configs import (  # noqa: E402
+    online_quant_config_to_quark,
+)
+
+
+class TestOnlineQuantConfigToQuark:
+    def test_ptpc_fp8_global(self):
+        out = online_quant_config_to_quark({"global_quant_config": "ptpc_fp8"})
+        assert out["quant_method"] == "quark_online"
+        assert out["global_quant_config"]["weight"]["dtype"] == "fp8_e4m3"
+        assert out["global_quant_config"]["weight"]["qscheme"] == "per_channel"
+        # default exclude
+        assert out["exclude"] == ["lm_head"]
+        # envelope present
+        assert out["layer_quant_config"] == {}
+        assert out["quant_mode"] == "eager_mode"
+
+    def test_mxfp4_global(self):
+        out = online_quant_config_to_quark({"global_quant_config": "mxfp4"})
+        w = out["global_quant_config"]["weight"]
+        assert w["dtype"] == "fp4"
+        assert w["group_size"] == 32
+        assert w["qscheme"] == "per_group"
+
+    @pytest.mark.parametrize(
+        ("cfg", "expected_exclude"),
+        [
+            (
+                {"global_quant_config": "ptpc_fp8", "exclude_layer": "lm_head"},
+                ["lm_head"],
+            ),
+            (
+                {"global_quant_config": "mxfp4", "exclude_layer": ["lm_head", "embed_tokens"]},
+                ["lm_head", "embed_tokens"],
+            ),
+            (
+                {"global_quant_config": "mxfp4", "exclude_layer": ["re:.*\\.gate\\..*"]},
+                ["re:.*\\.gate\\..*"],
+            ),
+            (
+                {"global_quant_config": "mxfp4", "exclude_layer": ""},
+                [],
+            ),
+        ],
+    )
+    def test_exclude_layer_normalization(self, cfg, expected_exclude):
+        out = online_quant_config_to_quark(cfg)
+        assert out["exclude"] == expected_exclude
+
+    def test_exclude_layer_glob_is_converted_to_regex(self):
+        out = online_quant_config_to_quark({"global_quant_config": "mxfp4", "exclude_layer": ["lm_head", "*.gate.*"]})
+        assert out["exclude"][0] == "lm_head"
+        assert out["exclude"][1].startswith("re:")
+
+    def test_mixed_layer_override(self):
+        out = online_quant_config_to_quark(
+            {
+                "global_quant_config": "mxfp4",
+                "layer_quant_config": {"*self_attn*": "ptpc_fp8"},
+                "exclude_layer": ["lm_head"],
+            }
+        )
+        assert out["global_quant_config"]["weight"]["dtype"] == "fp4"
+        override = out["layer_quant_config"]["*self_attn*"]
+        assert override["weight"]["dtype"] == "fp8_e4m3"
+        assert override["input_tensors"]["dtype"] == "fp8_e4m3"
+        # only weight + input_tensors carried in a per-layer override
+        assert set(override.keys()) == {"weight", "input_tensors"}
+
+    @pytest.mark.parametrize(
+        ("cfg", "exc", "match"),
+        [
+            ({"global_quant_config": "bogus"}, ValueError, "Unsupported online quant format"),
+            (
+                {"global_quant_config": "mxfp4", "layer_quant_config": {"*self_attn*": "bogus"}},
+                ValueError,
+                "Unsupported online quant format",
+            ),
+            ({}, ValueError, "global_quant_config"),
+            ("ptpc_fp8", TypeError, None),
+        ],
+    )
+    def test_invalid_configs_raise(self, cfg, exc, match):
+        if match is None:
+            with pytest.raises(exc):
+                online_quant_config_to_quark(cfg)
+        else:
+            with pytest.raises(exc, match=match):
+                online_quant_config_to_quark(cfg)
+
+    def test_deepcopied_not_aliased_to_preset(self):
+        # Mutating the output must not corrupt the shared preset blocks.
+        out = online_quant_config_to_quark({"global_quant_config": "ptpc_fp8"})
+        out["global_quant_config"]["weight"]["dtype"] = "MUTATED"
+        assert hf_quantization_config_ptpc_fp8["global_quant_config"]["weight"]["dtype"] == "fp8_e4m3"
+
+
+# ---------------------------------------------------------------------------
+# plugin.py — hf_overrides injection from additional_config + priority
+# ---------------------------------------------------------------------------
+
+
+from quark.online_quantization.vllm import plugin as _plugin  # noqa: E402
+
+
+class TestPluginInjectHfOverrides:
+    def _engine_args(self, additional_config, hf_overrides=None):
+        # EngineArgs.hf_overrides defaults to {} (empty dict = "not set").
+        return SimpleNamespace(
+            additional_config=additional_config,
+            hf_overrides={} if hf_overrides is None else hf_overrides,
+        )
+
+    @staticmethod
+    def _assert_cb_builds_quark_online(cb, expected_weight_dtype: str):
+        fake = SimpleNamespace(quantization_config=None)
+        cb(fake)
+        assert fake.quantization_config["quant_method"] == "quark_online"
+        assert (
+            fake.quantization_config["online_quant"]["global_quant_config"]["weight"]["dtype"] == expected_weight_dtype
+        )
+
+    def test_injects_when_present_and_no_explicit(self):
+        ea = self._engine_args({"online_quant_config": {"global_quant_config": "ptpc_fp8"}})
+        _plugin._maybe_inject_hf_overrides(ea)
+        assert isinstance(ea.hf_overrides, _OnlineQuantHfOverride)
+        self._assert_cb_builds_quark_online(ea.hf_overrides, "fp8_e4m3")
+
+    def test_extract_present(self):
+        online_quant_cfg = {"global_quant_config": "ptpc_fp8"}
+        assert (
+            _plugin._online_quant_config_from_additional_config({"online_quant_config": online_quant_cfg})
+            is online_quant_cfg
+        )
+
+    def test_extract_absent_returns_none(self):
+        assert _plugin._online_quant_config_from_additional_config({"other": 1}) is None
+        assert _plugin._online_quant_config_from_additional_config(None) is None
+        assert _plugin._online_quant_config_from_additional_config({}) is None
+
+    def test_build_callable_end_to_end(self):
+        cb = _plugin._build_hf_overrides_from_online_quant_config({"global_quant_config": "ptpc_fp8"})
+        assert isinstance(cb, _OnlineQuantHfOverride)
+        self._assert_cb_builds_quark_online(cb, "fp8_e4m3")
+
+    def test_built_callable_is_picklable(self):
+        cb = _plugin._build_hf_overrides_from_online_quant_config({"global_quant_config": "mxfp4"})
+        cb2 = pickle.loads(pickle.dumps(cb))
+        assert isinstance(cb2, _OnlineQuantHfOverride)
+
+    @pytest.mark.parametrize("additional_config", [None, {}, {"something_else": 1}])
+    def test_noop_when_no_online_quant_config(self, additional_config):
+        ea = self._engine_args(additional_config)
+        _plugin._maybe_inject_hf_overrides(ea)
+        assert ea.hf_overrides == {}
+
+    def test_explicit_hf_overrides_wins(self):
+        # A user-supplied --hf-overrides (truthy) must not be clobbered.
+        sentinel = {"some": "override"}
+        ea = self._engine_args(
+            {"online_quant_config": {"global_quant_config": "ptpc_fp8"}},
+            hf_overrides=sentinel,
+        )
+        _plugin._maybe_inject_hf_overrides(ea)
+        assert ea.hf_overrides is sentinel
+
+    def test_explicit_callable_hf_overrides_wins(self):
+        def _user_override(cfg):
+            return cfg
+
+        ea = self._engine_args(
+            {"online_quant_config": {"global_quant_config": "ptpc_fp8"}},
+            hf_overrides=_user_override,
+        )
+        _plugin._maybe_inject_hf_overrides(ea)
+        assert ea.hf_overrides is _user_override
+
+    def test_has_explicit_hf_overrides_detection(self):
+        assert _plugin._has_explicit_hf_overrides(SimpleNamespace(hf_overrides={"a": 1}))
+        assert _plugin._has_explicit_hf_overrides(SimpleNamespace(hf_overrides=lambda c: c))
+        assert not _plugin._has_explicit_hf_overrides(SimpleNamespace(hf_overrides={}))
+        assert not _plugin._has_explicit_hf_overrides(SimpleNamespace(hf_overrides=None))
+
+    def test_injected_override_preserves_offline_for_requant(self):
+        # The injected callable must still stash a pre-existing offline cfg.
+        ea = self._engine_args({"online_quant_config": {"global_quant_config": "mxfp4"}})
+        _plugin._maybe_inject_hf_overrides(ea)
+        offline = {"quant_method": "fp8", "weight_block_size": [128, 128]}
+        fake = SimpleNamespace(quantization_config=copy.deepcopy(offline))
+        ea.hf_overrides(fake)
+        assert fake.quantization_config["quant_method"] == "quark_online"
+        assert fake.quantization_config["offline_quant"] == offline
+        assert "online_quant" in fake.quantization_config
+
+    def test_malformed_config_raises_in_helper(self):
+        # The helper raises; the patched create_model_config wraps it in try/except.
+        ea = self._engine_args({"online_quant_config": {"global_quant_config": "bogus"}})
+        with pytest.raises(ValueError):
+            _plugin._maybe_inject_hf_overrides(ea)
+
+    def test_disabled_env(self, monkeypatch):
+        monkeypatch.setenv("QUARK_DISABLE_VLLM_PLUGIN", "1")
+        assert _plugin._disabled() is True
+        monkeypatch.setenv("QUARK_DISABLE_VLLM_PLUGIN", "0")
+        assert _plugin._disabled() is False
+        monkeypatch.delenv("QUARK_DISABLE_VLLM_PLUGIN", raising=False)
+        assert _plugin._disabled() is False
+
+    def test_register_idempotent_and_patches_engine_args(self, monkeypatch):
+        monkeypatch.delenv("QUARK_DISABLE_VLLM_PLUGIN", raising=False)
+
+        class EngineArgs:
+            def create_model_config(self):
+                return "model-config"
+
+        engine_mod = ModuleType("vllm.engine")
+        arg_utils_mod = ModuleType("vllm.engine.arg_utils")
+        arg_utils_mod.EngineArgs = EngineArgs
+        engine_mod.__path__ = []
+        engine_mod.arg_utils = arg_utils_mod
+        monkeypatch.setitem(sys.modules, "vllm.engine", engine_mod)
+        monkeypatch.setitem(sys.modules, "vllm.engine.arg_utils", arg_utils_mod)
+
+        orig = EngineArgs.create_model_config
+        try:
+            _plugin.register()
+            p1 = EngineArgs.create_model_config
+            assert getattr(p1, _plugin._PATCHED_FLAG, False)
+            _plugin.register()
+            p2 = EngineArgs.create_model_config
+            assert p1 is p2  # idempotent — not double-wrapped
+        finally:
+            EngineArgs.create_model_config = orig
 
 
 class TestPackageSurface:
@@ -941,9 +1182,10 @@ class TestPackageSurface:
             "QuarkVllmOnlineMxfp4Method",
             "OnlineRequantMethod",
             "HF_QUANTIZATION_CONFIGS",
-            "hf_quantization_config_fp8_ptpc",
+            "hf_quantization_config_ptpc_fp8",
             "hf_quantization_config_mxfp4",
             "online_quant_overrides",
+            "online_quant_config_to_quark",
         ]:
             assert hasattr(pkg, name), f"missing public export {name}"
 

@@ -53,6 +53,7 @@ QCONFIG_ALL_PARAMS = {
     "ExtraOpTypesToQuantize",
     "ExecutionProviders",
     "OptimizeModel",
+    "EnableNPUCnn",
     "ConvertFP16ToFP32",
     "ConvertNCHWToNHWC",
     "DebugMode",

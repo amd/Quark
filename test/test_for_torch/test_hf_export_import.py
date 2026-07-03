@@ -5,6 +5,7 @@
 
 import gc
 import os
+import re
 import tempfile
 from contextlib import ExitStack
 from dataclasses import replace
@@ -39,7 +40,7 @@ from quark.common.utils.testing_utils import (
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
-from quark.torch.export.safetensors import _load_weights_from_safetensors
+from quark.torch.export.safetensors import _load_weights_from_safetensors, export_hf_model, patch_missing_weights
 from quark.torch.export.utils import _build_quantized_model, _fix_loaded_weights_key_mismatch
 from quark.torch.quantization import (
     FP4PerGroupSpec,
@@ -2151,3 +2152,175 @@ def test_preprocessors_load_save():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         maybe_save_preprocessors("facebook/opt-125m", tmpdir)
+
+
+@slow_test
+@require_torch_higher_or_equal("2.6")
+def test_patch_missing_weights_restores_mtp(tmp_path):
+    """Weights that transformers drops via _keys_to_ignore_on_load_unexpected (e.g. mtp.*)
+    must be restored into the hf_format export from the source checkpoint.
+
+    Regression test for the bug where Qwen3.5 mtp.* weights were silently absent from the
+    exported safetensors because Qwen3_5ForConditionalGeneration does not instantiate them
+    in __init__ and lists `^mtp.*` in _keys_to_ignore_on_load_unexpected. This test fails on
+    `main` (mtp weights missing from export) and passes with the patch_missing_weights fix.
+    """
+    model_id = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", attn_implementation="eager")
+    model.eval()
+
+    # transformers drops mtp.* during from_pretrained, so it never reaches state_dict.
+    assert not any("mtp" in k for k in model.state_dict()), "expected transformers to drop mtp.* keys"
+    assert any(re.search(p, "mtp.fc.weight") for p in model._keys_to_ignore_on_load_unexpected)
+
+    # Build a source checkpoint that DOES contain an mtp weight (mirrors a real Qwen3.5 checkpoint).
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_path = huggingface_hub.snapshot_download(repo_id=model_id, repo_type="model")
+    source_sd = _load_weights_from_safetensors(cache_path)
+    mtp_weight = torch.arange(32, dtype=torch.float32).reshape(4, 8)
+    source_sd["mtp.fc.weight"] = mtp_weight
+    save_file(source_sd, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
+    model.config._name_or_path = str(source_dir)
+
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    export_hf_model(model, export_dir)
+
+    exported_sd = _load_weights_from_safetensors(str(export_dir))
+    assert "mtp.fc.weight" in exported_sd, "mtp.fc.weight should be restored into the export"
+    assert torch.equal(exported_sd["mtp.fc.weight"], mtp_weight)
+
+
+@slow_test
+@require_torch_higher_or_equal("2.6")
+def test_patch_missing_weights_does_not_leak_compressed_tensors_artifacts(tmp_path):
+    """End-to-end guard with a real compressed-tensors checkpoint: patch_missing_weights must
+    only copy back weights matching the model's _keys_to_ignore_on_load_unexpected patterns,
+    and must never transfer compressed-tensors artifacts (weight_scale_inv, etc.) into the export.
+
+    Uses Qwen/Qwen3-0.6B-FP8 truncated to 2 layers. The full source checkpoint on disk holds all
+    28 layers (with ~196 weight_scale_inv tensors); the export only contains the 2 truncated layers.
+    The source therefore has many keys absent from the export, but none of them match the model's
+    ignore patterns, so none must be restored.
+    """
+    model_id = "Qwen/Qwen3-0.6B-FP8"
+    config = AutoConfig.from_pretrained(model_id)
+    num_layers = 2
+    config.num_hidden_layers = num_layers
+    if getattr(config, "layer_types", None) is not None:
+        config.layer_types = config.layer_types[:num_layers]
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, config=config, torch_dtype="auto", device_map="cpu", attn_implementation="eager"
+    )
+    model.eval()
+
+    # Qwen3ForCausalLM does not declare an ignore list, so it stays at the base-class default (None),
+    # which patch_missing_weights maps to the built-in mtp.* pattern -- never to scale_inv artifacts.
+    assert model._keys_to_ignore_on_load_unexpected is None
+
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    export_hf_model(model, export_dir)
+
+    exported_sd = _load_weights_from_safetensors(str(export_dir))
+
+    # No key belonging only to the truncated-away layers (2..27) may leak into the export, in
+    # particular none of the compressed-tensors weight_scale_inv artifacts.
+    leaked = [k for k in exported_sd if re.search(r"\.layers\.(?:[2-9]|1[0-9]|2[0-7])\.", k)]
+    assert leaked == [], f"source-only keys must not be copied into the export, leaked: {leaked[:10]}"
+    assert not any("mtp" in k for k in exported_sd), "no mtp weights exist in this model, none should appear"
+
+
+def test_patch_missing_weights_respects_explicit_empty_ignore_list(tmp_path):
+    """An explicitly empty _keys_to_ignore_on_load_unexpected ([]) means "nothing is
+    ignored" and must be a no-op, while an absent attribute (None) falls back to the
+    default mtp.* pattern. Regression test for the falsy-`[]` bug where an explicit
+    empty list wrongly triggered the default pattern.
+    """
+    import types
+
+    # Source checkpoint contains an mtp weight; export does not.
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    save_file({"mtp.fc.weight": torch.ones(2, 2)}, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
+
+    def _make_export_dir(name):
+        d = tmp_path / name
+        d.mkdir()
+        save_file({"model.embed.weight": torch.zeros(2, 2)}, str(d / "model.safetensors"), metadata={"format": "pt"})
+        return d
+
+    def _make_model(ignore_attr):
+        model = types.SimpleNamespace()
+        model.config = types.SimpleNamespace(_name_or_path=str(source_dir))
+        model._keys_to_ignore_on_load_unexpected = ignore_attr
+        return model
+
+    # Case 1: explicit empty list -> no-op, mtp must NOT be restored.
+    export_empty = _make_export_dir("export_empty")
+    patch_missing_weights(export_empty, _make_model([]))
+    assert "mtp.fc.weight" not in _load_weights_from_safetensors(str(export_empty))
+
+    # Case 2: absent / None -> default pattern applies, mtp IS restored.
+    export_none = _make_export_dir("export_none")
+    patch_missing_weights(export_none, _make_model(None))
+    assert "mtp.fc.weight" in _load_weights_from_safetensors(str(export_none))
+
+
+def test_patch_missing_weights_appends_to_last_shard_for_sharded_export(tmp_path):
+    """For a sharded export, missing weights must be appended into the last existing shard,
+    keeping standard shard naming intact (no extra/out-of-range shard like 00016-of-00015,
+    which some downstream loaders reject). The index weight_map and total_size are updated.
+    """
+    import json
+    import types
+
+    # Source checkpoint contains an mtp weight.
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    save_file({"mtp.fc.weight": torch.ones(2, 2)}, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
+
+    # Sharded export: two shards + index, no mtp.
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    save_file(
+        {"model.a.weight": torch.zeros(2, 2)},
+        str(export_dir / "model-00001-of-00002.safetensors"),
+        metadata={"format": "pt"},
+    )
+    save_file(
+        {"model.b.weight": torch.zeros(2, 2)},
+        str(export_dir / "model-00002-of-00002.safetensors"),
+        metadata={"format": "pt"},
+    )
+    index = {
+        "metadata": {"total_size": 32},
+        "weight_map": {
+            "model.a.weight": "model-00001-of-00002.safetensors",
+            "model.b.weight": "model-00002-of-00002.safetensors",
+        },
+    }
+    with open(export_dir / "model.safetensors.index.json", "w") as f:
+        json.dump(index, f)
+
+    model = types.SimpleNamespace()
+    model.config = types.SimpleNamespace(_name_or_path=str(source_dir))
+    model._keys_to_ignore_on_load_unexpected = None
+
+    patch_missing_weights(export_dir, model)
+
+    # No extra/renamed shard file is created.
+    shard_files = sorted(p.name for p in export_dir.glob("*.safetensors"))
+    assert shard_files == ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+
+    # mtp weight landed in the last shard and the index points to it.
+    from safetensors.torch import load_file as _load_file
+
+    last_shard = _load_file(str(export_dir / "model-00002-of-00002.safetensors"))
+    assert "mtp.fc.weight" in last_shard
+    with open(export_dir / "model.safetensors.index.json") as f:
+        updated_index = json.load(f)
+    assert updated_index["weight_map"]["mtp.fc.weight"] == "model-00002-of-00002.safetensors"
+    assert updated_index["metadata"]["total_size"] > 32

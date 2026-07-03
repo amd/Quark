@@ -50,6 +50,7 @@ QUARK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
 if os.path.isdir(QUARK_ROOT) and QUARK_ROOT not in sys.path:
     sys.path.insert(0, QUARK_ROOT)
 
+from quark.common.utils.log import ScreenLogger  # noqa: E402
 from quark.torch import ModelQuantizer  # noqa: E402
 from quark.torch.algorithm.svdquant.svdquant import (  # noqa: E402
     QUANT_MODE_TO_SCHEME,
@@ -64,6 +65,8 @@ from quark.torch.quantization.config.config import (  # noqa: E402
 )
 from quark.torch.quantization.utils import RuntimeOptions, enable_native_inference  # noqa: E402
 from quark.torch.utils.diffusers import get_calib_dataloader  # noqa: E402
+
+logger = ScreenLogger(__name__)
 
 DEFAULT_NEGATIVE_PROMPT = "normal quality, low quality, worst quality, low res, blurry, nsfw, nude."
 
@@ -172,7 +175,7 @@ def load_coco2014_prompts(
     if max_prompts is not None:
         prompts = prompts[:max_prompts]
 
-    print(f"Loaded {len(prompts)} COCO2014 calibration prompts from {tsv_path}")
+    logger.info(f"Loaded {len(prompts)} COCO2014 calibration prompts from {tsv_path}")
     return prompts
 
 
@@ -293,7 +296,7 @@ def collect_calibration_data(
         # Flux pipelines do not accept negative_prompt/guidance_scale the same way.
         pipe_kwargs = dict(FLUX_GENERATION_ARGS)
 
-    print(f"Calibration running for {len(prompts)} prompts")
+    logger.info(f"Calibration running for {len(prompts)} prompts")
     dataloader = get_calib_dataloader(
         pipe,
         target,
@@ -307,8 +310,8 @@ def collect_calibration_data(
     # Cap the captured samples so very long calibration sets don't blow up memory.
     if max_captures is not None and len(dataloader.dataset.captured) > max_captures:
         dataloader.dataset.captured = dataloader.dataset.captured[:max_captures]
-        print(f"Capped to {max_captures} samples")
-    print(f"Captured {len(dataloader.dataset.captured)} samples")
+        logger.info(f"Capped to {max_captures} samples")
+    logger.info(f"Captured {len(dataloader.dataset.captured)} samples")
 
     return dataloader
 
@@ -326,7 +329,7 @@ def quantize_model_with_svdquant(
 
     target = get_quantize_target(pipe, model_type, module_name)
 
-    print(f"Applying SVDQuant to {module_name}...")
+    logger.info(f"Applying SVDQuant to {module_name}...")
     processor = SVDQuantProcessor(
         model=target,
         quant_algo_config=svd_config,
@@ -334,7 +337,7 @@ def quantize_model_with_svdquant(
     )
     processor.apply()
 
-    print(f"Quantizing {module_name}...")
+    logger.info(f"Quantizing {module_name}...")
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(target, dataloader)
 
@@ -421,9 +424,9 @@ def test_quantization_mode(
     svdquant_overlap_streams: bool = False,
 ) -> dict:
     """Test a single quantization mode. Returns a dict with test results."""
-    print("\n" + "=" * 80)
-    print(f"Testing quantization mode: {mode.upper()}")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info(f"Testing quantization mode: {mode.upper()}")
+    logger.info("=" * 80)
 
     start_time = time.time()
 
@@ -451,14 +454,14 @@ def test_quantization_mode(
 
     try:
         quant_layer_config = build_quant_layer_config(mode)
-        print(f"Quantization config for {mode}:")
-        print(f"  Weight spec: {quant_layer_config.weight}")
+        logger.info(f"Quantization config for {mode}:")
+        logger.info(f"  Weight spec: {quant_layer_config.weight}")
         if quant_layer_config.input_tensors:
-            print(f"  Activation spec: {quant_layer_config.input_tensors}")
+            logger.info(f"  Activation spec: {quant_layer_config.input_tensors}")
         else:
-            print("  Activation spec: None (FP16)")
+            logger.info("  Activation spec: None (FP16)")
     except Exception as e:
-        print(f"ERROR: Failed to build quantization config for {mode}: {e}")
+        logger.error(f"Failed to build quantization config for {mode}: {e}")
         return {
             "mode": mode,
             "success": False,
@@ -475,11 +478,11 @@ def test_quantization_mode(
         group_size = getattr(weight_spec, "group_size", None)
         if group_size is not None and group_size > 3:
             layer_type_overrides[nn.Conv2d] = QLayerConfig(weight=None)
-            print(f"  Conv2d override: excluded (group_size={group_size} incompatible with 3×3 kernels)")
+            logger.info(f"  Conv2d override: excluded (group_size={group_size} incompatible with 3×3 kernels)")
         elif quant_layer_config.input_tensors is not None:
             conv_weight_only = QLayerConfig(weight=quant_layer_config.weight)
             layer_type_overrides[nn.Conv2d] = conv_weight_only
-            print("  Conv2d override: weight-only (no activation quantization)")
+            logger.info("  Conv2d override: weight-only (no activation quantization)")
 
     layer_name_overrides: dict[str, QLayerConfig] = {}
     w4a16_patterns = QUANT_W4A16_OVERRIDE_PATTERNS.get(model_type, [])
@@ -487,7 +490,7 @@ def test_quantization_mode(
         weight_only_config = QLayerConfig(weight=quant_layer_config.weight)
         for pattern in w4a16_patterns:
             layer_name_overrides[pattern] = weight_only_config
-        print(f"  W4A16 overrides: {w4a16_patterns}")
+        logger.info(f"  W4A16 overrides: {w4a16_patterns}")
 
     quant_exclude = QUANT_EXCLUDE_PATTERNS.get(model_type, QUANT_EXCLUDE_PATTERNS["sdxl"])
     quant_config = QConfig(
@@ -497,11 +500,11 @@ def test_quantization_mode(
         exclude=list(quant_exclude),
     )
 
-    print(f"Loading fresh pipeline for {mode}...")
+    logger.info(f"Loading fresh pipeline for {mode}...")
     test_pipe = None
     test_pipe, _ = load_pipeline(model_id, device)
 
-    print(f"Applying SVDQuant + {mode} quantization...")
+    logger.info(f"Applying SVDQuant + {mode} quantization...")
     try:
         quantized_module = quantize_model_with_svdquant(
             pipe=test_pipe,
@@ -515,10 +518,10 @@ def test_quantization_mode(
 
         set_quantize_target(test_pipe, model_type, module_name, quantized_module)
 
-        print("✓ Quantization successful")
+        logger.info("✓ Quantization successful")
 
     except Exception as e:
-        print(f"✗ ERROR during quantization: {e}")
+        logger.error(f"✗ ERROR during quantization: {e}")
         import traceback
 
         traceback.print_exc()
@@ -554,7 +557,7 @@ def test_quantization_mode(
 
             traceback.print_exc()
 
-    print("Generating test image...")
+    logger.info("Generating test image...")
     try:
         output_image = generate_image(
             pipe=test_pipe,
@@ -567,7 +570,7 @@ def test_quantization_mode(
 
         image_path = os.path.join(output_dir, "test_output.png")
         output_image.save(image_path)
-        print(f"✓ Image saved to: {image_path}")
+        logger.info(f"✓ Image saved to: {image_path}")
 
         img_array = np.array(output_image)
         mean_intensity = img_array.mean()
@@ -575,12 +578,12 @@ def test_quantization_mode(
 
         is_valid = mean_intensity > 10 and mean_intensity < 245 and std_intensity > 10
         if is_valid:
-            print(f"✓ Image appears valid (mean={mean_intensity:.1f}, std={std_intensity:.1f})")
+            logger.info(f"✓ Image appears valid (mean={mean_intensity:.1f}, std={std_intensity:.1f})")
         else:
-            print(f"⚠ WARNING: Image may be invalid (mean={mean_intensity:.1f}, std={std_intensity:.1f})")
+            logger.warning(f"⚠ WARNING: Image may be invalid (mean={mean_intensity:.1f}, std={std_intensity:.1f})")
 
     except Exception as e:
-        print(f"✗ ERROR during image generation: {e}")
+        logger.error(f"✗ ERROR during image generation: {e}")
         import traceback
 
         traceback.print_exc()
@@ -610,10 +613,10 @@ def test_quantization_mode(
         "output_dir": output_dir,
     }
 
-    print(f"\n{'=' * 80}")
-    print(f"Mode {mode.upper()} completed in {elapsed:.1f}s")
-    print(f"Status: {'✓ SUCCESS' if result['success'] else '✗ FAILED'}")
-    print(f"{'=' * 80}\n")
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"Mode {mode.upper()} completed in {elapsed:.1f}s")
+    logger.info(f"Status: {'✓ SUCCESS' if result['success'] else '✗ FAILED'}")
+    logger.info(f"{'=' * 80}\n")
 
     return result
 
@@ -793,13 +796,13 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    print(f"\n[1/4] Loading pipeline: {args.model_id}")
+    logger.info(f"\n[1/4] Loading pipeline: {args.model_id}")
     pipe, model_type = load_pipeline(args.model_id, args.device)
-    print(f"Pipeline loaded (type: {model_type})")
+    logger.info(f"Pipeline loaded (type: {model_type})")
 
     if args.module_name is None:
         args.module_name = DEFAULT_MODULE_FOR_MODEL.get(model_type, "unet")
-        print(f"Auto-detected module to quantize: {args.module_name}")
+        logger.info(f"Auto-detected module to quantize: {args.module_name}")
 
     if args.n_gen_steps is None:
         args.n_gen_steps = 50 if model_type == "flux" else 30
@@ -807,34 +810,34 @@ def main():
     calib_source = "COCO2014" if args.use_coco2014 else "built-in"
     rounding_method = "GPTQ" if args.use_gptq else "RTN"
     model_label = model_type.upper()
-    print("=" * 80)
-    print(f"SVDQuant Multi-Mode Test for {model_label}")
-    print("=" * 80)
-    print(f"Model: {args.model_id}")
-    print(f"Model type: {model_type}")
-    print(f"Module: {args.module_name}")
-    print(f"Modes to test: {', '.join(args.modes)}")
-    print(f"SVD Rank: {args.svd_rank}")
-    print(f"Smooth Alpha: {args.smooth_alpha}")
+    logger.info("=" * 80)
+    logger.info(f"SVDQuant Multi-Mode Test for {model_label}")
+    logger.info("=" * 80)
+    logger.info(f"Model: {args.model_id}")
+    logger.info(f"Model type: {model_type}")
+    logger.info(f"Module: {args.module_name}")
+    logger.info(f"Modes to test: {', '.join(args.modes)}")
+    logger.info(f"SVD Rank: {args.svd_rank}")
+    logger.info(f"Smooth Alpha: {args.smooth_alpha}")
     alpha_search_label = "per-layer search" if args.search_alpha else "global (fixed)"
-    print(f"Alpha mode: {alpha_search_label}")
+    logger.info(f"Alpha mode: {alpha_search_label}")
     if args.search_alpha:
-        print(f"  Alpha search samples: {args.alpha_search_max_samples}")
+        logger.info(f"  Alpha search samples: {args.alpha_search_max_samples}")
         if args.alpha_candidates:
-            print(f"  Alpha candidates: {args.alpha_candidates}")
-    print(f"Residual rounding: {rounding_method}")
+            logger.info(f"  Alpha candidates: {args.alpha_candidates}")
+    logger.info(f"Residual rounding: {rounding_method}")
     if args.use_gptq:
-        print(
+        logger.info(
             f"  GPTQ: n_bits={args.gptq_n_bits}, symmetric={args.gptq_symmetric}, "
             f"group_size={args.gptq_group_size}, blocksize={args.gptq_blocksize}, "
             f"percdamp={args.gptq_percdamp}, actorder={args.gptq_actorder}"
         )
-    print(f"SVDQuant excludes: {SVDQUANT_EXCLUDE_PATTERNS.get(model_type, ['(default)'])}")
-    print(f"Quant excludes: {QUANT_EXCLUDE_PATTERNS.get(model_type, ['(default)'])}")
-    print(f"Calibration: {args.n_calib_prompts} prompts x {args.n_steps} steps ({calib_source})")
-    print(f"Generation steps: {args.n_gen_steps}")
-    print(f"Output: {args.output_dir}")
-    print("=" * 80)
+    logger.info(f"SVDQuant excludes: {SVDQUANT_EXCLUDE_PATTERNS.get(model_type, ['(default)'])}")
+    logger.info(f"Quant excludes: {QUANT_EXCLUDE_PATTERNS.get(model_type, ['(default)'])}")
+    logger.info(f"Calibration: {args.n_calib_prompts} prompts x {args.n_steps} steps ({calib_source})")
+    logger.info(f"Generation steps: {args.n_gen_steps}")
+    logger.info(f"Output: {args.output_dir}")
+    logger.info("=" * 80)
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -846,10 +849,10 @@ def main():
     else:
         calib_prompts = DEFAULT_CALIB_PROMPTS[: args.n_calib_prompts]
 
-    print("\n[2/4] Collecting calibration data...")
-    print(f"Using {len(calib_prompts)} prompts ({calib_source}):")
+    logger.info("\n[2/4] Collecting calibration data...")
+    logger.info(f"Using {len(calib_prompts)} prompts ({calib_source}):")
     for i, prompt in enumerate(calib_prompts, 1):
-        print(f"  {i}. {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+        logger.info(f"  {i}. {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
 
     calib_dataset = collect_calibration_data(
         pipe=pipe,
@@ -860,13 +863,13 @@ def main():
         device=args.device,
         max_captures=200,
     )
-    print(f"✓ Collected {len(calib_dataset)} calibration samples")
+    logger.info(f"✓ Collected {len(calib_dataset)} calibration samples")
 
-    print(f"\n[3/4] Testing {len(args.modes)} quantization modes...")
+    logger.info(f"\n[3/4] Testing {len(args.modes)} quantization modes...")
     results = []
 
     for i, mode in enumerate(args.modes, 1):
-        print(f"\n--- Mode {i}/{len(args.modes)}: {mode.upper()} ---")
+        logger.info(f"\n--- Mode {i}/{len(args.modes)}: {mode.upper()} ---")
 
         result = test_quantization_mode(
             pipe=pipe,
@@ -898,43 +901,38 @@ def main():
 
         results.append(result)
 
-    print("\n" + "=" * 80)
-    print("[4/4] SUMMARY")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("[4/4] SUMMARY")
+    logger.info("=" * 80)
 
     success_count = sum(1 for r in results if r["success"])
 
-    print(f"\nTested {len(results)} modes, {success_count} succeeded\n")
+    logger.info(f"\nTested {len(results)} modes, {success_count} succeeded\n")
 
     for result in results:
         mode = result["mode"]
         status = "✓" if result["success"] else "✗"
         time_str = f"{result['time']:.1f}s" if result["success"] else "N/A"
 
-        print(f"{status} {mode.upper():8s}  {time_str:>8s}", end="")
-
         if result["success"]:
-            if result.get("image_valid"):
-                print("  [Image OK]", end="")
-            else:
-                print("  [Image Warning]", end="")
-            print(f"  {result['output_dir']}")
+            img_status = "[Image OK]" if result.get("image_valid") else "[Image Warning]"
+            logger.info(f"{status} {mode.upper():8s}  {time_str:>8s}  {img_status}  {result['output_dir']}")
         else:
-            print(f"  Error: {result.get('error', 'Unknown')}")
+            logger.info(f"{status} {mode.upper():8s}  {time_str:>8s}  Error: {result.get('error', 'Unknown')}")
 
-    print("\n" + "=" * 80)
+    logger.info("\n" + "=" * 80)
 
     if success_count == len(results):
-        print("✓ ALL TESTS PASSED!")
-        print("SVDQuant is working correctly in Quark for all tested modes.")
+        logger.info("✓ ALL TESTS PASSED!")
+        logger.info("SVDQuant is working correctly in Quark for all tested modes.")
     elif success_count > 0:
-        print(f"⚠ PARTIAL SUCCESS: {success_count}/{len(results)} modes passed")
-        print("Some quantization modes may have issues.")
+        logger.warning(f"⚠ PARTIAL SUCCESS: {success_count}/{len(results)} modes passed")
+        logger.warning("Some quantization modes may have issues.")
     else:
-        print("✗ ALL TESTS FAILED")
-        print("SVDQuant integration may have issues.")
+        logger.error("✗ ALL TESTS FAILED")
+        logger.error("SVDQuant integration may have issues.")
 
-    print("=" * 80)
+    logger.info("=" * 80)
 
     summary_path = os.path.join(args.output_dir, "summary.txt")
     with open(summary_path, "w") as f:
@@ -966,7 +964,7 @@ def main():
                 f.write(f"FAILED - {result.get('error', 'Unknown')}\n")
         f.write(f"\nSuccess rate: {success_count}/{len(results)}\n")
 
-    print(f"\nSummary saved to: {summary_path}")
+    logger.info(f"\nSummary saved to: {summary_path}")
 
     return 0 if success_count == len(results) else 1
 

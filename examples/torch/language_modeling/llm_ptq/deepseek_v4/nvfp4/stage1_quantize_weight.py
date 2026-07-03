@@ -28,7 +28,8 @@ else (attention, the router gate, norms, embeddings, the output head, the MTP
 block) is excluded and kept in its original checkpoint format via
 ``keep_excluded_layers_as_original_model_state=True``.
 
-NVFP4 weight spec (two-stage scale-quant, weight-only):
+NVFP4 weight spec (two-stage scale-quant; the activation ``input_scale`` is
+calibrated separately in Stage 2):
 
 * first stage:  FP4 per-group (group_size=16, static, fp32 scale)
 * second stage: FP8 E4M3 per-tensor (static, fp32 scale) applied to the per-group
@@ -56,15 +57,13 @@ import argparse
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch import ModelQuantizer
-from quark.torch.quantization.config.config import (
-    FP4PerGroupSpec,
-    FP8E4M3PerTensorSpec,
-    QConfig,
-    QLayerConfig,
-    ScaleQuantSpec,
-)
+from quark.torch.quantization.config.config import QConfig, QLayerConfig
+from quark.torch.quantization.config.template import QuantizationSchemeCollection
 
 logger = ScreenLogger(__name__)
+
+# NVFP4 scheme from Quark's built-in scheme registry (no model-specific template needed).
+_NVFP4_SCHEME = QuantizationSchemeCollection().get_scheme("nvfp4")
 
 # fnmatch patterns (matched against the module name, i.e. tensor name minus
 # ".weight") for everything that is NOT a MoE expert. We quantize ONLY the MoE
@@ -85,39 +84,33 @@ MOE_ONLY_EXCLUDE_PATTERNS = [
 ]
 
 
-def build_nvfp4_quant_config() -> QConfig:
+def build_nvfp4_quant_config():
     """
-    Build a QConfig that quantizes only MoE expert weights to NVFP4 (weight-only).
-
-    Weight spec is a two-stage scale-quant spec:
-
-    * first stage:  FP4 per-group (group_size=16, static, fp32 scale)
-    * second stage: FP8 E4M3 per-tensor (static, fp32 scale) applied to the
-      per-group scale
+    Build a QConfig that quantizes the MoE expert weights to NVFP4,
+    using Quark's built-in ``nvfp4`` scheme.
 
     Only the routed/shared MoE expert weights are quantized; every other module is
     excluded (see ``MOE_ONLY_EXCLUDE_PATTERNS``) and preserved in its original
-    checkpoint format by the caller.
+    checkpoint format by the caller. The activation ``input_tensors`` is set to
+    ``None`` at this stage — it is calibrated separately in Stage 2 and attached
+    by Stage 3.
 
-    :return: Quark QConfig with an NVFP4 weight spec applied to MoE experts only.
+    :return: Quark QConfig with the built-in NVFP4 weight spec applied to MoE experts only.
     :rtype: QConfig
     """
-    weight_spec = ScaleQuantSpec(
-        first_stage=FP4PerGroupSpec(ch_axis=-1, group_size=16, is_dynamic=False, scale_type="float32"),
-        second_stage=FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False, scale_type="float32"),
-    ).to_quantization_spec()
-
+    # Use weight spec from the built-in nvfp4 scheme; set input_tensors=None
+    # because Stage 1 quantizes weights only.
     global_quant_config = QLayerConfig(
         input_tensors=None,
         output_tensors=None,
-        weight=weight_spec,
+        weight=_NVFP4_SCHEME.config.weight,
     )
     return QConfig(global_quant_config=global_quant_config, exclude=MOE_ONLY_EXCLUDE_PATTERNS)
 
 
 def quantize_weights(args: argparse.Namespace) -> None:
     """
-    Run Stage 1: NVFP4 weight-only quantization of the MoE expert weights.
+    Run Stage 1: NVFP4 quantization of the MoE expert weights.
 
     :param argparse.Namespace args: Parsed CLI arguments (input/output paths, device).
 
@@ -155,8 +148,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "End-to-end NVFP4 quantization for DeepSeek-V4-Pro. Stage 1 (this entry "
-            "point) does file-to-file NVFP4 weight-only quantization of the MoE "
-            "expert weights, dequantizing the source MXFP4/FP8 weights on the fly "
+            "point) does file-to-file NVFP4 quantization of the MoE expert "
+            "weights, dequantizing the source MXFP4/FP8 weights on the fly "
             "and re-quantizing to NVFP4 (FP4 per-group + FP8 E4M3 per-tensor scale)."
         )
     )

@@ -44,7 +44,26 @@ from vllm.model_executor.model_loader.reload.layerwise import (
 from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.platforms import current_platform
 
-from ..utils import materialize_meta_weight_, quark_aligned_fp8_per_channel_quant
+from ..utils import (
+    materialize_meta_weight_,
+    quant_gathered_along,
+    quark_aligned_fp8_per_channel_quant,
+)
+
+
+def _row_parallel_split(layer: torch.nn.Module) -> tuple[bool, int, int]:
+    """Return ``(is_row_sharded, tp_size, tp_rank)``: whether TP split the
+    weight's reduce dim (row-parallel) vs kept it whole (column-parallel)."""
+    tp_size = int(getattr(layer, "tp_size", 1))
+    tp_rank = int(getattr(layer, "tp_rank", 0))
+    if tp_size <= 1:
+        return False, tp_size, tp_rank
+    input_size = getattr(layer, "input_size", None)
+    input_per_part = getattr(layer, "input_size_per_partition", None)
+    if input_size is None or input_per_part is None:
+        return False, tp_size, tp_rank
+    return input_per_part != input_size, tp_size, tp_rank
+
 
 # ---------------------------------------------------------------------------
 # FP8 per-channel (W8A8 dynamic per-token) — inherits QuarkW8A8Fp8
@@ -63,12 +82,12 @@ from ..utils import materialize_meta_weight_, quark_aligned_fp8_per_channel_quan
 # ---------------------------------------------------------------------------
 
 
-# Quark scheme dicts equivalent to the user-facing "fp8_ptpc" preset.
-_FP8_PTPC_WEIGHT_CFG: dict[str, object] = {
+# Quark scheme dicts equivalent to the user-facing "ptpc_fp8" preset.
+_PTPC_FP8_WEIGHT_CFG: dict[str, object] = {
     "qscheme": "per_channel",
     "dtype": "fp8_e4m3",
 }
-_FP8_PTPC_INPUT_CFG: dict[str, object] = {
+_PTPC_FP8_INPUT_CFG: dict[str, object] = {
     "qscheme": "per_channel",
     "dtype": "fp8_e4m3",
     "is_dynamic": True,
@@ -88,8 +107,8 @@ class QuarkVllmOnlineFp8Method(QuarkW8A8Fp8):
 
     def __init__(self) -> None:
         super().__init__(
-            weight_config=_FP8_PTPC_WEIGHT_CFG,
-            input_config=_FP8_PTPC_INPUT_CFG,
+            weight_config=_PTPC_FP8_WEIGHT_CFG,
+            input_config=_PTPC_FP8_INPUT_CFG,
         )
 
     def create_weights(
@@ -162,7 +181,18 @@ class QuarkVllmOnlineFp8Method(QuarkW8A8Fp8):
         # by ``quantize_quark.py --quant_scheme ptpc_fp8``. ``ops.scaled_fp8_quant``
         # uses a slightly different scale precision and rounding mode and
         # would diverge byte-for-byte from offline.
-        qweight, weight_scale = quark_aligned_fp8_per_channel_quant(layer.weight.data)
+        #
+        # Row-parallel weights have their reduce dim (K, dim 1) split across TP;
+        # gather the full weight to match the offline quant
+        # (column-parallel layers pass tp_size=1 and skip the gather).
+        is_row_sharded, tp_size, tp_rank = _row_parallel_split(layer)
+        qweight, weight_scale = quant_gathered_along(
+            layer.weight.data,
+            quark_aligned_fp8_per_channel_quant,
+            dim=1,
+            tp_size=tp_size if is_row_sharded else 1,
+            tp_rank=tp_rank,
+        )
 
         # FNUZ normalize on platforms that need it. Our quant op always
         # produces ``float8_e4m3fn``; on ROCm/MI300 we then convert to

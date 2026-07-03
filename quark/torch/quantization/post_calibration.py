@@ -23,19 +23,28 @@ def realign_first_stage_block_scales_after_calibration(model: torch.nn.Module) -
     behavior while keeping the effective scale in float32.
     """
     realigned_quantizer_count = 0
-    named_modules = tuple(model.named_modules())
-    for _module_name, module in tqdm(
-        named_modules,
-        desc="Realigning block scales",
-        total=len(named_modules),
-    ):
-        if not isinstance(module, QuantMixin):
-            continue
+    quant_modules = [module for _module_name, module in model.named_modules() if isinstance(module, QuantMixin)]
 
-        weight_quantizer = module._weight_quantizer
-        if isinstance(weight_quantizer, SequentialQuantize):
-            if realign_single_sequential_quantizer(weight_quantizer):
-                realigned_quantizer_count += 1
+    # The per-block scale tensors handled here are small (a few MB). PyTorch's
+    # default intra-op parallelism opens one wide parallel region per tiny op, and
+    # at high thread counts the thread launch/sync overhead dominates: each
+    # quantizer costs ~80 ms at 32 threads vs <1 ms at a handful of threads. Cap
+    # the intra-op thread count for this loop and restore it afterwards. This is a
+    # pure performance change -- the computation (and its results) are unchanged.
+    saved_num_threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(min(8, saved_num_threads))
+        for module in tqdm(
+            quant_modules,
+            desc="Realigning block scales",
+            total=len(quant_modules),
+        ):
+            weight_quantizer = module._weight_quantizer
+            if isinstance(weight_quantizer, SequentialQuantize):
+                if realign_single_sequential_quantizer(weight_quantizer):
+                    realigned_quantizer_count += 1
+    finally:
+        torch.set_num_threads(saved_num_threads)
 
     if realigned_quantizer_count > 0:
         logger.info(
@@ -90,6 +99,8 @@ def realign_single_sequential_quantizer(sequential_quantizer: SequentialQuantize
         has_realign_action = True
 
         # Release temporary tensors as soon as persistent buffers are updated.
+        # Reclaim device memory per quantizer to keep the peak low on huge
+        # multi-GPU MoE models (avoids the cache pool holding freed blocks).
         del tensor_stage_amax
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

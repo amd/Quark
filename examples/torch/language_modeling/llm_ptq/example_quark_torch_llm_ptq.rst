@@ -26,15 +26,6 @@ Supported Models
      - SmoothQuant
      - AutoSmoothQuant
      - Rotation
-   * - meta-llama/Llama-2-\*-hf ⑥
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
    * - meta-llama/Llama-3-\*B(-Instruct)
      - ✓
      - ✓
@@ -80,15 +71,6 @@ Supported Models
      - ✓
      - ✓
      -
-   * - facebook/opt-\*
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     -
-     -
    * - EleutherAI/gpt-j-6b
      - ✓
      - ✓
@@ -105,33 +87,6 @@ Supported Models
      - ✓
      - ✓
      - ✓
-     -
-     -
-   * - Qwen/Qwen-\*
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     -
-     -
-   * - Qwen/Qwen1.5-\*
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     -
-     -
-   * - Qwen/Qwen1.5-MoE-A2.7B
-     - ✓
-     - ✓
-     - ✓
-     - ✓
-     -
-     -
      -
      -
    * - Qwen/Qwen2-\*
@@ -359,6 +314,87 @@ Supported Models
      -
      -
      -
+   * - deepseek-ai/DeepSeek-V4-Flash
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - deepseek-ai/DeepSeek-V4-Pro
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - zai-org/GLM-5
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - zai-org/GLM-5.1
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - zai-org/GLM-5.2
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - MiniMaxAI/MiniMax-M2.1
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - MiniMaxAI/MiniMax-M2.5
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - MiniMaxAI/MiniMax-M2.7
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
+   * - MiniMaxAI/MiniMax-M3
+     -
+     - ✓
+     - ✓
+     -
+     -
+     -
+     -
+     -
 
 .. note::
 
@@ -385,6 +421,18 @@ You can run the following Python scripts in the current path. Here we use Llama 
 
    - To avoid memory limitations, GPU users can add the `--multi_gpu` argument when running the model on multiple GPUs.
    - CPU users should add the `--device cpu` argument.
+
+Multi-GPU Placement (``--multi_gpu``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``--multi_gpu balanced`` when the default ``--multi_gpu`` placement overloads the last GPU and runs out of memory. It redistributes layers more evenly across GPUs so a single device is not saturated.
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [model checkpoint folder] \
+                             --output_dir output_dir \
+                             --quant_scheme fp8 \
+                             --multi_gpu balanced
 
 Multi-GPU Loading of Very Large MoE Models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

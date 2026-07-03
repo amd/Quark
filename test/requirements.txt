@@ -23,7 +23,7 @@ pytest-cov>=6.0.0
 safetensors>=0.5,<0.8
 torchao
 torchsummary
-trl>=0.28.0
+trl>=0.28.0,<=1.6.0
 # transformers is NOT listed here - it's installed separately in CI with specific versions from workflow matrix
 # Policy: Test 2 versions - chosen stable version and latest version for future compatibility
 # See .github/workflows/ci_unittest_main_{torch,onnx}.yml for tested versions (currently 4.55.4 and 4.57.0)

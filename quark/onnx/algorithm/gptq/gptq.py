@@ -398,8 +398,17 @@ class GptqProcessor:
         scale_tensor.name = node.input[1] + "_scales"
 
         # create zero tensor
-        packed_zero = np.full((new_zero.shape[0], 1), 136, dtype="uint8")
-        packed_zero[: packed_zero.shape[0] // 2, :] = (new_zero[::2, :]) | (new_zero[1::2, :] << 4)
+        # Lay out zero points per output column like the scales (N, k_blocks), then pack
+        # two 4-bit zero points per byte along the block dimension so the result has shape
+        # (N, ceil(k_blocks / 2)), which is what the MatMulNBits kernel expects. Packing the
+        # flat (N * k_blocks, 1) array directly produced a {N * k_blocks, 1} tensor and made
+        # ORT reject it (e.g. got {512, 1} instead of {128, 2}).
+        new_zero = np.reshape(new_zero, (-1, k_blocks))
+        if k_blocks % 2 != 0:
+            # Pad the block dimension to an even length; the unused high nibble defaults to
+            # the symmetric midpoint (2 ** (bits - 1)) and is ignored by the kernel.
+            new_zero = np.pad(new_zero, ((0, 0), (0, 1)), mode="constant", constant_values=1 << (bits - 1))
+        packed_zero = ((new_zero[:, ::2]) | (new_zero[:, 1::2] << 4)).astype("uint8")
         zero_tensor = onnx.numpy_helper.from_array(packed_zero)
         zero_tensor.name = node.input[1] + "_zero_points"
 

@@ -34,6 +34,7 @@ if is_transformers_available():
         AutoConfig,
         AutoModel,
         AutoModelForCausalLM,
+        AutoModelForImageTextToText,
         AutoTokenizer,
         MllamaForConditionalGeneration,
     )
@@ -411,6 +412,15 @@ def get_model(
                 trust_remote_code=trust_remote_code,
                 attn_implementation=attn_implementation,
                 quantization_config=quantization_config,
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "minimax_m3_vl":
+            model = AutoModelForImageTextToText.from_pretrained(
+                ckpt_path,
+                device_map=device_map,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
             )  # type: ignore[no-untyped-call]
             if (
                 trust_remote_code

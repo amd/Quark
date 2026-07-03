@@ -94,6 +94,33 @@ XINT8_ADAQUANT_QCONFIG = QConfig(
     extra_options={"ForceQuantizeNoInputCheck": True},
 )
 
+# VINT8 mirrors the legacy VINT8_CONFIG (see below) in the new QConfig API. It uses int8
+# symmetric power-of-2 (MinMSE) quantization for both input_tensors and weights, but unlike
+# XINT8 it targets VAIML: NPU CNN is disabled and model optimization is turned off, with a
+# set of graph conversions tailored for that deployment path.
+VINT8_QCONFIG = QConfig(
+    global_config=QLayerConfig(activation=XInt8Spec(), weight=XInt8Spec()),
+    extra_options={
+        "OptimizeModel": False,
+        "EnableNPUCnn": False,
+        "UseRandomData": True,
+        "ConvertBNToConv": True,
+        "ConvertSigmoidToHardSigmoid": False,
+        "ConvertClipToRelu": True,
+        "ConvertSplitToSlice": True,
+        "SplitLargeKernelPool": False,
+        "ReplaceClip6Relu": True,
+        "ConvertReduceMeanToGlobalAvgPool": False,
+        "RemoveQDQConvClip": False,
+        "RemoveQDQConvPRelu": False,
+        "RemoveQDQConvRelu": False,
+        "RemoveQDQConvLeakyRelu": False,
+        "Int32Bias": False,
+        "DedicatedQDQPair": True,
+        "QuantizeAllOpTypes": True,
+    },
+)
+
 A8W8_QCONFIG = QConfig(
     global_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
     extra_options={"ForceQuantizeNoInputCheck": True, "AlignSlice": False, "FoldRelu": True, "AlignConcat": True},

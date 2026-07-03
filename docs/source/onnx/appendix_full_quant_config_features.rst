@@ -104,7 +104,7 @@ Quantization Configuration
 
 *  **global_config**: (QLayerConfig) The global quantization configuration applied to all layers unless overridden. Defaults to QLayerConfig(activaiton=Int8Spec(), weight=Int8Spec()) .
 
-   -  input_tensors/weight (QTensorConfig): The Tensor-level quantization configuration of input_tensors or weight. The options are Int8Spec, UInt8Spec, XInt8Spec, Int16Spec, UInt16Spec, Int32Spec, UInt32Spec, BFloat16Spec, BFP16Spec, Int4Spec, UInt4Spec. It includes attributes whether symmetric quantization is used, the type of scaling strategy, the calibration method applied, and the level of quantization granularity.
+   -  input_tensors/weight (QTensorConfig): The Tensor-level quantization configuration of input_tensors or weight. The options are Int8Spec, UInt8Spec, XInt8Spec, Int16Spec, UInt16Spec, Int32Spec, UInt32Spec, BFloat16Spec, BFP16Spec. It includes attributes whether symmetric quantization is used, the type of scaling strategy, the calibration method applied, and the level of quantization granularity.
 
       - symmetric (bool): Whether use symmetric quantization for QTensorConfigs like Int8Spec. For signed data types such as Int8Spec, the default value is True, while for unsigned data types such as UInt8Spec, the default value is False.
       - scale_type (ScaleType): The scale type of QTensorConfigs like Int8Spec. The options are ScaleType.Float32, ScaleType.PowerOf2 and ScaleType.Int16.
@@ -267,8 +267,6 @@ Table 7. Quantization Data Types can be selected
 +----------------------------------+---------------------------+
 | data_type                        | comments                  |
 +==================================+===========================+
-| Int4                             |                           |
-| UInt4                            |                           |
 | Int8                             |                           |
 | UInt8                            |                           |
 | Int16                            |                           |

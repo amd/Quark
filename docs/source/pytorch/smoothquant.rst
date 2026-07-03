@@ -146,15 +146,13 @@ It is possible to verify the idea that SmoothQuant helps lower the output quanti
             group_size=None
         )
         global_config = QLayerConfig(weight=quant_spec, input_tensors=quant_spec)
-        quant_config = QConfig(global_quant_config=global_config)
-
-        pre_quant_optimization = SmoothQuantConfig(
+        smoothquant_config = SmoothQuantConfig(
             scaling_layers=[{"prev_op": "layer_norm", "layers": ["lin1"], "inp": "lin1"}],
             model_decoder_layers="layers",
             alpha=0.5,
             scale_clamp_min=1e-12,
         )
-        quant_config.pre_quant_opt_config.append(pre_quant_optimization)
+        quant_config = QConfig(global_quant_config=global_config, algo_config=[smoothquant_config])
 
         quantizer = ModelQuantizer(quant_config)
         calib_dataloader = DataLoader([{"x": inp}])
@@ -219,8 +217,8 @@ The implementation of SmoothQuant in AMD Quark is designed for LLM models. One n
         scale_clamp_min=1e-12,
     )
 
-    # There may be several pre-quantization optimization, hence the list.
-    quant_config = QConfig(..., pre_quant_opt_config=[smoothquant_config])
+    # There may be several algorithms, hence the list.
+    quant_config = QConfig(..., algo_config=[smoothquant_config])
 
 The key ``scaling_layers`` is a list of dictionaries, each dictionary corresponding to one linear module in the model to apply SmoothQuant on, with:
 

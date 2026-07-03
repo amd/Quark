@@ -124,6 +124,25 @@ def prepare_config_gptq():
     return quant_config
 
 
+def prepare_config_gptq_asym():
+    # Asymmetric GPTQ (WeightSymmetric=False) emits a zero_points initializer for each
+    # MatMulNBits node. Regression guard for the zero-point packing in
+    # GptqProcessor.prepare_matmul4bits_node, which previously produced a {N*k_blocks, 1}
+    # tensor that ORT rejected instead of the expected {N, ceil(k_blocks/2)} layout.
+    config_copy = copy.deepcopy(MATMUL_NBITS_CONFIG)
+    config_copy.extra_options["MatMulNBitsParams"]["Symmetric"] = False
+    config_copy.extra_options["MatMulNBitsParams"]["Algorithm"] = "GPTQ"
+    config_copy.extra_options["GPTQParams"] = {
+        "MSE": False,
+        "GroupSize": 32,
+        "ActOrder": True,
+        "PerChannel": True,
+        "WeightSymmetric": False,
+    }
+    quant_config = Config(global_quant_config=config_copy)
+    return quant_config
+
+
 def prepare_config_hqq():
     config_copy = copy.deepcopy(MATMUL_NBITS_CONFIG)
     config_copy.extra_options["MatMulNBitsParams"]["Symmetric"] = False
@@ -190,6 +209,94 @@ def tensor_quantize_matmul_4bits_gptq(output_dir):
     return output
 
 
+def tensor_quantize_matmul_4bits_gptq_asym(output_dir):
+    import math
+
+    import onnx
+
+    input_model_path, output_model_path = prepare_model_vit(output_dir)
+    data_reader = prepare_data()
+    quant_config = prepare_config_gptq_asym()
+    quantizer = prepare_quantizer(quant_config)
+    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+
+    # Every asymmetric MatMulNBits node must carry a zero_points input shaped
+    # {N, ceil(k_blocks/2)} (matching its scales {N, k_blocks}), not the buggy {N*k_blocks, 1}.
+    model = onnx.load(quantized_model_path)
+    initializers = {init.name: init for init in model.graph.initializer}
+    checked = 0
+    for node in model.graph.node:
+        if node.op_type != "MatMulNBits" or len(node.input) < 4:
+            continue
+        scales_dims = list(initializers[node.input[2]].dims)
+        zp_dims = list(initializers[node.input[3]].dims)
+        n, k_blocks = scales_dims
+        assert zp_dims == [n, math.ceil(k_blocks / 2)], (
+            f"Unexpected zero_points shape {zp_dims} for scales {scales_dims}"
+        )
+        checked += 1
+    assert checked > 0, "No asymmetric MatMulNBits node was produced"
+
+    # Inference must succeed; the malformed zero_points shape made the kernel raise.
+    output = infer_quantized_model(quantized_model_path)
+    return output
+
+
+def tensor_quantize_matmul_4bits_gptq_asym_odd_kblocks(output_dir):
+    # Same asymmetric GPTQ path, but with a K that makes k_blocks odd
+    # (K=384, GroupSize=128 -> k_blocks=3) to exercise the zero-point padding branch.
+    import math
+    import os
+
+    import onnx
+
+    rng = np.random.default_rng(0)
+    model = onnx.parser.parse_model(
+        """
+        < ir_version: 10, opset_import: ["" : 21] >
+        test_model (float[N, 384] input) => (float [N, ?] output)
+        <float[384, 64] W>
+        { output = MatMul(input, W) }
+        """
+    )
+    W = onnx.numpy_helper.from_array(rng.normal(size=(384, 64)).astype(np.float32), name="W")
+    model.graph.initializer.extend([W])
+    input_model_path = os.path.join(output_dir, "matmul_odd.onnx")
+    output_model_path = os.path.join(output_dir, "matmul_odd_quantized.onnx")
+    onnx.save(model, input_model_path)
+
+    odd_input = rng.random((4, 384)).astype(np.float32)
+    data_reader = DataReader(odd_input)
+    # GroupSize=128 over K=384 gives k_blocks=3 (odd), unlike the GroupSize=32 default.
+    config_copy = copy.deepcopy(MATMUL_NBITS_CONFIG)
+    config_copy.extra_options["MatMulNBitsParams"]["Symmetric"] = False
+    config_copy.extra_options["MatMulNBitsParams"]["Algorithm"] = "GPTQ"
+    config_copy.extra_options["GPTQParams"] = {
+        "MSE": False,
+        "GroupSize": 128,
+        "ActOrder": True,
+        "PerChannel": True,
+        "WeightSymmetric": False,
+    }
+    quantizer = prepare_quantizer(Config(global_quant_config=config_copy))
+    quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+
+    quantized = onnx.load(output_model_path)
+    initializers = {init.name: init for init in quantized.graph.initializer}
+    checked = 0
+    for node in quantized.graph.node:
+        if node.op_type != "MatMulNBits" or len(node.input) < 4:
+            continue
+        n, k_blocks = list(initializers[node.input[2]].dims)
+        assert k_blocks % 2 != 0, f"Expected odd k_blocks to exercise padding, got {k_blocks}"
+        assert list(initializers[node.input[3]].dims) == [n, math.ceil(k_blocks / 2)]
+        checked += 1
+    assert checked > 0, "No asymmetric MatMulNBits node was produced"
+
+    sess = onnxruntime.InferenceSession(output_model_path)
+    return sess.run(None, {"input": odd_input})
+
+
 def tensor_quantize_matmul_4bits_hqq(output_dir):
     input_model_path, output_model_path = prepare_model_vit(output_dir)
     data_reader = prepare_data()
@@ -218,6 +325,18 @@ class TestTensorQuantize(unittest.TestCase):
         output_gptq = tensor_quantize_matmul_4bits_gptq(tmpdir)
         comp_equal = np.allclose(output_gptq, output_tensor_gptq, atol=1e-1)
         self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_gptq_asym(self, tmpdir: str):
+        # Regression test for the asymmetric GPTQ zero_points packing bug
+        # (MatMulNBits kernel rejected the {N*k_blocks, 1} zero_points tensor).
+        # The shape assertions live in the helper; reaching here means inference passed.
+        tensor_quantize_matmul_4bits_gptq_asym(tmpdir)
+
+    @use_temporary_directory
+    def test_quantize_gptq_asym_odd_kblocks(self, tmpdir: str):
+        # Covers the odd-k_blocks zero-point padding branch in prepare_matmul4bits_node.
+        tensor_quantize_matmul_4bits_gptq_asym_odd_kblocks(tmpdir)
 
     @use_temporary_directory
     def test_quantize_hqq(self, tmpdir: str):
