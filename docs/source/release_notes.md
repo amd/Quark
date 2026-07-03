@@ -6,6 +6,8 @@
 
 AMD Quark 0.12 is tested against PyTorch 2.10 and 2.11, and compatible with upstream `transformers==4.57.6` and `transformers==5.2`.
 
+Note: `0.12.post1` is a packaging-only re-release identical to `0.12` (the original `0.12` wheel was removed from the index and its filename cannot be reused). No functional changes.
+
 ### AMD Quark Infrastructure
 
 #### New Features
