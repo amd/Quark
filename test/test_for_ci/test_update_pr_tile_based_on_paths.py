@@ -149,7 +149,7 @@ class TestUpdateTitle(TestUpdatePR):
 
     def test_no_change_if_prefixes_are_correct_with_lower_case_prefix(self):
         env = {
-            "MODIFIED_FILES": "docs/source/index.rst pyproject.toml quark/experimental/cli/main.py quark/experimental/cli/requirements.txt",
+            "MODIFIED_FILES": "docs/source/index.rst pyproject.toml quark/experimental/cli/main.py requirements-cli.txt",
             "PR_TITLE": "[CLI][docs][feat][onnx] Add first pass for quark Shapeshifter",
         }
         new_title = self._update_pr_title_with_mocks(env, "config_yaml_content")

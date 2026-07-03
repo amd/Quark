@@ -29,7 +29,7 @@ done
 
 # Install tests requirements
 pip install -r requirements.txt
-pip install -r ../quark/experimental/cli/requirements.txt
+pip install -r ../requirements-cli.txt
 
 # Run tests with or without code coverage.
 if [[ "${run_code_coverage}" == "1" || "${run_code_coverage,,}" == "true" || "${run_code_coverage,,}" == "yes" ]]; then

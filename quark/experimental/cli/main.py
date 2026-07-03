@@ -38,7 +38,7 @@ REQUIREMENTS
 
     Additionally, Quark-CLI has its own dependencies. From a local copy of Quark:
 
-    pip3 install -r quark/experimental/cli/requirements.txt
+    pip install amd-quark[cli]
 
 EXAMPLES
     Replace with input and output directories of your choice:
@@ -58,9 +58,9 @@ EXAMPLES
 try:
     import argparse
     import sys
-except ImportError:
+except ImportError:  # pragma: no cover
     print(
-        "AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`."
+        "AMD Quark CLI dependencies need to be installed with `pip install amd-quark[cli]` or `pip install -r requirements-cli.txt`."
     )
     exit(1)
 

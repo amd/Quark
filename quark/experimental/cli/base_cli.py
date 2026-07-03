@@ -11,9 +11,9 @@ try:
     import argparse
     from abc import ABC, abstractmethod
     from typing import ClassVar
-except ImportError:
+except ImportError:  # pragma: no cover
     print(
-        "AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`."
+        "AMD Quark CLI dependencies need to be installed with `pip install amd-quark[cli]` or `pip install -r requirements-cli.txt`."
     )
     exit(1)
 

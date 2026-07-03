@@ -62,6 +62,29 @@ profiling = [
   "psutil",
 ]
 
+cli = [
+  # Keep in sync with requirements-cli.txt at the repo root.
+  "accelerate",
+  "gguf",
+  "immutabledict",
+  "langdetect",
+  "onnx",
+  "onnx_ir",
+  "onnxruntime>=1.22.2,<=1.25.1",
+  "onnxruntime_extensions",
+  "onnxruntime_genai",
+  "opencv-python",
+  "Pillow",
+  "protobuf",
+  "psutil",
+  "py7zr",
+  "pydantic",
+  "rich",
+  "rouge_score",
+  "timm",
+  "transformers>5,<5.3",
+]
+
 [project.scripts]
 quark-cli = "quark.experimental.cli.main:main"
 

@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import evaluate  # type: ignore
 import numpy as np
 import pandas as pd
 import torch
@@ -24,6 +23,11 @@ from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer  # type:
 
 from quark.common.utils.import_utils import UnavailableObject, is_package_lower_or_equal
 from quark.common.utils.log import ScreenLogger
+
+try:
+    import evaluate  # type: ignore
+except ModuleNotFoundError:
+    evaluate = UnavailableObject("evaluate")  # type: ignore[assignment]
 
 try:
     import nltk  # type: ignore

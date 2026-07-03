@@ -24,8 +24,10 @@ except ImportError:
 # Gracefully handle imports, as user may not be aware of dependencies required.
 try:
     import onnx  # noqa: F401
-except ImportError:
-    print("AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/cli/requirements.txt`.")
+except ImportError:  # pragma: no cover
+    print(
+        "AMD Quark CLI dependencies need to be installed with `pip install amd-quark[cli]` or `pip install -r requirements-cli.txt`."
+    )
     exit(1)
 
 

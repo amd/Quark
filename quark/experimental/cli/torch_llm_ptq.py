@@ -14,9 +14,9 @@ try:
     from transformers import AutoProcessor  # type: ignore[attr-defined]
     from transformers.processing_utils import ProcessorMixin
 
-except ImportError as e:
+except ImportError as e:  # pragma: no cover
     print(
-        f"AMD Quark CLI dependencies need to be installed with `pip3 install -r quark/experimental/cli/requirements.txt`: {e}."
+        f"AMD Quark CLI dependencies need to be installed with `pip install amd-quark[cli]` or `pip install -r requirements-cli.txt`: {e}."
     )
     exit(1)
 

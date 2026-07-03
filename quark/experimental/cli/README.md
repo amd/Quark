@@ -36,10 +36,16 @@ Quark must be installed in your Python environment. This typically requires PyTo
 
 ### 2.2 Install `quark-cli` Dependencies
 
-`quark-cli` also has its own dependencies. If you have a local copy of Quark, you can install them from the `quark/experimental/cli/requirements.txt` file:
+`quark-cli` has its own optional dependencies. Install them with:
 
 ```bash
-pip3 install -r quark/experimental/cli/requirements.txt
+pip install amd-quark[cli]
+```
+
+Or, from a local source checkout:
+
+```bash
+pip install -r requirements-cli.txt
 ```
 
 ## 3. Overview of Main Subcommands

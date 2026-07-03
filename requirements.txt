@@ -7,7 +7,7 @@ onnxscript
 onnxslim>=0.1.84
 pandas
 plotly
-protobuf>=7.35.0
+protobuf
 psutil
 pydantic
 rich

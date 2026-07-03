@@ -1,0 +1,4 @@
+# transformers, datasets, tqdm and safetensors come with Quark / the llm_ptq
+# example, so they are not listed here. triton is pulled in by torch but is
+# version-sensitive for the kernels, so it is pinned to the tested version.
+triton==3.5.1
