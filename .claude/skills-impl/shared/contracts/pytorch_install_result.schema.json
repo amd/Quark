@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pytorch_install_result",
+  "description": "Outcome of quark-torch-install: which PyTorch build was installed and whether it verified.",
+  "type": "object",
+  "required": [
+    "status",
+    "pytorch_version",
+    "accelerator_tag"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "failed",
+        "skipped"
+      ]
+    },
+    "pytorch_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accelerator_tag": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "PyTorch wheel index tag, e.g., cu126, rocm7.1, cpu."
+    },
+    "torchvision_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "torchaudio_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "import_ok": {
+          "type": "boolean"
+        },
+        "cuda_available": {
+          "type": "boolean"
+        },
+        "gpu_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

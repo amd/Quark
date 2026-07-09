@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "session_context",
+  "description": "Per-session user intent and routing decision. Owned exclusively by quark-torch-router. Hardware, workspace, and install facts live in their own artifacts referenced via the *_ref fields.",
+  "type": "object",
+  "required": [
+    "user_goal",
+    "workflow",
+    "constraints",
+    "open_questions"
+  ],
+  "properties": {
+    "user_goal": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "string",
+      "enum": [
+        "quark-torch-llm-ptq-workflow",
+        "quark-torch-install",
+        "quark-install",
+        "quark-torch-export",
+        "quark-torch-debug"
+      ]
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "offline": {
+          "type": "boolean"
+        },
+        "execution_mode": {
+          "type": "string",
+          "enum": [
+            "plan_only",
+            "interactive_execute",
+            "batch_execute"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "env_context_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Path to env_context.json once quark-env-preflight has run."
+    },
+    "workspace_context_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Path to workspace_context.json once quark-workspace-validate has run."
+    },
+    "pytorch_install_result_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Path to pytorch_install_result.json once quark-torch-install has run."
+    },
+    "quark_install_result_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Path to quark_install_result.json once quark-install has run."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,76 @@
+{
+  "skill_name": "quark-skill-creator",
+  "skill_path": ".claude/skills-impl/meta/shared/quark-skill-creator",
+  "evals": [
+    {
+      "id": 1,
+      "category": "routing",
+      "name": "explicit-skill-command-positive",
+      "prompt": "/skill quark-skill-creator I want to add a new skill for FP4 quantization workflow.",
+      "expected_skill": "quark-skill-creator",
+      "expectations": [
+        "Claude loads .claude/skills-impl/meta/shared/quark-skill-creator/SKILL.md as the active skill.",
+        "Phase 1 (Capture Intent) is the first thing the assistant does \u2014 it asks for skill name, intent, layer, primary artifact, and trigger phrases before drafting.",
+        "The assistant does not jump straight to scripts/scaffold_skill.py without explicit confirmation."
+      ]
+    },
+    {
+      "id": 2,
+      "category": "routing",
+      "name": "natural-language-quark-skill-positive",
+      "prompt": "We need a new Quark agent skill that wraps quark.torch.export. Where do I start?",
+      "expected_skill": "quark-skill-creator",
+      "expectations": [
+        "Claude routes to quark-skill-creator because the prompt is explicitly about authoring a Quark skill.",
+        "Claude does not route to quark-torch-skill-sync (governance audit, not authoring) or quark-torch-doc-drift-check (upstream drift check)."
+      ]
+    },
+    {
+      "id": 3,
+      "category": "routing",
+      "name": "general-skill-creation-negative",
+      "prompt": "I want to create a Claude skill for parsing nginx logs and emailing me the summary.",
+      "expected_skill": null,
+      "expectations": [
+        "Claude does NOT invoke quark-skill-creator \u2014 the request is for a generic Claude skill, not a Quark agent skill, and quark-skill-creator's domain is the Quark skill ecosystem only.",
+        "Claude either falls through to a general-purpose skill creator or asks for clarification, but does not load .claude/skills-impl/meta/shared/quark-skill-creator/SKILL.md."
+      ]
+    },
+    {
+      "id": 4,
+      "category": "routing",
+      "name": "governance-audit-boundary-negative",
+      "prompt": "Audit all existing skills in .claude/skills-impl/ and report which ones are missing required sections.",
+      "expected_skill": "quark-torch-skill-sync",
+      "expectations": [
+        "Claude routes to quark-torch-skill-sync (governance audit of existing skills), NOT to quark-skill-creator (authoring of a new skill).",
+        "If quark-skill-creator is loaded, it stops at Phase 1 once the assistant realizes the user is asking for an audit of existing skills, not authoring a new one."
+      ]
+    },
+    {
+      "id": 5,
+      "category": "routing",
+      "name": "ptq-end-user-boundary-negative",
+      "prompt": "Quantize Llama-3-8B to FP8 with default settings.",
+      "expected_skill": "quark-torch-ptq",
+      "expectations": [
+        "Claude routes to quark-torch-ptq (end-user PTQ workflow), NOT to quark-skill-creator.",
+        "quark-skill-creator's description explicitly says 'maintainer-facing meta skill, not an end-user PTQ tool', which the routing surface should respect."
+      ]
+    },
+    {
+      "id": 6,
+      "category": "artifact",
+      "name": "validate-skill-produces-valid-report",
+      "prompt": "Run scripts/validate_skill.py against .claude/skills-impl/meta/shared/quark-skill-creator and capture the report.",
+      "input_artifacts": [
+        ".claude/skills-impl/meta/shared/quark-skill-creator/SKILL.md"
+      ],
+      "expectations": [
+        "validate_skill.py exits with code 0 (PASS \u2014 no findings) on the meta skill itself.",
+        "Output stdout matches the format documented in scripts/validate_skill.py docstring: 'validate_skill: <path>' header followed by either 'PASS \u2014 no findings' or BLOCK / WARN lines.",
+        "The same script run against quark-torch-skill-sync, quark-torch-doc-drift-check, quark-torch-eval-runner also exits 0 (no regression on existing meta skills)."
+      ]
+    }
+  ]
+}

@@ -125,27 +125,25 @@ def test_fp4_per_channel_scaled_fake_quantize(dtype, dim, scale_format, scale_ca
     def pipeline():
         quantizer_per_channel = FakeQuantizeBase.get_fake_quantize(fp4_per_channel_spec, device=torch_device)
         quantizer_per_group = FakeQuantizeBase.get_fake_quantize(fp4_per_group_spec)
-        outs = []
+        allclose_count = 0
+        close_col_sum = 0
         for _ in range(n_runs):
             x = torch.randn(tensor_shape, dtype=torch.float32, device=torch_device)
             per_channel = quantizer_per_channel(x.clone())
             per_group = quantizer_per_group(x.transpose(0, 1).clone()).transpose(0, 1)
-            outs.append((per_channel, per_group))
-        return outs
 
-    iteration_outputs = run_torch_op_variants(pipeline)
+            if torch.allclose(per_channel, per_group):
+                allclose_count += 1
+            close_col = torch.all(torch.isclose(per_channel, per_group), dim=-1)
+            close_col_sum += torch.sum(close_col).item()
+            diff = (per_channel - per_group).abs()
+            assert (torch.count_nonzero(diff).item() / diff.numel()) < 0.1
+        return allclose_count, close_col_sum
 
-    allclose_count = 0
-    close_col_sum = torch.tensor(0)
-    for per_channel, per_group in iteration_outputs:
-        if torch.allclose(per_channel, per_group):
-            allclose_count += 1
-        close_col = torch.all(torch.isclose(per_channel, per_group), dim=-1)
-        close_col_sum = close_col_sum + torch.sum(close_col)
-        diff = (per_channel - per_group).abs()
-        assert (torch.count_nonzero(diff).item() / diff.numel()) < 0.1
+    # TODO: Remove run_torch_op_variants once legacy pybind .so supported is dropped.
+    allclose_count, close_col_sum = run_torch_op_variants(pipeline)
 
-    print(f"Allclose: {allclose_count}/{n_runs} (columns average equal: {close_col_sum.item() / n_runs} / {dim0})")
+    print(f"Allclose: {allclose_count}/{n_runs} (columns average equal: {close_col_sum / n_runs} / {dim0})")
 
 
 @pytest.mark.parametrize(

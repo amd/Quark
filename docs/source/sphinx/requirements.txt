@@ -33,11 +33,11 @@ breathe==4.36.0
     # via rocm-docs-core
 certifi==2026.6.17
     # via requests
-cffi==2.0.0
+cffi==2.1.0
     # via
     #   cryptography
     #   pynacl
-charset-normalizer==3.4.7
+charset-normalizer==3.4.9
     # via requests
 click==8.4.2
     # via

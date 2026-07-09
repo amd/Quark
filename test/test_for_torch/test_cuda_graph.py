@@ -10,10 +10,12 @@ from typing import Any
 
 import pytest
 import torch
+from accelerate import dispatch_model, infer_auto_device_map
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from quark.common.utils.testing_utils import (
+    TEST_WITH_EXTENSIVE,
     PatchEverywhere,
     require_torch_higher_or_equal,
     skip_if_no_gpu,
@@ -276,6 +278,9 @@ def test_gptq_cuda_graph_global_correctness(act_order: bool, dtype: str, qscheme
 def test_gptq_cuda_graph_speed(model_id: str):
     n_layers = 10
 
+    if model_id == "meta-llama/Llama-2-70b-chat-hf" and not TEST_WITH_EXTENSIVE:
+        pytest.skip("Skipping extensive test; set QUARK_EXTENSIVE_TEST=1 to enable.")
+
     if model_id == "facebook/opt-6.7b":
         device_map = None
     else:
@@ -324,12 +329,16 @@ def test_gptq_cuda_graph_speed(model_id: str):
             model.model.layers = model.model.layers[:n_layers]
         model.config.num_hidden_layers = n_layers
 
-    model_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
-    if device_map is None:
-        model_graph = model_graph.to(torch_device)
+    model_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
 
     # Run through only through a few layers to speed up this test.
     truncate_layers(model_graph)
+
+    if device_map is None:
+        model_graph = model_graph.to(torch_device)
+    else:
+        device_map = infer_auto_device_map(model_graph)
+        model_graph = dispatch_model(model_graph, device_map)
 
     main_device = model_graph.device
     calib_dataloader = get_calib_dataloader(
@@ -358,10 +367,15 @@ def test_gptq_cuda_graph_speed(model_id: str):
 
         # Run GPTQ without using CUDA Graph.
         with PatchEverywhere("QUARK_DISABLE_CUDA_GRAPH", True, module_name_prefix="quark"):
-            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", device_map=device_map)
+            model_no_graph = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto")
+            truncate_layers(model_no_graph)
+
             if device_map is None:
                 model_no_graph = model_no_graph.to(torch_device)
-            truncate_layers(model_no_graph)
+            else:
+                device_map = infer_auto_device_map(model_no_graph)
+
+                model_no_graph = dispatch_model(model_no_graph, device_map)
 
             model_no_graph = model_no_graph.eval()
 

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "workspace_context",
+  "description": "Validated workspace paths: model location, output directory, repo paths. Owned by quark-workspace-validate.",
+  "type": "object",
+  "required": [
+    "model_path",
+    "model_source",
+    "output_dir"
+  ],
+  "properties": {
+    "model_path": {
+      "type": "string"
+    },
+    "model_source": {
+      "type": "string",
+      "enum": [
+        "local",
+        "huggingface_id",
+        "ambiguous"
+      ]
+    },
+    "trust_remote_code_required": {
+      "type": "boolean"
+    },
+    "output_dir": {
+      "type": "string"
+    },
+    "output_dir_exists": {
+      "type": "boolean"
+    },
+    "output_dir_parent_writable": {
+      "type": "boolean"
+    },
+    "disk_space_gb_free": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "quark_script_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "required_paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "input",
+          "resolved_path",
+          "exists"
+        ],
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "resolved_path": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "file",
+              "directory",
+              null
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
