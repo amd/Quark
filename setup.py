@@ -554,5 +554,5 @@ setup(
     cmdclass=cmdclass,
     install_requires=install_requires,
     # Keep in sync with ``pyproject.toml::[project].requires-python``.
-    python_requires=">=3.11,<3.14",
+    python_requires=">=3.10,<3.14",
 )

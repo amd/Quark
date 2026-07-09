@@ -19,6 +19,7 @@ classifiers = [
     'Intended Audience :: Education',
     'Intended Audience :: Science/Research',
     'Operating System :: OS Independent',
+    'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
@@ -37,7 +38,7 @@ readme = "README.md"
 # ``setup.py::_load_requires_python_spec()`` to gate cp-wheel vs universal
 # fallback. Keep in sync with ``[project].classifiers`` below and the install
 # docs (``docs/source/install.rst``, ``CONTRIBUTING.md``).
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.10,<3.14"
 
 [project.urls]
 documentation = "https://quark.docs.amd.com"
