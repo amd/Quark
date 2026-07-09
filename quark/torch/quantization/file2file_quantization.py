@@ -1192,6 +1192,21 @@ def _single_stage_quantize_weight(
     else:
         quantized_tensors[tensor_name + "_scale"] = quantizer.scale.contiguous()
 
+    # Export packed zero_point for symmetric INT quant so import round-trips work.
+    if (
+        getattr(quantizer, "zero_point", None) is not None
+        and weight_config.dtype.value in {"int4", "int8", "uint4", "uint8", "int2", "uint2"}
+    ):
+        assert tensor_name.endswith(".weight"), (
+            f"Expected weight tensor name to end with '.weight', got {tensor_name!r}"
+        )
+        zp_tensor_name = tensor_name[: -len(".weight")] + ".weight_zero_point"
+        quantized_tensors[zp_tensor_name] = pack_method.pack(
+            quantizer.zero_point, False
+        ).contiguous()
+        if output_weight_map is not None:
+            output_weight_map[zp_tensor_name] = safetensor_filename
+
     if output_weight_map is not None:
         output_weight_map[tensor_name + "_scale"] = safetensor_filename
 

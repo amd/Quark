@@ -48,6 +48,7 @@ from quark.torch.export.utils import (
     _fix_loaded_weights_key_mismatch,
     _fix_state_dict_key_on_save,
     _handle_multi_device_loading,
+    _synthesize_missing_zero_points,
     _untie_parameters,
     restore_aux_files,
 )
@@ -843,6 +844,12 @@ class SafetensorsImporter(BaseImporter):
             custom_mode=model_config.quantization_config["quant_method"],
         )
 
+        # Symmetric file-to-file exports may omit flat zero_point keys.
+        model_state_dict = model.state_dict()
+        checkpoint_weights = _synthesize_missing_zero_points(
+            checkpoint_weights, model_state_dict
+        )
+
         # Handle parameter untying
         if is_accelerate_available():
             _untie_parameters(model, checkpoint_weights)
@@ -851,9 +858,6 @@ class SafetensorsImporter(BaseImporter):
             logger.debug(
                 f"Saved {len(cache_state_dict)} cache keys before filtering. Cache keys: {', '.join(list(cache_state_dict.keys()))}."
             )
-
-        # Get current model state dict
-        model_state_dict = model.state_dict()
 
         # In case we are loading the quantized weights into a model that is not on meta device,
         # we re-use the original device the weights were placed on, as `assign=True` is used later.

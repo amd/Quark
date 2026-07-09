@@ -67,6 +67,7 @@ __all__ = [
     "_handle_multi_device_loading",
     "_convert_e4m3fn_to_e4m3fnuz",
     "_fix_loaded_weights_key_mismatch",
+    "_synthesize_missing_zero_points",
     "_fix_state_dict_key_on_save",
     "get_state_dict_for_export",
     "apply_export_state_dict_mappings",
@@ -328,6 +329,27 @@ def _route_prequantized_layers(
     return converted, preserved
 
 
+def _resolve_import_pack_method(
+    model_config: "PretrainedConfig",
+    model_state_dict: dict[str, Any],
+) -> str:
+    """Resolve pack_method for import, correcting file-to-file export mismatches."""
+    pack_method = model_config.pack_method or "reorder"
+    if pack_method != "reorder":
+        return pack_method
+    has_weight_zero_point = any(
+        key.endswith(".weight_zero_point") for key in model_state_dict
+    )
+    if not has_weight_zero_point:
+        logger.warning(
+            "Checkpoint has no weight_zero_point tensors (typical of Quark "
+            "file-to-file export). Overriding pack_method from 'reorder' to "
+            "'order' for import."
+        )
+        return "order"
+    return pack_method
+
+
 def _build_quantized_model(
     model: nn.Module, model_config: "PretrainedConfig", model_state_dict: dict[str, Any]
 ) -> nn.Module:
@@ -398,10 +420,11 @@ def _build_quantized_model(
         # TODO: we should not have circular imports.
         from quark.torch.export.api import _map_to_quark
 
+        pack_method = _resolve_import_pack_method(model_config, model_state_dict)
         _map_to_quark(
             model,
             quantization_config,
-            model_config.pack_method,  # type: ignore[arg-type]
+            pack_method,  # type: ignore[arg-type]
             custom_mode,
         )
     else:
@@ -647,6 +670,37 @@ def get_state_dict_for_export(model: nn.Module) -> dict[str, torch.Tensor]:
                 state_dict = get_state_dict_from_offload(module, module_name, state_dict)
 
     return state_dict
+
+
+def _synthesize_missing_zero_points(
+    checkpoint_weights: dict[str, torch.Tensor],
+    model_state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Fill missing zero_point tensors for symmetric real_quantized checkpoints.
+
+    File-to-file export omits ``weight_zero_point`` when ``symmetric=True`` because
+    the values are all zero, but the import skeleton still registers packed
+    ``*_quantizer.zero_point`` buffers. Synthesize zeros so round-trip import works.
+    """
+    for name, template in model_state_dict.items():
+        if ".zero_point" not in name or "_quantizer" not in name:
+            continue
+        if name in checkpoint_weights:
+            continue
+
+        quantizer_prefix = name.rsplit(".zero_point", 1)[0]
+        scale_name = f"{quantizer_prefix}.scale"
+        if scale_name not in checkpoint_weights:
+            continue
+
+        ref = checkpoint_weights[scale_name]
+        checkpoint_weights[name] = torch.zeros(
+            template.shape,
+            dtype=template.dtype,
+            device=ref.device,
+        )
+
+    return checkpoint_weights
 
 
 def _fix_loaded_weights_key_mismatch(

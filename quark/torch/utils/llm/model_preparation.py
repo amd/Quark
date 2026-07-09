@@ -68,6 +68,10 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("4.57
 
 if is_transformers_available() and is_transformers_version_higher_or_equal("5.2.0"):
     from transformers import Qwen3_5MoeForConditionalGeneration
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (  # type: ignore[attr-defined]
+        Qwen3_5MoeExperts,
+        Qwen3_5MoeSparseMoeBlock,
+    )
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import PreTrainedTokenizerBase
@@ -83,7 +87,9 @@ from .module_replacement.replacement_utils import (
     replace_gptoss_mlp_with_linear_router,
     replace_granite_moe_experts_with_linear,
     replace_llama4_experts_with_sequential,
+    replace_qwen3_5_moe_experts_with_linear,
     replace_qwen3_moe_experts_with_linear,
+    replace_qwen35moe_sparse_moe_block_with_linear_gate,
     replace_qwen3moe_sparse_moe_block_with_linear_gate,
     replace_qwen3vlmoe_experts_with_linear,
 )
@@ -280,6 +286,17 @@ def _prepare_for_moe_quant(model: nn.Module, reload: bool = False) -> None:
         raise ValueError(
             f"The quantization of MoE layer for model architecture {model_type} is not yet supported in Quark."
         )
+
+    if model_type == "qwen3_5_moe":
+        for name, module in tqdm(
+            model.named_modules(remove_duplicate=False),
+            desc="Preparing Qwen3.5 MoE modules for quantized import",
+        ):
+            if isinstance(module, Qwen3_5MoeExperts):
+                replace_qwen3_5_moe_experts_with_linear(module, reload=reload)
+            if isinstance(module, Qwen3_5MoeSparseMoeBlock):
+                replace_qwen35moe_sparse_moe_block_with_linear_gate(module)
+        return
 
     for name, module in model.named_modules(remove_duplicate=False):
         module_type = type(module)

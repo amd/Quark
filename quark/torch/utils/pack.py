@@ -99,7 +99,10 @@ class PackMethod:
                     # PR #1070 added a transpose for the scale for uint4/int4 data types, whenever using per-group quantization.
                     # Before quark==1.0, only custom AWQ models used to transpose the scale.
                     scale_shape = (shape_list[0], shape_list[-1] // group_size)
-                zero_point_shape = (shape_list[-1] // group_size, shape_list[0] // self.qparams_per_item)
+                zero_point_shape = (
+                    shape_list[-1] // group_size,
+                    (shape_list[0] + self.qparams_per_item - 1) // self.qparams_per_item,
+                )
             else:
                 raise NotImplementedError(
                     f"Packed shape inference for per group quantization with `ch_axis={quantization_spec.ch_axis}` is not implemented in Quark. Please open an issue."
@@ -355,7 +358,7 @@ class Pack_4_bits(PackMethod):
         if self.qscheme == "per_group":
             # reverse the first dimennsion number to the last dimension number
             shape_list[0], shape_list[-1] = shape_list[-1], shape_list[0]
-        shape_list[-1] = shape_list[-1] // self.qparams_per_item
+        shape_list[-1] = (shape_list[-1] + self.qparams_per_item - 1) // self.qparams_per_item
         return tuple(shape_list)
 
 

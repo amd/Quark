@@ -33,6 +33,11 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("5.0.
         Qwen3MoeMLP,
         Qwen3MoeSparseMoeBlock,
     )
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (  # type: ignore[attr-defined]
+        Qwen3_5MoeExperts,
+        Qwen3_5MoeMLP,
+        Qwen3_5MoeSparseMoeBlock,
+    )
 
 if is_transformers_available() and is_transformers_version_higher_or_equal("4.51.0"):
     from transformers.models.llama4.modeling_llama4 import (  # type: ignore[attr-defined]
@@ -790,6 +795,81 @@ def replace_qwen3_moe_experts_with_linear(experts_module: "Qwen3MoeExperts", rel
 
     if weights_synced or reload:
         _moe_experts_cleanup_fused(experts_module)
+
+
+@torch.no_grad()
+def replace_qwen3_5_moe_experts_with_linear(experts_module: "Qwen3_5MoeExperts", reload: bool = False) -> None:
+    """Unfuse Qwen3.5 MoE experts into per-expert MLP linears for import/export."""
+    num_experts: int = experts_module.num_experts
+    expert_dim: int = experts_module.intermediate_dim
+    original_device = experts_module.gate_up_proj.device
+    original_dtype = experts_module.gate_up_proj.dtype
+    default_dtype = torch.get_default_dtype()
+    config = getattr(experts_module, "config", None)
+
+    torch.set_default_dtype(original_dtype)
+    with torch.device(original_device):
+        for expert_index in range(num_experts):
+            expert_module = Qwen3_5MoeMLP(config, intermediate_size=expert_dim)  # type: ignore
+            setattr(experts_module, str(expert_index), expert_module)
+    torch.set_default_dtype(default_dtype)
+
+    weights_synced = _moe_experts_sync_weights_to_linear(experts_module, model_type="qwen3_moe")
+    experts_module.forward = MethodType(_qwen3_5_moe_forward, experts_module)
+
+    if weights_synced or reload:
+        _moe_experts_cleanup_fused(experts_module)
+
+
+def _qwen3_5_moe_forward(  # type: ignore[no-untyped-def]
+    self,
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Forward for unfused Qwen3.5 MoE experts (same routing as Qwen3 MoE)."""
+    return _qwen3_moe_forward(self, hidden_states, top_k_index, top_k_weights)
+
+
+def _qwen35moe_sparse_moe_block_forward(self: Any, hidden_states: torch.Tensor) -> torch.Tensor:
+    """Forward for Qwen3.5 MoE block with nn.Linear gate."""
+    import torch.nn.functional as F
+
+    batch_size, sequence_length, hidden_dim = hidden_states.shape
+    hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+    shared_expert_output = self.shared_expert(hidden_states_reshaped)
+
+    router_logits = self.gate(hidden_states_reshaped)
+    router_logits = F.softmax(router_logits, dtype=torch.float, dim=-1)
+    router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=-1)
+    router_top_value /= router_top_value.sum(dim=-1, keepdim=True)
+    router_top_value = router_top_value.to(router_logits.dtype)
+
+    expert_output = self.experts(
+        hidden_states_reshaped, router_indices, router_top_value
+    )
+    shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states_reshaped)) * shared_expert_output
+    expert_output = expert_output + shared_expert_output
+    return expert_output.reshape(batch_size, sequence_length, hidden_dim)
+
+
+@torch.no_grad()
+def replace_qwen35moe_sparse_moe_block_with_linear_gate(
+    moe_block: "Qwen3_5MoeSparseMoeBlock",
+) -> None:
+    """Replace Qwen3.5 MoE router with nn.Linear for quantized checkpoint import."""
+    router = moe_block.gate
+    linear_gate = nn.Linear(
+        router.hidden_dim,
+        router.num_experts,
+        bias=False,
+        dtype=router.weight.dtype,
+        device=router.weight.device,
+    )
+    linear_gate.weight.data.copy_(router.weight.data)
+    moe_block.top_k = router.top_k
+    moe_block.gate = linear_gate
+    moe_block.forward = MethodType(_qwen35moe_sparse_moe_block_forward, moe_block)
 
 
 # Adapted from https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/qwen3_moe/modeling_qwen3_moe.py#L226
