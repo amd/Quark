@@ -111,7 +111,6 @@ Key Features
    Using MX (Microscaling) <pytorch/adv_mx>
    Two Level Quantization Formats <pytorch/adv_two_level>
    Using Quark Agent Skills (Claude Code) <pytorch/agent_skills_torch>
-   Using Quark Agent Skills (Claude Code) <onnx/agent_skills_onnx>
 
 .. _advanced-quark-features-onnx:
 .. toctree::
@@ -125,6 +124,7 @@ Key Features
    Accuracy Improvement <onnx/accuracy_improvement>
    Efficiency Improvement <onnx/efficiency_improvement>
    Tooling <onnx/tooling>
+   Using Quark Agent Skills (Claude Code) <onnx/agent_skills_onnx>
 
 .. toctree::
    :hidden:

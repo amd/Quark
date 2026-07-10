@@ -4,17 +4,11 @@
 
 ## Release 0.12
 
-AMD Quark 0.12 is tested against PyTorch 2.10 and 2.11, and compatible with upstream `transformers==4.57.6` and `transformers==5.2`.
+AMD Quark 0.12 supports Python 3.11-3.13, is tested against PyTorch 2.10 and 2.11, ONNXRuntime 1.23.2, 1.24.2, and 1.25.1, and is compatible with upstream `transformers==4.57.6` and `transformers==5.2`. It bumps the minimum required `numpy` to `>= 2.0` across both PyTorch and ONNX flows, and supports `onnx` version `>=1.21.0,<=1.22.0`.
 
 Note: `0.12.post1` is a packaging-only re-release identical to `0.12` (the original `0.12` wheel was removed from the index and its filename cannot be reused). No functional changes.
 
-### AMD Quark Infrastructure
-
-#### New Features
-
-- Support for Python 3.11 up to 3.13
-- Bumped the minimum required `numpy` to `>= 2.0` across the ONNX and PyTorch flows.
-- **Pre-built wheels** are now published for PyTorch 2.10+ on the **AMD package index** (CPU, CUDA 12.8, ROCm 7.1, ROCm 7.2; Linux/Windows; Python 3.11–3.13). They ship pre-compiled C++ extensions, so no C++ compiler is needed and the first `import quark` no longer triggers a one-time kernel/custom-op build. To fetch a pre-built wheel, point `pip` at the matching index:
+As of this release, Quark provides **Pre-built wheels** for various environments, available on the **AMD package index** for PyTorch 2.10+ (CPU, CUDA 12.8, ROCm 7.1, ROCm 7.2; Linux/Windows; Python 3.11–3.13). They ship pre-compiled C++ extensions, so no C++ compiler is needed and the first `import quark` no longer triggers a one-time kernel/custom-op build. To fetch a pre-built wheel, point `pip` at the matching index:
 
   ```bash
   pip install amd-quark --extra-index-url https://pypi.amd.com/quark/cpu/simple    # CPU
@@ -23,35 +17,30 @@ Note: `0.12.post1` is a packaging-only re-release identical to `0.12` (the origi
   pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm72/simple # ROCm 7.2 (Linux only)
   ```
 
-#### Deprecations and breaking changes
-
-- The `quark.testing` module has been deprecated and removed. All testing utilities have been consolidated into `quark.common.utils.testing_utils`. Update your imports as follows:
-  - `from quark.testing import skip_if_no_gpu, slow_test, slow_test_if` → `from quark.common.utils.testing_utils import skip_if_no_gpu, slow_test, slow_test_if`
-  - `from quark.testing.common_utils import TestCase` → `from quark.common.utils.testing_utils import TestCase`
-
-### Quark Shapeshifter (formerly Quark ONNX Adapter)
-
-#### New Features
-
-- Added support for Quark ONNX post-processing workflows, including Q/DQ cleanup, scale alignment, bfloat16 adaptation, and XINT8/NPU simulation.
-- Added support for Quark Torch workflows through PyTorch model transformation passes, including dropout removal and model tracing.
-- Added automatic pass discovery and registration for official passes in `quark/shapeshifter/passes/` and optional community passes in `quark/contrib/shapeshifter_community_passes/`. Shapeshifter validates pass types so that each workflow contains either ONNX passes or PyTorch passes, but not both.
-
-#### Deprecations and breaking changes
-
-- The `quark-cli onnx-adapter` command is deprecated and will be removed in a future release. Please use `quark-cli shapeshifter` instead. Both commands are functionally identical during this release to provide backward compatibility.
-
 ### AMD Quark for PyTorch
 
+#### Release Highlights
+
+This release expands quantization format coverage, adds native diffusion model support, and brings Quark's quantization flow into vLLM for online inference.
+
+Key updates:
+
+- New FP4 quantization formats: NVFP4, AMDFP4, and global-scale variants.
+- SVDQuant for low-bit quantization of diffusion models and LLMs with low-rank error correction.
+- Native Hugging Face Diffusers integration for saving and reloading quantized diffusion models.
+- vLLM online quantization support at model load time.
+- Added PyTorch-focused Claude Code agent skills for end-to-end PTQ, evaluation, export, and debugging.
+
 #### New Features
 
-- Support for Python 3.11 up to 3.13
-- Support NVFP4 quantization (scheme: `nvfp4`).
-- Support FP4 quantization with E5M3 per-block scales, called AMDFP4 quantization (`amdfp4`, `amdfp4_g32`).
-- Support FP4 quantization with E5M3 per-block scales and a global FP32 scale (schemes: `amdfp4_global16`, `amdfp4_global32`).
-- Support native inference for xDiT and Diffusers workflows
+- Support for NVFP4 quantization (scheme: `nvfp4`).
+- Support for FP4 quantization with E5M3 per-block scales, called AMDFP4 quantization (`amdfp4`, `amdfp4_g32`).
+- Support for FP4 quantization with E5M3 per-block scales and a global FP32 scale (schemes: `amdfp4_global16`, `amdfp4_global32`).
+- Support for native inference for xDiT and Diffusers workflows.
 - Pre-quantized layers excluded from quantization (`FP8Linear`, compressed-tensors, HF-dequantized MXFP4) are now preserved in their original format on export instead of being dequantized to bf16/fp16.
 - Support for `compressed-tensors==0.15` in PyTorch export/import and file-to-file quantization flows.
+- Added **SVDQuant** support (`quark.torch.algorithm.svdquant`, via `SVDQuantConfig`), from [SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit Diffusion Models](https://arxiv.org/abs/2411.05007). Pairs SmoothQuant-style smoothing with a high-precision low-rank correction branch for INT4 / MXFP4 / NVFP4 weight quantization (optionally with 4-bit activations), applicable to both diffusion models and LLMs. Native ROCm inference is supported via `quark.torch.enable_native_inference`.
+- Added **Hugging Face Diffusers integration**: importing `quark.integrations.diffusers` self-registers Quark into the diffusers quantizer registry, enabling quantized diffusion models to be saved and reloaded via the standard `save_pretrained` / `from_pretrained` APIs. Supports on-the-fly quantization, calibration utilities (`quark.torch.utils.diffusers.get_calib_dataloader`), and works with round-to-nearest, SmoothQuant, and SVDQuant.
 
 #### Model Support
 
@@ -63,44 +52,14 @@ Supported out-of-box model architectures:
 - MiniMax-M2.5, MiniMax-M2.7, MiniMax-M3
 - Qwen3.5-397B-A17B, Qwen3.5-35B-A3B
 
-#### Bug fixes and minor improvements
-
-- Fixed MXFP4 dequantization kernel failures for large tensor shapes.
-- Fixed E5M3 Triton kernel dispatch on correct device in multi-device setting.
-- Fixed `LLMTemplate` validation to raise a clear error when a required algorithm configuration is missing.
-- Fixed a bug where MOE calibration diagnostics was not warning when static activation quantizers were not receiving calibration tokens.
-- Fixed AWQ scaling for Qwen3.5-style RMSNorm.
-
-#### Diffusion model quantization and Hugging Face Diffusers integration
-
-- AMD Quark now plugs directly into Hugging Face `diffusers`. Importing `quark.integrations.diffusers` self-registers Quark into the diffusers `AUTO_QUANTIZER_MAPPING` / `AUTO_QUANTIZATION_CONFIG_MAPPING`, so quantized diffusion models can be saved and reloaded through the standard `save_pretrained` / `from_pretrained` APIs:
-
-  ```python
-  from quark.integrations import diffusers  # registers the "quark" quantizer
-  from diffusers import DiffusionPipeline
-
-  pipe = DiffusionPipeline.from_pretrained("<org>/<sdxl-or-flux-quark-checkpoint>")
-  ```
-
-- **Export**: `DiffusersSafetensorsExporter` writes a quantized pipeline submodule via `save_pretrained`, embedding the serialized Quark `QConfig` under `quantization_config` in `config.json`. **Reload** reconstructs the quantized layers automatically (meta-device / `low_cpu_mem_usage` loading supported) and freezes them for inference.
-- **On-the-fly quantization**: a pipeline submodule (`pipe.unet` / `pipe.transformer`) can be quantized in-process, without a separate export/reload round-trip.
-- **Calibration utilities promoted into the library**: `quark.torch.utils.diffusers.get_calib_dataloader(pipe, target_module, prompts, n_steps=...)` runs the pipeline, captures the submodule's intermediate inputs, and returns a dataloader ready for `ModelQuantizer.quantize_model` — no more copying calibration code out of the examples.
-- Works with round-to-nearest, SmoothQuant, and SVDQuant. A PR to add Quark to `diffusers` upstream is planned; the self-registration path works today.
-
-#### SVDQuant (SVD-based low-bit error correction)
-
-- Added **SVDQuant** (`quark.torch.algorithm.svdquant`, configured via `SVDQuantConfig`), from [SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit Diffusion Models](https://arxiv.org/abs/2411.05007). It pairs SmoothQuant-style smoothing with a high-precision low-rank correction branch, making INT4 / MXFP4 / NVFP4 weight quantization (optionally with 4-bit activations) viable. The algorithm applies to **both diffusion models and LLMs**.
-- Ready-made schemes via `build_quant_layer_config`: `w4a16`, `w4a4`, `mxfp4`, and `nvfp4`. Optional **GPTQ** residual quantization (`use_gptq=True`) and **per-layer alpha search** (`search_alpha=True`).
-- A **calibration / grid-search helper**, `examples/torch/diffusers/svdquant_calibrate.py`, sweeps the smoothing alpha, GPTQ on/off, and the number of calibration samples, scoring each configuration by reference-image quality (PSNR / MSE, plus `lpips` when installed) or quantized-submodule MSE, and reports the best.
-- On FLUX.1-dev, SVDQuant in W4A4 / MXFP4 / NVFP4 nearly matches the FP16 CLIP score.
-- **Native inference**: SVDQuant-MXFP4 models can run with real low-bit `aiter` GEMM kernels (ROCm) via `quark.torch.enable_native_inference` — the MXFP4 residual GEMM plus the low-rank correction branch — replacing the emulation/QDQ path for faster, lower-memory inference.
-
 #### Agent Skills
 
 Added a Claude Code skill suite for the PyTorch flow, auto-discovered from `.claude/skills/` and routed by file type (HuggingFace / safetensors / PyTorch checkpoints → Torch skills, never silently mixed with the ONNX flow):
 
 - `quark-torch-ptq` — end-to-end PTQ pipeline for HF / safetensors models (FP8, INT4, MXFP4, etc.), stopping at the quantized output.
 - `quark-torch-llm-ptq-eval` — PTQ plus validation and perplexity evaluation in one flow.
+- `quark-torch-llm-eval` — end-to-end LLM accuracy evaluation via vLLM / SGLang / ATOM serving and lm-eval / lighteval / evalscope benchmarks (e.g. GSM8K, MMLU, AIME, GPQA).
+- `quark-torch-result-validator` — validates HuggingFace safetensors output via four checks: auxiliary file alignment, excluded tensor MD5 byte-identity, `config.json` deep comparison, and safetensors header pattern/dtype summary.
 - `quark-torch-file2file-quantization` — file-to-file quantization for ultra-large models.
 - `quark-torch-model-intake` — inspects a model and assesses quantization support.
 - `quark-torch-export` — exports quantized models (e.g. GGUF, ONNX).
@@ -110,50 +69,70 @@ The backend-neutral `quark-env-preflight` and `quark-install` skills apply to bo
 
 #### vLLM Online Quantization
 
-Added `quark.online_quantization.vllm` (tested against vLLM 0.21), bringing Quark's powerful online quantization flow into vLLM at load time. It extends vLLM's built-in online quantization and is designed to map Quark online quantization configs rather than being limited to a fixed list of schemes. The current release supports three schemas: per-channel FP8 (`ptpc_fp8`), MXFP4 (`mxfp4`), and a mixed linear-FP8/MoE-MXFP4 scheme (`linear_ptpc_fp8_moe_mxfp4`). It also supports re-quantizing offline-quantized checkpoints (e.g., DeepSeek-R1 FP8 block-scale) to a different online scheme at load time. Online versions of more Quark quantization algorithms are planned for future updates. See [the runnable example](../../examples/online_quantization/vllm_online_quantization.py).
+Added `quark.online_quantization.vllm` (tested against vLLM 0.21), bringing Quark's powerful online quantization flow into vLLM at load time. It extends vLLM's built-in online quantization and is designed to map Quark online quantization configs rather than being limited to a fixed list of schemes. The current release supports three schemes: per-channel FP8 (`ptpc_fp8`), MXFP4 (`mxfp4`), and a mixed linear-FP8/MoE-MXFP4 scheme (`linear_ptpc_fp8_moe_mxfp4`). It also supports re-quantizing offline-quantized checkpoints (e.g., DeepSeek-R1 FP8 block-scale) to a different online scheme at load time. Online versions of more Quark quantization algorithms are planned for future updates. See [the runnable example](../../examples/online_quantization/vllm_online_quantization.py).
+
+#### Bug fixes and minor improvements
+
+- Fixed MXFP4 dequantization kernel failures for large tensor shapes.
+- Fixed E5M3 Triton kernel dispatch on the correct device in a multi-device setting.
+- Fixed `LLMTemplate` validation to raise a clear error when a required algorithm configuration is missing.
+- Fixed a bug where MOE calibration diagnostics did not warn when static activation quantizers were not receiving calibration tokens.
+- Fixed AWQ scaling for Qwen3.5-style RMSNorm.
 
 ### AMD Quark for ONNX
 
+#### Release Highlights
+
+This release focuses on making ONNX quantization faster, lighter, easier to resume, and more compatible with downstream deployment tools.
+
+Key updates:
+
+- Faster calibration with lower memory and disk usage.
+- Better FastFinetune reliability and resume support.
+- Improved Q/DQ (Quantize/DeQuantize) quantization behavior for mixed-precision models.
+- Quark ONNX Adapter is now renamed to Quark Shapeshifter.
+- Added ONNX-focused agent skills to guide installation, quantization, debugging, and validation.
+
 #### New Features
 
-- Added additional quantize/dequantize node pairs at the mixed‑precision tensors to simulate node-wise quantization under QDQ mode.
-- Added support for excluding specific nodes' outputs from quantization via setting a new extra option `NodesToExcludeOutputQuantization`.
-- Refined the block axis of BFP and MX to make sure it's always on the reduction dimension in matrix multiplication operations.
+- Added additional quantization node pairs at mixed-precision tensor boundaries to simulate node-wise quantization in QDQ format.
+- Added support for excluding specific nodes' outputs from quantization via the new extra option `NodesToExcludeOutputQuantization`.
+- Refined the block axis of BFP and MX to ensure it is always on the reduction dimension in matrix multiplication operations.
 
 #### Enhancements
 
 Enhancements for calibration:
 
 - Added Selective Calibration Propagation (SCP) via the `CalibPassthroughOpTypes` extra option. Distribution-preserving operators (e.g., `Reshape`, `Transpose`, `Gather`) are skipped during calibration, reducing calibration time and memory.
-- Added `CalibOptimizeDisk` option for `LayerwisePercentile` calibration. When `True` (default), activation tensors are processed on-the-fly and never written to disk or held in memory, eliminating disk usage at the cost of slightly increased runtime.
-- Reduced the peak memory of `MinMax` and `NonOverflow` calibration methods by disabling CPU memory arena (only available for the CPU Executive Provider).
-- Reduced the peak memory of `Percentile`, `Entropy` and `Distribution` calibration methods by removing references of outputs in session run.
-- Reduced the peak memory of `LayerwisePercentile` calibration method by processing activation tensors in chunks rather than accumulating them in full.
+- Reduced the peak memory of `MinMax` and `NonOverflow` calibration methods by disabling the CPU memory arena (only available for the CPU Execution Provider).
+- Reduced the peak memory of `Percentile`, `Entropy`, and `Distribution` calibration methods by removing references to outputs during session runs.
+- Reduced the peak memory of `LayerwisePercentile` calibration method by processing activation tensors in chunks rather than accumulating them in full. A new option, `CalibOptimizeDisk` (True by default), has been introduced for this method. It processes activations on the fly so they are never written to disk or held in memory, eliminating disk usage with a small runtime overhead.
 - Reduced the disk usage of `MinMSE` calibration method (`All` mode) by replacing raw data accumulation with a fixed-size per-tensor histogram built online as each inference batch arrives.
 
 Enhancements for fast fine-tuning:
 
-- Skipped layers with dynamic weights from fine-tuning because there is no object for tuning.
-- Added support for inferring kernel size from weights if no attribute `kernel_shape` exists in the `Conv` nodes for fine-tuning.
+- Skipped layers with dynamic weights during fine-tuning because they have no static weights to tune.
+- Added support for inferring kernel size from weights when the `kernel_shape` attribute is absent from `Conv` nodes during fine-tuning.
 
 Other important enhancements:
 
-- Added support for ONNX Runtime 1.23.2, 1.24.2, and 1.25.1.
-- Added support for converting float16 subgraphs to float32 with Cast nodes at the subgraph boundaries to make sure the converted model is runnable.
-- Enabled the `ForceQuantizeNoInputCheck` option by default in built-in configurations to ensure op types like `Resize`, `Transpose` can be quantized even though their inputs are not quantized.
+- Added support for converting float16 subgraphs to float32 with Cast nodes at the subgraph boundaries to ensure the converted model is runnable.
+- Enabled the `ForceQuantizeNoInputCheck` option by default in built-in configurations to ensure op types like `Resize`, `Transpose` can be quantized even when their inputs are not quantized.
 - Extended `SaveAndRestore` to cover FastFinetune checkpointing. Calibration ranges, the intermediate quantized model, and selected layer indices are persisted to a `.json` file and automatically reloaded on resume, avoiding redundant calibration passes.
 - Added `FillAllValueInfo` option to post-processing. When set to `True`, missing `graph.value_info` entries are populated for all intermediate tensors (activations, weights, biases) using one ORT inference pass, which is required by many downstream compilers to infer tensor shapes. The default is `False`.
 - Improved the parameter summary printed by `ModelQuantizer` on the `QConfig` path: it now shows the effective options actually used for quantization (grouped by category) and flags any user-set options that do not apply to the selected quantizer, making it easier to spot incorrect settings.
-- Extended Cross-Layer Equalization (CLE) to support 5D `Conv` (`Conv3d`) weights.
 
-#### Bug fixes
+#### Quark Shapeshifter
 
-- Fixed a `TensorQuantOverrides` validation error that could prevent quantization (for example on the YOLO12 head) when pre-processing folded or fused away tensors referenced by the overrides.
-- Fixed several Cross-Layer Equalization (CLE) edge cases on graphs with missing weight initializers or non-standard `Clip`/`Relu` patterns.
+The former Quark ONNX Adapter has been renamed as Quark Shapeshifter, and the `quark-cli onnx-adapter` command is deprecated and will be removed in a future release. Please use `quark-cli shapeshifter` instead. Both commands are functionally identical during this release to provide backward compatibility.
+
+- Added support for Quark ONNX post-processing workflows, including Q/DQ cleanup, scale alignment, bfloat16 adaptation, and XINT8/NPU simulation.
+- Added support for Quark Torch workflows through PyTorch model transformation passes, including dropout removal and model tracing.
+- Added automatic pass discovery and registration for official passes in `quark/shapeshifter/passes/` and optional community passes in `quark/contrib/shapeshifter_community_passes/`. Shapeshifter validates pass types so that each workflow contains either ONNX passes or PyTorch passes, but not both.
 
 #### Agent Skills
 
-Introduced a Claude Code skill suite for the ONNX-to-ONNX flow, auto-discovered from `.claude/skills/` and routed by file type (`.onnx` inputs → ONNX skills, never silently mixed with the Torch flow):
+Introduced a Claude Code skill suite for the ONNX flow, auto-discovered from `.claude/skills/` and routed by file type (`.onnx` inputs → ONNX skills, never silently mixed with the Torch flow):
 
 - `quark-onnx-install` — installs and verifies the correct `onnxruntime` / `onnxruntime-gpu` / ROCm build and matching `onnx` package for the user's accelerator before any quantization step.
 - `quark-onnx-model-intake` — inspects a `.onnx` model (opset / IR version, I/O shapes and dtypes, op-type histogram, quantizable-op count, >2 GB external-data check) and assesses compatibility with CPU / CUDA / ROCm / AMD NPU CNN / AMD NPU Transformer targets.
@@ -162,12 +141,15 @@ Introduced a Claude Code skill suite for the ONNX-to-ONNX flow, auto-discovered 
 - `quark-onnx-debug` — diagnoses failed installation, calibration, quantization, custom-op compilation, or export attempts, including ORT execution-provider mismatches, silent CPU fallback, calibration OOM, `BFPQuantizeDequantize` / `MXQuantizeDequantize` / `Extended*` custom-op load failures, >2 GB external-data issues, and AdaRound / GPTQ ONNX / QuaRot divergence.
 - `quark-onnx-result-validator` — post-quantization inspection of `model.onnx` (and `model.onnx_data`) via four lightweight checks: auxiliary file copy alignment, expected non-quantized initializer MD5 byte-identity (inline `raw_data` and external-data byte ranges), model metadata equality after stripping quantization-only opset entries and Quark domains, and fuzzy node-pattern / op-type / dtype summaries with QDQ and `com.amd.quark` custom-op presence checks.
 
-#### Deprecations and breaking changes
+#### Bug Fixes
 
-- Support for Python 3.10 is deprecated and was removed.
-- Support for ONNX Runtime 1.20.1, 1.21.1 and 1.22.2 are deprecated and no longer tested.
-- The `Percentile` mode of `MinMSE` calibration method is deprecated.
-- The `LogSeverityLevel` extra option is removed. Use the `QUARK_LOG_LEVEL` environment variable instead.
+- Fixed a `TensorQuantOverrides` validation error that could prevent quantization (for example on the YOLO12 head) when pre-processing folded or fused away tensors referenced by the overrides.
+- Fixed several Cross-Layer Equalization (CLE) edge cases on graphs with missing weight initializers or non-standard `Clip`/`Relu` patterns.
+
+#### Deprecations
+
+- Support for ONNXRuntime 1.20.1, 1.21.1, and 1.22.2 has been deprecated and is no longer tested.
+- The `LogSeverityLevel` extra option has been removed. Use the `QUARK_LOG_LEVEL` environment variable instead.
 
 ## Release 0.11.1
 
