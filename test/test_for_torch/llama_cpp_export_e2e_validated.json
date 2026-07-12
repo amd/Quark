@@ -207,5 +207,19 @@
       "type_Q6_K": 92
     },
     "elapsed_s": 945.7
+  },
+  "bf16": {
+    "model": "amd/Qwen3.5-35B-A3B-AWQ-INT4-WO-128-FLOAT16",
+    "export": "ok",
+    "metadata": "ok",
+    "load_test": "fail: llama-server not ready within 600s",
+    "meta_summary": {
+      "file_type": 32,
+      "tensor_count": 61,
+      "type_BF16": 34,
+      "type_F16": 2,
+      "type_F32": 25
+    },
+    "elapsed_s": 824.2
   }
 }
