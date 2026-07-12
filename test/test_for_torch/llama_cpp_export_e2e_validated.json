@@ -235,5 +235,19 @@
       "type_TQ1_0": 355
     },
     "elapsed_s": 139.4
+  },
+  "tq2_0": {
+    "model": "amd/Qwen3.5-35B-A3B-AWQ-INT4-WO-128-FLOAT16",
+    "export": "ok",
+    "metadata": "ok",
+    "load_test": "fail: HTTP Error 500: Internal Server Error",
+    "meta_summary": {
+      "file_type": 37,
+      "tensor_count": 504,
+      "type_F16": 2,
+      "type_F32": 207,
+      "type_TQ2_0": 295
+    },
+    "elapsed_s": 139.4
   }
 }
