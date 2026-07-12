@@ -83,6 +83,8 @@ __all__ = [
     "export_safetensors",
     "export_onnx",
     "export_gguf",
+    "export_llama_cpp_gguf",
+    "list_llama_cpp_export_formats",
     "import_model_from_safetensors",
     "save_params",
 ]
@@ -719,6 +721,56 @@ def export_gguf(
         model=model, output_dir=Path(output_dir), model_type=model_type, tokenizer_path=tokenizer_path
     )
     exporter._export()
+
+
+def export_llama_cpp_gguf(
+    quark_model_dir: str | Path,
+    output_dir: str | Path,
+    export_format: str,
+    *,
+    name: str | None = None,
+    llama_cpp_dir: str | Path = "/home/l/work/llama.cpp",
+    libggml: str | Path | None = None,
+    tokenizer_source: str | Path | None = None,
+    group_size: int = 128,
+    pack_method: str = "reorder",
+    split_max_size: str = "8G",
+    max_tensors: int | None = None,
+    dry_run: bool = False,
+    keep_staging: bool = False,
+) -> Path:
+    """Export a Quark AWQ checkpoint to llama.cpp-compatible GGUF.
+
+    This is separate from ``export_gguf``, which only supports a narrow set of
+    native Quark GGUF layouts. ``export_llama_cpp_gguf`` targets the public
+    llama.cpp quant families such as ``q4_k_m``, ``q8_0``, and ``iq4_nl``.
+
+    See ``quark.torch.export.llama_cpp_export`` for format details.
+    """
+    from quark.torch.export.llama_cpp_export.api import export_llama_cpp_gguf as _export
+
+    return _export(
+        quark_model_dir=quark_model_dir,
+        output_dir=output_dir,
+        export_format=export_format,
+        name=name,
+        llama_cpp_dir=llama_cpp_dir,
+        libggml=libggml,
+        tokenizer_source=tokenizer_source,
+        group_size=group_size,
+        pack_method=pack_method,
+        split_max_size=split_max_size,
+        max_tensors=max_tensors,
+        dry_run=dry_run,
+        keep_staging=keep_staging,
+    )
+
+
+def list_llama_cpp_export_formats() -> list[str]:
+    """List llama.cpp export formats supported by ``export_llama_cpp_gguf``."""
+    from quark.torch.export.llama_cpp_export.api import list_llama_cpp_export_formats as _list
+
+    return _list()
 
 
 class BaseImporter(ABC):

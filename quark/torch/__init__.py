@@ -5,9 +5,11 @@
 
 from quark.torch.export.api import (
     export_gguf,
+    export_llama_cpp_gguf,
     export_onnx,
     export_safetensors,
     import_model_from_safetensors,
+    list_llama_cpp_export_formats,
     save_params,
 )
 from quark.torch.pruning.api import ModelPruner
@@ -24,6 +26,8 @@ __all__ = [
     "export_safetensors",
     "export_onnx",
     "export_gguf",
+    "export_llama_cpp_gguf",
+    "list_llama_cpp_export_formats",
     "import_model_from_safetensors",
     # Native inference
     "enable_native_inference",
