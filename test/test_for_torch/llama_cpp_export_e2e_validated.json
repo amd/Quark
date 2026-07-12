@@ -13,5 +13,20 @@
       "type_Q2_K": 232
     },
     "elapsed_s": 2046.9
+  },
+  "q2_k_s": {
+    "model": "amd/Qwen3.5-35B-A3B-AWQ-INT4-WO-128-FLOAT16",
+    "export": "ok",
+    "metadata": "ok",
+    "load_test": "ok",
+    "answer_check": "unexpected: 小米（Xiaomi）的总裁是**叶生**（Ye Sheng）。",
+    "meta_summary": {
+      "file_type": 21,
+      "tensor_count": 397,
+      "type_F16": 2,
+      "type_F32": 163,
+      "type_Q2_K": 232
+    },
+    "elapsed_s": 2045.0
   }
 }
