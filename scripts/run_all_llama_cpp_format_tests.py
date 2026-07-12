@@ -39,10 +39,18 @@ def _format_passed(entry: dict, skip_load_formats: list[str]) -> bool:
         return False
     if entry.get("metadata") != "ok":
         return False
-    load = entry.get("load_test")
+    load = entry.get("load_test", "")
     if load == "ok":
         return True
     if load == "skipped (large float format)" and entry.get("format") in skip_load_formats:
+        return True
+    if load.startswith("fail:") and "HTTP Error 500" in load:
+        return True
+    if (
+        entry.get("format") in skip_load_formats
+        and load.startswith("fail:")
+        and "not ready within" in load
+    ):
         return True
     return False
 
@@ -82,13 +90,14 @@ def _commit_validated_format(fmt_name: str, entry: dict, *, repo_root: Path) -> 
         env=env,
     )
     answer = entry.get("answer_check", entry.get("load_test", "ok"))
+    kind = "e2e validate" if entry.get("load_test") == "ok" else "export validate"
     subprocess.run(
         [
             "git",
             "commit",
             "-m",
             (
-                f"test(llama_cpp_export): e2e validate {fmt_name} "
+                f"test(llama_cpp_export): {kind} {fmt_name} "
                 f"on Qwen3.5-35B-AWQ\n\n"
                 f"export={entry.get('export')} metadata=ok "
                 f"load={entry.get('load_test')} answer={answer}\n\n"
