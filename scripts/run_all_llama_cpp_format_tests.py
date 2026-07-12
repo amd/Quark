@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -67,10 +68,18 @@ def _commit_validated_format(fmt_name: str, entry: dict, *, repo_root: Path) -> 
         encoding="utf-8",
     )
 
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "l",
+        "GIT_AUTHOR_EMAIL": "l@local",
+        "GIT_COMMITTER_NAME": "l",
+        "GIT_COMMITTER_EMAIL": "l@local",
+    }
     subprocess.run(
         ["git", "add", str(validated_path.relative_to(repo_root))],
         cwd=repo_root,
         check=True,
+        env=env,
     )
     answer = entry.get("answer_check", entry.get("load_test", "ok"))
     subprocess.run(
@@ -88,6 +97,7 @@ def _commit_validated_format(fmt_name: str, entry: dict, *, repo_root: Path) -> 
         ],
         cwd=repo_root,
         check=True,
+        env=env,
     )
     print(f"  git commit: validated {fmt_name}", flush=True)
 
