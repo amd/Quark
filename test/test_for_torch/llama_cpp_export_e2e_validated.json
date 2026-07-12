@@ -185,5 +185,12 @@
     "metadata": "ok",
     "load_test": "ok",
     "answer_check": "ok"
+  },
+  "q8_0": {
+    "model": "amd/Qwen3.5-35B-A3B-AWQ-INT4-WO-128-FLOAT16",
+    "export": "ok",
+    "metadata": "ok",
+    "load_test": "ok",
+    "answer_check": "ok"
   }
 }
