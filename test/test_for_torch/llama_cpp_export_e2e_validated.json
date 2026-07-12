@@ -88,5 +88,20 @@
       "type_Q4_0": 135
     },
     "elapsed_s": 128.4
+  },
+  "q4_1": {
+    "model": "amd/Qwen3.5-35B-A3B-AWQ-INT4-WO-128-FLOAT16",
+    "export": "ok",
+    "metadata": "ok",
+    "load_test": "ok",
+    "answer_check": "ok",
+    "meta_summary": {
+      "file_type": 3,
+      "tensor_count": 206,
+      "type_F16": 2,
+      "type_F32": 85,
+      "type_Q4_1": 119
+    },
+    "elapsed_s": 110.4
   }
 }
