@@ -25,18 +25,27 @@ def export_llama_cpp_gguf(
     llama_cpp_dir: str | Path = "/home/l/work/llama.cpp",
     libggml: str | Path | None = None,
     tokenizer_source: str | Path | None = None,
-    group_size: int = 128,
-    pack_method: str = "reorder",
+    group_size: int | None = None,
+    pack_method: str | None = None,
+    native_passthrough: bool | None = None,
     split_max_size: str = "8G",
     max_tensors: int | None = None,
     dry_run: bool = False,
     keep_staging: bool = False,
 ) -> Path:
-    """Export a Quark AWQ checkpoint to a llama.cpp-compatible GGUF file.
+    """Export a Quark checkpoint to a llama.cpp-compatible GGUF file.
 
     This path is independent from ``export_gguf`` and ``export_safetensors``.
-    It unpacks Quark signed INT4 AWQ in memory, re-encodes with llama.cpp's
-    native quantizers via ``libggml``, and writes public GGUF tensor types.
+
+    When the checkpoint uses a native scheme that maps 1:1 to a public GGUF
+    quant type, export avoids libggml re-quantization:
+
+    * ``uint4_wo_32`` (asymmetric, group size 32) -> ``q4_1``
+    * ``int4_wo_32`` (symmetric, group size 32) -> ``q4_0``
+
+    Architectures such as ``Qwen3_5MoeForConditionalGeneration`` are handled
+    via llama.cpp ``conversion/`` tensor mapping; only the quant payload is
+    produced by Quark.
 
     Args:
         quark_model_dir: Directory containing Quark AWQ safetensors.
@@ -49,8 +58,11 @@ def export_llama_cpp_gguf(
             ``$llama_cpp_dir/build-hip/bin/libggml.so``.
         tokenizer_source: Optional tokenizer directory when the Quark repo uses
             TokenizersBackend and lacks a standard HF tokenizer export.
-        group_size: Quark AWQ group size.
-        pack_method: Quark pack method, ``"order"`` or ``"reorder"``.
+        group_size: Quark per-group size. Auto-detected from ``config.json`` when omitted.
+        pack_method: Quark pack method, ``"order"`` or ``"reorder"``. Auto-detected when omitted.
+        native_passthrough: When ``True``, require a native scheme/format match and pack
+            Quark blocks directly (no libggml re-quant). When ``None`` (default), enable
+            passthrough automatically for ``q4_0`` / ``q4_1`` when the checkpoint matches.
         split_max_size: GGUF shard size limit.
         max_tensors: Debug option to stop after N tensors.
         dry_run: If True, do not write GGUF payload bytes.
@@ -80,6 +92,7 @@ def export_llama_cpp_gguf(
         tokenizer_source=Path(tokenizer_source).resolve() if tokenizer_source else None,
         group_size=group_size,
         pack_method=pack_method,
+        native_passthrough=native_passthrough,
         split_max_size=split_max_size,
         max_tensors=max_tensors,
         dry_run=dry_run,

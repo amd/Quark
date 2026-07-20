@@ -76,4 +76,74 @@ def test_gguf_python_roundtrip(format_name: str) -> None:
 def test_list_export_formats_contains_q4_k_m() -> None:
     assert "q4_k_m" in LLAMA_CPP_EXPORT_FORMATS
     assert "q8_0" in LLAMA_CPP_EXPORT_FORMATS
+    assert "q4_1" in LLAMA_CPP_EXPORT_FORMATS
+    assert "q4_0" in LLAMA_CPP_EXPORT_FORMATS
     assert len(LLAMA_CPP_EXPORT_FORMATS) == 32
+
+
+@require_torch_higher_or_equal("2.4.0")
+def test_native_q4_1_pack_roundtrip() -> None:
+    import gguf
+    import torch
+    from pathlib import Path
+    from safetensors import safe_open
+
+    from quark.torch.export.llama_cpp_export.quark_gguf_pack import pack_affine_uint4_to_q4_1
+    from quark.torch.export.llama_cpp_export.quark_awq_unpack import dequantize_uint4_weight
+
+    model_dir = Path(
+        os.environ.get(
+            "UINT4_TEST_MODEL",
+            "/home/l/work/quantization_work/qwen36_uint4_q4_1_gguf/output/uint4-wo32",
+        )
+    )
+    weights = model_dir / "model.safetensors"
+    if not weights.exists():
+        pytest.skip(f"uint4 checkpoint not found: {weights}")
+
+    name = "model.language_model.layers.0.linear_attn.in_proj_a.weight"
+    with safe_open(str(weights), framework="pt", device="cpu") as f:
+        if name not in f.keys():
+            pytest.skip(f"{name} not in checkpoint")
+        w = f.get_tensor(name)
+        s = f.get_tensor(name.replace(".weight", ".weight_scale"))
+        z = f.get_tensor(name.replace(".weight", ".weight_zero_point"))
+
+    ref = dequantize_uint4_weight(
+        w, s, z, group_size=32, pack_reorder=True, out_dtype=torch.float32
+    ).numpy()
+    packed = pack_affine_uint4_to_q4_1(
+        w, s, z, group_size=32, pack_reorder=True
+    ).numpy()
+    restored = gguf.quants.dequantize(packed, gguf.GGMLQuantizationType.Q4_1)
+    assert restored.shape == ref.shape
+    assert np.abs(restored - ref).max() < 1e-3
+
+
+def test_validate_native_passthrough_uint4() -> None:
+    from quark.torch.export.llama_cpp_export.scheme_compat import validate_native_passthrough
+    import json
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = {
+            "config": {"architectures": ["Qwen3_5MoeForConditionalGeneration"]},
+            "quantization_config": {
+                "global_quant_config": {
+                    "weight": {
+                        "dtype": "uint4",
+                        "symmetric": False,
+                        "group_size": 32,
+                        "qscheme": "per_group",
+                    }
+                },
+                "export": {"pack_method": "reorder"},
+            },
+        }
+        path = Path(tmp) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        scheme = validate_native_passthrough(Path(tmp), "q4_1")
+        assert scheme.gguf_format == "q4_1"
+        with pytest.raises(ValueError):
+            validate_native_passthrough(Path(tmp), "q4_0")

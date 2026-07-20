@@ -11,13 +11,31 @@ This module is separate from:
 ## Flow
 
 ```text
-Quark AWQ safetensors
-  -> in-memory signed INT4 unpack
-  -> libggml quantizer (llama.cpp)
-  -> GGUF writer (llama.cpp conversion/)
+Quark real-quantized safetensors
+  -> detect scheme (uint4_wo_32 / int4_wo_32)
+  -> native Q4_1 / Q4_0 block pack (no libggml re-quant) when formats match
+  -> llama.cpp conversion/ tensor mapping (Qwen3.5/3.6 MoE, Llama, ...)
+  -> GGUF writer
 ```
 
-No FP16/BF16 Hugging Face checkpoint is written to disk.
+For formats such as ``q4_k_m`` that do not match a Quark native scheme, the
+legacy path still dequantizes in memory and re-encodes with ``libggml``.
+
+## Native scheme mapping
+
+| Quark scheme | GGUF export format |
+|--------------|-------------------|
+| ``uint4_wo_32`` (asymmetric, gs=32) | ``q4_1`` |
+| ``int4_wo_32`` (symmetric, gs=32) | ``q4_0`` |
+
+```python
+export_llama_cpp_gguf(
+    quark_model_dir="/path/to/uint4-wo32",
+    output_dir="/path/to/out",
+    export_format="q4_1",  # must match checkpoint scheme
+    llama_cpp_dir="/path/to/llama.cpp",
+)
+```
 
 ## API
 

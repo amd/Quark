@@ -23,7 +23,12 @@ from quark.common.utils.log import ScreenLogger
 from quark.torch.export.llama_cpp_export.formats import LlamaCppExportFormat, get_export_format
 from quark.torch.export.llama_cpp_export.ggml_quantizer import GgmlQuantizer
 from quark.torch.export.llama_cpp_export.quark_awq_unpack import (
+    build_native_passthrough_loaders,
     build_quark_tensor_loaders,
+)
+from quark.torch.export.llama_cpp_export.scheme_compat import (
+    QuarkNativeScheme,
+    validate_native_passthrough,
 )
 
 logger = ScreenLogger(__name__)
@@ -48,8 +53,9 @@ class LlamaCppConvertConfig:
     llama_cpp_dir: Path
     libggml: Path
     tokenizer_source: Path | None = None
-    group_size: int = 128
-    pack_method: str = "reorder"
+    group_size: int | None = None
+    pack_method: str | None = None
+    native_passthrough: bool | None = None
     split_max_size: str = "8G"
     max_tensors: int | None = None
     dry_run: bool = False
@@ -120,7 +126,7 @@ def prepare_staging_dir(
 
 
 def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) -> Path:
-    """Stream a Quark AWQ checkpoint into a public llama.cpp GGUF file."""
+    """Stream a Quark checkpoint into a public llama.cpp GGUF file."""
     fmt = get_export_format(config.export_format)
     _setup_llama_cpp_imports(config.llama_cpp_dir)
 
@@ -133,6 +139,33 @@ def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) ->
     out_dir.mkdir(parents=True, exist_ok=True)
     staging_dir = out_dir / f".{config.name}-llama-cpp-staging"
 
+    native_scheme: QuarkNativeScheme | None = None
+    if config.native_passthrough is False:
+        native_scheme = None
+    elif config.native_passthrough is True or fmt.name in {"q4_0", "q4_1"}:
+        try:
+            native_scheme = validate_native_passthrough(quark_dir, fmt.name)
+        except ValueError:
+            if config.native_passthrough is True:
+                raise
+            native_scheme = None
+
+    if native_scheme is not None:
+        group_size = native_scheme.group_size
+        pack_method = native_scheme.pack_method
+        logger.info(
+            "Using native GGUF passthrough (%s, group_size=%d, pack_method=%s)",
+            fmt.name,
+            group_size,
+            pack_method,
+        )
+    else:
+        from quark.torch.export.llama_cpp_export.scheme_compat import read_quark_export_config
+
+        weight_cfg, export_cfg = read_quark_export_config(quark_dir)
+        group_size = config.group_size or int(weight_cfg.get("group_size", 128))
+        pack_method = config.pack_method or export_cfg.get("pack_method", "reorder")
+
     prepare_staging_dir(quark_dir, staging_dir, config.tokenizer_source)
 
     hparams = ModelBase.load_hparams(staging_dir, is_mistral_format=False)
@@ -142,7 +175,8 @@ def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) ->
 
     outfile = out_dir / f"{config.name}-{fmt.name}-{{ftype}}.gguf"
     quantizer = GgmlQuantizer(config.libggml)
-    pack_reorder = config.pack_method == "reorder"
+    pack_reorder = pack_method == "reorder"
+    use_native = native_scheme is not None
 
     class QuarkLlamaCppModel(model_class):  # type: ignore[misc, valid-type]
         model_arch = model_class.model_arch
@@ -166,13 +200,21 @@ def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) ->
                 None,
             )
             type(self)._original_block_count = hparams_local.get(key)
-            loaders, cache = build_quark_tensor_loaders(
-                quark_dir,
-                group_size=config.group_size,
-                pack_reorder=pack_reorder,
-                out_dtype=torch.float32,
-                max_tensors=config.max_tensors,
-            )
+            if use_native:
+                assert native_scheme is not None
+                loaders, cache = build_native_passthrough_loaders(
+                    quark_dir,
+                    native_scheme,
+                    max_tensors=config.max_tensors,
+                )
+            else:
+                loaders, cache = build_quark_tensor_loaders(
+                    quark_dir,
+                    group_size=group_size,
+                    pack_reorder=pack_reorder,
+                    out_dtype=torch.float32,
+                    max_tensors=config.max_tensors,
+                )
             QuarkLlamaCppModel._shard_cache = cache
             filtered: dict[str, Callable[[], Tensor]] = {}
             for item in loaders.items():
@@ -213,6 +255,18 @@ def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) ->
                         break
 
                 for new_name, data_torch in self.modify_tensors(data_torch, name, bid):
+                    if use_native and data_torch.dtype == torch.uint8:
+                        data_qtype = fmt.weight_qtype
+                        data = data_torch.numpy()
+                        shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype)
+                        shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
+                        logger.info(
+                            f"{f'%-{max_name_len}s' % f'{new_name},'} "
+                            f"quark-native --> {data_qtype.name}, shape = {shape_str}"
+                        )
+                        self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
+                        continue
+
                     data = data_torch.numpy()
                     n_dims = len(data.shape)
                     data_qtype: gguf.GGMLQuantizationType | bool = (
@@ -271,7 +325,9 @@ def convert_quark_checkpoint_to_llama_cpp_gguf(config: LlamaCppConvertConfig) ->
                         data_qtype = fmt.weight_qtype
 
                     try:
-                        if fmt.use_libggml:
+                        if use_native and fmt.name in {"q4_0", "q4_1"}:
+                            data = gguf.quants.quantize(data, data_qtype)
+                        elif fmt.use_libggml:
                             data = quantizer.quantize(data, data_qtype)
                         else:
                             data = gguf.quants.quantize(data, data_qtype)
