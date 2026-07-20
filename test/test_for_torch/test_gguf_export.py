@@ -773,3 +773,49 @@ def test_gguf_export(tmpdir: str):
         for multi_gpu in [False]:
             model = quantize_model(quant_config, model_name="facebook/opt-125m", multi_gpu=multi_gpu)
             export_gguf(model, output_dir=tmpdir, model_type="llama", tokenizer_path="facebook/opt-125m")
+
+
+@require_torch_higher_or_equal("2.4.0")
+def test_pack_uint4_wo32_to_q4_1_roundtrip() -> None:
+    import os
+    from pathlib import Path
+
+    import numpy as np
+    from safetensors import safe_open
+    from gguf.quants import dequantize as gguf_dequantize
+
+    from quark.torch.export.gguf_export.quark_packed_gguf import (
+        pack_uint4_wo32_to_q4_1,
+        unpack_unsigned_int4,
+    )
+
+    model_dir = Path(
+        os.environ.get(
+            "UINT4_TEST_MODEL",
+            "/home/l/work/quantization_work/qwen36_uint4_q4_1_gguf/output/uint4-wo32",
+        )
+    )
+    weights = model_dir / "model.safetensors"
+    if not weights.exists():
+        pytest.skip(f"uint4 checkpoint not found: {weights}")
+
+    name = "model.language_model.layers.0.linear_attn.in_proj_a.weight"
+    with safe_open(str(weights), framework="pt", device="cpu") as f:
+        if name not in f.keys():
+            pytest.skip(f"{name} not in checkpoint")
+        w = f.get_tensor(name)
+        s = f.get_tensor(name.replace(".weight", ".weight_scale"))
+        z = f.get_tensor(name.replace(".weight", ".weight_zero_point"))
+
+    q = unpack_unsigned_int4(w, pack_reorder=True).to(torch.float32)
+    z_u = unpack_unsigned_int4(z, pack_reorder=True).to(torch.float32)
+    s_f = s.to(torch.float32)
+    if s_f.shape[0] * 32 == q.shape[0]:
+        s_f = s_f.repeat_interleave(32, dim=0)
+        z_u = z_u.repeat_interleave(32, dim=0)
+    ref = ((q - z_u) * s_f).T.numpy()
+
+    packed = pack_uint4_wo32_to_q4_1(w, s, z, pack_reorder=True).numpy()
+    restored = gguf_dequantize(packed, GGMLQuantizationType.Q4_1)
+    assert restored.shape == ref.shape
+    assert np.abs(restored - ref).max() < 1e-3
