@@ -1,0 +1,3 @@
+interface:
+  display_name: "Install AMD Quark"
+  short_description: "Plan, install, and verify a Quark environment"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quark PyTorch PTQ"
+  short_description: "Quantize and validate PyTorch models with Quark"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quark ONNX PTQ"
+  short_description: "Quantize and validate ONNX models with Quark"
