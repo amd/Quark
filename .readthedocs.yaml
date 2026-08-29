@@ -20,7 +20,7 @@ build:
      pre_install:
        - pip install "cmake<4.0"
        - pip install torch==2.11.0  # The latest version
-       - bash -c "cd $READTHEDOCS_REPOSITORY_PATH && pip install ."
+       - bash -c "cd $READTHEDOCS_REPOSITORY_PATH && pip install .[cli]"
        - bash -c "cd docs && ./install_requirements.sh"
      build:
        htmlzip:
