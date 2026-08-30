@@ -710,6 +710,7 @@ class LLMTemplate:
             - gemma2
             - gemma3
             - gemma3_text
+            - gemma4
             - glm4_moe
             - glm4_moe_lite
             - glm_moe_dsa
@@ -1095,6 +1096,31 @@ DEFAULT_TEMPLATES = {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["*lm_head"],
+    },
+    "gemma4": {
+        "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
+        "q_layer_name": "*language_model.*q_proj",
+        "exclude_layers_name": [
+            "*vision_tower*",
+            "*embed_vision*",
+            "*audio_tower*",
+            "*embed_audio*",
+            "*multi_modal_projector*",
+            "*lm_head",
+            "*router.proj",
+        ],
+        "f2f_weight_converters": [
+            WeightConverter(
+                "gate_up_proj",
+                ["gate_proj.weight", "up_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+            WeightConverter(
+                "down_proj",
+                ["down_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+        ],
     },
     "glm4_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],

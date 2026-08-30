@@ -561,6 +561,21 @@ GPTQ_MAP = {
         ],
         model_decoder_layers="model.language_model.layers",
     ),
+    "gemma4": GPTQConfig(
+        inside_layer_modules=[
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.q_proj",
+            "self_attn.o_proj",
+            "mlp.up_proj",
+            "mlp.gate_proj",
+            "mlp.down_proj",
+            "experts.*.up_proj",
+            "experts.*.gate_proj",
+            "experts.*.down_proj",
+        ],
+        model_decoder_layers="model.language_model.layers",
+    ),
     "gpt_oss": GPTQConfig(
         inside_layer_modules=[
             "self_attn.q_proj",
