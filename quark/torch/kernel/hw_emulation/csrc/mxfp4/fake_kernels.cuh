@@ -149,53 +149,64 @@ __device__ float_type fp16_to_fp4_simulate(float_type* val) {
 template <
   typename float_type, uint32_t half_exp_bits, uint32_t half_mantissa_bits,
   uint32_t half_exp_bias, uint16_t val_to_add, uint16_t sign_exponent_mask>
-__global__ void qdq_mxfp4_kernel(float_type* inp, float_type* out) {
-  // Each thread handles one element.
+__global__ void qdq_mxfp4_kernel(
+  float_type* inp, float_type* out, int64_t numel
+) {
+  // Each thread handles one element per grid-stride iteration.
+  //
+  // `numel` is a multiple of `blockDim.x` (the caller enforces that it is a
+  // multiple of 64 or 128), and the stride is a multiple of `blockDim.x` too,
+  // so the loop bound always falls on a block boundary. Every block that runs
+  // an iteration therefore has all of its threads active, which keeps the
+  // warps below fully populated -- `shfl_xor_bf16_or_half` requires all 32
+  // lanes of a warp to participate.
+  const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
 
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  for (int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       idx < numel; idx += stride) {
+    float_type elem = inp[idx];
+    float_type block_max = habs_impl(elem);
 
-  float_type elem = inp[idx];
-  float_type block_max = habs_impl(elem);
+    // Compute the max across one warp via butterfly shuffles. Each thread
+    // handles a single value, so we need `log2(WARP_SIZE)` rounds of shuffle
+    // (5 rounds for a 32-lane warp).
+    for (int i = 1; i < static_cast<int>(WARP_SIZE); i *= 2) {
+      block_max =
+        hmax_impl(block_max, habs_impl(shfl_xor_bf16_or_half(block_max, i)));
+    }
 
-  // Compute the max across one warp via butterfly shuffles. Each thread
-  // handles a single value, so we need `log2(WARP_SIZE)` rounds of shuffle
-  // (5 rounds for a 32-lane warp).
-  for (int i = 1; i < static_cast<int>(WARP_SIZE); i *= 2) {
-    block_max =
-      hmax_impl(block_max, habs_impl(shfl_xor_bf16_or_half(block_max, i)));
+    // TODO: fix as well in quantize kernel.
+    // Apply rounding strategy to block_max.
+    // cannot take the address of an rvalue so need this intermediate
+    // `block_max_uint` variable?
+    uint16_t block_max_uint =
+      (*(uint16_t*)(&block_max) + val_to_add) & sign_exponent_mask;
+
+    block_max = *(float_type*)(&block_max_uint);
+
+    // Pick the largest power-of-two scale s.t. block_max / scale fits in fp4.
+    // Max fp4 magnitude is 6.0 (unbiased exp = FP4_MAX_NORMAL_EXP_UNBIASED),
+    // so we want the scale's unbiased exp to be `floor(log2(block_max)) -
+    // FP4_MAX_NORMAL_EXP_UNBIASED`.
+    uint8_t scale_exp = max(
+      0, FLOAT8_E8M0_MAX_EXP +
+           min(
+             bf16_or_half2int_rn<float_type>(hfloor_impl(hlog2_impl(block_max))
+             ) - FP4_MAX_NORMAL_EXP_UNBIASED,
+             FLOAT8_E8M0_MAX_EXP
+           )
+    );
+    float_type scale = float_to_bf16_or_half<float_type>(
+      powf(2.0, scale_exp - FLOAT8_E8M0_MAX_EXP)
+    );
+
+    elem = hdiv_impl(elem, scale);
+
+    float_type elem_fp4 = fp16_to_fp4_simulate<
+      float_type, half_exp_bits, half_mantissa_bits, half_exp_bias>(&elem);
+
+    out[idx] = hmul_impl(elem_fp4, scale);
   }
-
-  // TODO: fix as well in quantize kernel.
-  // Apply rounding strategy to block_max.
-  // cannot take the address of an rvalue so need this intermediate
-  // `block_max_uint` variable?
-  uint16_t block_max_uint =
-    (*(uint16_t*)(&block_max) + val_to_add) & sign_exponent_mask;
-
-  block_max = *(float_type*)(&block_max_uint);
-
-  // Pick the largest power-of-two scale s.t. block_max / scale fits in fp4.
-  // Max fp4 magnitude is 6.0 (unbiased exp = FP4_MAX_NORMAL_EXP_UNBIASED), so
-  // we want the scale's unbiased exp to be `floor(log2(block_max)) -
-  // FP4_MAX_NORMAL_EXP_UNBIASED`.
-  uint8_t scale_exp = max(
-    0, FLOAT8_E8M0_MAX_EXP +
-         min(
-           bf16_or_half2int_rn<float_type>(hfloor_impl(hlog2_impl(block_max))) -
-             FP4_MAX_NORMAL_EXP_UNBIASED,
-           FLOAT8_E8M0_MAX_EXP
-         )
-  );
-  float_type scale = float_to_bf16_or_half<float_type>(
-    powf(2.0, scale_exp - FLOAT8_E8M0_MAX_EXP)
-  );
-
-  elem = hdiv_impl(elem, scale);
-
-  float_type elem_fp4 = fp16_to_fp4_simulate<
-    float_type, half_exp_bits, half_mantissa_bits, half_exp_bias>(&elem);
-
-  out[idx] = hmul_impl(elem_fp4, scale);
 }
 
 #endif  // USE_CUDA

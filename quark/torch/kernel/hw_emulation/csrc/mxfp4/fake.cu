@@ -3,7 +3,9 @@
 #include <torch/csrc/stable/tensor.h>
 #include <torch/headeronly/core/ScalarType.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 
 #include "device_guard.h"
 #include "gpu_stream.h"
@@ -29,7 +31,7 @@ void launch_qdq_mxfp4(
   const torch::stable::Tensor& a, int64_t group_size, void* out_ptr
 ) {
   quark::DeviceGuard guard(a);
-  int numel = a.numel();
+  int64_t numel = a.numel();
   int block_size;
 
   if (numel % kBlockSizeLarge == 0) {
@@ -51,7 +53,15 @@ void launch_qdq_mxfp4(
     a.is_contiguous(), "Expected qdq_mxfp4 input to be contiguous!"
   );
 
-  dim3 dimGrid(numel / block_size, 1, 1);
+  // `numel` is a multiple of `block_size`, so this division is exact. Clamp to
+  // the maximum grid dimension; `qdq_mxfp4_kernel` is a grid-stride loop, so a
+  // clamped grid just means each thread handles more than one element. For any
+  // tensor that fits in memory today the clamp is inactive and every thread
+  // still handles exactly one element.
+  const int64_t num_blocks = numel / block_size;
+  const int64_t max_blocks = static_cast<int64_t>(std::numeric_limits<int>::max());
+
+  dim3 dimGrid(static_cast<unsigned int>(std::min(num_blocks, max_blocks)), 1, 1);
   dim3 dimBlock(block_size, 1, 1);  // < 1024: we are good!
 
   const cudaStream_t stream = getCurrentStream();
@@ -61,14 +71,14 @@ void launch_qdq_mxfp4(
       __half, FLOAT16_EXP_BITS, FLOAT16_MANTISSA_BITS, FLOAT16_EXP_BIAS,
       FLOAT16_VAL_TO_ADD, FLOAT16_SIGN_EXPONENT_MASK>
       <<<dimGrid, dimBlock, 0, stream>>>(
-        (__half*)a.data_ptr(), (__half*)out_ptr
+        (__half*)a.data_ptr(), (__half*)out_ptr, numel
       );
   } else if (a.scalar_type() == torch::headeronly::ScalarType::BFloat16) {
     qdq_mxfp4_kernel<
       __nv_bfloat16, BFLOAT16_EXP_BITS, BFLOAT16_MANTISSA_BITS,
       BFLOAT16_EXP_BIAS, BFLOAT16_VAL_TO_ADD, BFLOAT16_SIGN_EXPONENT_MASK>
       <<<dimGrid, dimBlock, 0, stream>>>(
-        (__nv_bfloat16*)a.data_ptr(), (__nv_bfloat16*)out_ptr
+        (__nv_bfloat16*)a.data_ptr(), (__nv_bfloat16*)out_ptr, numel
       );
   } else {
     STD_TORCH_CHECK(false, "Wrong input dtype in qdq_mxfp4!");
