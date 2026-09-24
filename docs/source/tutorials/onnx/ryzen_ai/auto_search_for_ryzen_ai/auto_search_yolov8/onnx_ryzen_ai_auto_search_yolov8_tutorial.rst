@@ -21,13 +21,13 @@ model’s performance.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Run auto search
+-  Run auto search
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -106,11 +106,11 @@ experiments in a central place. Otherwise, the current folder is used.
 
 The COCO dataset should be structured as follows:
 
-- val2017
+-  val2017
 
-  - sample_1.jpg
-  - sample_2.jpg
-  - …
+   -  sample_1.jpg
+   -  sample_2.jpg
+   -  …
 
 4) Auto Search Pipeline
 -----------------------
@@ -125,11 +125,11 @@ the original floating-point model and the quantized model. When the
 quantized model’s accuracy loss exceeds the set tolerance, the Auto
 Search framework will stop further searches.
 
-- **Tolerance Threshold**: This is a value representing the maximum
-  acceptable accuracy drop from the floating-point model.
-- **Auto-Stop Condition**: When the search reaches a configuration with
-  accuracy loss below the tolerance threshold, the framework will halt,
-  saving the best configuration and corresponding quantized model.
+-  **Tolerance Threshold**: This is a value representing the maximum
+   acceptable accuracy drop from the floating-point model.
+-  **Auto-Stop Condition**: When the search reaches a configuration with
+   accuracy loss below the tolerance threshold, the framework will halt,
+   saving the best configuration and corresponding quantized model.
 
 Example: If the floating-point model has 95% accuracy and the tolerance
 is set to 1%, the Auto Search will stop if a configuration causes an

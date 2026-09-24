@@ -27,6 +27,18 @@ For Contributors: How to Contribute
 
 We appreciate your interest in contributing to the Quark ``contrib`` area! Your contributions help expand the capabilities of Quark and benefit the entire community. To ensure a smooth and successful contribution process, please familiarize yourself with the following principles and guidelines.
 
+.. important::
+
+   **These guidelines are the single source of truth, and they evolve over time.**
+   Always follow the guidelines as written here — do not model your contribution on
+   an existing ``contrib`` component. Older components were merged under earlier
+   versions of these rules and may not yet reflect current requirements; where an
+   existing component and this document disagree, **this document wins**. Treating a
+   legacy component as precedent for skipping a current requirement is not a valid
+   justification during review. We update existing components toward these guidelines
+   over time, but they may lag, so trust the guidelines rather than the code you see
+   in the tree.
+
 .. _contribution_principles:
 
 Contribution Principles
@@ -67,6 +79,13 @@ By contributing to the ``contrib`` area, you agree to the following responsibili
 How to Contribute
 ^^^^^^^^^^^^^^^^^
 
+* **Know where each part of your contribution belongs.** Your component's **package code**, its unit tests (``test/``), its documentation (``docs/``), and any component-scoped ``requirements.txt`` / ``.gitignore`` **must** live under your component's directory, ``quark/contrib/your-component-name/``. Do **not** edit shared documentation files such as ``docs/source/index.rst`` — your docs are wired in automatically (see below). Two categories of assets are deliberate exceptions and live in the shared top-level folders so users can find them alongside the core equivalents:
+
+  * **Runnable examples** go in the repository's root ``examples/`` tree, under ``examples/contrib/your-component-name/``.
+  * **Jupyter tutorials** go in the repository's root ``tutorials/`` tree, under ``tutorials/contrib/your-component-name/``.
+
+  The only other files a contribution places outside its own folder are CI/CD workflows and reusable actions (under ``.github/workflows/`` and ``.github/actions/``, see :ref:`the CI/CD section <running_cicd_contribution>`) and your ownership entry in the root ``CODEOWNERS`` file. Keeping ``docs/`` and ``test/`` in the component makes it easy to review, maintain, and remove; keeping ``examples/`` and ``tutorials/`` in the shared trees makes them discoverable next to the core ones.
+
 * **File an Intent-to-Contribute Issue:** Before starting any work, you **must** open an issue on the Quark GitHub repository to declare your intent to contribute. This issue should provide a summary, design, and other relevant technical information about your proposed contribution. This step is crucial for preventing work duplication with the Quark Core Team's roadmap and allows for a discussion of the solution before significant time is invested in implementation.
 
 * **Create a ``README.md``:** Each contribution must include a ``README.md`` file within its component directory (e.g., ``quark/contrib/your-component-name/README.md``). This file should provide a short description of your contribution, its purpose, and clear contact information for users to report bugs, provide feedback, or address any other concerns directly to you, the author.
@@ -81,6 +100,8 @@ E.g., for taking ownership for ``your-component-name``:
 
 * **Contribution Guidelines:** For general development guidelines, including information on setting up your environment, writing tests, and submitting a pull request, please refer to the main ``CONTRIBUTING.md`` file in the repository.
 
+* **Contributing an algorithm (optional):** If you are contributing a quantization algorithm for the PyTorch backend, Quark provides ``QuarkAlgorithm`` — a wrapper that lets your code live in your own component directory instead of being threaded into Quark's core files. Follow :doc:`How to Add a New contrib Algorithm <contrib_add_algorithm>`, which explains how to package and register your algorithm.
+
 * **Update the ``.gitignore``:** If your contribution includes files that should not be tracked by Git, you must update the ``.gitignore`` file in your component's directory. This ensures that temporary files, build artifacts, or other non-essential files are not included in the repository.
 
 * **Update the ``requirements.txt``:** If your contribution introduces new Python dependencies, you must reach out to the Quark Core Team to discuss whether it is appropriate to update the main ``requirements.txt``. Otherwise, create a ``requirements.txt`` file in your component's directory to include these dependencies and produce documentation to inform users about the installation process.
@@ -92,9 +113,9 @@ Testing Your Contribution
 
 Each ``contrib`` component is expected to include its own dedicated tests to ensure its functionality and stability.
 
-* **Test Location:** All unit tests for your contribution must reside in a ``tests`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/tests/``.
+* **Test Location:** All unit tests for your contribution must reside in a ``test`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/test/``. The CI test runner discovers tests only under this ``test/`` folder.
 
-* **Test Quality:** Your unit tests must be fast, small, and achieve the **minimum code coverage threshold required by Quark**. Failure to meet the coverage threshold **will block your contribution from being merged**. Please refer to the general ``CONTRIBUTING.md`` guidelines and test's ``README.md`` (aka ``tests/README.md``) for the specific coverage requirements and other testing policies.
+* **Test Quality:** Your unit tests must be fast, small, and achieve the **minimum code coverage threshold required by Quark**. Failure to meet the coverage threshold **will block your contribution from being merged**. Please refer to the general ``CONTRIBUTING.md`` guidelines and test's ``README.md`` (aka ``test/README.md``) for the specific coverage requirements and other testing policies.
 
 * **CI/CD Integration:** To integrate your tests into Quark's continuous integration/continuous deployment (CI/CD) workflows and scripts, you **must consult with a DevOps engineer** from the Quark Core Team. They will assist in updating the infrastructure to properly run your tests.
 
@@ -105,23 +126,23 @@ Documenting Your Contribution
 
 Comprehensive documentation is vital for the usability and maintainability of your ``contrib`` component.
 
-* **Documentation Location:** All documentation for your contribution must be placed in a ``docs`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/docs/``.
+* **Documentation Location:** All documentation for your contribution must be placed in a ``docs`` subfolder within your component's directory, i.e., ``quark/contrib/your-component-name/docs/``. Your ``docs`` folder **must** contain an ``index.rst`` that serves as the landing page for your component — this is the file the documentation build looks for.
 
-* **Format and Content:** Documentation must be written in **ReStructuredText** format. It should include a clear conceptual introduction, practical examples, relevant diagrams or visualizations where appropriate, and any other information necessary to make the component easy to use, understand, and maintain for other developers. High-quality documentation is essential for user adoption and long-term maintainability.
+* **Format and Content:** Documentation must be written in **ReStructuredText** format. It should include a clear conceptual introduction, practical examples, relevant diagrams or visualizations where appropriate, and any other information necessary to make the component easy to use, understand, and maintain for other developers. High-quality documentation is essential for user adoption and long-term maintainability. If your landing page has additional sub-pages, add them to a ``toctree`` within your ``docs/index.rst``.
 
-* **CI/CD Integration:** To integrate your documentation into Quark's build and deployment infrastructure, you **may consult with a DevOps engineer** from the Quark Core Team. They will assist in updating the necessary CI/CD workflows or scripts, if needed. Typically, it is needed to update the ``docs/source/index.rst`` file to add an entry point for your new contribution's documentation. This entry should be placed right below the ``intro_contrib.rst`` page, similar to this example:
+* **Prefer executable tutorials (Jupyter notebooks) over source-code examples:** Whenever possible, teach your component with a runnable **Jupyter notebook** (``.ipynb``) rather than a standalone ``.py`` example plus prose. Notebooks are strongly preferred because they interleave explanation, runnable code, and real output on one page; they are executed by the documentation CI, so they double as living tests that catch API drift; and they give users an interactive, copy-and-run onboarding experience. A plain ``.py`` example is only validated for syntax, not behavior, and tends to rot. Place notebooks under ``tutorials/contrib/your-component-name/`` in the repository's root ``tutorials/`` tree (alongside the core tutorials, with any per-notebook ``requirements.txt`` next to the notebook), and reference them from your ``docs/index.rst`` so they appear under your component's documentation. Runnable ``.py`` examples, if any, go under ``examples/contrib/your-component-name/``.
 
-    .. code-block:: rst
+  A good tutorial follows the notebook **Style Guide** in ``CONTRIBUTING.md``: it opens with a one-line statement of what the reader will achieve, states assumed knowledge, walks through a concrete end-to-end example the reader can run and modify, includes a short troubleshooting subsection, and closes with a summary plus links to further reading. For reference, study these core-repo tutorials as templates:
 
-        .. toctree::
-            :hidden:
-            :caption: Contributions
-            :maxdepth: 1
+  * ``tutorials/torch/quickstart_tutorial/quickstart_tutorial.ipynb`` — a minimal, welcoming first-run walkthrough.
+  * ``tutorials/torch/llm_ptq/llm_tutorial/llm_tutorial.ipynb`` — a fuller end-to-end PTQ example with explanation interleaved with runnable cells.
+  * ``tutorials/onnx/image_classification/onnx_image_classification_tutorial.ipynb`` — a task-oriented tutorial with concrete inputs and outputs.
 
-            Quark ``contrib``s <intro_contrib_without_dot_rst>
-            Your component name <contrib_your_component_name>
+* **Automatic integration — no core files to edit:** You do **not** need to touch any shared documentation file (such as ``docs/source/index.rst``) to publish your docs. At build time, ``docs/build_docs.sh`` copies every ``quark/contrib/<component>/docs/`` directory into the documentation tree, and ``intro_contrib.rst`` indexes each component's ``index.rst`` automatically via a globbing ``toctree`` under the **Contributions** section. Simply create ``quark/contrib/your-component-name/docs/index.rst`` and your page will appear in the rendered documentation.
 
 * Write and test rendering of the documentation as per the general ``CONTRIBUTING.md`` guidelines.
+
+.. _running_cicd_contribution:
 
 Running CI/CD for Your Contribution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -243,3 +264,15 @@ Conclusion
 Thank you for your interest in contributing to the Quark ``contrib`` area! Your contributions play a vital role in expanding Quark's capabilities and serving the diverse needs of our community. We look forward to collaborating with you to build high-quality, well-maintained extensions that benefit all Quark users.
 
 If you have any questions about the contribution process or need assistance, please don't hesitate to reach out to the Quark Core Team through GitHub issues or our community channels. We're here to help you succeed!
+
+.. Each contrib component ships its own docs under quark/contrib/<component>/docs/.
+   docs/build_docs.sh copies them to contrib/<component>/ in the build tree, and the
+   globbing toctree below auto-indexes every component's index page — contributors
+   never edit this file.
+
+.. toctree::
+   :caption: Contributions
+   :maxdepth: 1
+   :glob:
+
+   contrib/*/index

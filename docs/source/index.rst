@@ -78,6 +78,7 @@ Key Features
    PyTorch Tutorials <tutorials_pytorch>
    PyTorch Examples <pytorch/pytorch_examples>
    ONNX Tutorials <tutorials_onnx>
+   ONNX Examples <onnx/onnx_examples>
 
 .. supported-accelerators:
 .. toctree::
@@ -87,12 +88,14 @@ Key Features
 
    AMD Ryzen AI <supported_accelerators/ryzenai/index>
    AMD Instinct <supported_accelerators/mi_gpus/index>
+   AMD Adaptive SoC <supported_accelerators/adaptive_soc/index>
 
 .. _advanced-quark-features-pytorch:
 .. toctree::
    :hidden:
    :caption: Advanced AMD Quark Features for PyTorch
    :maxdepth: 1
+
 
    Configuring PyTorch Quantization for Large Language Models <pytorch/user_guide_config_for_llm>
    Configuring PyTorch Quantization from Scratch <pytorch/user_guide_config_description>
@@ -110,7 +113,7 @@ Key Features
    Extensions <pytorch/extensions>
    Using MX (Microscaling) <pytorch/adv_mx>
    Two Level Quantization Formats <pytorch/adv_two_level>
-   Using Quark Agent Skills (Claude Code) <pytorch/agent_skills_torch>
+   Using Quark Agent Skills (Claude Code, Cursor, and Codex) <pytorch/agent_skills_torch>
 
 .. _advanced-quark-features-onnx:
 .. toctree::
@@ -132,6 +135,7 @@ Key Features
    :maxdepth: 1
 
    Introduction and guidelines <intro_contrib>
+   Adding a new algorithm <contrib_add_algorithm>
 
 .. toctree::
    :hidden:
@@ -141,8 +145,8 @@ Key Features
    Quark CLI <quark_cli>
    Mix Precision Auto-Search <mix_precision>
    Blockwise Joint Tuning <pytorch/blockwise_joint_tuning>
+   Speculative Decoding <speculative_decoding>
    Built-in Profiling <builtin_profiling>
-   ONNX Examples <onnx/onnx_examples>
 
 .. toctree::
    :hidden:

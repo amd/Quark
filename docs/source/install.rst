@@ -44,11 +44,11 @@ We will install Quark from PyPI, which will pull in required dependencies.
 
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-Next, if you are using the ONNX-to-ONNX flow in Quark, please install ONNX Runtime. We recommend using an ONNX Runtime version ≥ 1.22.2 and ≤ 1.25.1 for compatibility.
+Next, if you are using the ONNX-to-ONNX flow in Quark, please install ONNX Runtime. We recommend using an ONNX Runtime version ≥ 1.22.2 and ≤ 1.28.0 for compatibility.
 
 .. code-block:: bash
 
-   pip install "onnxruntime>=1.22.2,<=1.25.1"
+   pip install "onnxruntime>=1.22.2,<=1.28.0"
 
 Next, if you are using the OnnxRuntime Gen AI (OGA) Flow for LLM models, please install ONNX Runtime Gen AI.
 
@@ -157,7 +157,7 @@ If neither of these combinations is available on your system, you may install wi
 Install ONNX Runtime
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-ONNX Runtime version >=1.22.2 and <=1.25.1 is required.
+ONNX Runtime version >=1.22.2 and <=1.28.0 is required.
 
 Windows
 """""""
@@ -410,6 +410,7 @@ Previous Versions of AMD Quark
 
 **Note**: The following links are for older versions of AMD Quark, before the package distribution name was renamed to ``amd-quark``.
 
+-  `quark_0.13.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.13.zip>`__
 -  `quark_0.12.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.12.zip>`__
 -  `quark_0.11.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.11.zip>`__
 -  `quark_0.10.zip <https://download.amd.com/opendownload/Quark/amd_quark-0.10.zip>`__

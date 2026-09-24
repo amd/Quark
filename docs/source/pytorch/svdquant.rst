@@ -209,6 +209,88 @@ on a second CUDA stream so it overlaps the residual GEMM.
    non-persistent buffers, so export/reload always uses the standard Quark
    format regardless of whether native inference is active.
 
+.. _native-linear-modes:
+
+``native_linear_mode`` reference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RuntimeOptions(native_linear_mode=...)`` selects which kernel each converted
+layer runs on.  The mode names describe the *kernel*, not the quantization
+scheme, so read the activation column before choosing one:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 20 30 28
+
+   * - Mode
+     - Weight
+     - Activation
+     - Kernel
+   * - ``none`` (QDQ)
+     - dequantized
+     - **static per-tensor FP8** (from calibration)
+     - torch matmul
+   * - ``mxfp4``
+     - MXFP4
+     - **MXFP4**, dynamic per-1x32 -> **w4a4**
+     - AITER ASM ``gemm_a4w4``
+   * - ``flydsl_a8w4``
+     - MXFP4
+     - MXFP8, dynamic per-1x32 -> w4a8
+     - FlyDSL preshuffle GEMM
+   * - ``flydsl_svdquant``
+     - MXFP4 residual + high-precision low-rank
+     - MXFP8 -> w4a8
+     - FlyDSL, fused SVD epilogue
+   * - ``fp8_per_tensor``
+     - FP8
+     - FP8 per-tensor
+     - AITER FP8
+
+Three consequences are easy to miss:
+
+* **``mxfp4`` is w4a4, not w4a8.**  It quantizes the *activation* to MXFP4 as
+  well as the weight (per-1x32 input quant feeding ``gemm_a4w4``).  It is also
+  the only non-SVDQuant w4a4 path, and it needs no FlyDSL.
+* **A SVDQuant mode is uniform across the model.**  It converts the SVDQuant
+  wrappers to its fused kernel and routes plain quantized layers -- which have no
+  low-rank branch to fuse -- to a matching plain kernel: ``flydsl_svdquant`` uses
+  ``flydsl_a8w4``.  So every converted layer sees the activation precision the mode
+  name advertises.
+* **One packed checkpoint serves both w4a8 and w4a4.**  The weight on disk is
+  MXFP4 (``float4_e2m1fn_x2``) either way; the two differ only in how the
+  activation is quantized, which happens dynamically at load/run time.  Choosing
+  w4a4 is a ``native_linear_mode`` choice, not a different export.  A checkpoint
+  calibrated as ``mxfp4_fp8`` carries per-tensor FP8 input scales that the
+  ``mxfp4`` path simply ignores.
+* **QDQ and native do not use the same activation scheme.**  ``none`` applies the
+  static per-tensor FP8 scale recorded at calibration; the native kernels
+  re-quantize activations dynamically per 1x32 block.  The two are therefore not
+  numerically identical by construction, before any kernel differences.
+
+.. note::
+
+   Environment requirements (gfx950, ``flydsl==0.2.4``, ``aiter >= v0.1.20``) and
+   common failure modes are documented under "FlyDSL / native inference issues" in
+   :doc:`pytorch_troubleshooting`.
+
+.. note::
+
+   The FlyDSL A8W4 GEMM requires ``in_features`` to be ``>= 256`` and a multiple
+   of 256, and ``out_features`` to be ``>= 128`` and a multiple of 128.  Layers
+   that violate this (for example Wan's ``proj_out``: ``out_features=64`` on
+   A14B, ``192`` on TI2V-5B) are **silently left on the eager path**, so a
+   "native" model is often a mix.  Count the converted layers
+   (``enable_native_inference`` returns the number) rather than assuming.
+
+.. warning::
+
+   When validating a low-bit kernel, track output **magnitude**
+   (``||out|| / ||reference||``) alongside cosine similarity.  Cosine is
+   scale-invariant: a uniform, biased magnitude error is invisible to it.  A
+   round-to-nearest bug in the E8M0 activation scale once cost ~3.7% of output
+   magnitude while every ``cos > 0.98`` assertion still passed.
+
 .. _svdquant-calibration:
 
 Calibrating and tuning SVDQuant

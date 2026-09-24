@@ -21,21 +21,21 @@ across AMD’s hardware ecosystem.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare dataset
+-  Prepare dataset
 
-- Quantizatize models
+-  Quantizatize models
 
-  - INT8 only
+   -  INT8 only
 
-  - INT8 and GPTQ
+   -  INT8 and GPTQ
 
-  - INT8 and MatMul NBits
+   -  INT8 and MatMul NBits
 
-- Evaluate Models
+-  Evaluate Models
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -754,15 +754,23 @@ The following table contains the expected results, but please note that
 different machines can lead to minor variations in the accuracy of
 quantized model.
 
-+------------+---------+---------------+--------------------+-----------------+
-|            | Float   | INT8          | INT8 + GPTQ        | MatMul          |
-|            | Model   | Quantized     | Quantized Model    | Quantized Model |
-|            |         | Model         |                    |                 |
-+============+=========+===============+====================+=================+
-| Model Size | 480 MB  | 384 MB        | 384 MB             | 406 MB          |
-+------------+---------+---------------+--------------------+-----------------+
-| Perplexity | 27.0317 | 28.6846       | 27.5734            | 30.3604         |
-+------------+---------+---------------+--------------------+-----------------+
++----+--------+---------------+--------------------+-----------------+
+|    | Float  | INT8          | INT8 + GPTQ        | MatMul          |
+|    | Model  | Quantized     | Quantized Model    | Quantized Model |
+|    |        | Model         |                    |                 |
++====+========+===============+====================+=================+
+| M  | 480 MB | 384 MB        | 384 MB             | 406 MB          |
+| od |        |               |                    |                 |
+| el |        |               |                    |                 |
+| Si |        |               |                    |                 |
+| ze |        |               |                    |                 |
++----+--------+---------------+--------------------+-----------------+
+| Pe | 2      | 28.6846       | 27.5734            | 30.3604         |
+| rp | 7.0317 |               |                    |                 |
+| le |        |               |                    |                 |
+| xi |        |               |                    |                 |
+| ty |        |               |                    |                 |
++----+--------+---------------+--------------------+-----------------+
 
 .. code:: ipython3
 

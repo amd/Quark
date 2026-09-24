@@ -20,11 +20,11 @@ Notebooks.
 What You Will Learn
 -------------------
 
-- AMD Quark basic installation.
-- How to use Quark to quantize the weights of a model in PyTorch.
-- How to compare the model’s accuracy before and after quantization.
-- Checking if the quantized model still correctly detects your
-  hand-drawn shoe image!
+-  AMD Quark basic installation.
+-  How to use Quark to quantize the weights of a model in PyTorch.
+-  How to compare the model’s accuracy before and after quantization.
+-  Checking if the quantized model still correctly detects your
+   hand-drawn shoe image!
 
 Installation and Set-Up
 -----------------------
@@ -241,9 +241,9 @@ These numbers will be important to compare against later, when we have a
 quantized version of this model. Remember, we can increase the number of
 epochs to gain some accuracy at the expense of more training time.
 
-- Try changing the number of epochs below to higher numbers, e.g. 5, 10,
-  20. Run the code section again, and watch what happens to the accuracy
-  result.
+-  Try changing the number of epochs below to higher numbers, e.g. 5,
+   10, 20. Run the code section again, and watch what happens to the
+   accuracy result.
 
 .. code:: ipython3
 
@@ -268,11 +268,11 @@ epochs to gain some accuracy at the expense of more training time.
 With 10 epochs, my model achieved 71.0% accuracy, with average loss of
 0.789085.
 
-- Record the results of each training session you run. Your numbers will
-  differ from mine given the use of random numbers in creating the
-  artificial neural network. We will use this as a reference later.
-- In Visual Studio code, you may need to change to a “scrollable
-  element” to see all of the output text.
+-  Record the results of each training session you run. Your numbers
+   will differ from mine given the use of random numbers in creating the
+   artificial neural network. We will use this as a reference later.
+-  In Visual Studio code, you may need to change to a “scrollable
+   element” to see all of the output text.
 
 We also saved and loaded copies of our model.
 
@@ -332,9 +332,9 @@ a shoe and a t-shirt:
 You need to make the image in the same format at MNIST - that’s 28x28
 pixels grayscale.
 
-- Create your own 28x28 pixel grayscale image, using
-  e.g. `GIMP <https://www.gimp.org/>`__, and save it as ``my_shirt.jpg``
-  in the notebook directory.
+-  Create your own 28x28 pixel grayscale image, using
+   e.g. `GIMP <https://www.gimp.org/>`__, and save it as
+   ``my_shirt.jpg`` in the notebook directory.
 
 Let’s just check that my sample images are on the right path, by loading
 them up and displaying them with ``matplotlib``:
@@ -361,9 +361,9 @@ You can load these up easily using the ``PIL`` package, and convert them
 to a tensor representation using
 ```ToTensor`` <https://pytorch.org/vision/main/generated/torchvision.transforms.ToTensor.html>`__.
 
-- Uncomment the filename you wish to test against - your hand-drawn
-  image is ``user_input.jpg``.
-- Comment out my images and add in your own hand-drawn image filename.
+-  Uncomment the filename you wish to test against - your hand-drawn
+   image is ``user_input.jpg``.
+-  Comment out my images and add in your own hand-drawn image filename.
 
 .. code:: ipython3
 
@@ -394,13 +394,14 @@ Now we’re going to *quantize* our model with AMD Quark, and do a
 before-and-after comparison of accuracy. This is a lot like choosing a
 *lossy* image compression level with a JPEG-format image.
 
-- Quantizing a model after training is called *post-training
-  quantization* (PTQ). This should compress a model, giving us both a
-  smaller memory footprint and lower bandwidth for inference. But we
-  expect some accuracy loss, because the values of weights will have
-  changed slightly with lower precision numbers.
-- It’s possible to quantize a model before training, which can reduce
-  the accuracy loss. This is called *quantization-aware training* (QAT).
+-  Quantizing a model after training is called *post-training
+   quantization* (PTQ). This should compress a model, giving us both a
+   smaller memory footprint and lower bandwidth for inference. But we
+   expect some accuracy loss, because the values of weights will have
+   changed slightly with lower precision numbers.
+-  It’s possible to quantize a model before training, which can reduce
+   the accuracy loss. This is called *quantization-aware training*
+   (QAT).
 
 Quark supports both PTQ and QAT. For now we are just going to use PTQ.
 
@@ -556,8 +557,7 @@ quantization*, or *simulated* quantization. That means it’s not actually
 swapping the data types for the smaller ones and making the saving of
 memory, *yet*.
 
-.. figure::
-   ../../../_static/quickstart_tutorial_images/container_bits.png
+.. figure:: ../../../_static/quickstart_tutorial_images/container_bits.png
    :alt: Image of a 32 bits float used to store an 8-bit integer
 
    Image of a 32 bits float used to store an 8-bit integer
@@ -593,16 +593,16 @@ at the end of the previous section. What differences can we observe?
 
     print(quant_model)
 
-- Our *Linear* layers have been changed to a new layer type called
-  *QuantLinear*.
+-  Our *Linear* layers have been changed to a new layer type called
+   *QuantLinear*.
 
-  - The shape is the same.
-  - There is a new *ScaledFakeQuantize* addition that contains the
-    quantization parameters; data type (int8), per-tensor scheme, scale,
-    and zero-point, and a min and max range corresponding to the
-    numerical range of an 8-bit integer (-128 to 127).
-  - A per-tensor *observer* has collected the minimum and maximum values
-    from each tensor.
+   -  The shape is the same.
+   -  There is a new *ScaledFakeQuantize* addition that contains the
+      quantization parameters; data type (int8), per-tensor scheme,
+      scale, and zero-point, and a min and max range corresponding to
+      the numerical range of an 8-bit integer (-128 to 127).
+   -  A per-tensor *observer* has collected the minimum and maximum
+      values from each tensor.
 
 With this information we can see that our quantization has worked. We
 can see a single scale value has been created by Quark for each tensor,
@@ -659,28 +659,30 @@ Visual Studio command line tools.
 Further Reading
 ---------------
 
-- `Introduction to
-  Quantization <https://quark.docs.amd.com/latest/intro.html>`__. If
-  you’re finding some of the process a bit mysterious, this article
-  gives a good, visual, introduction to how quantizers like AMD Quark
-  work with machine learning models.
-- `Getting started with AMD
-  Quark <https://quark.docs.amd.com/latest/basic_usage.html>`__. If
-  you’re wondering what options you have for your quantization
-  configuration, this page provides a table with a column of supported
-  features for Quark’s PyTorch integration, as well as a comparison with
-  Quark’s ONNX interface, which we haven’t covered in this tutorial.
-- `Getting started: Quark for
-  PyTorch <https://quark.docs.amd.com/latest/pytorch/basic_usage_pytorch.html>`__.
-  If you’d like to try using Quark’s PyTorch integration with a larger
-  model, this articles uses the same quantization approach as our
-  tutorial, but with the Facebook opt-125m language model.
-- `Installation <https://quark.docs.amd.com/latest/install.html>`__. If
-  you have a GPU and would like to try running accelerated quantization,
-  or would like to try installing on a different system, the *Advanced
-  Installation* section covers those set-ups. Remember to specify the
-  ``device`` to use in your PyTorch code, as in the `PyTorch
-  Quickstart <https://docs.pytorch.org/tutorials/beginner/basics/quickstart_tutorial.html>`__.
+-  `Introduction to
+   Quantization <https://quark.docs.amd.com/latest/intro.html>`__. If
+   you’re finding some of the process a bit mysterious, this article
+   gives a good, visual, introduction to how quantizers like AMD Quark
+   work with machine learning models.
+-  `Getting started with AMD
+   Quark <https://quark.docs.amd.com/latest/basic_usage.html>`__. If
+   you’re wondering what options you have for your quantization
+   configuration, this page provides a table with a column of supported
+   features for Quark’s PyTorch integration, as well as a comparison
+   with Quark’s ONNX interface, which we haven’t covered in this
+   tutorial.
+-  `Getting started: Quark for
+   PyTorch <https://quark.docs.amd.com/latest/pytorch/basic_usage_pytorch.html>`__.
+   If you’d like to try using Quark’s PyTorch integration with a larger
+   model, this articles uses the same quantization approach as our
+   tutorial, but with the Facebook opt-125m language model.
+-  `Installation <https://quark.docs.amd.com/latest/install.html>`__. If
+   you have a GPU and would like to try running accelerated
+   quantization, or would like to try installing on a different system,
+   the *Advanced Installation* section covers those set-ups. Remember to
+   specify the ``device`` to use in your PyTorch code, as in the
+   `PyTorch
+   Quickstart <https://docs.pytorch.org/tutorials/beginner/basics/quickstart_tutorial.html>`__.
 
 Next Steps
 ----------

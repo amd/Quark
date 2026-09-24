@@ -51,3 +51,4 @@ or use case.
    Auto Search On MobileNetv2-50<tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_mobilenetv2_50_custom_evaluator/onnx_ryzen_ai_auto_search_mobilenetv2_50_tutorial>
    Auto Search On ResNet50<tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_resnet50/onnx_ryzen_ai_auto_search_resnet50_tutorial>
    Auto Search On YOLOv8<tutorials/onnx/ryzen_ai/auto_search_for_ryzen_ai/auto_search_yolov8/onnx_ryzen_ai_auto_search_yolov8_tutorial>
+   FP8 Quantization on Qwen1.5-0.5B<tutorials/onnx/ryzen_ai/fp8_quantization/onnx_ryzen_ai_fp8_tutorial>

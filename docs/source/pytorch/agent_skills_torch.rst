@@ -1,164 +1,116 @@
 .. Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 
-Using Quark Agent Skills for PyTorch (Claude Code)
-==================================================
+Using Quark Agent Skills for PyTorch
+====================================
 
-.. note::
-
-    In this documentation, **AMD Quark** is sometimes referred to simply as **"Quark"** for ease of
-    reference. When you encounter the term "Quark" without the "AMD" prefix, it refers to the AMD Quark
-    quantizer unless otherwise stated.
-
-AMD Quark ships a set of **agent skills** for `Claude Code <https://claude.com/claude-code>`__. They let
-you drive the Quark PyTorch quantization flow with plain-language requests instead of memorizing CLI
-flags and script layouts. You describe the goal — *"quantize Qwen3-8B to FP8"* — and Claude Code
-routes to the right skill, inspects your model, plans the run, and (with your confirmation) executes it.
-
-This page covers the **PyTorch / Hugging Face** skills only. It is a usage guide for end users; you do
-not need to understand how the skills are built or layered internally to use them.
+AMD Quark provides Agent Skills for Claude Code, Cursor, and Codex.
+The skills turn plain-language PyTorch and Hugging Face requests into planned, confirmation-gated Quark workflows.
 
 Prerequisites
 -------------
 
-- `Claude Code <https://claude.com/claude-code>`__ installed and running.
-- This repository checked out locally. The skills live under ``.claude/skills/`` and are
-  **auto-discovered** by Claude Code when you start it from the repository root — there is no extra
-  registration step.
-- AMD Quark and a compatible PyTorch build installed. If you are not sure, just ask Claude Code to set
-  it up (see :ref:`torch-skills-common-tasks`), or follow :doc:`../install`.
+- Install and start Claude Code, Cursor, or Codex.
+- For the complete skill suite, check out this repository and start the agent from the repository root.
+- Install the runtime required by the selected workflow as described in :ref:`torch-skills-runtime`.
 
-How to invoke a skill
----------------------
-
-There are two ways to trigger a skill:
-
-1. **Describe the task in natural language.** Claude Code reads your intent and routes to the matching
-   skill automatically. For example:
-
-   .. code-block:: text
-
-      Quantize Qwen/Qwen3-8B to FP8 and validate the result.
-
-2. **Call a skill explicitly** with a slash command when you already know which one you want:
-
-   .. code-block:: text
-
-      /quark-torch-ptq
-
-Skills are routed by **input artifact type**. A Hugging Face repo id, a ``config.json`` +
-``*.safetensors`` checkpoint, or a ``transformers`` / ``torch`` workflow routes to the
-``quark-torch-*`` skills described here. A ``.onnx`` file routes to the ONNX skills instead — the two
-backends are never silently mixed. If your request is ambiguous (for example, *"quantize my model"*
-with no path), Claude Code asks before routing.
-
-Torch skills at a glance
+Discovery and invocation
 ------------------------
 
-The table below lists the PyTorch-side skills plus the two backend-agnostic helpers most users need
-first. You rarely call these by name — describing the task is usually enough — but the trigger phrases
-show what each one responds to.
+The canonical skill tree is the repository-root ``skills/`` directory.
+Claude Code discovers it through real-file adapters in ``.claude/skills``, while Cursor and Codex use the adapters in ``.agents/skills``.
 
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| Skill                                  | What it does                                             | Say this to trigger                                    |
-+========================================+==========================================================+========================================================+
-| ``quark-env-preflight``                | Reports your OS, Python, GPU, and CUDA / ROCm state      | "check my environment", "what GPU do I have"           |
-|                                        | before any install or quantization step.                 |                                                        |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-install``                      | Installs or verifies the ``amd-quark`` package and its   | "install Quark", "pip install amd-quark"               |
-|                                        | core dependencies.                                       |                                                        |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-model-intake``           | Inspects a Hugging Face / safetensors checkpoint and     | "analyze my model", "is this model supported"          |
-|                                        | reports architecture, quant targets, and risks.          |                                                        |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-ptq``                    | Runs the full PTQ pipeline: intake, planning, script     | "quantize my model", "run PTQ", "quantize Qwen3        |
-|                                        | generation, and optional execution. Stops at the         | with FP8/INT4"                                         |
-|                                        | quantized output.                                        |                                                        |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-llm-ptq-eval``           | The full lifecycle: quantize, then validate the output,  | "quantize and validate", "quantize and evaluate", "PTQ |
-|                                        | then run opt-in accuracy evaluation in one flow.         | with accuracy check"                                   |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-result-validator``       | Checks an exported model for structural correctness      | "validate quantization result", "verify exported       |
-|                                        | (config diff, byte-identity on excluded tensors).        | weights"                                               |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-llm-eval``               | Runs LLM accuracy evaluation (perplexity, ``lm-eval``    | "evaluate this model", "run gsm8k/mmlu", "measure      |
-|                                        | tasks) on the quantized model.                           | perplexity"                                            |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-export``                 | Exports a quantized run to Hugging Face safetensors,     | "export model", "convert to GGUF"                      |
-|                                        | GGUF, or ONNX.                                           |                                                        |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
-| ``quark-torch-file2file-quantization`` | Low-memory file-to-file quantization for very large LLMs | "run file2file quantization", "quantize without        |
-|                                        | that cannot be loaded whole.                             | loading the model"                                     |
-+----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
+The self-contained public entries are ``quark-install``, ``quark-torch-ptq``, and ``quark-torch-quant-perf``.
+``quark-install`` and ``quark-torch-ptq`` can be copied independently.
+A copied ``quark-torch-quant-perf`` entry supports automatic search, while fixed ``--quant-strategy`` also requires a Quark checkout containing ``skills/quark-torch-ptq``.
+The other 16 public entries delegate to ``skills/_legacy_impl/`` and must remain with that tree.
+The ``amd-quark`` wheel bundles the complete skill tree; after installation, run ``quark-skills install --agent {claude-code,cursor,codex,all}`` to copy it into a workspace.
+The command targets the current directory by default, and ``--target <path>`` selects another existing project directory.
 
-Walkthrough: quantize a Hugging Face LLM end to end
----------------------------------------------------
-
-This example quantizes ``Qwen/Qwen3-8B`` to FP8 and checks the result. You only type
-the requests in the ``You`` blocks; Claude Code drives the rest.
-
-**1. (Optional) Confirm your environment is ready.**
+Describe the task in natural language:
 
 .. code-block:: text
 
-   You: Check my environment and make sure Quark is ready to quantize an 8B model.
+   Quantize Qwen/Qwen3-8B to FP8 and validate the result.
 
-Claude Code runs ``quark-env-preflight`` (and ``quark-install`` if anything is missing), then reports
-your GPU, the detected CUDA / ROCm stack, and whether ``amd-quark`` imports cleanly.
-
-**2. Ask for the quantization.**
+You can also name the public entry:
 
 .. code-block:: text
 
-   You: Quantize Qwen/Qwen3-8B to FP8.
+   Use quark-torch-ptq to quantize Qwen/Qwen3-8B to FP8.
 
-Claude Code routes to ``quark-torch-ptq``. It first inspects the checkpoint (architecture, layer count,
-which modules are quantization targets, which to exclude such as ``lm_head``), then proposes a plan and
-the exact command it intends to run — for example:
+Claude Code may expose the entry as ``/quark-torch-ptq``.
+Route Hugging Face repository IDs, ``config.json`` plus SafeTensors checkpoints, and ``torch`` or ``transformers`` workflows to Torch skills.
+If the model format is ambiguous, confirm it before routing, and never send an ONNX model through a Torch workflow.
+
+Available skills
+----------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 68
+
+   * - Skill
+     - Purpose
+   * - ``quark-env-preflight``
+     - Report OS, Python, accelerator, and container facts before installation or quantization.
+   * - ``quark-install``
+     - Install or verify ``amd-quark`` and the selected runtime capabilities.
+   * - ``quark-torch-ptq``
+     - Run confirmed end-to-end PTQ for a PyTorch or Hugging Face LLM and verify the quantized output.
+   * - ``quark-torch-quant-perf``
+     - Run managed quantization with an accuracy gate, optional throughput and performance optimization, and final reports.
+   * - ``quark-torch-install``
+     - Install or verify the PyTorch build that matches the accelerator.
+   * - ``quark-torch-model-intake``
+     - Inspect a Hugging Face or SafeTensors model and produce facts for PTQ planning.
+   * - ``quark-torch-result-validator``
+     - Validate quantized SafeTensors, auxiliary files, configuration, and excluded tensor identity.
+   * - ``quark-torch-llm-eval``
+     - Evaluate LLM accuracy on AMD ROCm through supported serving and benchmark frameworks.
+   * - ``quark-torch-file2file-quantization``
+     - Quantize very large sharded SafeTensors checkpoints without loading the whole model.
+   * - ``quark-torch-shrink-model``
+     - Create a small representative SafeTensors model for faster debugging and workflow tests.
+
+.. _torch-skills-runtime:
+
+Runtime requirements
+--------------------
+
+``quark-torch-ptq`` requires ``amd-quark[cli]``, ``datasets``, and a separately installed PyTorch build that matches the accelerator.
+Those packages provide ``quark-cli torch-llm-ptq`` and its runtime dependencies, but they do not install the skill directory.
+
+``quark-torch-quant-perf`` requires ``amd-quark[quant_perf]`` plus its documented accelerator, vLLM, and optional backend/tool stack.
+Automatic search does not require a Quark source checkout solely to locate a PTQ skill.
+Fixed ``--quant-strategy`` requires a checkout containing ``skills/quark-torch-ptq``; Quant-Perf discovers one from an editable package or the current directory and its ancestors, and ``QUARK_ROOT`` selects one explicitly when needed.
+
+PTQ workflow
+------------
+
+The self-contained ``quark-torch-ptq`` workflow always uses these four checkpoints:
+
+1. **Model analysis:** inspect configuration without loading model weights, write ``model_analysis.json``, and ask the user to accept or correct the findings.
+2. **Quantization plan:** write and validate ``quant_plan.json``, then ask the user to confirm the scheme, exclusions, algorithms, and calibration choices.
+3. **Execution:** write ``run_manifest.yaml``, show the exact command and affected paths, and wait for explicit approval before running PTQ.
+4. **Verification:** inspect the output files, update the manifest with observed status, and ask the user to accept the verified result.
+
+A typical execution command is:
 
 .. code-block:: bash
 
-   python3 quantize_quark.py --model_dir Qwen/Qwen3-8B \
-                             --quant_scheme fp8 \
-                             --output_dir qwen3-8b-fp8
+   quark-cli torch-llm-ptq \
+     --model_dir "Qwen/Qwen3-8B" \
+     --output_dir "$PWD/qwen3-8b-fp8" \
+     --quant_scheme fp8 \
+     --device cuda \
+     --no_trust_remote_code \
+     --skip_evaluation
 
-**3. Confirm execution.**
+Plan approval is not execution approval, and an exit code alone is not proof that the expected model, configuration, and tokenizer files were produced.
 
-Quantization is a high-cost step, so the skill **waits for your explicit approval** before running.
-After you confirm, it executes the command and reports where the quantized model was written
-(``--output_dir``).
+Post-quantization checks
+------------------------
 
-**4. Validate (and optionally evaluate).**
-
-If you had asked for *"quantize and validate"* or *"quantize and evaluate"* up front, Claude Code would
-have routed to ``quark-torch-llm-ptq-eval`` instead, which chains all three stages automatically:
-
-- **Quantize** — delegates to the same ``quark-torch-ptq`` pipeline.
-- **Validate** — runs ``quark-torch-result-validator`` to confirm the export is structurally sound
-  (config diff, byte-identity on excluded tensors).
-- **Evaluate** *(opt-in)* — runs ``quark-torch-llm-eval`` for perplexity or ``lm-eval`` tasks such as
-  ``gsm8k`` / ``mmlu``.
-
-  .. code-block:: text
-
-     You: Quantize Qwen/Qwen3-8B to INT4 with AWQ, validate it, and report mmlu.
-
-**Use ``quark-torch-ptq`` when** you only want the quantized model. **Use ``quark-torch-llm-ptq-eval``
-when** you also want the output checked and its accuracy measured.
-
-.. _torch-skills-common-tasks:
-
-Common tasks and which skill handles them
------------------------------------------
-
-- **Check hardware / readiness** → ``quark-env-preflight``
-- **Install Quark** → ``quark-install``
-- **See whether a model is supported and what will be quantized** → ``quark-torch-model-intake``
-- **Quantize only (stop at the quantized output)** → ``quark-torch-ptq``
-- **Quantize, validate, and measure accuracy in one flow** → ``quark-torch-llm-ptq-eval``
-- **Quantize a model too large to load whole** → ``quark-torch-file2file-quantization``
-- **Export an existing run to safetensors / GGUF / ONNX** → ``quark-torch-export``
-- **Check an exported model is structurally correct** → ``quark-torch-result-validator``
-- **Run accuracy eval on a quantized model** → ``quark-torch-llm-eval``
-
-You do not have to memorize this list: describe the goal and Claude Code picks the skill. The mapping is
-here so you know what is happening under the hood.
+Validation and accuracy evaluation are separate follow-up skills rather than a combined recipe.
+Use ``quark-torch-result-validator`` to inspect the quantized output, then use ``quark-torch-llm-eval`` when ROCm accuracy evaluation is requested.
+Each follow-up applies its own environment checks, execution gates, and recovery rules.

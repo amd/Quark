@@ -577,7 +577,13 @@ The quantized model can be imported and evaluated:
 Recipe 11: File-to-File Quantization (No Full Model Loading)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For ultra-large models (e.g., 600B+) that cause OOM when loaded into memory, Quark provides a file-to-file quantization workflow via the ``--file2file_quantization`` mode.
+``--quant_flow`` selects which execution flow ``quantize_quark.py`` runs:
+
+- ``standard`` (default): load the full model into memory, the flow used by Recipes 1-10 above.
+- ``file2file``: quantize safetensors shards directly without loading the full model into memory; requires ``--model_export hf_format``. Described in this recipe.
+- ``per_block``: load decoder blocks lazily between weight and activation calibration, keeping only ``--gpu_resident_blocks`` blocks GPU-resident at a time. Described in Recipe 12.
+
+For ultra-large models (e.g., 600B+) that cause OOM when loaded into memory, Quark provides a file-to-file quantization workflow via the ``--quant_flow file2file`` mode.
 It quantizes safetensors files **one-by-one** without loading the full model, so peak memory is proportional to a single file (~5-10 GB) rather than the entire model.
 
 This mode supports **weight-only quantization** and **dynamic activation quantization + weight quantization**, exports **hf_format** only, and can also accept pre-quantized inputs (FP8, compressed-tensors) and re-quantize them to a different format. For example, the command below runs file-to-file quantization to MXFP4 and shows common layer exclusions:
@@ -588,8 +594,74 @@ This mode supports **weight-only quantization** and **dynamic activation quantiz
                              --output_dir [output folder] \
                              --quant_scheme mxfp4 \
                              --exclude_layers "*self_attn*" "*mlp.gate" "*mlp.gate.linear" "*lm_head" \
-                             --file2file_quantization \
+                             --quant_flow file2file \
                              --skip_evaluation
+
+.. note::
+
+   ``--file2file_quantization`` still works but is deprecated; use ``--quant_flow file2file`` instead.
+
+Recipe 12: Per-Block Quantization (Lazy Decoder-Block Loading)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Recipe 11 keeps peak memory low by never building the model, which is why it cannot run activation calibration.
+``--quant_flow per_block`` covers the case Recipe 11 cannot: a model that is too large to hold on GPU, but whose
+quantization scheme still needs **activation calibration**, and therefore real forward passes.
+
+The model is loaded on CPU and weight calibration runs there. A lazy loader is then installed on the decoder
+blocks before activation calibration: each block's weights are pulled onto the GPU right before its forward and
+released right after, so GPU memory holds one decoder block at a time instead of the whole stack. Offloaded
+blocks are held in CPU RAM when there is enough of it, and otherwise streamed from the safetensors shards
+(which requires ``model.safetensors.index.json``). After calibration the loader is finalized and the model
+continues through post-calibration optimization, freeze, and export as usual.
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [model checkpoint folder] \
+                             --output_dir [output folder] \
+                             --quant_scheme nvfp4 \
+                             --num_calib_data 128 \
+                             --exclude_layers "*lm_head" "*vision_tower*" "*multi_modal_projector*" "*block_sparse_moe.gate" \
+                             --model_export hf_format \
+                             --quant_flow per_block \
+                             --skip_evaluation
+
+``--gpu_resident_blocks N`` keeps the first ``N`` decoder blocks permanently on the GPU and lazy-loads the rest.
+The default is ``0`` (every block lazy-loaded, lowest GPU memory). Raise it to trade GPU memory for fewer
+weight transfers when you have headroom:
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [model checkpoint folder] \
+                             --output_dir [output folder] \
+                             --quant_scheme nvfp4 \
+                             --num_calib_data 128 \
+                             --model_export hf_format \
+                             --quant_flow per_block \
+                             --gpu_resident_blocks 2 \
+                             --skip_evaluation
+
+For multimodal models the lazy loader targets the language/text decoder stack, so vision encoder layers are
+left alone.
+
+.. note::
+
+   This flow has three requirements:
+
+   - The scheme must have activation qparams to calibrate, in eager mode. Static activations qualify, and
+     so do dynamic activations that carry a calibrated per-tensor scale -- ``nvfp4``, used in the commands
+     above, is dynamic and works. What is rejected is a config with nothing to calibrate at all:
+     weight-only, fully dynamic without a per-tensor scale (``mxfp4``), or ``fx_graph_mode``. Those run no
+     calibration forward pass, so the lazy loader would never fire and the full model would be loaded into
+     memory anyway; use Recipe 11 for them.
+   - The model must come from ``from_pretrained()``, since the loader reads the checkpoint directory from
+     ``model.config._name_or_path``.
+   - An accelerator must be available. The model itself is always loaded on CPU, but blocks are streamed
+     onto the device given by ``--device``, and ``--device cpu`` is rejected because CPU is the offload
+     target. ``--device`` takes ``cuda`` or ``cpu``, so use ``CUDA_VISIBLE_DEVICES`` to choose which GPU
+     the blocks run on; the library API takes any device, including ``cuda:1``. ``--multi_gpu`` /
+     ``--multi_device`` are ignored for this flow -- one block is resident at a time on one device, so
+     sharding the model across devices is redundant.
 
 Tutorial: Running a Model Not on the Supported List
 ---------------------------------------------------

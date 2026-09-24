@@ -24,3 +24,5 @@ Resources
 
 * :doc:`Language Model Post Training Quantization (PTQ) Using Quark <../../pytorch/example_quark_torch_llm_ptq>`
 * :doc:`Evaluation of Quantized Models <../../pytorch/example_quark_torch_llm_eval_perplexity>`
+* :doc:`Speculative Decoding (EAGLE-3) on AMD Instinct <../../eagle3_quick_start>`
+* :doc:`EAGLE-3 Large-Model Best Recipe <../../eagle3_best_recipe>`

@@ -122,6 +122,13 @@ AMD), no extra setup beyond the plugin import is required -- the loader
 sees ``quant_method = "quark"`` and instantiates
 ``QuarkDiffusersQuantizer`` for you.
 
+The same reload path applies to transformer pipelines.  A Quark-quantized
+Wan2.2 transformer, for example, is exported with ``export_safetensors``
+and reloaded via ``WanTransformer3DModel.from_pretrained(...)`` then passed
+to ``WanPipeline.from_pretrained(..., transformer=transformer)`` -- exactly
+parallel to the SDXL UNet example above (swap ``UNet2DConditionModel`` /
+``DiffusionPipeline`` for ``WanTransformer3DModel`` / ``WanPipeline``).
+
 How dispatch works
 ------------------
 

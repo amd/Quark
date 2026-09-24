@@ -28,6 +28,6 @@ PyTorch passes operate on PyTorch models (any Python callable: ``torch.nn.Module
 Community-Contributed Passes
 -----------------------------
 
-Community-contributed passes extend Shapeshifter's capabilities beyond the core passes. These passes are maintained in ``quark/contrib/shapeshifter_community_passes/`` and follow the same patterns and registration system as core passes.
+Community-contributed passes extend Shapeshifter's capabilities beyond the core passes. They are maintained in the ``contrib`` area and follow the same patterns and registration system as core passes.
 
-See :doc:`quark_shapeshifter` for information about creating community passes.
+See :doc:`Shapeshifter Community Passes </contrib/shapeshifter_community_passes/index>` for how to author, test, and document them.

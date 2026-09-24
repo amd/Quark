@@ -22,6 +22,14 @@ Fast Finetune
 
 Fast finetune improves the quantized model's accuracy by training the output of each layer as close as possible to the floating-point model. It includes two practical algorithms: "AdaRound" and "AdaQuant". Applying fast finetune might achieve better accuracy for some models but takes much longer time than normal PTQ. It is disabled by default to save quantization time but can be turned on if you encounter accuracy issues. If this feature is enabled, `quark.onnx` will require the PyTorch package.
 
+There are two ways to invoke fast finetune:
+
+1. **Integrated mode**: Pass an ``AdaRoundConfig`` or ``AdaQuantConfig`` directly inside ``QConfig`` so quantization and finetuning happen in a single ``quantize_model`` call.
+2. **Standalone mode**: Quantize the model first (optionally applying custom post-processing), then call ``apply_FastFinetune`` separately. This is useful when you need to inspect or modify the quantized model before finetuning.
+
+Integrated Mode
+~~~~~~~~~~~~~~~
+
 Here is a simple example showing how to apply the AdaRound algorithm on an A8W8 (Activation-8bit-Weight-8bit) quantization.
 
 .. code-block:: python
@@ -41,7 +49,56 @@ Here is a simple example showing how to apply the AdaRound algorithm on an A8W8 
     )
 
     quantizer = ModelQuantizer(config)
-    quantizer.quantize_model(input_model_path, quantized_model_path, calib_data_reader)
+    quantizer.quantize_model(float_model_path, quantized_model_path, calib_data_reader)
+
+Standalone Mode
+~~~~~~~~~~~~~~~
+
+In some workflows you may want to quantize the model first—applying custom post-processing such as graph editing, or hardware-specific adjustments—and then run fast finetune as a separate step. The ``apply_FastFinetune`` API supports this pattern:
+
+.. code-block:: python
+
+    # Step 1: Quantize the model (fast finetune disabled here).
+    from quark.onnx import ModelQuantizer, QConfig
+
+    quant_config = QConfig.get_default_config("XINT8")
+    quantizer = ModelQuantizer(quant_config)
+    quantizer.quantize_model(float_model_path, quantized_model_path, calib_data_reader)
+
+    # Step 2: (Optional) apply any custom post-processing on the quantized model here.
+    # e.g. graph editing, hardware-specific adjustments …
+
+    # Step 3: Run fast finetune on the (post-processed) quantized model.
+    import onnx
+    from quark.onnx import AdaRoundConfig, CachedDataReader
+    from quark.onnx.algorithm import apply_FastFinetune
+
+    calib_data_reader.rewind()
+    finetuning_data_reader = CachedDataReader(calib_data_reader)
+
+    adaround_config = AdaRoundConfig(
+                      batch_size=1,
+                      num_iterations=1000,
+                      learning_rate=0.1)
+    finetuning_options = adaround_config.get_options()
+
+    use_external_data_format = False
+
+    finetuned_model = apply_FastFinetune(
+        float_model_path,
+        quantized_model_path,
+        finetuning_data_reader,
+        use_external_data_format,
+        finetuning_options,
+    )
+
+    onnx.save(finetuned_model, finetuned_model_path)
+
+``apply_FastFinetune`` takes the original float model and the quantized model as inputs, runs the chosen finetuning algorithm, and returns the finetuned ONNX model object. Use ``CachedDataReader`` to wrap your existing calibration reader so the same data can be iterated over during finetuning.
+
+.. note::
+
+   Fast finetune works by comparing each compute layer's output in the quantized model against the corresponding layer in the **float model** (used as the reference). If you modify the quantized model's graph in Step 2—for example by fusing nodes or restructuring subgraphs—the compute nodes targeted for finetuning may no longer correspond to nodes in the float model. In that case you must apply the **same structural changes** to the float model before calling ``apply_FastFinetune``, so that both models remain in sync. Using a mismatched float model results in incorrect loss computation and skips tuning for some target layers.
 
 Arguments
 ~~~~~~~~~

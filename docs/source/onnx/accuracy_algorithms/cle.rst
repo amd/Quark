@@ -32,6 +32,37 @@ Here we only list a few important and commonly used arguments, please refer to t
 
   - **cle_scale_append_bias**: (Boolean) Whether the bias is included when calculating the scale of the weights. The default value is True.
 
+Stem Equalization
+=================
+
+Regular CLE only equalizes consecutive ``Conv -> ... -> Conv`` chains and structurally skips the *stem* (first) convolution in architectures where it is followed by ``BatchNorm -> ReLU -> MaxPool`` with a concat fan-out, such as DenseNet. Whenever the stem weights are quantized with a single per-tensor scale shared across all output channels, a large per-output-channel weight magnitude spread leaves the low-magnitude channels with very little of the representable range, so they lose most of their precision — an error that then propagates through the whole network. This is independent of the bit width or scale format used.
+
+Stem equalization addresses this case. For each stem output channel ``i``, it scales the weight up by a factor ``s_i`` (capped to avoid numerical instability) and folds the inverse ``1 / s_i`` into the affine parameters of the downstream BatchNorm. Because the stem output only passes through positively-homogeneous operations (ReLU / MaxPool, where ``f(s*x) = s*f(x)`` for ``s > 0``) before reaching the BatchNorm, the per-channel scale propagates unchanged and is absorbed exactly by the BatchNorm. The FP32 output is therefore mathematically unchanged, while the stem weights quantize far more evenly.
+
+The pass auto-detects the stem convolution and its downstream BatchNorm(s), verifies the pass-through chain is positively-homogeneous (handling concat fan-out and channel offsets), and is a safe no-op when the pattern does not match.
+
+Stem equalization runs automatically as the first step of CLE when ``include_cle`` is enabled. Because it depends on no CLE state, it can also be applied on its own as a standalone pre-processing step, before quantizing the model with any configuration:
+
+.. code-block:: python
+
+    import onnx
+    from quark.onnx.algorithm import stem_equalize_transforms
+
+    model = onnx.load(input_model_path)
+
+    # Equalize the stem convolution in place; safe no-op if no stem/BatchNorm
+    # pattern is found. The FP32 output of the model is unchanged.
+    model = stem_equalize_transforms(
+        model,
+        op_types_to_quantize=["Conv"],
+        nodes_to_quantize=[],
+        nodes_to_exclude=[],
+    )
+
+    onnx.save(model, equalized_model_path)
+
+The equalized float model can then be quantized as usual.
+
 Example
 =======
 

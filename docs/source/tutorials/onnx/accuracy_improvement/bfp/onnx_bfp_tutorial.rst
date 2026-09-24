@@ -25,17 +25,17 @@ step.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Quantizatize with BFP16 only
+-  Quantizatize with BFP16 only
 
-- Quantizatize with BFP16 and AdaQuant
+-  Quantizatize with BFP16 and AdaQuant
 
-- Evaluate Models
+-  Evaluate Models
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -56,9 +56,15 @@ extra packages are require for this tutorial.
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace_dir", default="")
+    parser.add_argument("--calib_n_samples", type=int, default=None)
+    parser.add_argument("--eval_n_samples", type=int, default=None)
     args, _ = parser.parse_known_args()
     workspace_dir = args.workspace_dir
+    calib_n_samples = args.calib_n_samples
+    eval_n_samples = args.eval_n_samples
     print("Working root dir: ", workspace_dir)
+    print("Calib N Samples: ", calib_n_samples)
+    print("Eval N Samples: ", eval_n_samples)
 
 2) Export ONNX Model From mobilenetv2_050.lamb_in1k Torch Model.
 ----------------------------------------------------------------
@@ -202,36 +208,36 @@ current directory.
 The storage format of the val_data of the ImageNet dataset organized as
 follows:
 
-- val_data
+-  val_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
-    - ILSVRC2012_val_00002138.JPEG
-    - …
+      -  ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00002138.JPEG
+      -  …
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
-    - ILSVRC2012_val_00000262.JPEG
-    - …
+      -  ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000262.JPEG
+      -  …
 
-  - …
+   -  …
 
 The storage format of the calib_data of the ImageNet dataset organized
 as follows:
 
-- calib_data
+-  calib_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00000293.JPEG
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000236.JPEG
 
-  - …
+   -  …
 
 4) Quantization Procedure
 -------------------------
@@ -252,7 +258,7 @@ model and pass in your configuration.
     from quark.onnx.operators.custom_ops import get_library_path
     
     
-    def load_loader(model_name, data_dir, batch_size, workers):
+    def load_loader(model_name, data_dir, batch_size, workers, max_samples=None):
         timm_model = create_model(
             model_name,
             pretrained=False,
@@ -270,8 +276,10 @@ model and pass in your configuration.
             ]
         )
         dataset = torchvision.datasets.ImageFolder(data_dir, data_transform)
+        if max_samples is not None and max_samples < len(dataset):
+            dataset = torch.utils.data.Subset(dataset, range(max_samples))
         data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True
+            dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True
         )
         return data_loader
     
@@ -297,7 +305,13 @@ Now let’s define the quantization process.
     
     
     def quantize_model(args: dict) -> None:
-        data_loader = load_loader(args["model_name"], args["calibration_dataset_path"], args["batch_size"], args["workers"])
+        data_loader = load_loader(
+            args["model_name"],
+            args["calibration_dataset_path"],
+            args["batch_size"],
+            args["workers"],
+            max_samples=calib_n_samples,
+        )
         dr = CalibrationDataReader(data_loader)
     
         # Get quantization configuration
@@ -327,6 +341,17 @@ Now let’s define the quantization process.
         # Quantize the ONNX model
         quantizer.quantize_model(args["input_model_path"], args["output_model_path"], dr)
 
+**Tip:** The graph optimization passes configured here through
+individual ``extra_options`` flags (such as ``FoldRelu``,
+``AlignConcat``, and ``AlignSlice``) can also be applied declaratively
+with Quark’s **ShapeShifter** framework by setting the
+``ShapeShifterYaml`` option — a single YAML file with
+``preprocess_passes`` (run on the float model before quantization) and
+``postprocess_passes`` (run on the quantized model afterwards). See the
+`ShapeShifter ONNX
+tutorial <https://quark.docs.amd.com/latest/tutorials/onnx/shapeshifter/onnx_shapeshifter_resnet50_tutorial.html>`__
+for details.
+
 The cell defines a quantization config with AdaQuant disabled, and then
 generates a quantized model to the models directory using the BFP16Spec
 configuration.
@@ -341,6 +366,7 @@ configuration.
         "batch_size": 1,
         "workers": 1,
         "device": "cpu",
+        "calib_n_samples": calib_n_samples,
     }
 
 .. code:: ipython3
@@ -442,6 +468,7 @@ model’s top candidates.
     
     def evaluate(args: dict):
         args["gpu_id"] = 0
+        max_samples = args.get("eval_n_samples")
     
         # Set graph optimization level
         sess_options = onnxruntime.SessionOptions()
@@ -467,12 +494,14 @@ model’s top candidates.
         sess_options.register_custom_ops_library(get_library_path(device))
     
         if args.get("onnx_input"):
-            val_loader = load_loader(args["model_name"], args["data"], args["batch_size"], args["workers"])
+            val_loader = load_loader(
+                args["model_name"], args["data"], args["batch_size"], args["workers"], max_samples=max_samples
+            )
             f_top1, f_top5 = metrics(args["onnx_input"], sess_options, providers, val_loader, args["print_freq"])
             print(f" * Prec@1 {f_top1.avg:.3f} ({100 - f_top1.avg:.3f}) Prec@5 {f_top5.avg:.3f} ({100.0 - f_top5.avg:.3f})")
             return round(f_top1.avg, 3), round(f_top5.avg, 3)
         elif args.get("onnx_float") and args.get("onnx_quant"):
-            val_loader = load_loader(args[""], args["data"], args["batch_size"], args["workers"])
+            val_loader = load_loader(args[""], args["data"], args["batch_size"], args["workers"], max_samples=max_samples)
             f_top1, f_top5 = metrics(args["onnx_float"], sess_options, providers, val_loader, args["print_freq"])
             f_top1 = format(f_top1.avg, ".2f")
             f_top5 = format(f_top5.avg, ".2f")
@@ -523,7 +552,8 @@ Precision model on ImageNet val dataset
         "batch_size": 1,
         "workers": 1,
         "gpu": False,
-        "print_freq": 1000,
+        "print_freq": 10,
+        "eval_n_samples": eval_n_samples,
     }
 
 .. code:: ipython3
@@ -557,17 +587,16 @@ The following table contains the expected results, but please note that
 different machines can lead to minor variations in the accuracy of
 quantized model with AdaQuant.
 
-+--------+----------+---------------------------+-------------------------+
-|        | Float    | Quantized Model without   | Quantized Model with    |
-|        | Model    | AdaQuant                  | AdaQuant                |
-+========+==========+===========================+=========================+
-| Model  | 8.7 MB   | 8.4 MB                    | 8.4 MB                  |
-| Size   |          |                           |                         |
-+--------+----------+---------------------------+-------------------------+
-| Prec@1 | 65.424 % | 60.838 %                  | 65.220 %                |
-+--------+----------+---------------------------+-------------------------+
-| Prec@5 | 85.788 % | 82.658 %                  | 85.584 %                |
-+--------+----------+---------------------------+-------------------------+
++------------+-------------+-------------------+-------------------+
+|            | Float Model | Quantized Model   | Quantized Model   |
+|            |             | without AdaQuant  | with AdaQuant     |
++============+=============+===================+===================+
+| Model Size | 8.7 MB      | 8.4 MB            | 8.4 MB            |
++------------+-------------+-------------------+-------------------+
+| Prec@1     | 65.424 %    | 60.838 %          | 65.220 %          |
++------------+-------------+-------------------+-------------------+
+| Prec@5     | 85.788 %    | 82.658 %          | 85.584 %          |
++------------+-------------+-------------------+-------------------+
 
 .. code:: ipython3
 
@@ -610,7 +639,7 @@ quantized model with AdaQuant.
             top1, top5 = "ERROR", "ERROR"
             diff1, diff5 = "ERROR", "ERROR"
         prec1_meta = {"golden": benchmark["Prec@1"], "difference": diff1}
-        prec5_meta = {"golden": benchmark["Prec@1"], "difference": diff5}
+        prec5_meta = {"golden": benchmark["Prec@5"], "difference": diff5}
         result = {
             "version": 1,
             "data": [

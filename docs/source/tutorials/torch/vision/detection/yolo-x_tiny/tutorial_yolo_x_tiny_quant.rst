@@ -6,6 +6,14 @@ YOLO-X Tiny Quant example
    NOTE This tutorial can be downloaded for local execution on a Jupyter
    Notebook environment. Click here to download the source file.
 
+   **Note:** This tutorial is provided to demonstrate Quark’s QAT
+   (Quantization-Aware Training) workflow and feature set. It does
+   **not** imply that QAT is required to achieve acceptable INT8
+   accuracy for YOLOX-Tiny. In practice, PTQ techniques such as
+   ADAQuant/AdaRound can achieve high INT8 accuracy for this model
+   without QAT. QAT is an optional optimization and may not be the
+   preferred approach for every model or use case.
+
 In this example, we present an Object Detection Model Quantization
 workflow. We used YOLO-X Tiny as a demonstration to illustrate the
 effectiveness of FX-graph-based QAT and PTQ.
@@ -26,16 +34,17 @@ code to perform the quantization.
 Highlight Overview
 ------------------
 
-- **Quantization schema**: INT8 (quant range [-128, 127]), symmetric,
-  power-of-2 scale (e.g., 1/(2**4)) for weight, bias, activation.
-- **Hardware friendly**: Step-by-step instructions to deploy in the AMD
-  NPU.
-- **Satisfied Quant results**: For the original FP32 model, the
-  detection results get the 32.8mAP on COCO val dataset. Using the Quark
-  FX quant tool, the PTQ model gets 25.2 mAP. After QAT(training), the
-  final quantized model gets 30.3 30.3 mAP. This means that even after
-  int8 and pow-of-2 format scale quantization, the quantized model can
-  recover over 92% of the original floating-point model.
+-  **Quantization schema**: INT8 (quant range [-128, 127]), symmetric,
+   power-of-2 scale (e.g., 1/(2**4)) for weight, bias, activation.
+-  **Hardware friendly**: Step-by-step instructions to deploy in the AMD
+   NPU.
+-  **Satisfied Quant results**: For the original FP32 model, the
+   detection results get the 32.8mAP on COCO val dataset. Using the
+   Quark FX quant tool, the PTQ model gets 25.2 mAP. After
+   QAT(training), the final quantized model gets 30.3 30.3 mAP. This
+   means that even after int8 and pow-of-2 format scale quantization,
+   the quantized model can recover over 92% of the original
+   floating-point model.
 
 Important Information
 ---------------------
@@ -251,7 +260,9 @@ the backbone network. We only need to quantize this part of the model.
 
 .. code:: ipython3
 
-    graph_model = torch.export.export_for_training(trainer.model.base_model, (dummy_input,)).module()
+    from quark.common.utils.import_utils import export_for_training as _quark_export_for_training
+    
+    graph_model = _quark_export_for_training(trainer.model.base_model, (dummy_input,)).module()
     graph_model = torch.fx.GraphModule(graph_model, graph_model.graph)
     trainer.model.base_model = graph_model
 

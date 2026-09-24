@@ -13,4 +13,5 @@ Language Model Optimization
    example_quark_torch_llm_qat
    example_quark_torch_llm_eval
    tutorial_rotation
+   tutorial_composed_quantization
    quantizing_large_models

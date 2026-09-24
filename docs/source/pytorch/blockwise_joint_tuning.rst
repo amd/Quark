@@ -8,7 +8,7 @@ Blockwise Joint Tuning (Experimental)
     Blockwise joint tuning is an **experimental** feature. It depends on
     ``quark.experimental`` (in particular
     ``ExperimentalLearnableQuantizedLinear`` in
-    ``quark.experimental.torch.algorithm.blockwise_joint_tuning``),
+    ``quark.experimental.torch.blockwise_joint_tuning``),
     a temporary learnable-quantizer implementation that may change or be
     replaced by the official Quark ``QuantLinear`` in a future release. APIs and
     defaults described here are not yet stable.

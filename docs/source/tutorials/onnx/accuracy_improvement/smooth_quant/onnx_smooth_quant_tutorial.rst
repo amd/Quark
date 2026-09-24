@@ -34,19 +34,19 @@ please refer to the paper: https://arxiv.org/abs/2211.10438
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare dataset
+-  Prepare dataset
 
-- Quantizatize models
+-  Quantizatize models
 
-  - INT8 only
+   -  INT8 only
 
-  - INT8 and Smooth Quant
+   -  INT8 and Smooth Quant
 
-- Evaluate Models
+-  Evaluate Models
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -734,14 +734,15 @@ The following table contains the expected results, but please note that
 different machines can lead to minor variations in the accuracy of
 quantized model.
 
-+------------+------------+---------------------+----------------------------+
-|            | Float      | INT8 Quantized      | INT8 + Smooth Quant        |
-|            | Model      | Model               | Quantized Model            |
-+============+============+=====================+============================+
-| Model Size | 480 MB     | 384 MB              | 385 MB                     |
-+------------+------------+---------------------+----------------------------+
-| Perplexity | 27.0317    | 28.6846             | 28.4315                    |
-+------------+------------+---------------------+----------------------------+
++------------+-------------+-------------------+-------------------+
+|            | Float Model | INT8 Quantized    | INT8 + Smooth     |
+|            |             | Model             | Quant Quantized   |
+|            |             |                   | Model             |
++============+=============+===================+===================+
+| Model Size | 480 MB      | 384 MB            | 385 MB            |
++------------+-------------+-------------------+-------------------+
+| Perplexity | 27.0317     | 28.6846           | 28.4315           |
++------------+-------------+-------------------+-------------------+
 
 .. code:: ipython3
 

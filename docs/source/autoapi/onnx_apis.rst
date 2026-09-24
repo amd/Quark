@@ -12,3 +12,4 @@ AMD Quark APIs for ONNX
 
    Quantization <../autoapi/quark/onnx/quantization/api/index>
    Quantizer Configuration <../autoapi/quark/onnx/quantization/config/config/index>
+   Algorithm <../autoapi/quark/onnx/algorithm/index>

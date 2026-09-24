@@ -15,15 +15,15 @@ memory usage.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Quantizatize Model
+-  Quantizatize Model
 
-- Evaluate Model
+-  Evaluate Model
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -123,18 +123,18 @@ current directory.
 
 The COCO dataset should be structured as follows:
 
-- val2017
+-  val2017
 
-  - sample_1.jpg
-  - sample_2.jpg
-  - …
+   -  sample_1.jpg
+   -  sample_2.jpg
+   -  …
 
-- annotations
+-  annotations
 
-  - …
-  - instances_train2017.json
-  - instances_val2017.json
-  - …
+   -  …
+   -  instances_train2017.json
+   -  instances_val2017.json
+   -  …
 
 4) Quantization Procedure
 -------------------------
@@ -361,6 +361,17 @@ Now, define a procedure to run quantizations.
         calib_datareader = ImageDataReader(args["input_model_path"], args["calib_data_path"])
         quantizer = ModelQuantizer(quant_config)
         quantizer.quantize_model(args["input_model_path"], args["output_model_path"], calib_datareader)
+
+**Tip:** The graph optimization passes configured here through
+individual ``extra_options`` flags (such as ``FoldRelu``,
+``AlignConcat``, and ``AlignSlice``) can also be applied declaratively
+with Quark’s **ShapeShifter** framework by setting the
+``ShapeShifterYaml`` option — a single YAML file with
+``preprocess_passes`` (run on the float model before quantization) and
+``postprocess_passes`` (run on the quantized model afterwards). See the
+`ShapeShifter ONNX
+tutorial <https://quark.docs.amd.com/latest/tutorials/onnx/shapeshifter/onnx_shapeshifter_resnet50_tutorial.html>`__
+for details.
 
 Let’s create a folder “models” to contain all the quantized models.
 

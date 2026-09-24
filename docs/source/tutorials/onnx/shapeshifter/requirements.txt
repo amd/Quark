@@ -1,0 +1,15 @@
+accelerate
+ipywidgets
+jupyter
+nbstripout
+netron
+notebook
+onnx>=1.21.0,<=1.22.0
+onnxruntime~=1.28.0
+onnxslim
+Pillow
+# quark-cli imports every subcommand at startup, so its optional CLI
+# dependencies must be present for `quark-cli shapeshifter ...` to run.
+# Equivalent to `pip install amd-quark[cli]`.
+timm
+transformers

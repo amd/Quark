@@ -2,6 +2,182 @@
 
 # Release Notes
 
+## Release 0.13
+
+AMD Quark 0.13 supports Python 3.11-3.13, is tested against PyTorch 2.12.1 and 2.13.0, and ONNXRuntime 1.27.0 and 1.28.0, and is compatible with upstream `transformers==4.57.6` and `transformers==5.15`.
+
+### AMD Quark for PyTorch
+
+#### Mixed-Precision Search, Export, and Quant-Perf
+
+This release improves mixed-precision search and export and introduces Quant-Perf for managed quantization and accuracy validation.
+
+**Note:** Mixed-precision search and the Quant-Perf workflow are experimental features. Their Python APIs and CLI options may change in future releases.
+
+Key updates:
+
+- New Quant-Perf workflow (`quark-quant-perf`) for mixed-precision search quantization, with exported-checkpoint accuracy validation and optional throughput benchmarking and performance optimization.
+- Hardware-aware mixed-precision search guided by operator-level Roofline estimates to select configurations within a user-defined accuracy budget.
+- Finer module-level search for dense layers and routed MoE experts, with shared-expert handling and source-aware filtering for pre-quantized models.
+- Low-memory file-to-file export for calibration-free mixed-precision configurations, without loading the full model for export.
+- Improved vLLM compatibility for MoE and pre-quantized models, avoiding redundant re-quantization when source and target formats match.
+- Resumable sessions, runtime recovery support, live progress, and structured reports for long-running quantization workflows.
+
+#### Breaking Changes
+
+- `QConfig.exclude` patterns are no longer expanded implicitly. Previously, an entry that did not end in `.*` was silently duplicated as `[entry, entry + ".*"]`, so excluding a parent module also excluded everything under it. Patterns are now matched verbatim with `fnmatch` against the full module name: `exclude=["*.mlp.gate"]` excludes only the `gate` module itself, and quantizable children such as `*.mlp.gate.wg` are quantized. To keep the old behavior, list the descendant pattern explicitly:
+
+  ```python
+  QConfig(global_quant_config=..., exclude=["*.mlp.gate", "*.mlp.gate.*"])
+  ```
+
+  This also removes the `x` / `x.*` pairs that the expansion used to write into the exported `config.json` `exclude` list.
+
+- Moved the experimental mixed-precision and vLLM plugin modules to `quark.experimental.torch.mix_precision` and `quark.experimental.torch.plugin`. Update imports from `quark.experimental.torch.llm.mix_precision` and `quark.experimental.plugin`, respectively.
+
+#### New Features
+
+- Added optional multi-GPU parallelism to file-to-file quantization. The existing `device` parameter of `ModelQuantizer.direct_quantize_checkpoint` and `quantize_model_per_safetensor` now also accepts a list of devices (for example `device=["cuda:0", "cuda:1"]`), and `quantize_quark.py` enables it via the existing `--multi_gpu` flag (uses all visible GPUs). When a device list is given, safetensors shards are distributed across the listed devices and processed in parallel, one worker process per device. Passing a single device is unchanged, so existing behavior is preserved. Note: multi-device quantization of FP8 source models is not yet supported.
+- Added quantization support for the `qwen4_exp` architecture (`Qwen3.8-Flash-Next`), covering AWQ, AutoSmoothQuant, GPTQ, GPTAQ and Qronos. Both `model_type` spellings are registered: file-to-file mode reads the top-level `qwen4_exp`, while live model loading resolves the nested text config to `qwen4_exp_text`. Quantization targets the MoE experts, routed and shared; attention, the routers and the multimodal, MTP and PLE components stay excluded.
+
+  ```bash
+  quark-cli torch-llm-ptq --model_dir $MODEL_DIR --output_dir $OUTPUT_DIR \
+      --quant_scheme uint4_wo_128 --quant_algo awq
+  ```
+
+- Added `qwen3_5` GPTAQ and AutoSmoothQuant configurations, completing its algorithm coverage alongside the existing AWQ, GPTQ, Qronos and SmoothQuant entries.
+- Added the `QuantFlow.per_block` execution flow and the `quantize_quark.py --quant_flow per_block` CLI option for large-model activation calibration. This flow keeps the model on CPU, performs weight calibration there, and streams decoder blocks to the accelerator for activation calibration. `--gpu_resident_blocks` can keep selected leading decoder blocks on GPU to trade memory for fewer transfers.
+- Added AutoRound post-training quantization support for LLMs. AutoRound optimizes weight rounding with calibration data and supports INT4/UINT4 weight-only, MXFP4 weight-only, and MXFP4 weight-plus-activation quantization.
+- Added the `torch-llm-ptq --template_file` option to register a custom LLM template from JSON. This enables CLI quantization of models whose Hugging Face `model_type` does not have a built-in template, including custom per-algorithm configurations.
+
+  ```bash
+  quark-cli torch-llm-ptq --model_dir $MODEL_DIR --output_dir $OUTPUT_DIR \
+      --template_file my_template.json --quant_scheme fp8 --quant_algo awq
+  ```
+
+- Added the experimental `quark.experimental.torch.quant_perf` pipeline and
+  `quark-quant-perf` CLI for managed quantization, exported-checkpoint accuracy
+  validation, optional throughput benchmarking, and optional trace-guided
+  kernel optimization. Its common Python dependencies are available through
+  the `quant_perf` optional dependency group; accelerator-specific vLLM,
+  AITER, and optional optimization tools are installed separately as
+  documented in the module README.
+- Added the [MINCE](https://arxiv.org/abs/2606.22826) evaluation subsetting
+  evaluation subsetting to `quark.contrib` via the `quark.contrib.mince`
+  pipeline. MINCE creates reproducible, smaller evaluation subsets while maintaining accuracy comparable to the full dataset, reducing evaluation time and supporting reuse across Quark-quantized model variants.
+
+- Fixed RMSNorm fusion for architectures that parameterize the norm as `normalize(x) * (1.0 + weight)` (Qwen3.5, Gemma family, Muse-Glimmer). Only `weight` was folded into the following linear layers instead of the full `1.0 + weight`, degrading accuracy with offline rotation, which fuses normalization before rotation. Fusion now folds `weight + c` and resets the norm to `1.0 - c`, consistently with AWQ / SmoothQuant scale folding.
+
+- Extended file-to-file quantization to support Hadamard rotation (online R1, R2, R4) via `RotationConfig`. Combined with `layer_quant_config` / `exclude`, this enables mixed quantization of large MoE models such as Qwen3.5-397B-A17B in a single pass — rotation plus MXFP4 on the outlier-prone attention projections, plain MXFP4 on the routed experts that provide most of the memory savings. Rotation modes the model-free flow cannot reconstruct (trainable/SpinQuant, offline R1, R3, random rotations) raise an actionable error instead of producing wrong weights.
+
+- Added a [Composed Quantization tutorial](https://quark.docs.amd.com/latest/pytorch/tutorial_composed_quantization.html) for combining Rotation, AutoSmoothQuant, and GPTQ in one pass. The three algorithms address different sources of low-bit error, so they compose; the tutorial covers the `Rotation → ASQ → GPTQ` ordering and a runnable configuration.
+- Added packed MXFP4 support for Wan2.2 text-to-video transformers (Wan2.2-T2V-A14B and Wan2.2-TI2V-5B) with three native inference modes: **w4a4 RTN**, **w4a8 RTN**, and **w4a8 SVDQuant**. Export, reload, native FlyDSL / aiter usage, and VBench results are in `examples/torch/diffusers/wan2.2_mxfp4/README.md` and Example 6 of `examples/torch/diffusers/example_quark_torch_diffusers.rst`.
+
+#### Model Support
+
+Supported out-of-box model architectures added in this release:
+
+- Gemma4-E2B-it, Gemma4-E4B-it, Gemma4-12B-it, Gemma4-26B-A4B-it, Gemma4-31B-it
+- GLM-5.3-Flash
+- Hunyuan-0.5B-Instruct, Hunyuan-1.8B-Instruct, Hunyuan-4B-Instruct, Hunyuan-7B-Instruct, HY-MT1.5-1.8B, HY-MT1.5-7B
+- Kimi-K3
+- LFM2-2.6B, LFM2-2.6B-Exp, LFM2.5-1.2B-Instruct, LFM2.5-1.2B-Thinking, LFM2.5-350M
+- Muse-Glimmer-30B
+- Qwen3.5-0.8B, Qwen3.5-2B, Qwen3.5-4B
+- Qwen3.8-Flash-Next
+- Wan2.2-TI2V-5B, Wan2.2-T2V-A14B (MXFP4 w4a4 RTN, w4a8 RTN, w4a8 SVDQuant)
+
+#### Speculative Decoding
+
+- Added experimental speculative decoding support through `quark.experimental.speculative_decoding`, including an EAGLE-3 workflow for creating and evaluating draft models. The workflow provides on-policy data generation, draft-model training, export in vLLM-compatible `LlamaForCausalLMEagle3` format, and evaluation utilities for served acceptance length and throughput. It also includes a configuration-driven `setup` / `run` CLI, a validated Qwen3-8B quick-start workflow for AMD Instinct/ROCm, and a large-model recipe template based on `amd/MiniMax-M3-MXFP4`.
+
+  **Note:** Speculative decoding is an experimental feature. Its Python APIs, recipes, CLI flags, execution backends, and measured performance may change in future releases. Validate performance with your own model, workload, and serving environment.
+
+#### Quark Agent Skills
+
+- Expanded Quark Agent Skills beyond Claude Code to Cursor and Codex, added the bundled `quark-skills` installer, and packaged self-contained skills for installation, PyTorch PTQ.
+
+### Quark Shapeshifter
+
+- **Security (CWE-502) / behavior change:** `PytorchModelConfig.weights_only` now defaults to `True`, matching PyTorch 2.6+'s secure default that refuses to unpickle arbitrary objects, and the legacy top-level config format no longer forces `weights_only=False`. Previously Shapeshifter always loaded PyTorch model files with `weights_only=False`, which executes arbitrary code on load and exposed a deserialization-of-untrusted-data vulnerability. Loading a full `nn.Module` (as Shapeshifter's PyTorch passes require) now needs an explicit opt-in: set `weights_only: false` in `input_model_config` (or `weights_only=False` on `PytorchModelConfig`) — only do so for model files you trust. When a load fails under the safe default, Shapeshifter raises a `ValueError` explaining how to opt in.
+
+  Before (implicitly unsafe):
+
+  ```yaml
+  input_model_config:
+    model_type: pytorch
+    input_model_path: /path/to/model.pt
+  passes:
+    pytorch_remove_dropout: {}
+  output_model_path: /path/to/output.pt
+  ```
+
+  After (explicit opt-in required to load full nn.Module objects):
+
+  ```yaml
+  input_model_config:
+    model_type: pytorch
+    input_model_path: /path/to/model.pt
+    weights_only: false  # runs pickle on load; only for trusted files
+  passes:
+    pytorch_remove_dropout: {}
+  output_model_path: /path/to/output.pt
+  ```
+
+### AMD Quark for ONNX
+
+#### Release Highlights
+
+This release delivers a fully redesigned Automatic Mixed Precision (AMP) pipeline. Starting from a uniformly quantized baseline, AMP automatically identifies which layers or subgraphs benefit most from a precision change and applies upgrades or downgrades where they matter, guided by a configurable accuracy metric. It runs in two phases: sensitivity analysis ranks every candidate by how much a precision switch closes the gap to the float model, then a greedy mixing executor walks the ranked list and stops as soon as the accuracy threshold is met. The improved automatic mixed precision can be used together with manual mixed precision to achieve more diverse precision settings.
+
+#### Breaking Changes
+
+- **The Automatic Mixed Precision and `AutoMixprecisionConfig` API redesigned**
+  The Automatic Mixed Precision (AMP) and its configuration class have been fully redesigned in this release. There is no backward compatibility and no automatic migration path: all existing `AutoMixprecisionConfig` call sites must be updated manually before upgrading to 0.13.
+
+  - **Supports more precision formats and multiple precision targets**
+    The `target_layer_config` previously accepted only a single `QLayerConfig` and was limited in practice to integer data types. It now accepts three forms and supports the full range of Quark ONNX precision specs, including bfloat16, float16, BFP(block floating-point), microexponents, and microscaling formats:
+
+    - A plain `QLayerConfig` — applied uniformly to every candidate (the most common form; a plain `QLayerConfig` from 0.12 continues to work here).
+    - A `dict[QLayerConfig, list[str]]` — maps each precision config to a specific list of candidate node names, allowing different layers to be promoted to different precisions in a single AMP run. One entry may map to `[]` to serve as the global fallback for any node not listed elsewhere.
+    - A `list[QLayerConfig]` — multi-target mode where sensitivity analysis scores every config in the list against every candidate and automatically selects the precision that yields the smallest distance from float for each layer.
+
+  - **Supports subgraph-level mixed precision**
+    The new `subgraph_json` parameter accepts a path to a JSON file that groups model nodes into named functional blocks (e.g. backbone stages, detection heads, self-attention sublayers, FFN blocks). When provided, sensitivity scoring and precision promotion operate on entire subgraphs as a unit rather than individual ops, producing more semantically coherent mixed-precision models.
+
+  - **Improved sensitivity analysis**
+
+    - `sensitivity_cache_file` (new) — path to a JSON file where per-candidate sensitivity scores are persisted after the first run. Subsequent runs with the same path load the cache and skip re-analysis entirely, making iterative threshold tuning much faster. The cache is automatically invalidated when the model topology or the AMP configuration (target op types, layer filters, target config) changes. The cache file is human-editable: individual candidates can be disabled or reordered before the mixing step is re-run.
+    - `worker_num` (new, default `1`) — number of parallel workers for sensitivity analysis. Each worker scores one candidate independently using a thread-based backend, reducing wall-clock time proportionally to the number of available CPU cores.
+
+  - **Flexible metric design**
+
+    - `metric_default` (new, default `"l2"`) — selects the built-in distance metric when no custom function is provided. Available options: `"l2"` (mean L2 norm of element-wise differences), `"kl"` (mean KL divergence), `"cosine"` (mean cosine distance), `"sqnr"` (mean negative SQNR in dB — use a negative `metric_threshold`, e.g. `-30`), `"psnr"` (mean negative PSNR in dB).
+    - `metric_distance_fn` — a callable `(float_output, quant_output) -> float` where a lower value indicates the quantized output is closer to float. Takes priority over `metric_default` when provided.
+    - `metric_evaluate_fn` — a callable `(model_output) -> float` where a higher value is better (e.g. top-1 accuracy). Internally converted to a distance by subtracting the quantized score from the float score. Takes priority over `metric_default` when provided. Mutually exclusive with `metric_distance_fn`.
+    - `metric_threshold` default changed from `0.5` to `0`, and its type is now `float | None` (previously `float`). `0` promotes all candidates unconditionally; `None` runs sensitivity analysis only and skips mixing entirely. Pass `metric_threshold=0.5` explicitly to restore the old behaviour.
+
+#### New Features
+
+- Exposed a standalone API for finetuning models that have already been quantized.
+- Added a new extra option `QuantizationPreference` that automatically adjusts advanced options toward one of the goals "accuracy", "speed" and "resource_efficiency".
+- Added stem equalization to Cross-Layer Equalization (CLE), covering the stem convolution followed by a BatchNorm fan-out that pairwise Conv->Conv equalization skips. Enabled automatically with `include_cle`.
+- Added support for the standard FP8 data types `FLOAT8E4M3FN` and `FLOAT8E5M2`, which use the native `QuantizeLinear` / `DequantizeLinear` operators instead of a custom operator. Models below opset 21 are converted automatically before Q/DQ insertion.
+
+#### Enhancements
+
+- Enhanced [Quark ShapeShifter](https://quark.docs.amd.com/latest/quark_shapeshifter.html) integration: a new `ShapeShifterYaml` extra option drives both preprocessing and postprocessing graph transformations from a single YAML file via its `preprocess_passes` and `postprocess_passes` groups; a new postprocessing pass `onnx_constrain_per_channel_weight_scale` bounds the ratio between the largest and smallest per-channel weight scales of `Conv`, `ConvTranspose`, and `Gemm` nodes.
+- Sped up `LayerWisePercentile` calibration and reduced its peak memory by selecting percentiles from the calibration histogram in a single pass, removing the second inference pass.
+
+#### Bug Fixes
+
+- Fixed Cross-Layer Equalization failing on `Gemm` nodes whose `transB` attribute is not at the expected position.
+- Fixed several latent bugs in the ONNX backend.
+
+#### Deprecations
+
+- The `PreprocessYAML` extra option is deprecated in favor of `ShapeShifterYaml` and will be removed in a future release.
+
 ## Release 0.12
 
 AMD Quark 0.12 supports Python 3.11-3.13, is tested against PyTorch 2.10 and 2.11, ONNXRuntime 1.23.2, 1.24.2, and 1.25.1, and is compatible with upstream `transformers==4.57.6` and `transformers==5.2`. It bumps the minimum required `numpy` to `>= 2.0` across both PyTorch and ONNX flows, and supports `onnx` version `>=1.21.0,<=1.22.0`.

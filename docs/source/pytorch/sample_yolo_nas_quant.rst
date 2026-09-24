@@ -147,22 +147,44 @@ Preparation
 
    1. Download coco dataset: `annotations <http://images.cocodataset.org/annotations/annotations_trainval2017.zip>`_, `train2017 <http://images.cocodataset.org/zips/train2017.zip>`_, `val2017 <http://images.cocodataset.org/zips/val2017.zip>`_
 
-   2. After Unzip, the data directory structure would be the following:
+   2. Unzip all the archives into one directory. As extracted, the folders are laid out flat (there is no ``images`` layer):
 
-   3.
-        .. parsed-literal::
+      .. parsed-literal::
 
-            coco_data_dir
-            ├── annotations
-            │      ├─ instances_train2017.json
-            │      ├─ instances_val2017.json
-            │      └─ ...
-            └── images
-                ├── train2017
-                │   ├─ 000000000001.jpg
-                │   └─ ...
-                └── val2017
-                    └─ ...
+          coco_data_dir
+          ├── annotations
+          │      ├─ instances_train2017.json
+          │      ├─ instances_val2017.json
+          │      └─ ...
+          ├── train2017
+          │      ├─ 000000000001.jpg
+          │      └─ ...
+          └── val2017
+                 └─ ...
+
+   3. ``super_gradients`` expects the image folders to live under an ``images`` subdirectory of ``data_dir``, so reorganize the extracted data:
+
+      .. code-block:: shell
+
+          $ cd coco_data_dir
+          $ mkdir images
+          $ mv train2017 val2017 images/
+
+   4. The final data directory structure expected by ``super_gradients``:
+
+      .. parsed-literal::
+
+          coco_data_dir
+          ├── annotations
+          │      ├─ instances_train2017.json
+          │      ├─ instances_val2017.json
+          │      └─ ...
+          └── images
+              ├── train2017
+              │   ├─ 000000000001.jpg
+              │   └─ ...
+              └── val2017
+                  └─ ...
 
 
 
@@ -292,6 +314,7 @@ In the following, we give a brief introduction to the quantization.
     from super_gradients.training.dataloaders import coco2017_val_yolo_nas, coco2017_train_yolo_nas
     # ===== prepare the data for training, validation and calibration
     # Calib is used for PTQ
+    # data_dir: root directory of the COCO dataset that contains 'annotations/' and 'images/' (see the Preparation section)
     valid_dataloader = coco2017_val_yolo_nas(dataloader_params={"batch_size": 25},
                                              dataset_params={"data_dir": args.data_dir})
     calib_data = [x[0].to(device) for x in list(itertools.islice(valid_dataloader, args.calib_data_size))]

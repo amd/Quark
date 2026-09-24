@@ -17,17 +17,17 @@ minimizing the impact on model accuracy.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Quantizatize without Mixed Precision
+-  Quantizatize without Mixed Precision
 
-- Quantizatize with Mixed Precision
+-  Quantizatize with Mixed Precision
 
-- Evaluate Models
+-  Evaluate Models
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -52,10 +52,12 @@ extra packages are require for this tutorial.
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace_dir", default="")
     parser.add_argument("--frequency", default=None)
+    parser.add_argument("--calib_n_samples", type=int, default=None)
     parser.add_argument("--eval_n_samples", type=int, default=None)
     args, _ = parser.parse_known_args()
     workspace_dir = args.workspace_dir
     frequency = args.frequency
+    calib_n_samples = args.calib_n_samples
     eval_n_samples = args.eval_n_samples
 
 2) Export ONNX Model From Densenet121.ra_in1k Model.
@@ -199,36 +201,36 @@ current directory.
 The storage format of the val_data of the ImageNet dataset organized as
 follows:
 
-- val_data
+-  val_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
-    - ILSVRC2012_val_00002138.JPEG
-    - …
+      -  ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00002138.JPEG
+      -  …
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
-    - ILSVRC2012_val_00000262.JPEG
-    - …
+      -  ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000262.JPEG
+      -  …
 
-  - …
+   -  …
 
 The storage format of the calib_data of the ImageNet dataset organized
 as follows:
 
-- calib_data
+-  calib_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00000293.JPEG
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000236.JPEG
 
-  - …
+   -  …
 
 4) Quantization Procedure
 -------------------------
@@ -285,7 +287,7 @@ degradation during quantization.
     import torch
     from timm.data import create_dataset, create_loader
     
-    from quark.onnx import AutoMixprecisionConfig, Int8, Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig
+    from quark.onnx import AutoMixprecisionConfig, Int8Spec, Int16Spec, ModelQuantizer, QConfig, QLayerConfig
     
     
     def post_process_top1(output: torch.Tensor) -> float:
@@ -305,38 +307,44 @@ degradation during quantization.
         return count / len(preds)
     
     
-    def top1_acc(results: list[torch.Tensor | list[Any]]) -> float:
-        """
-        Calculate the top1 accuracy of the model.
-        :param results: the result of the model
-        :return: the top1 accuracy
-        """
-        timm_model_name = model_name
+    def make_top1_acc(max_samples=None):
+        def top1_acc(results: list[torch.Tensor | list[Any]]) -> float:
+            """
+            Calculate the top1 accuracy of the model.
+            :param results: the result of the model
+            :return: the top1 accuracy
+            """
+            timm_model_name = model_name
     
-        timm_model = create_model(
-            timm_model_name,
-            pretrained=False,
-        )
+            timm_model = create_model(
+                timm_model_name,
+                pretrained=False,
+            )
     
-        data_config = resolve_data_config(model=timm_model, use_test_size=True)
+            data_config = resolve_data_config(model=timm_model, use_test_size=True)
     
-        loader = create_loader(
-            create_dataset("", calib_data_path),
-            input_size=data_config["input_size"],
-            batch_size=20,
-            use_prefetcher=False,
-            interpolation=data_config["interpolation"],
-            mean=data_config["mean"],
-            std=data_config["std"],
-            num_workers=2,
-            crop_pct=data_config["crop_pct"],
-        )
-        target = []
-        for _, labels in loader:
-            target.extend(labels.data.tolist())
-        outputs_top1 = post_process_top1(torch.Tensor(numpy.squeeze(numpy.array(results))))
-        top1_acc = getAccuracy_top1(outputs_top1, target)
-        return round(top1_acc, 2)
+            loader = create_loader(
+                create_dataset("", calib_data_path),
+                input_size=data_config["input_size"],
+                batch_size=20,
+                use_prefetcher=False,
+                interpolation=data_config["interpolation"],
+                mean=data_config["mean"],
+                std=data_config["std"],
+                num_workers=2,
+                crop_pct=data_config["crop_pct"],
+            )
+            target = []
+            for _, labels in loader:
+                target.extend(labels.data.tolist())
+                if max_samples is not None and len(target) >= max_samples:
+                    target = target[:max_samples]
+                    break
+            outputs_top1 = post_process_top1(torch.Tensor(numpy.squeeze(numpy.array(results))))
+            top1_acc = getAccuracy_top1(outputs_top1, target)
+            return round(top1_acc, 2)
+    
+        return top1_acc
     
     
     class CalibrationDataReader:
@@ -357,8 +365,13 @@ degradation during quantization.
         if args["calibration_dataset_path"] == "":
             dr = None
         else:
+            max_samples = calib_n_samples
             data_loader = load_loader(
-                args["model_name"], args["calibration_dataset_path"], args["batch_size"], args["workers"]
+                args["model_name"],
+                args["calibration_dataset_path"],
+                args["batch_size"],
+                args["workers"],
+                max_samples=max_samples,
             )
             dr = CalibrationDataReader(data_loader)
     
@@ -366,14 +379,14 @@ degradation during quantization.
         if args["config"] == "S16S16_MIXED_S8S8":
             activation_spec = Int16Spec()
             weight_spec = Int16Spec()
+            max_samples = calib_n_samples
             algo_config = [
                 AutoMixprecisionConfig(
-                    l2_target=None,
-                    top1_acc_target=0.02,
-                    evaluate_function=top1_acc,
-                    act_target_quant_type=Int8,
-                    weight_target_quant_type=Int8,
-                    output_index=0,
+                    target_layer_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+                    data_size=max_samples if max_samples is not None else 1000,
+                    metric_evaluate_fn=make_top1_acc(max_samples),
+                    metric_threshold=0.02,
+                    metric_output_index=0,
                 )
             ]
         else:
@@ -397,6 +410,16 @@ degradation during quantization.
         # Quantize the ONNX model
         quantizer.quantize_model(args["input_model_path"], args["output_model_path"], dr)
 
+**Tip:** The graph optimization passes configured here through
+individual ``extra_options`` flags (such as ``Int16Bias``) can also be
+applied declaratively with Quark’s **ShapeShifter** framework by setting
+the ``ShapeShifterYaml`` option — a single YAML file with
+``preprocess_passes`` (run on the float model before quantization) and
+``postprocess_passes`` (run on the quantized model afterwards). See the
+`ShapeShifter ONNX
+tutorial <https://quark.docs.amd.com/latest/tutorials/onnx/shapeshifter/onnx_shapeshifter_resnet50_tutorial.html>`__
+for details.
+
 The cell defines a quantization config with the default S8S8_AAWS
 configuration — symmetric INT8 quantization for both weights and
 activations, and then generates a quantized model to the models
@@ -412,6 +435,8 @@ directory.
         "config": "S8S8_AAWS",
         "batch_size": 1,
         "workers": 1,
+        "frequency": frequency,
+        "calib_n_samples": calib_n_samples,
     }
 
 .. code:: ipython3
@@ -515,7 +540,7 @@ model’s top candidates.
     
     def evaluate(args: dict):
         args["gpu_id"] = 0
-        max_samples = args.get("eval_n_samples") if args.get("frequency") == "nightly" else None
+        max_samples = eval_n_samples
     
         # Set graph optimization level
         sess_options = onnxruntime.SessionOptions()
@@ -559,15 +584,6 @@ model’s top candidates.
     
             f_size = format(os.path.getsize(args["onnx_float"]) / (1024 * 1024), ".2f")
             q_size = format(os.path.getsize(args["onnx_quant"]) / (1024 * 1024), ".2f")
-            """
-            --------------------------------------------------------
-            |             | float model    | quantized model |
-            --------------------------------------------------------
-            | ****        | ****           | ****             |
-            --------------------------------------------------------
-            | Model Size  | ****           | ****             |
-            --------------------------------------------------------
-            """
             from rich.console import Console
             from rich.table import Table
     
@@ -599,7 +615,7 @@ Precision model on ImageNet val dataset
         "batch_size": 1,
         "workers": 1,
         "gpu": False,
-        "print_freq": 1000,
+        "print_freq": 10,
         "frequency": frequency,
         "eval_n_samples": eval_n_samples,
     }
@@ -617,7 +633,7 @@ precision** and record its accuracy on ImageNet val dataset
 .. code:: ipython3
 
     quant_eval_config = copy.deepcopy(eval_config)
-    quant_eval_config["onnx_input"] = "models/densenet121.ra_in1k2_quantized.onnx"
+    quant_eval_config["onnx_input"] = "models/densenet121.ra_in1k_quantized.onnx"
     
     top1, top5 = evaluate(quant_eval_config)
 
@@ -635,17 +651,21 @@ The following table contains the expected results, but please note that
 different machines can lead to minor variations in the accuracy of
 quantized model with Mixed Precision.
 
-+--------+----------+---------------------------+-------------------------+
-|        | Float    | Quantized Model without   | Quantized Model with    |
-|        | Model    | Mixed Precision           | Mixed Precision         |
-+========+==========+===========================+=========================+
-| Model  | 33 MB    | 10 MB                     | 17 MB                   |
-| Size   |          |                           |                         |
-+--------+----------+---------------------------+-------------------------+
-| Prec@1 | 76.602 % | 2.642 %                   | 75.216 %                |
-+--------+----------+---------------------------+-------------------------+
-| Prec@5 | 93.440 % | 7.932 %                   | 92.768 %                |
-+--------+----------+---------------------------+-------------------------+
++-----+----------+---------------------------+-------------------------+
+|     | Float    | Quantized Model without   | Quantized Model with    |
+|     | Model    | Mixed Precision           | Mixed Precision         |
++=====+==========+===========================+=========================+
+| Mo  | 33 MB    | 10 MB                     | 17 MB                   |
+| del |          |                           |                         |
+| S   |          |                           |                         |
+| ize |          |                           |                         |
++-----+----------+---------------------------+-------------------------+
+| Pre | 76.602 % | 2.642 %                   | 75.216 %                |
+| c@1 |          |                           |                         |
++-----+----------+---------------------------+-------------------------+
+| Pre | 93.440 % | 7.932 %                   | 92.768 %                |
+| c@5 |          |                           |                         |
++-----+----------+---------------------------+-------------------------+
 
 .. code:: ipython3
 
@@ -688,7 +708,7 @@ quantized model with Mixed Precision.
             top1, top5 = "ERROR", "ERROR"
             diff1, diff5 = "ERROR", "ERROR"
         prec1_meta = {"golden": benchmark["Prec@1"], "difference": diff1}
-        prec5_meta = {"golden": benchmark["Prec@1"], "difference": diff5}
+        prec5_meta = {"golden": benchmark["Prec@5"], "difference": diff5}
         result = {
             "version": 1,
             "data": [

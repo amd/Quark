@@ -20,17 +20,17 @@ weights.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Quantizatize without AdaRound
+-  Quantizatize without AdaRound
 
-- Quantizatize with AdaRound
+-  Quantizatize with AdaRound
 
-- Evaluate Models
+-  Evaluate Models
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -52,13 +52,16 @@ extra packages are require for this tutorial.
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace_dir", default="")
     parser.add_argument("--frequency", default=None)
+    parser.add_argument("--calib_n_samples", type=int, default=None)
     parser.add_argument("--eval_n_samples", type=int, default=None)
     args, _ = parser.parse_known_args()
     workspace_dir = args.workspace_dir
     frequency = args.frequency
+    calib_n_samples = args.calib_n_samples
     eval_n_samples = args.eval_n_samples
     print("Working root dir: ", workspace_dir)
     print("Frequency: ", frequency)
+    print("Calib N Samples: ", calib_n_samples)
     print("Eval N Samples: ", eval_n_samples)
 
 2) Export ONNX Model From mobilenetv2_050.lamb_in1k Torch Model.
@@ -203,36 +206,36 @@ current directory.
 The storage format of the val_data of the ImageNet dataset organized as
 follows:
 
-- val_data
+-  val_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
-    - ILSVRC2012_val_00002138.JPEG
-    - …
+      -  ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00002138.JPEG
+      -  …
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
-    - ILSVRC2012_val_00000262.JPEG
-    - …
+      -  ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000262.JPEG
+      -  …
 
-  - …
+   -  …
 
 The storage format of the calib_data of the ImageNet dataset organized
 as follows:
 
-- calib_data
+-  calib_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00000293.JPEG
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000236.JPEG
 
-  - …
+   -  …
 
 4) Quantization Procedure
 -------------------------
@@ -306,8 +309,13 @@ during quantization.
         if args["calibration_dataset_path"] == "":
             dr = None
         else:
+            max_samples = calib_n_samples
             data_loader = load_loader(
-                args["model_name"], args["calibration_dataset_path"], args["batch_size"], args["workers"]
+                args["model_name"],
+                args["calibration_dataset_path"],
+                args["batch_size"],
+                args["workers"],
+                max_samples=max_samples,
             )
             dr = CalibrationDataReader(data_loader)
     
@@ -336,6 +344,17 @@ during quantization.
         # Quantize the ONNX model
         quantizer.quantize_model(args["input_model_path"], args["output_model_path"], dr)
 
+**Tip:** The graph optimization passes configured here through
+individual ``extra_options`` flags (such as ``FoldRelu``,
+``AlignConcat``, and ``AlignSlice``) can also be applied declaratively
+with Quark’s **ShapeShifter** framework by setting the
+``ShapeShifterYaml`` option — a single YAML file with
+``preprocess_passes`` (run on the float model before quantization) and
+``postprocess_passes`` (run on the quantized model afterwards). See the
+`ShapeShifter ONNX
+tutorial <https://quark.docs.amd.com/latest/tutorials/onnx/shapeshifter/onnx_shapeshifter_resnet50_tutorial.html>`__
+for details.
+
 The cell defines a quantization config with AdaRound disabled, and then
 generates a quantized model to the models directory using the default
 S8S8_AAWS configuration — symmetric INT8 quantization for both weights
@@ -350,6 +369,8 @@ and activations.
         "calibration_dataset_path": calib_data_path,
         "batch_size": 1,
         "workers": 1,
+        "frequency": frequency,
+        "calib_n_samples": calib_n_samples,
     }
 
 .. code:: ipython3
@@ -451,7 +472,7 @@ model’s top candidates.
     
     def evaluate(args: dict):
         args["gpu_id"] = 0
-        max_samples = args.get("eval_n_samples") if args.get("frequency") == "nightly" else None
+        max_samples = eval_n_samples
     
         # Set graph optimization level
         sess_options = onnxruntime.SessionOptions()
@@ -495,15 +516,6 @@ model’s top candidates.
     
             f_size = format(os.path.getsize(args["onnx_float"]) / (1024 * 1024), ".2f")
             q_size = format(os.path.getsize(args["onnx_quant"]) / (1024 * 1024), ".2f")
-            """
-            --------------------------------------------------------
-            |             | float model    | quantized model |
-            --------------------------------------------------------
-            | ****        | ****           | ****             |
-            --------------------------------------------------------
-            | Model Size  | ****           | ****             |
-            --------------------------------------------------------
-            """
             from rich.console import Console
             from rich.table import Table
     
@@ -535,7 +547,7 @@ Precision model on ImageNet val dataset
         "batch_size": 1,
         "workers": 2,
         "gpu": False,
-        "print_freq": 1000,
+        "print_freq": 10,
         "frequency": frequency,
         "eval_n_samples": eval_n_samples,
     }
@@ -571,17 +583,16 @@ The following table contains the expected results, but please note that
 different machines can lead to minor variations in the accuracy of
 quantized model with AdaRound.
 
-+--------+----------+---------------------------+-------------------------+
-|        | Float    | Quantized Model without   | Quantized Model with    |
-|        | Model    | AdaRound                  | AdaRound                |
-+========+==========+===========================+=========================+
-| Model  | 8.4 MB   | 2.3 MB                    | 2.4 MB                  |
-| Size   |          |                           |                         |
-+--------+----------+---------------------------+-------------------------+
-| Prec@1 | 65.424 % | 1.708 %                   | 39.790 %                |
-+--------+----------+---------------------------+-------------------------+
-| Prec@5 | 85.788 % | 5.690 %                   | 63.004 %                |
-+--------+----------+---------------------------+-------------------------+
++------------+-------------+-------------------+-------------------+
+|            | Float Model | Quantized Model   | Quantized Model   |
+|            |             | without AdaRound  | with AdaRound     |
++============+=============+===================+===================+
+| Model Size | 8.4 MB      | 2.3 MB            | 2.4 MB            |
++------------+-------------+-------------------+-------------------+
+| Prec@1     | 65.424 %    | 1.708 %           | 39.790 %          |
++------------+-------------+-------------------+-------------------+
+| Prec@5     | 85.788 %    | 5.690 %           | 63.004 %          |
++------------+-------------+-------------------+-------------------+
 
 .. code:: ipython3
 
@@ -624,7 +635,7 @@ quantized model with AdaRound.
             top1, top5 = "ERROR", "ERROR"
             diff1, diff5 = "ERROR", "ERROR"
         prec1_meta = {"golden": benchmark["Prec@1"], "difference": diff1}
-        prec5_meta = {"golden": benchmark["Prec@1"], "difference": diff5}
+        prec5_meta = {"golden": benchmark["Prec@5"], "difference": diff5}
         result = {
             "version": 1,
             "data": [

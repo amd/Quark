@@ -21,13 +21,13 @@ model’s performance.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Run auto search
+-  Run auto search
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -106,11 +106,11 @@ experiments in a central place. Otherwise, the current folder is used.
 
 The COCO dataset should be structured as follows:
 
-- val2017
+-  val2017
 
-  - sample_1.jpg
-  - sample_2.jpg
-  - …
+   -  sample_1.jpg
+   -  sample_2.jpg
+   -  …
 
 4) Auto Search Pipeline
 -----------------------

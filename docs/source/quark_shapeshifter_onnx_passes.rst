@@ -58,6 +58,30 @@ Preprocessing Passes
 
    -  **fold_batch_norm_after_concat**: (bool). Fold BatchNormalization parameters into upstream Conv, ConvTranspose, or Gemm nodes when the BN follows a Concat operation. The pass slices the BN parameters (gamma, beta, mean, variance) by channel to match each Concat input's channel count, and folds each slice into the corresponding upstream operator. This handles the case where standard BN folding fails because a Concat sits between the Conv and BN.
 
+**Div Folding**
+
+*  **onnx_fold_div_into_matmul**:
+
+   -  **fold_div_into_matmul**: (bool). Fold a scalar ``Div`` used for attention-score scaling into an upstream projection within a Multi-Head Attention (MHA) block, removing the ``Div`` node while preserving the computation. The scaling factor is pushed into the projection's weights (and bias, if present). The projection may be a ``MatMul``, a ``MatMul`` followed by an ``Add``, or a fused ``Gemm``. Two cases are handled: (1) when the ``Div`` scales the attention scores (``QK^T``) before ``Softmax``, only the Query projection is modified, with both separate and fused QKV projections supported (only the Query partition is scaled in the fused case); (2) when the ``Div`` scales a ``MatMul``/``Gemm`` input directly, the entire upstream projection weight (and bias) is scaled. The fold is exact when the divisor is a power of two (e.g. ``sqrt(64) = 8``), producing a simpler and more efficient graph with one fewer node.
+
+**Weight Equalization**
+
+*  **onnx_cross_layer_equalization**:
+
+   Apply Cross-Layer Equalization (CLE), a data-free, function-preserving weight-rebalancing technique that equalizes the weight ranges of adjacent ``Conv``/``Gemm`` layers joined by a positive-scaling-invariant activation (e.g. ReLU), so both layers quantize better. This pass reuses the existing Quark ONNX CLE implementation. It is referenced from "Markus Nagel et al., Data-Free Quantization Through Weight Equalization and Bias Correction, arXiv:1906.04721, 2019." No calibration data is required. Note: only ``Conv`` nodes that carry an explicit ``group`` attribute are supported.
+
+   -  **cross_layer_equalization**: (bool). Whether to apply CLE to the input model.
+   -  **op_types_to_quantize**: (list[str], optional). Operator types to equalize. Empty means the CLE-supported types (``Conv``, ``Gemm``).
+   -  **nodes_to_quantize**: (list[str], optional). Node names to include. Empty means all supported nodes.
+   -  **nodes_to_exclude**: (list[str], optional). Node names to exclude from equalization.
+   -  **replace_clip6_relu**: (bool, optional, default False). Replace ``Clip(0, 6)`` nodes with ``Relu`` before equalization to expose more equalizable patterns.
+   -  **cle_steps**: (int, optional, default 1). Number of equalization iterations. Use ``-1`` for adaptive iteration until convergence.
+   -  **cle_balance_method**: (str, optional, default "max"). The method used to balance weight ranges between layers.
+   -  **cle_weight_threshold**: (float, optional, default 0.5). Weight range threshold below which a channel is left unscaled.
+   -  **cle_scale_append_bias**: (bool, optional, default True). Fold the head bias into the range computation when calculating scales.
+   -  **cle_scale_use_threshold**: (bool, optional, default True). Apply the weight threshold when calculating scales.
+   -  **cle_total_layer_diff_threshold**: (float, optional, default 2e-7). Convergence threshold on the total weight change between iterations.
+
 **Model Format Conversion**
 
 *  **onnx_convert_fp16_to_fp32**:
@@ -121,6 +145,14 @@ Postprocessing passes are applied to quantized ONNX models to optimize Q/DQ node
 
    -  **align_scale**: (str or list[str]). Align scale and zero-point of Q/DQ nodes for selected operator types to satisfy compiler constraints for float-scale quantized models. Supported op types: "Concat", "MaxPool", "AveragePool", "GlobalAveragePool", "Pad", "Slice", "Transpose", and "Reshape". Can be a single op type name or a list (e.g., ["Concat", "MaxPool", "AveragePool", "Pad"]). For Concat, Pad, Transpose, and Reshape, the output Q/DQ parameters are copied to all inputs; for MaxPool/AveragePool/GlobalAveragePool and Slice, the input Q/DQ parameters are copied to the output. The pass iterates up to 5 rounds until no further changes occur.
 
+*  **onnx_constrain_per_channel_weight_scale**:
+
+   -  **constrain_per_channel_weight_scale**: (bool). Constrain per-channel weight scales in QDQ quantized models so that the spread of scales within one weight tensor stays bounded. For Conv, ConvTranspose, and Gemm nodes whose weight input comes from a DequantizeLinear with a multi-element (per-channel) scale initializer, the pass lifts the smallest channel scales when ``max(scales) / min(scales)`` exceeds **maxmin_scale_ratio**. Only the minimum side is clamped up (``scales = max(scales, floor)``); the largest scale of the tensor is never modified. A weight tensor whose scales are within the ratio, or that contains a non-positive scale, is left untouched. The DequantizeLinear scale initializer is updated in place, so a paired QuantizeLinear that shares the same scale tensor sees the new values as well. This limits the dynamic range that per-channel scales must cover, which prevents the tiny scales of near-zero channels from being flushed to zero or losing precision on hardware backends with limited scale range.
+   -  **min_w_scale**: (float, optional). Lower bound used to clamp up the smallest channel scales of a violating weight tensor. Default: ``1e-7``. Must be positive; a non-positive value raises ``ValueError``.
+   -  **adaptive_min_w_scale**: (bool, optional). When True, the floor for a violating weight tensor is raised to ``max(min_w_scale, max_scale / maxmin_scale_ratio)`` so that the ratio constraint is actually satisfied after clamping. When False, the fixed **min_w_scale** is used as-is, which bounds the smallest scale but may leave the ratio above the limit. Default: ``False``.
+   -  **maxmin_scale_ratio**: (float, optional). Maximum allowed ratio between the largest and the smallest scale within one weight tensor (``max_scale / min_scale``). A weight tensor is only modified when this ratio is exceeded. Default: ``1e6``. Must be >= 1.0; a smaller value raises ``ValueError``.
+   -  **adjust_bias**: (bool, optional). When True, and the node has a quantized bias (its third input is produced by a DequantizeLinear with a per-channel scale aligned to the weight output channels), the bias of every channel whose weight scale changed is updated: the bias scale is multiplied by the same per-channel factor, preserving the ``bias_scale = input_scale * weight_scale`` invariant, and the int bias is re-quantized at the new scale so that the dequantized bias value ``(q_bias - zero_point) * bias_scale`` is preserved. A bias that is not per-channel or does not align with the weight channels is skipped with a warning. Default: ``True``.
+
 *  **onnx_remove_qdq_between_op_types**:
 
    -  **remove_qdq_between_op_types**: (list[list[str]]). Remove redundant QuantizeLinear/DequantizeLinear node pairs between specified operator type pairs. Each entry is a list of two operator type names [upper_op, lower_op]. For each pair, the pass finds patterns where an upper_op output feeds through Q→DQ into a lower_op input, and removes the Q/DQ nodes to connect them directly. Only single-consumer DQ outputs are removed to avoid breaking other connections. For example: [["Conv", "Relu"], ["Conv", "LeakyRelu"], ["Mul", "Add"]].
@@ -152,3 +184,10 @@ Postprocessing passes are applied to quantized ONNX models to optimize Q/DQ node
 *  **onnx_set_node_attributes**:
 
    -  **node_attribute_updates**: (list[dict]). Each element must provide **node_name** (str, must match ``NodeProto.name``) and **attributes** (dict mapping attribute name to a new value). The pass updates **only attributes that already exist** on that node; it does not add new attributes or create nodes. Missing attribute names are skipped with a warning; if no node matches **node_name**, a warning is logged. For primitive ONNX attribute kinds (INT, FLOAT, STRING, INTS, FLOATS, STRINGS), the configured value must have a **compatible Python type** with the existing ONNX attribute (e.g. native ``int`` for INT, ``float`` for scalar FLOAT attributes—integer literals are not accepted—``str`` for STRING). For **INTS**, **FLOATS**, and **STRINGS**, the value must be a ``list`` or ``tuple`` (a bare scalar is not accepted), and every element must match the element type: ``int`` for INTS, ``float`` for FLOATS, ``str`` for STRINGS. If the user supplies a mismatched type (for example a scalar ``9`` where ``[9]`` is required for INTS), the pass logs a warning and **skips** updating that attribute, leaving the model unchanged for that entry. Attributes whose ONNX kind is not one of INT, FLOAT, STRING, INTS, FLOATS, or STRINGS (for example **TENSOR** or **GRAPH**) are **not** modified; matching keys in the configuration are skipped with a warning. Use this pass to adjust scales, axes, flags, or custom-op parameters on specific operators after export or quantization without round-tripping through the original framework.
+
+Community-Contributed Passes
+----------------------------
+
+Community-contributed passes extend Shapeshifter's capabilities beyond the core passes. They are maintained in the ``contrib`` area and follow the same patterns and registration system as core passes.
+
+See :doc:`Shapeshifter Community Passes </contrib/shapeshifter_community_passes/index>` for how to author, test, and document them.

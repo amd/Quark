@@ -12,25 +12,25 @@ strategy to meet target quantization accuracy.
 
 The example has the following parts:
 
-- Install requirements
+-  Install requirements
 
-- Prepare model
+-  Prepare model
 
-- Prepare data
+-  Prepare data
 
-- Quantizatize model With different configs
+-  Quantizatize model With different configs
 
-  - XINT8
-  - A8W8
-  - A16W8
-  - BF16
-  - BFP16
-  - CLE
-  - AdaRound
-  - AdaQuant
-  - Exclude Nodes
+   -  XINT8
+   -  A8W8
+   -  A16W8
+   -  BF16
+   -  BFP16
+   -  CLE
+   -  AdaRound
+   -  AdaQuant
+   -  Exclude Nodes
 
-- Evaluate model
+-  Evaluate model
 
 1) Install The Necessary Python Packages:
 -----------------------------------------
@@ -64,9 +64,15 @@ Get working directory for json output file
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace_dir", default="")
+    parser.add_argument("--calib_n_samples", type=int, default=None)
+    parser.add_argument("--eval_n_samples", type=int, default=None)
     args, _ = parser.parse_known_args()
     workspace_dir = args.workspace_dir
+    calib_n_samples = args.calib_n_samples
+    eval_n_samples = args.eval_n_samples
     print("Working root dir: ", workspace_dir)
+    print("Calib N Samples: ", calib_n_samples)
+    print("Eval N Samples: ", eval_n_samples)
 
 3) Prepare data
 ---------------
@@ -160,36 +166,36 @@ current directory.
 The storage format of the val_data of the ImageNet dataset organized as
 follows:
 
-- val_data
+-  val_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
-    - ILSVRC2012_val_00002138.JPEG
-    - …
+      -  ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00002138.JPEG
+      -  …
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
-    - ILSVRC2012_val_00000262.JPEG
-    - …
+      -  ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000262.JPEG
+      -  …
 
-  - …
+   -  …
 
 The storage format of the calib_data of the ImageNet dataset organized
 as follows:
 
-- calib_data
+-  calib_data
 
-  - n01440764
+   -  n01440764
 
-    - ILSVRC2012_val_00000293.JPEG
+      -  ILSVRC2012_val_00000293.JPEG
 
-  - n01443537
+   -  n01443537
 
-    - ILSVRC2012_val_00000236.JPEG
+      -  ILSVRC2012_val_00000236.JPEG
 
-  - …
+   -  …
 
 4) Quantization Procedure
 -------------------------
@@ -426,6 +432,17 @@ Define a function to perform quantization based on your config
         quantizer = ModelQuantizer(quant_config)
         quantizer.quantize_model(args["input_model_path"], args["output_model_path"], calib_datareader)
 
+**Tip:** The graph optimization passes configured here through
+individual ``extra_options`` flags (such as ``FoldRelu``,
+``AlignConcat``, and ``AlignSlice``) can also be applied declaratively
+with Quark’s **ShapeShifter** framework by setting the
+``ShapeShifterYaml`` option — a single YAML file with
+``preprocess_passes`` (run on the float model before quantization) and
+``postprocess_passes`` (run on the quantized model afterwards). See the
+`ShapeShifter ONNX
+tutorial <https://quark.docs.amd.com/latest/tutorials/onnx/shapeshifter/onnx_shapeshifter_resnet50_tutorial.html>`__
+for details.
+
 Create a basic configuration, then modify it based on each requirement
 
 .. code:: ipython3
@@ -433,7 +450,7 @@ Create a basic configuration, then modify it based on each requirement
     quant_config = {
         "input_model_path": "models/resnet50-v1-12.onnx",
         "calib_data_path": calib_data_path,
-        "num_calib_data": 1000,
+        "num_calib_data": calib_n_samples if calib_n_samples is not None else 1000,
         "batch_size": 1,
         "num_iters": 1,
         "device": "cpu",
@@ -564,7 +581,7 @@ model’s top candidates.
             self.avg = self.sum / self.count
     
     
-    def load_loader(data_dir, batch_size, workers):
+    def load_loader(data_dir, batch_size, workers, max_samples=None):
         data_transform = transforms.Compose(
             [
                 transforms.Resize(256),
@@ -574,6 +591,8 @@ model’s top candidates.
             ]
         )
         dataset = torchvision.datasets.ImageFolder(data_dir, data_transform)
+        if max_samples is not None and max_samples < len(dataset):
+            dataset = torch.utils.data.Subset(dataset, range(max_samples))
         data_loader = torch.utils.data.DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True
         )
@@ -623,6 +642,7 @@ model’s top candidates.
     
     def evaluate(args: dict):
         args["gpu_id"] = 0
+        max_samples = args.get("eval_n_samples")
     
         # Set graph optimization level
         sess_options = onnxruntime.SessionOptions()
@@ -646,7 +666,7 @@ model’s top candidates.
             device = "CPU"
             providers = ["CPUExecutionProvider"]
         sess_options.register_custom_ops_library(get_library_path(device))
-        val_loader = load_loader(args["data"], args["batch_size"], args["workers"])
+        val_loader = load_loader(args["data"], args["batch_size"], args["workers"], max_samples=max_samples)
         top1, top5 = metrics(args["onnx_input"], sess_options, providers, val_loader, args["print_freq"])
         print(f" * Prec@1 {top1.avg:.3f} ({100 - top1.avg:.3f}) Prec@5 {top5.avg:.3f} ({100.0 - top5.avg:.3f})")
         return round(top1.avg, 3), round(top5.avg, 3)
@@ -661,7 +681,8 @@ Precision model on ImageNet val dataset
         "batch_size": 100,
         "workers": 1,
         "gpu": False,
-        "print_freq": 1000,
+        "print_freq": 10,
+        "eval_n_samples": eval_n_samples,
     }
 
 .. code:: ipython3
@@ -738,7 +759,7 @@ Prec@5     91.716 %    91.420 %
             top1, top5 = "ERROR", "ERROR"
             diff1, diff5 = "ERROR", "ERROR"
         prec1_meta = {"golden": benchmark["Prec@1"], "difference": diff1}
-        prec5_meta = {"golden": benchmark["Prec@1"], "difference": diff5}
+        prec5_meta = {"golden": benchmark["Prec@5"], "difference": diff5}
         result = {
             "version": 1,
             "data": [

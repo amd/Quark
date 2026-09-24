@@ -22,6 +22,8 @@ Summary Table
 +------------------------------------------------------------------------------+
 | BFloat16                                                                     |
 +------------------------------------------------------------------------------+
+| Float8(E4M3FN) / Float8(E5M2)                                                |
++------------------------------------------------------------------------------+
 | BFP16                                                                        |
 +------------------------------------------------------------------------------+
 | MX4 / MX6 / MX9                                                              |
@@ -142,6 +144,56 @@ For models in Float16, we recommend setting ``ConvertFP16ToFP32`` to True in ext
 .. note::
 
    When using ``ConvertFP16ToFP32`` in quark.onnx, it requires onnxslim to simplify the ONNX model. Ensure that onnxslim is installed by using ``python -m pip install onnxslim``.
+
+3. Quantizing to Standard FP8 (E4M3FN / E5M2)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In addition to the Microscaling ``MXFP8`` data types (which use block-wise scales and the ``MXQuantizeDequantize`` custom op), quark.onnx also supports the *standard* per-tensor / per-channel FP8 formats defined in the ONNX standard: ``FLOAT8E4M3FN`` and ``FLOAT8E5M2``. These use the native ONNX ``QuantizeLinear`` / ``DequantizeLinear`` operators (no custom op required) with a symmetric MinMax scale ``scale = absmax / fp8_max`` and a zero-point of ``0``.
+
+Standard FP8 is selected through ONNX Runtime's ``QuantType`` rather than a ``*Spec`` class. Use the legacy ``QuantizationConfig`` API:
+
+.. code:: python
+
+    from quark.onnx import ModelQuantizer
+    from quark.onnx.quantization.config.config import Config
+    from quark.onnx.quantization.config.legacy import QuantizationConfig
+    from onnxruntime.quantization.calibrate import CalibrationMethod
+    from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
+
+    # E4M3FN is exposed natively by ONNX Runtime's QuantType.
+    quant_config = QuantizationConfig(
+        calibrate_method=CalibrationMethod.MinMax,
+        quant_format=QuantFormat.QDQ,
+        activation_type=QuantType.QFLOAT8E4M3FN,
+        weight_type=QuantType.QFLOAT8E4M3FN,
+        op_types_to_quantize=["Conv", "Gemm", "MatMul"],
+        per_channel=False,             # set True for per-channel weight scales
+        extra_options={
+            "ActivationSymmetric": True,   # FP8 zero-point is always 0
+            "WeightsOnly": True,           # recommended for LLMs (weights-only)
+        },
+    )
+    quantizer = ModelQuantizer(Config(global_quant_config=quant_config))
+    quantizer.quantize_model(model_input, model_output, calibration_data_reader)
+
+The two standard FP8 variants and how to request them:
+
++----------------+----------------------------+------------------------------------------------------------+
+| Data Type      | Max finite value           | How to request                                             |
++================+============================+============================================================+
+| Float8 E4M3FN  | 448.0                      | ``QuantType.QFLOAT8E4M3FN``                                |
++----------------+----------------------------+------------------------------------------------------------+
+| Float8 E5M2    | 57344.0                    | quant type object with                                     |
+|                |                            | ``tensor_type = onnx.TensorProto.FLOAT8E5M2``              |
++----------------+----------------------------+------------------------------------------------------------+
+
+.. note::
+
+   Standard FP8 ``QuantizeLinear`` / ``DequantizeLinear`` only load in ONNX Runtime at **opset >= 21**. quark.onnx automatically converts a lower-opset input model up to opset 21 before inserting FP8 Q/DQ nodes, so no manual opset bump is required. Only the ``CalibrationMethod.MinMax`` and ``CalibrationMethod.Distribution`` methods are supported for FP8.
+
+.. note::
+
+   For LLMs, weights-only FP8 (``WeightsOnly=True``) is strongly recommended. Quantizing activations to FP8 severely degrades attention accuracy. In weights-only mode only weight tensors receive Q/DQ nodes while activations stay in Float16/Float32.
 
 Supported Op Type
 -----------------

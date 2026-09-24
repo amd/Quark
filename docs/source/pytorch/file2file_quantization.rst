@@ -98,20 +98,42 @@ This approach mirrors the ``_build_quant_config`` helper in ``quantize_quark.py`
        save_path=save_path,
    )
 
+   # Multi-GPU: pass a list of devices to distribute shards for parallel quantization
+   quantizer.direct_quantize_checkpoint(
+       pretrained_model_path=model_path,
+       save_path=save_path,
+       device=["cuda:0", "cuda:1", "cuda:2", "cuda:3",
+               "cuda:4", "cuda:5", "cuda:6", "cuda:7"],
+   )
+
 Example 2: File-to-File Mode via ``quantize_quark.py``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``quantize_quark.py`` script supports a ``--file2file_quantization`` flag that bypasses model loading and the standard quantization pipeline. It reads ``config.json`` to determine the model type, builds ``quant_config`` using the same ``LLMTemplate`` / ``--quant_scheme`` mechanism, and directly quantizes safetensors files in a file-to-file manner.
+The ``quantize_quark.py`` script supports a ``--quant_flow file2file`` mode that bypasses model loading and the standard quantization pipeline. It reads ``config.json`` to determine the model type, builds ``quant_config`` using the same ``LLMTemplate`` / ``--quant_scheme`` mechanism, and directly quantizes safetensors files in a file-to-file manner.
 
 .. code-block:: bash
 
+   # Single device
    python examples/torch/language_modeling/llm_ptq/quantize_quark.py \
        --model_dir /path/to/model \
        --quant_scheme mxfp4 \
        --exclude_layers "*self_attn*" "*mlp.gate" "*mlp.gate.linear" "*lm_head" \
        --output_dir /path/to/output \
-       --file2file_quantization \
+       --quant_flow file2file \
        --skip_evaluation
+
+   # Multi-GPU: add --multi_gpu to distribute shards across all visible GPUs
+   python examples/torch/language_modeling/llm_ptq/quantize_quark.py \
+       --model_dir /path/to/model \
+       --quant_scheme mxfp4 \
+       --output_dir /path/to/output \
+       --quant_flow file2file \
+       --multi_gpu \
+       --skip_evaluation
+
+.. note::
+
+   ``--file2file_quantization`` still works but is deprecated; use ``--quant_flow file2file`` instead.
 
 
 API Reference: ``direct_quantize_checkpoint``
@@ -149,7 +171,7 @@ API Reference: ``direct_quantize_checkpoint``
      - Optional list of :py:class:`WeightConverter` instances to transform tensors after precision recovery and before quantization. See `Weight Transformation with WeightConverter`_ below.
    * - ``device``
      - ``None``
-     - Device for tensor operations (e.g. ``"cuda"``, ``"cuda:0"``, ``"cpu"``). Defaults to ``"cuda"`` when ``None``.
+     - Device(s) for tensor operations. Pass a single device (e.g. ``"cuda"``, ``"cuda:0"``, ``"cpu"``; defaults to ``"cuda"`` when ``None``) for single-device mode, or a list (e.g. ``["cuda:0", "cuda:1"]``) to distribute shards round-robin across those devices and quantize them in parallel, one worker process per device. With a multi-device list, models with cross-shard weight/scale dependencies fall back to single-device automatically, and FP8 source models are not yet supported (single-device FP8 works).
    * - ``presharded_weights``
      - ``None``
      - Optional pre-loaded shard dictionary. When provided, the method uses these tensors directly instead of reading from ``pretrained_model_path``.
@@ -241,7 +263,7 @@ This matches the AMD-Quark W4A8 recipe used by models such as ``amd/Kimi-K2-Thin
    python examples/torch/language_modeling/llm_ptq/quantize_quark.py \
        --model_dir /path/to/model \
        --quant_scheme int4_fp8 \
-       --file2file_quantization \
+       --quant_flow file2file \
        --output_dir /path/to/output \
        --skip_evaluation
 

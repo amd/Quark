@@ -20,20 +20,20 @@ activation values, particularly the presence of “outliers” that can lead
 to significant quantization errors when activations are mapped to
 low-bit formats. Auto-SmoothQuant addresses this by:
 
-- **Shifting Quantization Difficulty:** It strategically shifts the
-  quantization difficulty from the activations to the weights by
-  applying channel-wise scaling factors to activations. This makes the
-  activations more “quantization-friendly.”
-- **Compensating Scales:** To maintain model correctness, these scaling
-  factors are compensated for by inversely scaling the corresponding
-  weights.
-- **Automated Scale Search:** Unlike manual or fixed-parameter
-  SmoothQuant, Auto-SmoothQuant automatically searches for the best
-  scaling factors for each layer, minimizing the quantization error
-  (e.g., MSE, MAE, RMSE) between the floating-point and quantized
-  outputs. SmoothQuant uses fixed hyperparameter values in the range of
-  0.1 to 1, while Auto-SmoothQuant applies a grid search with a step
-  size of 0.1 to efficiently find the optimal parameter.
+-  **Shifting Quantization Difficulty:** It strategically shifts the
+   quantization difficulty from the activations to the weights by
+   applying channel-wise scaling factors to activations. This makes the
+   activations more “quantization-friendly.”
+-  **Compensating Scales:** To maintain model correctness, these scaling
+   factors are compensated for by inversely scaling the corresponding
+   weights.
+-  **Automated Scale Search:** Unlike manual or fixed-parameter
+   SmoothQuant, Auto-SmoothQuant automatically searches for the best
+   scaling factors for each layer, minimizing the quantization error
+   (e.g., MSE, MAE, RMSE) between the floating-point and quantized
+   outputs. SmoothQuant uses fixed hyperparameter values in the range of
+   0.1 to 1, while Auto-SmoothQuant applies a grid search with a step
+   size of 0.1 to efficiently find the optimal parameter.
 
 This automated approach allows Auto-SmoothQuant to achieve a practical
 trade-off, delivering significant memory and computational efficiency
@@ -227,20 +227,20 @@ How to Write Your Own Auto-SmoothQuant Config
 
 4. **Define module2inspect and inp**
 
-   - ``module2inspect`` is an ``nn.Module`` that serves as the minimal
-     unit to search for the optimal scale of a ``prev_op``–``layers``
-     pair.
+   -  ``module2inspect`` is an ``nn.Module`` that serves as the minimal
+      unit to search for the optimal scale of a ``prev_op``–``layers``
+      pair.
 
-     - In the config, specify the *module name* of this ``nn.Module``.
-     - It must at least include the target layers. You can expand its
-       scope for potentially higher accuracy. If left empty, it defaults
-       to the target layers itself. If layers is an array,
-       ``module2inspect`` must be explicitly specified.
+      -  In the config, specify the *module name* of this ``nn.Module``.
+      -  It must at least include the target layers. You can expand its
+         scope for potentially higher accuracy. If left empty, it
+         defaults to the target layers itself. If layers is an array,
+         ``module2inspect`` must be explicitly specified.
 
-   - ``inp`` denotes the **first operator (module) inside**
-     ``module2inspect``. Specify its *module name* in the config. A
-     forward hook will be attached to capture its input tensor for
-     calibration.
+   -  ``inp`` denotes the **first operator (module) inside**
+      ``module2inspect``. Specify its *module name* in the config. A
+      forward hook will be attached to capture its input tensor for
+      calibration.
 
 4. Auto Smoothquant end-to-end example
 --------------------------------------

@@ -25,15 +25,15 @@ than an hour to run a single generation.
 What You Will Learn
 -------------------
 
-- PyTorch installation with ROCm/CUDA compatibility for parallel
-  processing.
-- Diffusion model background.
-- Hugging Face pipelines.
-- Image generation using Hugging Face models.
-- Quantization of Hugging Face models.
-- Comparing quality degradation through image generation quality.
-- Exporting using ONNX.
-- Displaying the ONNX model using Netron.
+-  PyTorch installation with ROCm/CUDA compatibility for parallel
+   processing.
+-  Diffusion model background.
+-  Hugging Face pipelines.
+-  Image generation using Hugging Face models.
+-  Quantization of Hugging Face models.
+-  Comparing quality degradation through image generation quality.
+-  Exporting using ONNX.
+-  Displaying the ONNX model using Netron.
 
 Installation and Set-Up
 -----------------------
@@ -125,8 +125,7 @@ resulting in new images to be generated. The below image is an example
 of the diffusion process for a simple model across a series of
 timesteps.
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/forward_back_pass.png
+.. figure:: ../../../_static/diffusion_tutorial_images/forward_back_pass.png
    :alt: forward_back_pass
 
    forward_back_pass
@@ -142,8 +141,7 @@ Face <https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5>`__
 is an image generation model capable of creating images from text
 prompts, as below:
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/rabbit_prompt1.png
+.. figure:: ../../../_static/diffusion_tutorial_images/rabbit_prompt1.png
    :alt: rabbit_prompt1
 
    rabbit_prompt1
@@ -164,8 +162,7 @@ the most important features in the network by abstracting the features.
 Then, the upsampling occurs, which increases the resolution of the image
 output.
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/upsample_downsample.png
+.. figure:: ../../../_static/diffusion_tutorial_images/upsample_downsample.png
    :alt: upsample_downsample
 
    upsample_downsample
@@ -194,8 +191,7 @@ original data. The autoencoder in this model uses a downsampling factor
 of 8 to map the images of shape ``H x W x 3`` to latents of shape
 ``H/f x W/f x 4``.
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/autoencoder_diagram2.png
+.. figure:: ../../../_static/diffusion_tutorial_images/autoencoder_diagram2.png
    :alt: autoencoder_diagram2
 
    autoencoder_diagram2
@@ -229,8 +225,7 @@ with the smaller the number of parameters being a smaller model. If the
 code is too slow to run, you can request access for a smaller model such
 as ``stabilityai/stable-diffusion-3.5-medium``.
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/model_selection.png
+.. figure:: ../../../_static/diffusion_tutorial_images/model_selection.png
    :alt: model_selection
 
    model_selection
@@ -239,8 +234,7 @@ Then, you can click on the model name to navigate to the model page.
 Click on the copy symbol to copy the link to the model for download as
 below:
 
-.. figure::
-   ../../../_static/diffusion_tutorial_images/copy_model_name2.png
+.. figure:: ../../../_static/diffusion_tutorial_images/copy_model_name2.png
    :alt: copy_model_name2
 
    copy_model_name2
@@ -520,25 +514,25 @@ Further Reading
 Papers
 ^^^^^^
 
-- `Deep Unsupervised Learning using Nonequilibrium
-  Thermodynamics <https://arxiv.org/pdf/1503.03585>`__
+-  `Deep Unsupervised Learning using Nonequilibrium
+   Thermodynamics <https://arxiv.org/pdf/1503.03585>`__
 
-  - The original diffusion model paper
+   -  The original diffusion model paper
 
-- `Denoising Diffusion Probabilistic
-  Models <https://arxiv.org/abs/2006.11239>`__
+-  `Denoising Diffusion Probabilistic
+   Models <https://arxiv.org/abs/2006.11239>`__
 
-  - Improvements to diffusion model image generation
+   -  Improvements to diffusion model image generation
 
 Tutorials
 ^^^^^^^^^
 
-- `Hugging Face Diffusers
-  Tutorial <https://huggingface.co/docs/diffusers/index>`__
+-  `Hugging Face Diffusers
+   Tutorial <https://huggingface.co/docs/diffusers/index>`__
 
-  - For more in-depth background regarding diffusion models
+   -  For more in-depth background regarding diffusion models
 
-- `Optimum Inference with ONNX
-  Runtime <https://huggingface.co/docs/optimum/onnxruntime/usage_guides/models>`__
+-  `Optimum Inference with ONNX
+   Runtime <https://huggingface.co/docs/optimum/onnxruntime/usage_guides/models>`__
 
-  - For running inference on an ONNX diffusion model
+   -  For running inference on an ONNX diffusion model

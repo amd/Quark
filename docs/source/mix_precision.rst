@@ -8,9 +8,9 @@ mixed-precision quantization configuration for large language models running
 on AMD Instinct GPUs via vLLM.
 
 Given an accuracy loss budget—for example, GSM8K must not drop by more than
-2%—it searches from least to most aggressive quantization and selects the
-most aggressively quantized configuration whose accuracy stays within the
-threshold, without any manual parameter testing.
+2%—it uses a hardware-aware decode Roofline to walk adjacent performance
+candidates and selects the fastest evaluated configuration whose accuracy
+stays within the threshold.
 
 Supported Quantization Modes
 -----------------------------
@@ -33,14 +33,28 @@ Workflow Overview
 
 1. **Load model on meta device** — builds the layer graph for quantization
    config generation with no GPU memory cost.
-2. **Generate candidate configs** — sorted from least to most aggressive
-   quantization.
-3. **Evaluate baseline** — run GSM8K on the original (unquantized) vLLM model.
-4. **Search loop** — for each config in rank order, re-quantize, evaluate,
-   check accuracy threshold, and reset.
-5. **Select best config** — the most aggressively quantized config that passes
-   the threshold.
-6. **Export** (optional) — apply best config and save as safetensors.
+2. **Generate candidate configs** — constrained by the target hardware and
+   requested mode subset. With ``--file2file_quantization``, candidates containing
+   calibration-dependent ``fp8`` or ``mxfp4_fp8`` (W4A8) modes are reported in a
+   warning and removed before evaluation.
+3. **Compute the Roofline** — walk the meta model's Linear shapes and score
+   candidates with per-op GEMM, FusedMoE, and SDPA compute/memory ceilings on
+   the target GPU, with aggregate memory as a fallback. The default workload is
+   ``ISL=8192`` / ``OSL=1024``; a separate prefill Roofline is reported but does
+   not affect ordering.
+4. **Evaluate baseline** — run GSM8K on the original (unquantized) vLLM model.
+5. **Search loop** — start from the hardware anchor, walk adjacent Roofline
+   candidates, re-quantize, evaluate, check the threshold, and reset.
+6. **Select best config** — the highest-scoring evaluated config under the
+   Roofline model that passes.
+7. **Export** (optional) — apply best config and save as safetensors. With
+   ``--file2file_quantization``, the best calibration-free config is exported one
+   checkpoint shard at a time without loading the full model. Hugging Face model
+   IDs are resolved to the local cache automatically; local inputs must contain
+   ``config.json`` and at least one ``.safetensors`` shard.
+
+MI300 and MI325 use ``mlp=ptpc_fp8`` as the preferred anchor. MI355 uses
+``mlp=mxfp4``. All other layer partitions start as ``native``.
 
 Quick Start
 -----------
@@ -61,10 +75,11 @@ Quick Start
        --hardware mi300 \
        -tp 8 \
        --gpu-memory-utilization 0.8 \
-       --export_best_model
+       --export_best_model \
+       --file2file_quantization
 
 Further Reading
 ---------------
 
 * `Example script and README <https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark/blob/main/examples/torch/experimental/mix_precision/README.md>`_
-* `API design document <https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark/blob/main/quark/experimental/torch/llm/mix_precision/README.md>`_
+* `API design document <https://gitenterprise.xilinx.com/AMDNeuralOpt/Quark/blob/main/quark/experimental/torch/mix_precision/README.md>`_

@@ -109,7 +109,7 @@ Run with:
     input_model_config:
       model_type: pytorch  # Discriminator field (required in YAML)
       input_model_path: /path/to/model.pt
-      weights_only: false  # Required for loading nn.Module objects
+      weights_only: false  # Opt-in: needed to load full nn.Module objects; runs pickle, so only for trusted files
       map_location: cpu
     passes:
       pytorch_remove_dropout: {}
@@ -143,7 +143,7 @@ Shapeshifter uses an inheritance-based configuration system:
     # PyTorch-specific
     class PytorchModelConfig(ModelConfig):
         model_type: Literal["pytorch"] = "pytorch"
-        weights_only: bool = False
+        weights_only: bool = True  # Secure default; set False to load full nn.Module objects
         map_location: str = "cpu"
 
 **Configuration Selection:**
@@ -284,9 +284,9 @@ To add a new core pass, create a new Python file in the ``quark/shapeshifter/pas
 
 **Community Passes**
 
-Community-contributed passes can be added to the ``quark/contrib/shapeshifter_community_passes/`` directory. Community passes use the same registration system and are automatically discovered and registered to the global registry.
-
-To contribute a community pass, follow the same implementation requirements as core passes (see below), but place the file in ``quark/contrib/shapeshifter_community_passes/`` instead of ``quark/shapeshifter/passes/``. Add your tests to ``quark/contrib/shapeshifter_community_passes/tests/`` and document your pass in :doc:`quark_shapeshifter_torch_passes` or :doc:`quark_shapeshifter_onnx_passes`.
+Community-contributed passes live in the ``contrib`` area and use the same
+registration system as core passes. For how to author, test, and document one,
+see :doc:`Shapeshifter Community Passes </contrib/shapeshifter_community_passes/index>`.
 
 Naming Conventions
 ~~~~~~~~~~~~~~~~~~
@@ -471,14 +471,25 @@ Important Notes
 
 * Set ``SkipPreprocess`` to ``True`` in quantization config if Shapeshifter is used before quantization. See :doc:`Full List of Quantization Config Features <onnx/appendix_full_quant_config_features>` for details.
 
+* To drive Shapeshifter passes from within the ONNX quantizer, use the ``ShapeShifterYaml`` option in ``extra_options``. Its YAML supports a ``preprocess_passes`` group (run before quantization on the float model) and a ``postprocess_passes`` group (run after quantization on the quantized model, in addition to the flag-driven postprocessing). When a ``preprocess_passes`` group runs, the preprocessed float model (after those passes, before quantization) is saved automatically — to the optional ``preprocessed_model_path`` field if given, otherwise to ``<input_model_name>_preprocessed.onnx`` beside the input model. The older ``PreprocessYAML`` option is deprecated and is now a preprocess-only alias of ``ShapeShifterYaml``.
+
 **For PyTorch Models:**
 
 * PyTorch models can be any Python callable (``torch.nn.Module``, functions, custom callables)
 * Use ``PytorchModelConfig`` for file-based loading
 * Configuration fields:
 
-  * ``weights_only`` (bool, default=False): If ``True``, only load state dict (more secure). If ``False``, load full model object (required for nn.Module). Note: PyTorch 2.6+ defaults to ``True`` for security.
+  * ``weights_only`` (bool, default=True): If ``True`` (default), only load tensors/state dict, matching PyTorch 2.6+'s secure default that refuses to unpickle arbitrary objects. If ``False``, load the full model object (required for ``nn.Module``). ``map_location`` still applies in both cases.
   * ``map_location`` (str, default="cpu"): Device to load model on (``"cpu"``, ``"cuda"``, ``"cuda:0"``, etc.)
+
+.. warning::
+
+   Setting ``weights_only: false`` makes ``torch.load`` unpickle the file, which
+   **executes arbitrary code on load**. Only use it for model files you trust.
+   Shapeshifter's PyTorch passes operate on full ``nn.Module`` objects, so file-based
+   PyTorch workflows require ``weights_only: false`` -- opt in explicitly rather than
+   loading untrusted checkpoints. Loading a full ``nn.Module`` under the safe default
+   (``weights_only: true``) raises a ``ValueError`` explaining how to opt in.
 
 **Pass Validation:**
 
@@ -528,7 +539,7 @@ Configuration uses inheritance for type safety:
     # PyTorch-specific
     class PytorchModelConfig(ModelConfig):
         model_type: Literal["pytorch"] = "pytorch"
-        weights_only: bool = False
+        weights_only: bool = True  # Secure default; set False to load full nn.Module objects
         map_location: str = "cpu"
 
     # Top-level config
@@ -881,13 +892,17 @@ Troubleshooting
    * All passes must match the model type
    * Check inheritance of each pass class
 
-3. **"Model is not callable" error:**
+3. **"Failed to load ... with weights_only=True" error:**
 
-   * PyTorch checkpoint doesn't contain a callable
-   * Try setting ``weights_only: false`` in ``input_model_config``
-   * Ensure you saved the full model, not just state dict
+   * Your checkpoint contains a full pickled object (e.g. an ``nn.Module``), which the safe default refuses to unpickle
+   * Set ``weights_only: false`` in ``input_model_config`` to opt in (runs pickle -- only for trusted files)
 
-4. **Import errors during pass discovery:**
+4. **"Model is not callable" error:**
+
+   * PyTorch checkpoint doesn't contain a callable (e.g. you saved a bare state dict)
+   * Ensure you saved the full model, not just the state dict
+
+5. **Import errors during pass discovery:**
 
    * Check pass file for syntax errors
    * Ensure all dependencies are installed

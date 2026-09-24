@@ -16,12 +16,12 @@ first.
 What You Will Learn
 -------------------
 
-- Large Language Model fundamentals
-- AMD Command Line Interface (CLI) for Quantization
-- Advanced quantization algorithms
-- Comparing the model’s accuracy before and after quantization using
-  benchmarks
-- Exporting using Hugging Face format
+-  Large Language Model fundamentals
+-  AMD Command Line Interface (CLI) for Quantization
+-  Advanced quantization algorithms
+-  Comparing the model’s accuracy before and after quantization using
+   benchmarks
+-  Exporting using Hugging Face format
 
 Installation and Setup
 ----------------------
@@ -103,7 +103,7 @@ Higher-importance tokens within the context window are prioritized using
 an attention mechanism; more on this later. In a LLM, the model uses the
 context window to generate the next most likely token in a sequence.
 
-|image1|
+|image0|
 
 The tokens are usually processed in parallel, to speed up compute time.
 This is why we check if we can use a GPU with
@@ -113,7 +113,7 @@ in our sentences/tokens in our context window. To solve this, we add a
 *positional embedding*. You can think about it like a dictionary of
 tokens with a corresponding index associated with it:
 
-|image2|
+|image1|
 
 To process a large text into smaller and more manageable pieces for the
 model to interpret, the text is split into sections called *chunks* to
@@ -130,11 +130,11 @@ or grid), with the distance between encodings being their closeness in
 relation to each other. We call this mapping a *latent space*. You can
 think of it as below:
 
-|image3|
+|image2|
 
 You can clearly see the different categories as below:
 
-|image4|
+|image3|
 
 In a computer, however, instead of a two-dimensional space, it is
 *n*-dimensional. The emojis, depicted above, can represent the machine’s
@@ -155,8 +155,7 @@ sentiment.
 We can put together the tokenization -> text encoding -> latent space as
 follows:
 
-.. figure::
-   ../../../../_static/llm_tutorial_images/prompt_processing.png
+.. figure:: ../../../../_static/llm_tutorial_images/prompt_processing.png
    :alt: prompt_processing
 
    prompt_processing
@@ -179,7 +178,7 @@ important parts of information during inference (prompting) and
 training. As transformers can also be used in image segmentation tasks,
 we can think about the attention mechanism visually as below:
 
-|image5|
+|image4|
 
 The important part of the picture, the two rabbits, are extracted. The
 background is not considered as much when classifying, as we are looking
@@ -197,15 +196,15 @@ it with ``Dublin`` despite the incomplete sentence.
 Testing with *Microsoft Copilot*, we can see this is the case, with
 slight variations in its response:
 
-|image6|
+|image5|
 
 compared to
 
-|image7|
+|image6|
 
 The reasoning can be visualized as follows:
 
-|image8|
+|image7|
 
 Within the transformer architecture, the self-attention mechanism
 computes the attention scores so the transformer model knows which words
@@ -215,7 +214,7 @@ to assign more priority to. It uses ``Query``, ``Key`` and ``Value``
 We can think about the ``Query``, ``Key`` and ``Value`` intuitively by
 considering a search query, as below:
 
-|image9|
+|image8|
 
 The ``Query`` is the search. The ``Key`` is the indexes or titles of the
 links returned (like “Quantization (signal processing)”). The ``Value``
@@ -230,7 +229,7 @@ vectors are weighted by this result.
 Putting it all together, we can now make our transformer architecture as
 below:
 
-|image10|
+|image9|
 
 LLMs use *Multi-Headed* attention; this allows the model to have
 different relationships between words. This is like our example from
@@ -252,7 +251,7 @@ probabilities, to select the next most likely token.
 
 The full LLM architecture can be described as below:
 
-|image11|
+|image10|
 
 To break it down, the LLM processes and outputs text as follows:
 
@@ -270,17 +269,17 @@ To break it down, the LLM processes and outputs text as follows:
 9.  Next token is repeatedly generated from next most probable outcome
 10. This process is repeated until until max token limit is reached.
 
-.. |image1| image:: ../../../../_static/llm_tutorial_images/generation.png
-.. |image2| image:: ../../../../_static/llm_tutorial_images/positional_encoding.png
-.. |image3| image:: ../../../../_static/llm_tutorial_images/associations.png
-.. |image4| image:: ../../../../_static/llm_tutorial_images/latent_space_clustering.png
-.. |image5| image:: ../../../../_static/llm_tutorial_images/attention_mechanism.png
-.. |image6| image:: ../../../../_static/llm_tutorial_images/prompt_long.png
-.. |image7| image:: ../../../../_static/llm_tutorial_images/prompt_short.png
-.. |image8| image:: ../../../../_static/llm_tutorial_images/prompt_attention.png
-.. |image9| image:: ../../../../_static/llm_tutorial_images/query_key_value.png
-.. |image10| image:: ../../../../_static/llm_tutorial_images/transformer.png
-.. |image11| image:: ../../../../_static/llm_tutorial_images/llm_architecture.png
+.. |image0| image:: ../../../../_static/llm_tutorial_images/generation.png
+.. |image1| image:: ../../../../_static/llm_tutorial_images/positional_encoding.png
+.. |image2| image:: ../../../../_static/llm_tutorial_images/associations.png
+.. |image3| image:: ../../../../_static/llm_tutorial_images/latent_space_clustering.png
+.. |image4| image:: ../../../../_static/llm_tutorial_images/attention_mechanism.png
+.. |image5| image:: ../../../../_static/llm_tutorial_images/prompt_long.png
+.. |image6| image:: ../../../../_static/llm_tutorial_images/prompt_short.png
+.. |image7| image:: ../../../../_static/llm_tutorial_images/prompt_attention.png
+.. |image8| image:: ../../../../_static/llm_tutorial_images/query_key_value.png
+.. |image9| image:: ../../../../_static/llm_tutorial_images/transformer.png
+.. |image10| image:: ../../../../_static/llm_tutorial_images/llm_architecture.png
 
 CLI Scripts
 -----------
@@ -509,53 +508,53 @@ Further Reading
 Tutorials/Articles
 ~~~~~~~~~~~~~~~~~~
 
-- `On the Biology of a Large Language
-  Model <https://transformer-circuits.pub/2025/attribution-graphs/biology.html>`__
+-  `On the Biology of a Large Language
+   Model <https://transformer-circuits.pub/2025/attribution-graphs/biology.html>`__
 
-  - Explains the internals of how LLMs “think” beyond just a black box
+   -  Explains the internals of how LLMs “think” beyond just a black box
 
-- `Hugging Face LLM
-  Course <https://huggingface.co/learn/llm-course/chapter1/3?fw=pt>`__
+-  `Hugging Face LLM
+   Course <https://huggingface.co/learn/llm-course/chapter1/3?fw=pt>`__
 
-  - More in-depth description on the background of LLM models
+   -  More in-depth description on the background of LLM models
 
-- `GPT from scratch <https://www.youtube.com/watch?v=kCc8FmEb1nY>`__
+-  `GPT from scratch <https://www.youtube.com/watch?v=kCc8FmEb1nY>`__
 
-  - A video on creating a LLM from scratch in PyTorch, by a founding
-    engineer of ChatGPT, Andrej Karpathy
+   -  A video on creating a LLM from scratch in PyTorch, by a founding
+      engineer of ChatGPT, Andrej Karpathy
 
-- `AMD GPU ONNX
-  runtime <https://huggingface.co/docs/optimum/onnxruntime/usage_guides/amdgpu>`__
+-  `AMD GPU ONNX
+   runtime <https://huggingface.co/docs/optimum/onnxruntime/usage_guides/amdgpu>`__
 
-  - Detailing how to use ONNX runtime on AMD GPUs for inference using
-    ONNX
+   -  Detailing how to use ONNX runtime on AMD GPUs for inference using
+      ONNX
 
 Papers
 ~~~~~~
 
-- `Attention Is All you Need <https://arxiv.org/pdf/1706.03762>`__
+-  `Attention Is All you Need <https://arxiv.org/pdf/1706.03762>`__
 
-  - Original Transformer model paper; based on language translation
-    tasks
+   -  Original Transformer model paper; based on language translation
+      tasks
 
-- `Improving Language Understanding by Generative
-  Pre-Training <https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf>`__
+-  `Improving Language Understanding by Generative
+   Pre-Training <https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf>`__
 
-  - Introduces the original ChatGPT; the first pretrained Transformer
-    model
+   -  Introduces the original ChatGPT; the first pretrained Transformer
+      model
 
-- `A Latent Space Theory for Emergent Abilities in Large Language
-  Models <https://arxiv.org/pdf/2304.09960>`__
+-  `A Latent Space Theory for Emergent Abilities in Large Language
+   Models <https://arxiv.org/pdf/2304.09960>`__
 
-  - Examining latent space clustering for words in LLMs
+   -  Examining latent space clustering for words in LLMs
 
-- `Measuring Massive Multitask Language
-  Understanding <https://arxiv.org/abs/2009.03300>`__
+-  `Measuring Massive Multitask Language
+   Understanding <https://arxiv.org/abs/2009.03300>`__
 
-  - Introduction to the method used to evaluate our LLM performance;
-    MMLU
+   -  Introduction to the method used to evaluate our LLM performance;
+      MMLU
 
-- `AWQ: Activation-aware Weight Quantization for LLM Compression and
-  Acceleration <https://arxiv.org/abs/2306.00978>`__
+-  `AWQ: Activation-aware Weight Quantization for LLM Compression and
+   Acceleration <https://arxiv.org/abs/2306.00978>`__
 
-  - Weight selection for quantization accuracy
+   -  Weight selection for quantization accuracy

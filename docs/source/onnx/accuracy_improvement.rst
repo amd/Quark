@@ -18,5 +18,6 @@ Contents
    AdaQuant and AdaRound <accuracy_algorithms/ada>
    AutoSearch <auto_search>
    Mixed Precision <tutorial_mix_precision>
+   Automatic Mixed Precision <accuracy_algorithms/amp>
    SmoothQuant <accuracy_algorithms/sq>
    QuaRot (experimental) <accuracy_algorithms/quarot>

@@ -14,16 +14,10 @@ BFloat16 (Brain Floating Point 16) is a floating-point format designed for deep 
 
 AMD's latest NPU and GPU devices natively support BF16, enabling more efficient matrix operations and lower latency. This guide explains how to convert an FP32/FP16 model to BF16 using Quark.
 
-.. figure:: ../../_static/convert_fp32_or_fp16_to_bf16.png
-   :width: 30%
-   :align: center
-
-   **Figure 1. How to Convert FP32/FP16 to BF16**
-
 How to Convert FP32 to BF16
 ---------------------------
 
-As the Figure 1 shows, you can use this command to convert a float32 model to bfloat16:
+Run the following command to convert an FP32 ONNX model to BF16:
 
 .. code-block:: bash
 
@@ -32,21 +26,38 @@ As the Figure 1 shows, you can use this command to convert a float32 model to bf
 How to Convert FP16 to BF16
 ---------------------------
 
-As the Figure 1 shows, you can use this command to convert a float16 model to bfloat16:
+Run the following command to convert an FP16 ONNX model to BF16:
 
 .. code-block:: bash
 
     python -m quark.onnx.tools.convert_fp16_to_bf16 --input $FLOAT16_ONNX_MODEL_PATH --output $BFLOAT16_ONNX_MODEL_PATH --format with_cast
 
-.. note::
+How the Graph Changes
+---------------------
 
-    In the conversion, graph optimization and saturation (overflow protection) will be automatically performed, and the ONNX converted from float32/float16 to bfloat16 looks like Figure 2. As you can see, compared to the float32/float16 model on the left, the bfloat16 model on the right includes additional pairs of Cast operations and some graph optimizations, for example merging three MatMul operations into one.
+The ``with_cast`` format represents BF16 rounding by inserting a Cast to BF16 followed by a Cast back to FP32 at selected tensor boundaries. The first Cast applies BF16 rounding; the second Cast restores FP32 storage so the next operator can consume the BF16-rounded values. For FP16 input models, Quark also preserves FP16 at the model inputs and outputs.
 
-.. figure:: ../../_static/example_of_converting_fp_to_bf16.png
-   :width: 90%
+During conversion, Quark also applies graph optimizations. Figures 1 and 2 are Netron views of the same residual block extracted from the `ONNX Model Zoo ResNet50 v1-12 model <https://huggingface.co/onnxmodelzoo/resnet50-v1-12>`_ before and after FP32-to-BF16 conversion. The extracted model keeps the residual shortcut and the initializer branches required by its Conv nodes, so the figures show the actual ONNX graphs rather than a schematic.
+
+.. figure:: ../../_static/resnet50_fp32_residual_block.png
+   :width: 100%
    :align: center
+   :alt: Netron view of an FP32 ResNet50 residual block before BF16 conversion.
 
-   **Figure 2. Convert FP32/FP16 Models to BF16**
+   **Figure 1. Netron View of the FP32 ResNet50 Residual Block**
+
+.. figure:: ../../_static/resnet50_bf16_residual_block.png
+   :width: 100%
+   :align: center
+   :alt: Netron view of the same ResNet50 residual block with BF16 Cast pairs and folded BatchNormalization nodes.
+
+   **Figure 2. Netron View of the Same Residual Block After BF16 Conversion**
+
+Compared with Figure 1, Figure 2 shows the following changes:
+
+- Cast pairs apply BF16 rounding on selected activation and initializer paths.
+- The BatchNormalization nodes visible in Figure 1 are folded into the corresponding Conv nodes during graph optimization.
+- The residual shortcut and Add operation remain in place.
 
 How to Measure Accuracy (Compare Differences between FP32/FP16 and BF16)
 ------------------------------------------------------------------------

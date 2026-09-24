@@ -35,10 +35,9 @@ Calibration-focused settings
 ----------------------------
 
 - ``CalibOptimizeMem`` reduces calibration memory pressure and is a strong
-  default for large models or large calibration datasets.
-- ``CalibOptimizeDisk`` is particularly useful with
-  ``CalibMethod.LayerwisePercentile`` because it avoids caching intermediate
-  activation tensors in memory or on disk, recomputing them only when needed.
+  default for large models or large calibration datasets. It applies to the
+  ``MinMSE``, ``MinMax``, ``NonOverflow``, ``Percentile``, ``Entropy``, and
+  ``Distribution`` calibration methods.
 - ``CalibPassthroughOpTypes`` enables Selective Calibration Propagation for
   distribution-preserving ops such as ``Reshape``, ``Transpose``, ``MaxPool``,
   ``Split``, ``Slice``, ``Squeeze``, ``Unsqueeze``, and ``Gather``.
@@ -66,9 +65,9 @@ Practical guidance
 - If a model previously failed with ``LayerwisePercentile`` because of memory,
   retry it on the current pipeline before falling back to a less accurate
   calibration method.
-- Use ``CalibOptimizeMem`` first when calibration hits memory limits.
-- Keep ``CalibOptimizeDisk`` enabled for ``LayerwisePercentile`` unless disk
-  activity is the primary bottleneck.
+- Use ``CalibOptimizeMem`` first when calibration hits memory limits with the
+  methods that expose it (``MinMSE``, ``MinMax``, ``NonOverflow``,
+  ``Percentile``, ``Entropy``, ``Distribution``).
 - Set ``CalibPassthroughOpTypes`` to the recommended passthrough-op list to
   avoid redundant calibration work.
 - Keep ``CalibWorkerNum`` moderate on memory-constrained machines.

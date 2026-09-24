@@ -12,10 +12,9 @@ Recent memory improvements
 --------------------------
 
 Recent Quark ONNX pipeline updates significantly reduced the peak RSS memory
-footprint of ``LayerwisePercentile``. In internal benchmarking, some
-activation-heavy workloads saw roughly 20x to 66x lower peak RSS, turning
-``LayerwisePercentile`` from a method that could previously require extremely
-large memory budgets into one that fits standard workstation-class hardware.
+footprint of ``LayerwisePercentile``, turning it from a method that could
+previously require very large memory budgets into one that fits standard
+workstation-class hardware.
 
 The main changes are:
 
@@ -60,11 +59,10 @@ Key settings
 Memory and disk behavior
 ------------------------
 
-- ``CalibOptimizeMem`` reduces calibration memory pressure and is a good
-  default when activation caching becomes expensive.
-- ``CalibOptimizeDisk`` is specific to ``LayerwisePercentile`` and avoids
-  retaining intermediate activation tensors in memory or on disk, recomputing
-  them instead when needed.
+- The optimal percentile is scored from each tensor's histogram in a single
+  inference pass.
+- Activations are kept in memory during calibration, minimizing calibration
+  time and disk usage.
 - ``CalibPassthroughOpTypes`` reduces redundant calibration work on
   distribution-preserving ops and can further lower peak RSS.
 - ``TmpDir`` lets you move temporary calibration files away from a small
@@ -75,8 +73,7 @@ Takeaway
 
 For most models, you can now choose ``LayerwisePercentile`` based on accuracy
 needs rather than assuming it will exceed available memory. Start with the
-default memory-saving settings, then tune percentile candidates and worker
-count as needed.
+default settings, then tune percentile candidates and worker count as needed.
 
 Related references
 ------------------

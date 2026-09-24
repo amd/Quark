@@ -23,7 +23,7 @@ The process was automatically terminated during calibration due to an out-of-mem
 
 **Solution**:
 
-This issue is caused by insufficient memory. If you are using amd-quark version earlier than 0.11, please upgrade to version 0.11 or later. Starting from version 0.11, a parameter named ``CalibOptimizeMem`` was introduced. When the calibration method is MinMSE or LayerwisePercentile, setting this parameter to True can effectively alleviate memory-related issues. Alternatively, you may resolve this issue by using a machine with more available memory.
+This issue is caused by insufficient memory. If you are using amd-quark version earlier than 0.11, please upgrade to version 0.11 or later. Starting from version 0.11, a parameter named ``CalibOptimizeMem`` was introduced. When the calibration method is MinMSE, setting this parameter to True can effectively alleviate memory-related issues. Alternatively, you may resolve this issue by using a machine with more available memory.
 
 **Issue 3**:
 
@@ -121,6 +121,23 @@ How can we determine the highest achievable accuracy of a quantized model under 
 **Solution**:
 
 Use higher quantization precision (e.g., a A16W8 or A8W16 config) as a reference to establish the upper bound of achievable accuracy under the given configuration.
+
+**Issue 5**:
+
+When using an INT32 bias configuration, some bias channels are silently clipped to INT32_MIN or INT32_MAX, causing unexpected accuracy degradation.
+
+**Solution**:
+
+This occurs when the product ``input_scale × weight_scale`` is too small relative to the bias values, so ``|bias / (input_scale × weight_scale)|`` exceeds the INT32 representable range and OnnxRuntime saturates the result. Enable ``AdjustWeightScaleForInt32Bias`` in ``extra_options``:
+
+.. code-block:: python
+
+    extra_options={
+        "Int32Bias": True,
+        "AdjustWeightScaleForInt32Bias": True,
+    }
+
+When enabled, the quantizer detects per-channel overflow before INT32 bias quantization, inflates the weight scale by the minimum ratio needed to keep all channels within the INT32 range, and re-quantizes the INT8 weight with the adjusted scale. This prevents silent bias clipping without modifying the calibrated activation scale. For more detailed information, see :doc:`Full List of Quantization Config Features <appendix_full_quant_config_features>`.
 
 
 Quantization Acceleration

@@ -143,35 +143,4 @@ Automatic Mixed Precision based on Sensitivity Analysis
 
 The previous examples are manually specified mixed precision, but in the practical applications automatically identifying sensitive layers and then applying mixed precision becomes more critical.
 
-AMD Quark for ONNX supports automatic mixed precision as follows:
-
-**Step 1** Sensitivity analysis. This step can involve profiling the model with a new precision settings and measuring the impact on accuracy.
-
-**Step 2** Sort layers by sensitivity. Layers that show significant accuracy degradation when quantized are deemed "sensitive" and are kept at higher precision. Less sensitive parts can be quantized more aggressively to lower precision without significant impact on overall model performance.
-
-**Step 3** Perform mixed precision operations. Perform layer by layer until reach the accuracy target which is specified by users.
-
-We provide two types of accuracy target: general L2 Norm metric and Top1 metric specific to image classification models. Here is a simple example of how to use the L2 Norm metric to achieve automatic mixed precision:
-
-.. code-block:: python
-
-   from quark.onnx import QConfig, QLayerConfig, Int8Spec, Int16Spec, ModelQuantizer, AutoMixprecisionConfig
-
-   auto_mixprecision_algo = AutoMixprecisionConfig(target_op_type=["Conv", "ConvTranspose", "Gemm", "MatMul"],
-                                                   act_target_quant_type=Int8,
-                                                   weight_target_quant_type=Int16,
-                                                   output_index=0,
-                                                   l2_target=0.1)
-
-   # Build the configuration
-   quant_config = QConfig(global_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec()),
-                          algo_config=[auto_mixprecision_algo])
-
-   # Create an ONNX quantizer
-   quantizer = ModelQuantizer(quant_config)
-
-   # Quantize the ONNX model. Users need to provide the input model path, output model path,
-   # and a data reader for calibration.
-   quantizer.quantize_model(input_model_path, output_model_path, data_reader)
-
-For a detailed example of using Top1 metric for mixed precision, refer to the :doc:`Mixed Precision Example <../tutorials/onnx/accuracy_improvement/mixed_precision/onnx_mixed_precision_tutorial>`.
+Please refer to this :doc:`link <accuracy_algorithms/amp>` for more details.

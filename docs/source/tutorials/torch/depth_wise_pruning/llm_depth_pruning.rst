@@ -24,17 +24,17 @@ Pruning is a powerful and well-known technique for reducing model size.
 Combined with the model quantization, makes it easier to deploy the LLMs
 in a server under computation resource constraints environments.
 
-- **Structured pruning:**
+-  **Structured pruning:**
 
-  - Prunes (delete) entire rows or columns of weights;
-  - Dropping entire decode layers;
-  - Both pruning the entire rows or entire layers can bring certain
-    computation acceleration.
+   -  Prunes (delete) entire rows or columns of weights;
+   -  Dropping entire decode layers;
+   -  Both pruning the entire rows or entire layers can bring certain
+      computation acceleration.
 
-- **Unstructured pruning**: select the specific individual weight to 0,
-  but it may not bring much computation acceleration.
-- **Semi-structured pruning.** Exactly N non-zero values in each block
-  of M consecutive weights.
+-  **Unstructured pruning**: select the specific individual weight to 0,
+   but it may not bring much computation acceleration.
+-  **Semi-structured pruning.** Exactly N non-zero values in each block
+   of M consecutive weights.
 
 According to the recent research papers and industrial practice.
 Structured pruning is a usable and adaptable method, which can actually
@@ -58,16 +58,16 @@ removal leads to smaller degradation in PPL.
 Prerequisite & Some Facts
 -------------------------
 
-- GPU: to run pruning, at least a GPU compatible with ROCm or CUDA.
-- We support three modes to run the pruning process:
+-  GPU: to run pruning, at least a GPU compatible with ROCm or CUDA.
+-  We support three modes to run the pruning process:
 
-  - **Pure GPU mode**. This will need less time to finish the pruning
-    process, but requires larger GPU resources.
-  - **GPU CPU mix mode**. During the pruning process, only the layer
-    that needs to be computed will be placed on GPU; this may largely
-    reduce the GPU memory requirements, but it needs more time.
-  - The user can select the proper method based on the actual production
-    environments.
+   -  **Pure GPU mode**. This will need less time to finish the pruning
+      process, but requires larger GPU resources.
+   -  **GPU CPU mix mode**. During the pruning process, only the layer
+      that needs to be computed will be placed on GPU; this may largely
+      reduce the GPU memory requirements, but it needs more time.
+   -  The user can select the proper method based on the actual
+      production environments.
 
 Environments prepare
 --------------------
@@ -190,20 +190,20 @@ file, the ``config.json`` file shows as follows. The concent in
 Param explanations:
 '''''''''''''''''''
 
-- **delete_layer_num**: We want to finally delete 2 consecutive decode
-  layers.
-- **model_decoder_layers**: the decode layers name field in
-  ``facebook/opt-125m``;
-- **layer_norm_field**: the final norm layer name field.
-- **layer_num_field**: In model’s ``config.json``, for example, in
-  ``fakebook/opt``, ``num_hidden_layers`` indicates the decode layer
-  num.
-- **save_gpu_memory**:
+-  **delete_layer_num**: We want to finally delete 2 consecutive decode
+   layers.
+-  **model_decoder_layers**: the decode layers name field in
+   ``facebook/opt-125m``;
+-  **layer_norm_field**: the final norm layer name field.
+-  **layer_num_field**: In model’s ``config.json``, for example, in
+   ``fakebook/opt``, ``num_hidden_layers`` indicates the decode layer
+   num.
+-  **save_gpu_memory**:
 
-  - if ``false``: model fully running in GPU, save time but need more
-    GPU mem.
-  - if ``true``: during the evaluation, the model is tested layer by
-    layer, saving GPU memory but typically needing more time.
+   -  if ``false``: model fully running in GPU, save time but need more
+      GPU mem.
+   -  if ``true``: during the evaluation, the model is tested layer by
+      layer, saving GPU memory but typically needing more time.
 
 Init the prune config and the pruner instance.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -275,32 +275,46 @@ Experiments results (Partly)
 We conducted several experiments on different types of models to show
 the compatibility of our tools.
 
-+----------------------------+--------------+--------------+---------+-------------------+
-| **Model**                  | **PPL        | **PPL**      | **prune | **other info**    |
-|                            | (Original)** | **(After     | ratio** |                   |
-|                            |              | prune)**     |         |                   |
-+============================+==============+==============+=========+===================+
-| llama-2-7b-chat-hf         | 6.9419       | 8.139        | 9.01%   | delete 3 layer    |
-|                            |              |              |         | [11-13] total 32  |
-+----------------------------+--------------+--------------+---------+-------------------+
-| llama-3.1-405B             | 1.85624      | 2.8429       | 10.3%   | delete 13 layer   |
-|                            |              |              |         | [18-30] total 126 |
-+----------------------------+--------------+--------------+---------+-------------------+
-| Llama-2-70b-chat-h         | 4.6460       | 5.5305       | 11.16%  | delete 9 layer    |
-|                            |              |              |         | [27-35] total 80  |
-+----------------------------+--------------+--------------+---------+-------------------+
-| Qwen2.5-14B-Instruct       | 5.7010       | 7.0681       | 9.32%   | delete 5 layers   |
-|                            |              |              |         | [22-26] total 48  |
-+----------------------------+--------------+--------------+---------+-------------------+
-| Mixtral-8x7B-Instruct-v0.1 | 4.1378       | 5.0338       | 10%     | delete 3 layer    |
-|                            |              |              |         | [12-14] total 32  |
-+----------------------------+--------------+--------------+---------+-------------------+
-| facebook/opt-6.7b          | 10.8605      | 14.4321      | 12.1%   | delete 4 layer    |
-|                            |              |              |         | [21-24] total 32  |
-+----------------------------+--------------+--------------+---------+-------------------+
-| deepseek-moe-16b-chat      | 7.3593       | 8.94327      | 10.76%  | delete 3 layer    |
-|                            |              |              |         | [11-13] total 28  |
-+----------------------------+--------------+--------------+---------+-------------------+
++-------------+-------------+-------------+-------------+-------------+
+| **Model**   | **PPL       | **PPL**     | **prune     | **other     |
+|             | (           | **(After    | ratio**     | info**      |
+|             | Original)** | prune)**    |             |             |
++=============+=============+=============+=============+=============+
+| llama-2     | 6.9419      | 8.139       | 9.01%       | delete 3    |
+| -7b-chat-hf |             |             |             | layer       |
+|             |             |             |             | [11-13]     |
+|             |             |             |             | total 32    |
++-------------+-------------+-------------+-------------+-------------+
+| lla         | 1.85624     | 2.8429      | 10.3%       | delete 13   |
+| ma-3.1-405B |             |             |             | layer       |
+|             |             |             |             | [18-30]     |
+|             |             |             |             | total 126   |
++-------------+-------------+-------------+-------------+-------------+
+| Llama-2     | 4.6460      | 5.5305      | 11.16%      | delete 9    |
+| -70b-chat-h |             |             |             | layer       |
+|             |             |             |             | [27-35]     |
+|             |             |             |             | total 80    |
++-------------+-------------+-------------+-------------+-------------+
+| Qwen2.5-1   | 5.7010      | 7.0681      | 9.32%       | delete 5    |
+| 4B-Instruct |             |             |             | layers      |
+|             |             |             |             | [22-26]     |
+|             |             |             |             | total 48    |
++-------------+-------------+-------------+-------------+-------------+
+| Mixt        | 4.1378      | 5.0338      | 10%         | delete 3    |
+| ral-8x7B-In |             |             |             | layer       |
+| struct-v0.1 |             |             |             | [12-14]     |
+|             |             |             |             | total 32    |
++-------------+-------------+-------------+-------------+-------------+
+| facebo      | 10.8605     | 14.4321     | 12.1%       | delete 4    |
+| ok/opt-6.7b |             |             |             | layer       |
+|             |             |             |             | [21-24]     |
+|             |             |             |             | total 32    |
++-------------+-------------+-------------+-------------+-------------+
+| deepseek-m  | 7.3593      | 8.94327     | 10.76%      | delete 3    |
+| oe-16b-chat |             |             |             | layer       |
+|             |             |             |             | [11-13]     |
+|             |             |             |             | total 28    |
++-------------+-------------+-------------+-------------+-------------+
 
 From several research papers, the beginning and the ending decode layers
 play an important role in LLMs. Through the depth pruning, we also get

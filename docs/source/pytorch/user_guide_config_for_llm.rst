@@ -68,9 +68,14 @@ The following table shows the quantization schemes supported by :py:class:`.LLMT
 |                 | - Group size 32                 |                        |
 |                 | - Dynamic quantization          |                        |
 +-----------------+---------------------------------+------------------------+
-| mx6             | - MX6 format                    | TBD                    |
-|                 | - Per-group quantization        |                        |
-|                 | - Group size 32                 |                        |
+| mx6             | - MX6 MicroeXponent format      | - Emulation only       |
+|                 | - Per-group quantization        |   (no native hardware  |
+|                 | - Group size 16 (``k1``)        |   execution)           |
+|                 | - Dynamic quantization          |                        |
++-----------------+---------------------------------+------------------------+
+| mx9             | - MX9 MicroeXponent format      | - Emulation only       |
+|                 | - Per-group quantization        |   (no native hardware  |
+|                 | - Group size 16 (``k1``)        |   execution)           |
 |                 | - Dynamic quantization          |                        |
 +-----------------+---------------------------------+------------------------+
 | bfp16           | - BFP16 format                  | TBD                    |

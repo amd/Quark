@@ -84,8 +84,12 @@ autoapi_dirs = ['../../quark']
 autoapi_keep_files = True
 autoapi_add_toctree_entry = False
 autoapi_options = ["members", "show-module-summary"]
-autoapi_ignore = ['*/quark/contrib/*']  # TODO: include contrib into documentation soon
-                                        # TODO: https://github.com/readthedocs/sphinx-autoapi/issues/312 must use *subfolder* pattern
+autoapi_ignore = [
+    '*/quark/contrib/*',
+    '*/quark/skills.py',
+]
+# TODO: include contrib into documentation soon
+# TODO: https://github.com/readthedocs/sphinx-autoapi/issues/312 must use *subfolder* pattern
 
 FACTORY_TYPES = {"typing.List": "[]", "list": "[]", "typing.Dict": "{}", "dict": "{}", "str": "''"}
 
@@ -189,6 +193,10 @@ language = 'en'
 # This patterns also effect to html_static_path and html_extra_path
 exclude_patterns = ['include', 'api_rst', '_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints']
 exclude_patterns.append('*autoapi/quark/index.rst')
+# The root `tutorials/` folder is copied into the build tree, including its
+# README.md files (which document the folder layout for contributors, not
+# rendered docs). Exclude them so Sphinx doesn't warn they're not in a toctree.
+exclude_patterns.append('tutorials/**/README.md')
 
 nitpicky = True
 

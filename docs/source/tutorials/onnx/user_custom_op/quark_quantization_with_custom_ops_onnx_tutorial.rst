@@ -9,7 +9,7 @@ Quantizing ONNX Models with Custom Operators Using Quark
 This tutorial demonstrates how to use Quark to quantize an ONNX model
 containing Custom Operators. The example includes two types of custom
 operator implementations: - Python Custom Operator (my_custom_op) - C++
-Custom Operator (\_COP_IN_OP_NAME)
+Custom Operator (_COP_IN_OP_NAME)
 
 This tutorial will guide you through the following steps: - Building a
 floating-point ONNX model with custom operators - Preparing calibration

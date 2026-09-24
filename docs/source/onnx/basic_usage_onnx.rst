@@ -92,7 +92,40 @@ Next, you can refer to the following code to construct a calibration data reader
         def rewind(self):
             self.enum_data = None
 
-3. Set the quantization configuration
+3. (Optional) Apply graph optimizations with ShapeShifter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Quark's :doc:`Shapeshifter <../quark_shapeshifter>` framework can apply graph transformations as part of quantization: **preprocessing** passes run on the float model before quantization (for example constant folding, operator fusion, or BatchNorm folding), and **postprocessing** passes run on the quantized Q/DQ model afterwards (for example Q/DQ scale alignment for a hardware target). This step is optional; skip it to rely on the default built-in preprocessing and postprocessing.
+
+List the passes you want in a YAML file, grouped into ``preprocess_passes`` and ``postprocess_passes`` (either group may be omitted):
+
+.. code-block:: yaml
+
+    # shapeshifter_passes.yaml
+    preprocess_passes:
+      onnx_simplify:
+        simplify: true
+      onnx_fold_batch_norm:
+        fold_batch_norm: true
+    # Optional: where to save the float model after the preprocess passes (before
+    # quantization). If omitted, it is saved as <input_model_name>_preprocessed.onnx
+    # next to the input model.
+    preprocessed_model_path: models/resnet50_preprocessed.onnx
+    postprocess_passes:
+      onnx_align_scale:
+        align_scale: [MaxPool, GlobalAveragePool]
+
+When you set the quantization configuration in the next step, point it at this file through ``extra_options``. Setting ``ShapeShifterYaml`` automatically forces ``SkipPreprocess`` to ``True``, so ShapeShifter fully owns preprocessing:
+
+.. code-block:: python
+
+    quantization_config.global_quant_config.extra_options["ShapeShifterYaml"] = "shapeshifter_passes.yaml"
+
+.. note::
+
+    For the full list of ONNX preprocessing and postprocessing passes and their parameters, see :doc:`ONNX Model Passes <../quark_shapeshifter_onnx_passes>`.
+
+4. Set the quantization configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 While Quark ONNX provides a granular API to handle diverse quantization scenarios, it also offers streamlined APIs for common use cases. The example below demonstrates this simplified approach.
@@ -110,7 +143,7 @@ While Quark ONNX provides a granular API to handle diverse quantization scenario
     The A8W8 configuration is our default setup. To minimize quantization time, accuracy-improvement strategies such as AdaRound or AdaQuant are not applied by default, which may lead to suboptimal accuracy in some cases. For better quantization accuracy, please refer to Section **How to Improve Quantization Accuracy** of :doc:`Float Scales (A8W8 and A16W8) Quantization <../supported_accelerators/ryzenai/tutorial_a8w8_and_a16w8_quantize>` page for details.
 
 
-4. Quantize the model
+5. Quantize the model
 ~~~~~~~~~~~~~~~~~~~~~
 
 Once the model, input data, and quantization configuration are ready, quantizing the model is straightforward, as shown below:

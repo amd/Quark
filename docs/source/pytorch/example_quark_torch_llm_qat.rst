@@ -10,6 +10,20 @@ This document provides examples of Quantization-Aware Training (QAT) for languag
    For information on accessing Quark PyTorch examples, refer to :doc:`Accessing PyTorch Examples <pytorch_examples>`.
    This example and the relevant files are available at ``/torch/language_modeling/llm_qat``.
 
+.. note::
+
+   For the **2-bit full-weight QAD** (Quantization-Aware Distillation) pipeline —
+   distilling a 2-bit student from a BF16 teacher and exporting a packed int2
+   model — see ``README_QAD_2BIT.md`` in ``../llm_qad`` (the QAD examples live in
+   ``examples/torch/language_modeling/llm_qad``).
+
+.. note::
+
+   For the **2-bit LoRA + knowledge-distillation** pipeline — attaching LoRA
+   adapters to a 2-bit PTQ student, distilling from a BF16 teacher, and exporting
+   a factored or Quark-native packed uint2 model — see ``README_LORA_KD_2BIT.md``
+   in ``lora_kd_2bit`` (``examples/torch/language_modeling/llm_qat/lora_kd_2bit``).
+
 Supported Models
 ----------------
 
@@ -36,8 +50,12 @@ You can run the following Python scripts in the ``examples/torch/language_modeli
 
 
 
-Recipe 1: QAT Finetuning ChatGLM and Export to Safetensors using FSDP (The configuration variable ONLY_TRAIN_SCALING_FACTOR determines whether to only make scaling factor trainable, while keeping other parameters frozen)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Recipe 1: QAT Finetuning ChatGLM and Export to Safetensors using FSDP
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The configuration variable ``ONLY_TRAIN_SCALING_FACTOR`` determines whether to only make the scaling factor trainable, while keeping other parameters frozen.
+
+This recipe uses the default optimizer ``adamw_8bit``, which can reduce GPU memory usage. The default attention implementation is now SDPA, but ChatGLM does not support SDPA, so ``--attn_implementation`` must be set to ``eager``.
 
 .. code-block:: bash
 
@@ -59,6 +77,7 @@ Recipe 1: QAT Finetuning ChatGLM and Export to Safetensors using FSDP (The confi
                         --fsdp_config ${FSDP_CONFIG} \
                         --model ${MODEL_DIR} \
                         --model_trust_remote_code \
+                        --attn_implementation eager \
                         --quant_scheme w_uint4_asym \
                         --group_size 128 \
                         --finetune_dataset wikitext \
@@ -70,6 +89,8 @@ Recipe 1: QAT Finetuning ChatGLM and Export to Safetensors using FSDP (The confi
                         --model_export hf_format \
                         --output_dir $finetune_checkpoint \
                         --model_export_dir ${output_dir} \
+                        --save_only_model true \
+                        --load_best_model_at_end false \
                         --gradient_accumulation_steps ${GRADIENT_ACC_STEPS} \
                         --skip_evaluation 2>&1| tee $log_file
     date -ud "@$SECONDS" "+Time elapsed: %H:%M:%S" |tee -a ${log_file}
@@ -145,7 +166,7 @@ Results on ChatGLM3-6B
 +=====================+============================+=======+============+
 | BF16                | 53.6559                    | 50.51 | 62.98      |
 +---------------------+----------------------------+-------+------------+
-| QAT Trainer         | 57.3335                    | 50.28 | 64.09      |
+| QAT Trainer         | 57.1710                    | 50.24 | 64.25      |
 +---------------------+----------------------------+-------+------------+
 
 .. raw:: html

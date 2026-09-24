@@ -80,6 +80,13 @@ enough — but the example phrases show what each skill listens for.
 |                                        | count, >2 GB external-data check) and assesses target    | QDQ"                                                   |
 |                                        | compatibility (CPU / CUDA / ROCm / AMD NPU).             |                                                        |
 +----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
+| ``quark-onnx-shapeshifter-run``        | Applies ShapeShifter graph passes to a ``.onnx`` model   | "run ShapeShifter on my .onnx",                        |
+|                                        | via the ``quark-cli shapeshifter`` CLI or a ShapeShifter | "apply an ``onnx_`` pass", "fold batch norm /          |
+|                                        | YAML: preprocessing (fold BatchNorm, simplify, convert   | simplify / convert opset / fuse LayerNorm on my        |
+|                                        | opset, fuse LayerNorm) before quantization and           | ONNX model", "preprocess/postprocess my .onnx"         |
+|                                        | postprocessing (Q/DQ cleanup, scale alignment, XINT8 /   |                                                        |
+|                                        | NPU adaptation) after.                                   |                                                        |
++----------------------------------------+----------------------------------------------------------+--------------------------------------------------------+
 | ``quark-onnx-ptq``                     | Runs the full ONNX PTQ pipeline: intake, planning,       | "quantize my .onnx", "quantize yolov8/resnet50 with    |
 |                                        | calibration-script generation, manifest, and confirmed   | XINT8/A8W8/BFP16"                                      |
 |                                        | execution for schemes such as XINT8, A8W8, BFP16, and    |                                                        |
@@ -172,6 +179,7 @@ Common tasks and which skill handles them
 - **Install Quark** → ``quark-install``
 - **Install / fix the ONNX Runtime build** → ``quark-onnx-install``
 - **See whether a model is supported and what will be quantized** → ``quark-onnx-model-intake``
+- **Preprocess / postprocess a .onnx graph (fold BatchNorm, simplify, convert opset, fuse LayerNorm, align Q/DQ for XINT8 / NPU)** → ``quark-onnx-shapeshifter-run``
 - **Quantize a .onnx model (XINT8 / A8W8 / BFP16 / MXFP\*)** → ``quark-onnx-ptq``
 - **Find the best quant config automatically** → ``quark-onnx-autosearch-pro``
 - **Check a quantized model is structurally correct** → ``quark-onnx-result-validator``
