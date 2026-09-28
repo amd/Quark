@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# Local outputs written by the CLIs
+mince_sizing/
+mince_frozen/
+eval_test_logs/
+bf16_test_logs/

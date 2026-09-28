@@ -1,0 +1,24 @@
+schema_version: 1
+id: kernel.flydsl.productionization.v1
+domain: kernel_optimization
+kind: validated_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms: []
+  keywords: [flydsl, prewarm, scratch, m_pad, cudagraph]
+summary: Port an existing FlyDSL kernel minimally, validate first, then tune and productionize its prewarm and scratch lifecycle.
+guidance:
+  - Start from the closest MFMA and layout match instead of rewriting the kernel.
+  - Use one M-padding helper for runtime and prewarm.
+  - Compile all shapes before allocating persistent scratch and never allocate in the captured hot path.
+  - Ship tuned entries with a bounded fallback heuristic for untuned shapes.
+required_checks: [standalone_correctness, kernel_unit, cudagraph_replay, e2e]
+evidence:
+  level: E3
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/flydsl-kernel-porting/SKILL.md
+  sha256: ac2f3f6967f328525900e5925ee662645bb9d02b6da9e38ae04ee9ada2b04de8

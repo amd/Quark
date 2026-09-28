@@ -39,9 +39,12 @@ from quark.onnx.preprocess import apply_pre_process
 from quark.onnx.quantization.input_check import (
     check_crypto_mode_arguments,
     check_fast_fintune_arguments,
+    check_fp8_opset_conversion_required,
+    check_quantization_preference_arguments,
     check_static_quant_arguments,
 )
 from quark.onnx.quantization.output_eval import eval_metrics
+from quark.onnx.quantization.quant_utils import FP8_MIN_OPSET
 from quark.onnx.quantizers import (
     get_dynamic_op_types,
     get_static_op_types,
@@ -49,6 +52,7 @@ from quark.onnx.quantizers import (
     run_matmul_nbits_quantization,
     run_static_quantization,
 )
+from quark.onnx.tools.convert_opset_version import convert_opset_version
 from quark.onnx.utils.file_utils import (
     save_and_restore_func,
     update_crypto_mode,
@@ -68,6 +72,10 @@ from quark.onnx.utils.print_utils import (
     print_quantize_static_info,
     print_quantized_info,
 )
+from quark.onnx.utils.shapeshifter_utils import (
+    apply_shapeshifter_preprocess,
+    run_shapeshifter_stage,
+)
 from quark.onnx.utils.system_utils import (
     create_tmp_dir,
     update_tmp_dir,
@@ -86,7 +94,6 @@ from .quant_utils import (
     get_eltwise_op,
     get_exclude_nodes,
     get_matmul_nodes_without_weights,
-    get_pre_defined_preprocess_config,
     model_size_exceeds,
     skip_node_with_inf_tensor,
 )
@@ -267,28 +274,49 @@ def quantize_static(
     quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
 
     skip_pre_process_graph_optimization = extra_options.get("SkipPreprocess", False)
-    pre_process_yaml_path = extra_options.get("PreprocessYAML")
-    if pre_process_yaml_path is not None:
-        from quark.shapeshifter import Engine, LoadConfigFromFileOrDict
 
-        skip_pre_process_graph_optimization = True
+    # ShapeShifter preprocessing stage: resolve the 'ShapeShifterYaml' spec (or the
+    # deprecated 'PreprocessYAML' alias), run its 'preprocess_passes' group on the float
+    # model and persist the result. Must run before the size/opset checks below, since
+    # the passes can change both. The returned 'postprocess_passes' group is applied to
+    # the quantized model further down.
+    shapeshifter = apply_shapeshifter_preprocess(
+        float_model,
+        model_input,
+        extra_options,
+        include_cle=include_cle,
+        skip_pre_process_graph_optimization=skip_pre_process_graph_optimization,
+        use_external_data_format=use_external_data_format,
+    )
+    float_model = shapeshifter.model
+    include_cle = shapeshifter.include_cle
+    skip_pre_process_graph_optimization = shapeshifter.skip_pre_process_graph_optimization
 
-        if pre_process_yaml_path.endswith(".yaml"):
-            engine_config = LoadConfigFromFileOrDict(pre_process_yaml_path).data
-        else:
-            engine_config = get_pre_defined_preprocess_config(pre_process_yaml_path)
-
-        engine = Engine(config=engine_config)
-        engine.initialize()
-        float_model = engine.run(float_model=float_model)  # type: ignore
-
-    if not use_external_data_format and model_size_exceeds(float_model):
+    if not use_external_data_format and model_size_exceeds(
+        float_model
+    ):  # pragma: no cover - >2GB model auto-enables external data
         use_external_data_format = True
         logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
 
     check_static_quant_arguments(
         float_model, quant_format, activation_type, weight_type, calibrate_method, extra_options
     )
+
+    check_quantization_preference_arguments(calibrate_method, include_fast_ft, extra_options)
+
+    # Auto-bump opset for FP8: float8 QuantizeLinear/DequantizeLinear only load in
+    # ONNX Runtime at opset >= 21. Converting the float model here (before QDQ
+    # insertion) ensures the quantizer emits float8 nodes with value_info typed
+    # under opset-21 rules, avoiding stale-type conflicts at load time.
+    if check_fp8_opset_conversion_required(float_model, activation_type, weight_type):
+        try:
+            float_model = convert_opset_version(float_model, FP8_MIN_OPSET)
+        except Exception as e:
+            logger.warning(f"convert_opset_version failed ({e}); falling back to a direct opset_import bump.")
+            for opset in float_model.opset_import:
+                if opset.domain in ("", "ai.onnx"):
+                    opset.version = FP8_MIN_OPSET
+            float_model.ir_version = max(float_model.ir_version, 9)
 
     if include_fast_ft and include_auto_mp is False:
         check_fast_fintune_arguments(activation_type, weight_type, extra_options)
@@ -520,7 +548,7 @@ def quantize_static(
         try:
             run_onnx_model(float_model, use_external_data_format, cached_data_reader)
             cached_data_reader.reset_iter()
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires real ORT inference failure
             logger.error(f"Run the float model failed due to an error: {e}, please check your model and data reader.")
             return None
 
@@ -637,6 +665,7 @@ def quantize_static(
         float_model,
         quant_model,
         cached_data_reader,
+        tensors_range=tensors_range,
         calibrate_method=calibrate_method,
         activation_type=activation_type,
         weight_type=weight_type,
@@ -648,6 +677,12 @@ def quantize_static(
         include_fast_ft=include_fast_ft,
         extra_options=extra_options,
     )
+
+    # ShapeShifter postprocessing stage: run the 'postprocess_passes' group (if any)
+    # on the quantized model through the Shapeshifter engine, in addition to the
+    # flag-driven postprocessing already applied by apply_post_process.
+    quant_model = run_shapeshifter_stage(quant_model, shapeshifter.postprocess_passes)
+
     cached_data_reader.reset_iter()
 
     if print_summary and fp32_nodes_dict and not crypto_mode:
@@ -745,7 +780,9 @@ def quantize_dynamic(
     float_model: onnx.ModelProto = model_input if isinstance(model_input, onnx.ModelProto) else onnx.load(model_input)
     quant_model: onnx.ModelProto = onnx.ModelProto()  # the quantized model
 
-    if not use_external_data_format and model_size_exceeds(float_model):
+    if not use_external_data_format and model_size_exceeds(
+        float_model
+    ):  # pragma: no cover - >2GB model auto-enables external data
         use_external_data_format = True
         logger.warning("The model size is bigger than 2GB, have set use_external_data_format to True.")
 

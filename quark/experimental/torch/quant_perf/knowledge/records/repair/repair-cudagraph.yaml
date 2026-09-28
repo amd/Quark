@@ -1,0 +1,26 @@
+schema_version: 1
+id: repair.vllm.cudagraph-lifecycle.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - runtimeerror: cancelled
+    - memory access fault
+    - garbage outputs
+  keywords: [cudagraph, workspace, lazy init, scratch, capture, replay]
+summary: Exonerate the kernel first, then inspect allocations, lazy state, and workspace growth inside graph capture.
+guidance:
+  - Run the kernel unit tests before instrumenting kernel code.
+  - Use eager, no-cudagraph, and no-compile rungs to isolate the failing subsystem.
+  - Prewarm maximum capacity and every scheduler-visible shape; allocate scratch before capture.
+required_checks: [kernel_unit, load, inference, accuracy]
+evidence:
+  level: E3
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/vllm-kernel-debug/references/cuda-graph-bugs.md
+  sha256: 7837338b2daeafa9d3fd3c4c1b1c1c02a38fde329c600188fc3583579649b90d

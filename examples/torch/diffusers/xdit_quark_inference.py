@@ -45,10 +45,10 @@ from quark.common.utils.log import ScreenLogger
 # AMD Quark imports
 from quark.torch.quantization.api import ModelQuantizer
 from quark.torch.quantization.config.config import (
-    Config,
     FP8E4M3PerTensorSpec,
     OCP_MXFP4Spec,
-    QuantizationConfig,
+    QConfig,
+    QLayerConfig,
 )
 
 logger = ScreenLogger(__name__)
@@ -106,10 +106,10 @@ def quantize_model_with_quark(
         raise ValueError(f"Unsupported quantization mode: {quant_mode}. Choose 'fp8' or 'mxfp4'")
 
     # Create quantization config for both weights and activations
-    quant_config = QuantizationConfig(weight=quant_spec, input_tensors=quant_spec)
+    layer_config = QLayerConfig(weight=quant_spec, input_tensors=quant_spec)
 
     # Initialize ModelQuantizer
-    quantizer = ModelQuantizer(Config(global_quant_config=quant_config))
+    quantizer = ModelQuantizer(QConfig(global_quant_config=layer_config))
 
     # Quantize the model
     # For dynamic quantization, calib_dataloader is optional

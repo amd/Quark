@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -535,6 +536,19 @@ class GptqProcessor(BaseHessianProcessor):
         self.damp_percent = quant_algo_config.damp_percent
         if self.use_cuda_graphs:
             logger.info("Using CUDA Graph for GPTQ column by column quantization.")
+
+            # TODO: Remove when ROCm 7.2 support is dropped.
+            # Workaround for segfaults: https://github.com/ROCm/rocm-systems/issues/5071
+            # The patch https://github.com/ROCm/rocm-systems/pull/4066 is part of ROCm 7.14.
+            if (
+                torch.version.hip is not None
+                and torch.version.hip.startswith("7.2")
+                and os.environ.get("HSA_TOOLS_DISABLE_REGISTER", "0") == "0"
+            ):
+                logger.warning(
+                    "GPTQ using ROCm 7.2 HIP Graph replay is known to have instabilities (segmentation faults, reference: https://github.com/ROCm/rocm-systems/issues/5071). In case of issues, please consider using `HSA_TOOLS_DISABLE_REGISTER=1` as a workaround, or consider updating to ROCm 7.14."
+                )
+
         elif QUARK_DISABLE_CUDA_GRAPH:
             logger.info(
                 f"CUDA Graph are not used for GPTQ column by column quantization as the environment variable QUARK_DISABLE_CUDA_GRAPH is {QUARK_DISABLE_CUDA_GRAPH}."

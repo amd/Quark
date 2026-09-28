@@ -25,7 +25,7 @@ from quark.torch.quantization.config.config import (
     SmoothQuantConfig,
 )
 from quark.torch.quantization.config.config_verification import ConfigVerifier
-from quark.torch.quantization.config.type import Dtype, QSchemeType, ScaleType
+from quark.torch.quantization.config.type import MX6, MX9, Dtype, QSchemeType, ScaleType
 
 
 def test_llm_template_basic_initialization():
@@ -129,6 +129,7 @@ def test_supported_schemes():
         "mxfp6_e3m2",
         "mxfp6_e2m3",
         "mx6",
+        "mx9",
         "bfp16",
         "int8",
         "nvfp4",
@@ -157,6 +158,7 @@ def test_supported_schemes():
         "mxfp6_e3m2",
         "mxfp6_e2m3",
         "mx6",
+        "mx9",
         "bfp16",
         "int8",
         "nvfp4",
@@ -386,6 +388,33 @@ def test_mx6_scheme():
     assert config.global_quant_config.input_tensors is not None
     assert config.global_quant_config.weight.dtype == Dtype.mx6
     assert config.global_quant_config.input_tensors.dtype == Dtype.mx6
+    assert config.global_quant_config.weight.group_size == 16
+    assert config.global_quant_config.input_tensors.group_size == 16
+
+
+def test_mx9_scheme():
+    """Test MX9 quantization scheme"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("mx9")
+    assert isinstance(config, QConfig)
+    assert config.global_quant_config.weight is not None
+    assert config.global_quant_config.input_tensors is not None
+    assert config.global_quant_config.weight.dtype == Dtype.mx9
+    assert config.global_quant_config.input_tensors.dtype == Dtype.mx9
+    # MicroeXponent formats fix the first-level block size at k1 = 16.
+    assert config.global_quant_config.weight.group_size == MX9.k1
+    assert config.global_quant_config.input_tensors.group_size == MX9.k1
+
+
+def test_microexponent_format_parameters():
+    """MX6/MX9 format constants"""
+    for fmt, mantissa_bits, avg_bits in ((MX6, 4, 6), (MX9, 7, 9)):
+        assert (fmt.k1, fmt.k2, fmt.d1, fmt.d2) == (16, 2, 8, 1)
+        assert fmt.mantissa_bits == mantissa_bits
+        assert fmt.element_bits == mantissa_bits + 1  # + sign bit
+        assert fmt.avg_bits_per_element == avg_bits
+        # Amortized cost: (m + 1) + d1 / k1 + d2 / k2
+        assert avg_bits == (fmt.mantissa_bits + 1) + fmt.d1 / fmt.k1 + fmt.d2 / fmt.k2
 
 
 def test_bfp16_scheme():
@@ -896,16 +925,22 @@ def test_builtin_templates_exist():
         "gemma2",
         "gemma3",
         "gemma3_text",
+        "gemma4",
+        "gemma4_unified",
         "glm4_moe",
         "glm4_moe_lite",
+        "glm5_next",
         "glm_moe_dsa",
         "gptj",
         "gpt_oss",
         "granitemoehybrid",
         "grok-1",
+        "hunyuan_v1_dense",
         "instella",
         "kimi_k2",
         "kimi_k25",
+        "kimi_k3",
+        "lfm2",
         "llama",
         "llama4",
         "minimax_m2",
@@ -913,6 +948,7 @@ def test_builtin_templates_exist():
         "mistral",
         "mixtral",
         "mllama",
+        "muse_glimmer",
         "olmo",
         "opt",
         "phi",
@@ -924,13 +960,124 @@ def test_builtin_templates_exist():
         "qwen3_moe",
         "qwen3_next",
         "qwen3_vl_moe",
+        "qwen3_5",
         "qwen3_5_moe",
+        "qwen4_exp",
+        "qwen4_exp_text",
     ]
 
     available_models = LLMTemplate.list_available()
 
     assert set(expected_models) == set(available_models), (
         "expected_models and available_models should contain the same model types"
+    )
+
+
+def test_qwen3_5_kv_cache_group_pairs_every_full_attention_layer():
+    """
+    The qwen3_5 kv_layers_name must pair k_proj with v_proj on every full-attention layer.
+
+    Qwen3.5 dense has a hybrid decoder: only full-attention layers own a KV cache, while
+    gated-delta linear-attention layers keep conv/recurrent states instead. Listing
+    "*linear_attn.in_proj_qkv" in kv_layers_name silently breaks k_scale/v_scale export,
+    because find_patterns_groups seeds each group from pattern[0] and derives the siblings
+    by string substitution -- a linear_attn seed can never reach self_attn.k_proj, so every
+    full-attention layer ends up in a group of its own with no v_proj to merge scales with.
+    """
+    from quark.torch.export.utils import find_patterns_groups
+
+    # Decoder module names of a Qwen3.5 dense checkpoint: 24 layers alternating between
+    # gated-delta linear attention and full attention, the latter at every 4th index.
+    full_attention_indices = {3, 7, 11, 15, 19, 23}
+    layer_names = []
+    for layer_index in range(24):
+        prefix = f"model.language_model.layers.{layer_index}"
+        if layer_index in full_attention_indices:
+            layer_names += [f"{prefix}.self_attn.{p}_proj" for p in ("q", "k", "v", "o")]
+        else:
+            layer_names += [
+                f"{prefix}.linear_attn.{p}" for p in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+            ]
+
+    template = LLMTemplate.get("qwen3_5")
+    groups = find_patterns_groups([template.kv_layers_name], layer_names)
+
+    assert len(groups) == len(full_attention_indices), (
+        f"expected one kv group per full-attention layer, got {len(groups)}: {groups}"
+    )
+    for group in groups:
+        assert len(group) == 2, f"kv group must pair k_proj with v_proj, got {group}"
+        assert group[0].endswith("self_attn.k_proj")
+        assert group[1].endswith("self_attn.v_proj")
+
+    grouped_names = {name for group in groups for name in group}
+    assert not any("linear_attn" in name for name in grouped_names), (
+        "linear-attention layers have no KV cache and must not appear in kv_cache_group"
+    )
+
+
+def test_lfm2_mxfp4_excludes_conv_and_lm_head():
+    """MXFP4 is plain RTN with no algo_config, so exclude_layers_name on the template is the
+    only thing protecting conv.in_proj/conv.out_proj/lm_head. Confirms the exclusion still
+    applies when there's no AWQ/GPTQ config to go through (see AWQ_MAP/GPTQ_MAP["lfm2"] in
+    algo_configs.py for the calibrated-algorithm case)."""
+    template = LLMTemplate.get("lfm2")
+    config = template.get_config("mxfp4")
+
+    assert isinstance(config, QConfig)
+    for pattern in ("lm_head", "*conv.in_proj", "*conv.out_proj"):
+        assert pattern in config.exclude, f"expected exclude pattern {pattern!r} in {config.exclude}"
+    assert not config.algo_config
+
+
+@pytest.mark.parametrize(
+    "model_type,layer_prefix",
+    [("qwen4_exp", "model.language_model.layers"), ("qwen4_exp_text", "model.layers")],
+)
+def test_qwen4_exp_kv_cache_group_pairs_every_full_attention_layer(model_type, layer_prefix):
+    """
+    The qwen4_exp templates must pair k_proj with v_proj on every full-attention layer.
+
+    Identical hybrid-decoder failure mode to qwen3_5 (see the test above). Regression test: both
+    qwen4 entries originally carried "*linear_attn.in_proj_qkv" as pattern[0] of kv_layers_name,
+    which made find_patterns_groups seed every group from the linear-attention projection --
+    producing 18 singleton linear_attn groups instead of 6 k/v pairs, so k_scale/v_scale export
+    silently lost the full-attention merge.
+    """
+    from quark.torch.export.utils import find_patterns_groups
+
+    # 24 hybrid decoder layers, full attention at every 4th index, routed experts on every layer.
+    full_attention_indices = {3, 7, 11, 15, 19, 23}
+    layer_names = []
+    for layer_index in range(24):
+        prefix = f"{layer_prefix}.{layer_index}"
+        if layer_index in full_attention_indices:
+            layer_names += [f"{prefix}.self_attn.{p}_proj" for p in ("q", "k", "v", "o")]
+        else:
+            layer_names += [
+                f"{prefix}.linear_attn.{p}" for p in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+            ]
+        layer_names += [
+            f"{prefix}.mlp.experts.{expert}.{p}" for expert in range(2) for p in ("gate_proj", "up_proj", "down_proj")
+        ]
+
+    template = LLMTemplate.get(model_type)
+    groups = find_patterns_groups([template.kv_layers_name], layer_names)
+
+    assert len(groups) == len(full_attention_indices), (
+        f"expected one kv group per full-attention layer, got {len(groups)}: {groups}"
+    )
+    for group in groups:
+        assert len(group) == 2, f"kv group must pair k_proj with v_proj, got {group}"
+        assert group[0].endswith("self_attn.k_proj")
+        assert group[1].endswith("self_attn.v_proj")
+
+    grouped_names = {name for group in groups for name in group}
+    assert not any("linear_attn" in name for name in grouped_names), (
+        "linear-attention layers have no KV cache and must not appear in kv_cache_group"
+    )
+    assert not any("experts" in name for name in grouped_names), (
+        "MoE expert projections have no KV cache and must not appear in kv_cache_group"
     )
 
 

@@ -33,7 +33,7 @@
 matrix:
 - name: Markdown
   sources:
-  - ['**/*.md']
+  - ['**/*.md', '!skills/**/*.md']
   expect_match: false
   aspell:
     lang: en

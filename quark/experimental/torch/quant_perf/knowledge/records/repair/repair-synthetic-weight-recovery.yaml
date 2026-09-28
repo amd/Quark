@@ -1,0 +1,32 @@
+schema_version: 1
+id: repair.vllm.quark.synthetic-weight-recovery.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [accuracy_gap]
+  keywords: [fp8, identity, synthetic, dequantize_weight, get_and_maybe_dequant_weights]
+summary: Recover stored quantized weights without applying activation quantization to synthetic inputs.
+guidance:
+  - Trace derived-weight construction to determine whether it executes the quantized layer on an identity matrix.
+  - Compare the recovered weight with a direct reference dequantization of the stored weight and weight scale.
+  - Do not recalibrate or globally replace a valid static activation scale to accommodate a synthetic input.
+  - Prefer an optional quant-method hook that directly dequantizes stored weights.
+  - Retain identity-based recovery only for quantization methods that do not provide direct weight dequantization.
+  - Re-run load, inference, and the original real quantized accuracy gate.
+required_checks: [weight_reference, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: weight_reference_and_real_quantized_accuracy
+  validated_case:
+    model_arch: glm_moe_dsa
+    framework_version: 0.24.0+rocm723
+    accelerator: gfx950
+    failure: synthetic_identity_clipped_by_static_activation_scale
+    result: direct_weight_dequantization_restored_accuracy
+provenance:
+  kind: validated_session
+  source: glm53_quant_perf_recovery
+  validated_at: "2026-09-09"

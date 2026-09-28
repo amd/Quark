@@ -1,0 +1,21 @@
+# Public runtime adapter only. This is not a tuned training recipe.
+schema_version: 1
+
+model:
+  repository: amd/MiniMax-M3-MXFP4
+  trust_remote_code: true
+  quantization: mxfp4
+  chat_template: minimax-m3
+  # Public model structure needed to locate the text input embedding.
+  embedding_key: language_model.model.embed_tokens.weight
+  lm_head_key: language_model.lm_head.weight
+  norm_key: language_model.model.norm.weight
+
+runner:
+  profile: minimax_m3_best_recipe
+  target_tp_size: 4
+
+runtime:
+  environment:
+    VLLM_ROCM_USE_AITER: "1"
+    VLLM_ROCM_USE_AITER_MOE: "1"

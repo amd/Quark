@@ -10,7 +10,19 @@
 #   N_BLOCKS=5 SRC=... OUT=... bash run_pipeline.sh   # quick smoke test on N layers
 #
 # Env vars: SRC, OUT (required); QUARK (auto-detected), GPU (0), N_BLOCKS (all),
-# CALIB_BATCH, N_CALIB_SAMPLES, CALIB_SEQLEN, PPL_BATCH, PPL_MAX_CHUNKS. See README.
+# CALIB_BATCH, N_CALIB_SAMPLES, CALIB_SEQLEN, PPL_BATCH, PPL_MAX_CHUNKS,
+# EXCLUDE_LAYERS, KEEP_ORIGINAL_FORMAT_LAYERS. See README.
+#
+# Two space-separated fnmatch pattern lists select which modules are NOT NVFP4-quantized,
+# both threaded into Stage 1 (weight quant) and Stage 2 (input_scale calib):
+#   EXCLUDE_LAYERS               modules truly NOT quantized -> kept 16-bit / BF16
+#                                (default: *ffn.gate *ffn_norm embed head norm mtp*)
+#   KEEP_ORIGINAL_FORMAT_LAYERS  modules kept in their ORIGINAL quantized format
+#                                (passthrough, e.g. FP8 attention + shared experts)
+#                                (default: *attn* *shared_experts*)
+# Leave both unset for the default (routed experts only, shared experts kept FP8). To also
+# quantize the shared experts to NVFP4, drop '*shared_experts*', e.g.:
+#   KEEP_ORIGINAL_FORMAT_LAYERS="*attn*" SRC=... OUT=... bash run_pipeline.sh
 #
 set -euo pipefail
 
@@ -34,6 +46,24 @@ else
     CALIB_SEQLEN="${CALIB_SEQLEN:-512}"; PPL_BATCH="${PPL_BATCH:-4}"
 fi
 PPL_MAX_CHUNKS="${PPL_MAX_CHUNKS:-}"
+
+# Optional shared exclude lists for Stage 1 + Stage 2 (default: script defaults).
+# Split on whitespace with globbing disabled so patterns like *attn* are passed
+# through literally instead of being expanded against the current directory.
+EXCLUDE_LAYERS_ARG=()
+if [[ -n "${EXCLUDE_LAYERS:-}" ]]; then
+    set -f
+    # shellcheck disable=SC2206  # intentional word-split of the pattern list
+    EXCLUDE_LAYERS_ARG=(--exclude_layers $EXCLUDE_LAYERS)
+    set +f
+fi
+KEEP_ORIGINAL_FORMAT_LAYERS_ARG=()
+if [[ -n "${KEEP_ORIGINAL_FORMAT_LAYERS:-}" ]]; then
+    set -f
+    # shellcheck disable=SC2206  # intentional word-split of the pattern list
+    KEEP_ORIGINAL_FORMAT_LAYERS_ARG=(--keep_original_format_layers $KEEP_ORIGINAL_FORMAT_LAYERS)
+    set +f
+fi
 
 # Prerequisite: the source checkpoint must keep its inference/ model code.
 [[ -d "$SRC/inference" ]] || { echo "ERROR: $SRC/inference not found (need model.py + config.json)"; exit 1; }
@@ -62,12 +92,14 @@ PY
 fi
 
 echo "### [1/4] Stage 1 — weight quantization"
-python "$HERE/stage1_quantize_weight.py" --input-model-path "$QUANT_SRC" --output-path "$OUT" --device cuda
+python "$HERE/stage1_quantize_weight.py" --input-model-path "$QUANT_SRC" --output-path "$OUT" \
+    --device cuda "${EXCLUDE_LAYERS_ARG[@]}" "${KEEP_ORIGINAL_FORMAT_LAYERS_ARG[@]}"
 
 echo "### [2/4] Stage 2 — input_scale calibration"
 python "$HERE/stage2_calibrate_input_scale.py" \
     --model-dir "$SRC" --batch-size "$CALIB_BATCH" --n-calib-samples "$N_CALIB_SAMPLES" \
-    --calib-seqlen "$CALIB_SEQLEN" "${NBLK_ARG[@]}" --output "$INPUT_SCALE"
+    --calib-seqlen "$CALIB_SEQLEN" "${NBLK_ARG[@]}" --output "$INPUT_SCALE" \
+    "${EXCLUDE_LAYERS_ARG[@]}" "${KEEP_ORIGINAL_FORMAT_LAYERS_ARG[@]}"
 
 echo "### [3/4] Stage 3 — merge input_scale"
 python "$HERE/stage3_merge.py" --checkpoint-path "$OUT" --input-scale-path "$INPUT_SCALE"

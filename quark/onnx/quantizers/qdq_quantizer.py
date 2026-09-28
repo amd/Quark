@@ -41,6 +41,7 @@ from onnxruntime.quantization.quant_utils import (
     ms_domain,
     normalize_axis,
     quantize_nparray,
+    quantize_onnx_initializer,
 )
 
 from quark.common.utils.log import ScreenLogger
@@ -297,7 +298,7 @@ class QDQQuantizer(OrtQDQQuantizer):  # type: ignore
             pruned_model.topological_sort()
             logger.info("Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).")
             self.model.model = pruned_model.model
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive; normal flow never yields an invalid graph
             logger.warning(
                 f"Unable to remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu). Exception: {e}"
             )
@@ -848,6 +849,185 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
                 raise RuntimeError(f"Unexpected operator type {quant_value.node_type!r}.")
             self.model.add_node(dequant_node)
 
+    def _adjust_weight_scale_for_int32bias_overflow(
+        self,
+        bias_name: str,
+        weight_name: str,
+        input_scale: np.ndarray,
+        weight_scale: np.ndarray,
+        beta: float = 1.0,
+    ) -> np.ndarray:
+        """Increase weight_scale so that bias / (input_scale * weight_scale * beta) fits in INT32.
+
+        Delegates overflow detection and scale-ratio computation to ORT's inherited
+        _adjust_weight_scale_for_int32_bias(), then applies the result to the model graph
+        by updating the weight scale initializer and re-quantizing the INT8 weight.
+
+        Must be called after _quantize_normal_tensors() and before quantize_bias_static_impl().
+        Gated by extra_options["AdjustWeightScaleForInt32Bias"].
+
+        param bias_name: Float bias initializer name in the graph.
+        param weight_name: Float weight initializer name whose scale is adjusted.
+        param input_scale: Activation quantization scale (per-tensor or per-channel).
+        param weight_scale: Current weight quantization scale to be adjusted if needed.
+        param beta: Bias-scale multiplier (default 1.0).
+        return: Adjusted weight scale (same dtype as input); unchanged if no overflow detected.
+        """
+        bias_init = find_by_name(bias_name, self.model.initializer())
+        if bias_init is None:
+            return weight_scale
+
+        qv = self.quantized_value_map.get(weight_name)
+
+        # ORT's _adjust_weight_scale_for_int32_bias requires weight_scale.size to equal
+        # the bias channel count for per-channel, or be a scalar for per-tensor.
+        # Grouped convolutions (weight_scale.size != bias channels) are unsupported and
+        # skipped to avoid incorrect per-channel indexing into the bias tensor.
+        bias_channels = tensor_proto_to_array(bias_init).size
+        if weight_scale.size > 1 and weight_scale.size != bias_channels:
+            logger.debug(
+                f"AdjustWeightScaleForInt32Bias: skipping '{weight_name}' — "
+                f"weight_scale size ({weight_scale.size}) != bias channels ({bias_channels}), "
+                f"likely a grouped convolution."
+            )
+            return weight_scale
+
+        is_per_channel = weight_scale.size > 1
+
+        # ORT's per-channel path modifies weight_scale in-place; save a copy so we can
+        # return the original if the model update has to be skipped.
+        weight_scale_orig = weight_scale.copy()
+
+        # Absorb beta into input_scale so ORT's method sees the effective bias scale.
+        effective_input_scale = (np.asarray(input_scale, dtype=np.float64) * float(beta)).astype(input_scale.dtype)
+        did_update, new_weight_scale = self._adjust_weight_scale_for_int32_bias(
+            effective_input_scale, weight_scale, weight_name, bias_init, is_per_channel
+        )
+
+        if not did_update or new_weight_scale is None:
+            return weight_scale
+
+        if qv is None:
+            # No quantized-value-map entry means we cannot locate the scale/q-weight
+            # initializers to update the model.  Return the original scale so that the
+            # bias_scale passed to quantize_bias_static_impl stays consistent with the
+            # weight DQ node that is already in the graph (which still holds the old scale).
+            return weight_scale_orig
+
+        orig_weight_init = find_by_name(weight_name, self.model.initializer())
+        scale_init = find_by_name(qv.original.scale_name, self.model.initializer())
+        q_weight_init = find_by_name(qv.original.q_name, self.model.initializer())
+        zp_init = find_by_name(qv.original.zp_name, self.model.initializer())
+
+        if orig_weight_init is None or scale_init is None or q_weight_init is None:
+            return weight_scale_orig
+
+        # Use the actual scale initializer size rather than qv.original.axis to determine
+        # how many elements the scale should have.  Some layers (e.g. SE-block fc2) are
+        # quantized per-channel in the graph but recorded as axis=None in quantized_value_map,
+        # so trusting qv.original.axis would spuriously trip the size check.
+        actual_scale_size = int(np.prod(scale_init.dims)) if scale_init.dims else 1
+        if new_weight_scale.size != actual_scale_size:
+            logger.warning(
+                f"AdjustWeightScaleForInt32Bias: scale size mismatch for '{weight_name}' "
+                f"(got {new_weight_scale.size}, expected {actual_scale_size} from model scale dims) — "
+                f"returning original weight_scale to keep bias_scale consistent with model."
+            )
+            # Return original so bias_scale matches what adjust_bias_scale reads from the
+            # model's weight DQ, preventing a spurious re-quantization of the INT32 bias.
+            return weight_scale_orig
+
+        # Determine the quantization axis from the actual scale shape.
+        # qv.original.axis may be None for layers that are per-channel in the graph;
+        # fall back to the first weight dimension that matches the scale size.
+        if actual_scale_size == 1:
+            actual_axis = None
+        elif qv.original.axis is not None:
+            actual_axis = qv.original.axis
+        else:
+            actual_axis = next(
+                (i for i, d in enumerate(orig_weight_init.dims) if d == actual_scale_size),
+                0,
+            )
+
+        zp = onnx.numpy_helper.to_array(zp_init) if zp_init is not None else np.zeros(1, dtype=np.int8)
+
+        self.model.remove_initializer(scale_init)
+        self.model.add_initializer(
+            onnx.numpy_helper.from_array(new_weight_scale.reshape(scale_init.dims), scale_init.name)
+        )
+        self.model.remove_initializer(q_weight_init)
+        self.model.add_initializer(
+            quantize_onnx_initializer(
+                orig_weight_init,
+                self.weight_qType,
+                zp,
+                new_weight_scale,
+                actual_axis,
+                quant_weight_name=q_weight_init.name,
+            )
+        )
+        logger.info(
+            f"AdjustWeightScaleForInt32Bias: adjusted weight scale for '{weight_name}' "
+            f"to prevent bias '{bias_name}' from overflowing INT32."
+        )
+        return new_weight_scale
+
+    def quantize_bias_static(self, bias_name: str, bias_info: "QDQBiasQuantInfo") -> str:  # type: ignore[override]
+        """Override ORT's quantize_bias_static to support AdjustWeightScaleForInt32Bias.
+
+        When extra_options["AdjustWeightScaleForInt32Bias"] is True, calls
+        _adjust_weight_scale_for_int32bias_overflow() before quantize_bias_static_impl()
+        so that bias values are guaranteed to fit within the INT32 range.
+
+        param bias_name: Float bias initializer name to quantize.
+        param bias_info: QDQBiasQuantInfo with associated input/weight tensor names and beta.
+        return: Name of the quantized INT32 bias initializer added to the graph.
+        """
+        if bias_name in self.quantized_value_map:
+            return self.quantized_value_map[bias_name].original.q_name
+
+        weight_scale = self._get_tensor_quantization_scale(bias_info.weight_name, bias_info.node_name)
+        if weight_scale is None:
+            raise ValueError(
+                f"Unable to get quantization scale for weight '{bias_info.weight_name}' "
+                f"when quantizing bias '{bias_name}' to INT32."
+            )
+
+        input_scale = self._get_tensor_quantization_scale(bias_info.input_name, bias_info.node_name)
+        if input_scale is None:
+            raise ValueError(
+                f"Unable to get quantization scale for input '{bias_info.input_name}' "
+                f"when quantizing bias '{bias_name}' to INT32."
+            )
+
+        if self.extra_options and self.extra_options.get("AdjustWeightScaleForInt32Bias", False):
+            weight_scale = self._adjust_weight_scale_for_int32bias_overflow(
+                bias_name, bias_info.weight_name, input_scale, weight_scale, bias_info.beta
+            )
+
+        (
+            quantized_bias_name,
+            quantized_bias_scale_name,
+            quantized_bias_zp_name,
+            bias_scale_data,
+            node_type,
+            node_qtype,
+        ) = self.quantize_bias_static_impl(bias_name, input_scale, weight_scale, bias_info.beta)
+
+        quantized_value = QuantizedValue(
+            bias_name,
+            quantized_bias_name,
+            quantized_bias_scale_name,
+            quantized_bias_zp_name,
+            QuantizedValueType.Initializer,
+            0 if bias_scale_data.size > 1 else None,
+            node_type=node_type,
+            node_qtype=node_qtype,
+        )
+        self.quantized_value_map[bias_name] = QDQTensorQuantizedValue(quantized_value, None, None)
+        return quantized_bias_name
+
     def quantize_model(self) -> Any:
         annotate_tensors = get_annotate_tensors(self.model.model)
 
@@ -879,7 +1059,7 @@ class BaseExtendedQDQQuantizer(OrtQDQQuantizer):  # type: ignore
             pruned_model.topological_sort()
             logger.info("Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).")
             self.model.model = pruned_model.model
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive; normal flow never yields an invalid graph
             logger.warning(
                 f"Unable to remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu). Exception: {e}"
             )

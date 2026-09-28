@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "policy_id": "quark-quant-perf-gsm8k-v2",
+  "benchmarks": {
+    "gsm8k": {
+      "task": "gsm8k",
+      "request_type": "generate_until",
+      "num_fewshot": 5,
+      "prompting_strategy": "cot",
+      "metric": "exact_match,flexible-extract",
+      "gen_kwargs": {
+        "temperature": 0,
+        "top_p": 1
+      }
+    }
+  }
+}

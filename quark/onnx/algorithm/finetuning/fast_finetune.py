@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from quark.common.utils.log import ScreenLogger
 from quark.onnx.algorithm.finetuning.torch_utils import estimate_largest_mem_layer
+from quark.onnx.calibration import CachedDataReader
 from quark.onnx.utils.file_utils import (
     load_model_layers_to_finetune,
     save_model_layers_to_finetune,
@@ -59,16 +60,22 @@ def fast_finetune(
     else:
         reference_model = float_model if isinstance(float_model, onnx.ModelProto) else onnx.load(float_model)
 
+    if not hasattr(data_reader, "reset_iter"):
+        # Wrap to ensure the data reader has the reset_iter method
+        cached_data_reader = CachedDataReader(data_reader)
+    else:
+        cached_data_reader = data_reader
+
     if selective_update:
-        float_results = inference_model(reference_model, data_reader, data_size, output_index)
-        quant_results = inference_model(quant_model, data_reader, data_size, output_index)
+        float_results = inference_model(reference_model, cached_data_reader, data_size, output_index)
+        quant_results = inference_model(quant_model, cached_data_reader, data_size, output_index)
         l2_distance = average_L2(float_results, quant_results)
         logger.info(f"Selective update for fast finetune, initial average L2 distance {l2_distance}")
 
     # Fix the seed to guarantee that finetuned model could be reproduced
     fixed_seed = extra_options.get("FastFinetune", {}).get("FixedSeed", 1705472343)
     setup_seed(fixed_seed)
-    sg = Subgraph(reference_model, quant_model, use_external_data_format, data_reader, extra_options)
+    sg = Subgraph(reference_model, quant_model, use_external_data_format, cached_data_reader, extra_options)
 
     assert len(sg.subgraph_qmodel_list) == len(sg.subgraph_fmodel_list) == len(sg.f_weight_list), (
         "The quantized model or float model has an incorrect number of subgraphs"
@@ -108,7 +115,7 @@ def fast_finetune(
             q_input_data, f_input_data, f_output_data = sg.get_training_data(i)
             got_data_flag = True
 
-        except OSError as e:
+        except OSError as e:  # pragma: no cover - requires real disk-space / IO failure
             logger.error(f"Encountered an OSError: {e}")
 
             if "space" in str(e) or "written" in str(e):
@@ -124,7 +131,7 @@ def fast_finetune(
                         "Please provide another temporary directory with sufficient disk space via the option 'TmpDir'."
                     )
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires real failure / OOM
             logger.error(f"Encountered an error: {e}")
 
             if "memory" in str(e) or "alloc" in str(e):
@@ -186,7 +193,7 @@ def fast_finetune(
             )
             optimized_module_flag = True
 
-        except (MemoryError, RuntimeError) as e:
+        except (MemoryError, RuntimeError) as e:  # pragma: no cover - requires real GPU/host OOM
             logger.error(f"Encountered an error: {e}")
 
             if "out of memory" in str(e):  # The error message should be "HIP out of memory" or "CUDA out of memory"
@@ -200,7 +207,7 @@ def fast_finetune(
                 else:
                     logger.warning("Please reduce the data size for the fine-tuning via the option 'DataSize'.")
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires real training-time failure
             logger.error(f"Encountered an error: {e}")
 
         finally:
@@ -222,7 +229,7 @@ def fast_finetune(
         ori_bias: onnx.TensorProto | None = _update_optimized_param(sg.qmodel, sg.q_bias_name_list[i], opt_bias)
         # If the L2 distance increased, restore the weight and bias
         if selective_update:
-            quant_results = inference_model(sg.qmodel, data_reader, data_size, output_index)
+            quant_results = inference_model(sg.qmodel, cached_data_reader, data_size, output_index)
             l2_distance_new = average_L2(float_results, quant_results)
 
             if l2_distance_new < l2_distance:

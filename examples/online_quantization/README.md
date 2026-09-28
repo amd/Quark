@@ -6,6 +6,10 @@ vLLM's built-in online quantization (`quantization="online"`) supports per-tenso
 
 A second gap: checkpoints that already carry an offline quantization config (e.g., DeepSeek-R1 ships with FP8 block-scale weights) cannot be re-quantized to a different scheme at load time — for example, to per-channel FP8 to match Quark's offline `ptpc_fp8` output and reuse the same inference kernels.
 
+## Online vs. offline quantization
+
+Online quantization lets you reuse an already-supported `quant_method` and freely tune the quantization granularity, which makes it well suited for fast quantization experiments and validation. It is, however, plain round-to-nearest (RTN) quantization, so the accuracy it can recover is limited; on top of that, the set of schemes it currently supports is also limited. Once you have settled on the quantization scheme you need and want to push for higher accuracy and a real reduction in on-disk footprint, you should switch to offline quantization with Quark, which can apply accuracy-recovery techniques such as rotation, SmoothQuant, and more.
+
 ## Design
 
 `quark.online_quantization.vllm` introduces `QuarkVllmOnlineConfig`, registered in vLLM as the `"quark_online"` quantization backend. It quantizes weights at model-load time inside vLLM's `process_weights_after_loading` hook.

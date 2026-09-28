@@ -21,7 +21,12 @@ def assert_non_destructive_transform(algo_config: AlgoConfig, model_id: str):
     model = model.eval()
     model = model.to(torch_device)
 
-    # Higher numerical correctness.
+    # Higher numerical correctness. Must stay unconditional: the transform is mathematically
+    # exact, so in float32 the difference asserted below sits orders of magnitude under
+    # atol/rtol, while in bfloat16 the rounding error alone is of the same order as the
+    # tolerance and the assert would no longer catch a wrong rotation. Memory is not a reason
+    # to skip this -- every model here is tiny-random (< 100 MB in float32), and cache
+    # pressure from earlier tests is handled by the autouse fixture in test/conftest.py.
     model = model.to(torch.float32)
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)

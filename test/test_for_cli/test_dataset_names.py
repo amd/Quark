@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 import argparse
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from quark.experimental.cli.quark_onnx.helper_utils import (
     get_wikitext2,
 )
 from quark.experimental.cli.quark_onnx.onnx_validate import TextDataset, evaluate_wikitext_onnx
+from quark.torch import LLMTemplate
 
 
 def test_get_wikitext2() -> None:
@@ -109,3 +111,77 @@ def test_torch_llm_ptq_run(
     from quark.experimental.cli.torch_llm_ptq import TorchLLM_PTQ_CLI
 
     TorchLLM_PTQ_CLI(parser=MagicMock(), args=args).run()
+
+
+@patch("quark.experimental.cli.torch_llm_ptq.AutoConfig")
+@patch("quark.experimental.cli.torch_llm_ptq.get_model")
+def test_torch_llm_ptq_mismatched_template_fails_before_model_load(
+    mock_get_model: MagicMock,
+    mock_auto_config: MagicMock,
+    tmp_path,
+) -> None:
+    """
+    A --template_file whose model_type doesn't match the target model must be rejected using
+    only the lightweight AutoConfig (not the full model), and must not leave the built-in
+    template for that model_type overwritten by the rejected custom template.
+    """
+    mock_auto_config.from_pretrained.return_value = MagicMock(model_type="opt")
+
+    template_path = tmp_path / "template.json"
+    template_path.write_text(json.dumps({"model_type": "llama"}))
+
+    original_llama_template = LLMTemplate.get("llama")
+
+    args = argparse.Namespace(
+        model_dir="/fake",
+        device="cpu",
+        multi_device=False,
+        template_file=str(template_path),
+        no_trust_remote_code=False,
+    )
+
+    from quark.experimental.cli.torch_llm_ptq import TorchLLM_PTQ_CLI
+
+    with pytest.raises(ValueError, match="llama"):
+        TorchLLM_PTQ_CLI(parser=MagicMock(), args=args).run()
+
+    mock_get_model.assert_not_called()
+    assert LLMTemplate.get("llama") is original_llama_template
+
+
+@patch("quark.experimental.cli.torch_llm_ptq.AutoConfig")
+@patch("quark.experimental.cli.torch_llm_ptq.get_model")
+def test_torch_llm_ptq_matching_template_is_registered_before_model_load(
+    mock_get_model: MagicMock,
+    mock_auto_config: MagicMock,
+    tmp_path,
+) -> None:
+    """
+    A --template_file whose model_type matches the target model must be registered with
+    LLMTemplate before the (mocked, here short-circuited) full model load proceeds.
+    """
+    unique_model_type = "quark_cli_test_matching_template_model"
+    mock_auto_config.from_pretrained.return_value = MagicMock(model_type=unique_model_type)
+    mock_get_model.side_effect = RuntimeError("stop after registration")
+
+    template_path = tmp_path / "template.json"
+    template_path.write_text(json.dumps({"model_type": unique_model_type}))
+
+    args = argparse.Namespace(
+        model_dir="/fake",
+        device="cpu",
+        multi_device=False,
+        template_file=str(template_path),
+        no_trust_remote_code=False,
+    )
+
+    from quark.experimental.cli.torch_llm_ptq import TorchLLM_PTQ_CLI
+
+    try:
+        with pytest.raises(RuntimeError, match="stop after registration"):
+            TorchLLM_PTQ_CLI(parser=MagicMock(), args=args).run()
+
+        registered_template = LLMTemplate.get(unique_model_type)
+        assert registered_template.model_type == unique_model_type
+    finally:
+        LLMTemplate._templates.pop(unique_model_type, None)

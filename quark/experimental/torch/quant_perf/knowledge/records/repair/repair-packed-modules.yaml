@@ -1,0 +1,49 @@
+schema_version: 1
+id: repair.quark.packed-modules-mapping.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - tensor size mismatch
+    - excluded layers from the quark config are still being treated as quantized
+    - "parameter.py|load_merged_column_weight|start ("
+  keywords: [quark, packed_modules_mapping, gate_up_proj, qkv_proj]
+summary: Check whether the model declares the fused projection mapping used by Quark loading.
+guidance:
+  - Compare the Quark path with the native or unquantized model mapping.
+  - Add only structural gate/up or QKV mappings that the model actually fuses.
+  - A merged-column bounds error is a diagnostic trigger, not proof of a mapping defect; compare the selected scheme and checkpoint scale shape before changing the mapping.
+  - For DeepSeek V4, declare fused_wqa_wkv as [wq_a, wkv] and shared gate_up_proj as [w1, w3] so their source projection rules are resolved before the global fallback.
+  - Verify that fused shards use compatible quantization schemes. A mixed-precision compressor needs separate projection handling rather than an unconditional fused mapping.
+  - For draft or MTP Quark exports, rule out an exclude_layers recipe gap before changing vLLM.
+required_checks: [load, inference, accuracy]
+evidence:
+  level: E2
+  additional_validated_cases:
+    - model_arch: deepseek_v4
+      framework_version: 0.25.0+rocm723
+      accelerator: gfx950
+      tensor_parallel_size: 2
+      level: E3
+      failure: "start (0) + length (512) exceeds dimension size (4)"
+      cause: fused_attention_fell_back_to_global_channel_fp8_instead_of_source_block_fp8
+      result: structural_mapping_restored_source_scheme_selection
+      verification_scope: Final full offline GSM8K passed with the combined V4 repairs.
+      session_artifacts:
+        - repair/verification-1790057371225248711/failure.log
+        - repairs/shared-mapping-test-after.log
+        - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/quark-inference-engine-debug-tips/entries/quark-missing-packed-modules-mapping.md
+  sha256: 64eb66106586069874d1f9b4b20ff7c2a5fbc430d1cbc2aabff925884f519c59
+  additional_sources:
+    - source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+      source_session_name: qwen35-accuracy-performance
+      managed_commit: abf19db634553f3eb0f11d6887ba0b7e833b15f2
+      validated_runtime_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+      validated_at: "2026-09-22"

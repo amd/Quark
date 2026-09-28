@@ -280,7 +280,8 @@ def create_inverse_quantizer(module: nn.Module) -> InverseWeightQuantizer:
     Auto-detects the module type and returns the appropriate subclass:
 
     - compressed ``nn.Linear`` (compressed-tensors>=0.15) → :class:`CompressedLinearInverseQuantizer`
-    - ``FP8Linear`` → :class:`FP8LinearInverseQuantizer`
+    - ``FP8Linear`` (or an FP8-block-quantized per-expert slice thereof, see
+      ``is_fp8_block_quantized_linear``) → :class:`FP8LinearInverseQuantizer`
     """
     if is_compressed_tensors_available() and is_package_lower_or_equal("compressed-tensors", "0.14.99"):
         raise ImportError(
@@ -290,7 +291,7 @@ def create_inverse_quantizer(module: nn.Module) -> InverseWeightQuantizer:
     if is_compressed_tensors_module(module):
         return CompressedLinearInverseQuantizer(module)
 
-    if type(module).__name__ == "FP8Linear":
+    if is_fp8_block_quantized_linear(module):
         return FP8LinearInverseQuantizer(module)
 
     raise ValueError(
@@ -311,16 +312,30 @@ def is_compressed_tensors_module(module: nn.Module) -> bool:
     return False
 
 
+def is_fp8_block_quantized_linear(module: nn.Module) -> bool:
+    """
+    Check if a module is a single-Linear-shaped, block-quantized FP8 weight holder.
+
+    Matches transformers' ``FP8Linear`` by class name, or any module tagged with
+    ``_is_fp8_block_quantized_linear = True`` (e.g. ``FP8ExpertLinear``, a per-expert
+    slice of a fused ``FP8Experts`` module -- see
+    ``quark.torch.utils.llm.module_replacement.quark_experts``). The tag avoids a
+    circular import between this module and ``quark_experts.py``.
+    """
+    return type(module).__name__ == "FP8Linear" or getattr(module, "_is_fp8_block_quantized_linear", False)
+
+
 def is_prequantized_linear(module: nn.Module) -> bool:
     """
     Check if a module is a pre-quantized linear layer.
 
     Supports:
-    - FP8Linear from transformers
+    - FP8Linear from transformers (and per-expert FP8 slices thereof, see
+      ``is_fp8_block_quantized_linear``)
     - CompressedLinear from compressed_tensors (<=0.14)
     - Compressed nn.Linear from compressed_tensors (>=0.15)
     """
-    if type(module).__name__ == "FP8Linear":
+    if is_fp8_block_quantized_linear(module):
         return True
     return is_compressed_tensors_module(module)
 

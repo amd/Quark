@@ -1,0 +1,82 @@
+# Generic large-model TorchSpec baseline.
+#
+# This file intentionally contains no model-specific layer search, private data
+# mix, vocabulary mapping, checkpoint cadence, or benchmark target. The common
+# runner patches the public target path, derived draft config, data paths,
+# topology and user-selected workload settings into a writable active copy.
+
+model:
+  target_model_path: /models/target
+  trust_remote_code: true
+  draft_model_config: /workspace/runtime/draft_config.json
+  embedding_key: language_model.model.embed_tokens.weight
+  lm_head_key: language_model.lm_head.weight
+  norm_key: language_model.model.norm.weight
+
+dataset:
+  train_data_path: /data/onpolicy_train.jsonl
+  eval_data_path: /data/onpolicy_eval.jsonl
+  eval_interval: 500
+  chat_template: minimax-m3
+  prompt_key: conversations
+
+training:
+  attention_backend: sdpa
+  continual_training: false
+  # Checkpoint to resume from; run_all.sh sets it when auto-resuming.
+  load_path: null
+  micro_batch_size: 1
+  draft_accumulation_steps: 8
+  learning_rate: 1e-4
+  max_grad_norm: 1.0
+  max_seq_length: 8192
+  num_epochs: 1
+  seed: 42
+  training_num_gpus_per_node: 4
+  training_num_nodes: 1
+  ttt_length: 7
+  save_per_epoch: true
+  warmup_ratio: 0.02
+  gradient_checkpointing: true
+
+inference:
+  inference_engine_type: vllm
+  inference_num_gpus: 4
+  inference_num_gpus_per_engine: 4
+  inference_num_gpus_per_node: 8
+  max_sample_pool_size: 8
+  inference_buffer_threshold: 4
+  inference_batch_size: 1
+  aux_hidden_states_layers: auto
+  vllm:
+    tp_size: 4
+    # Extraction batches at most `max_num_batched_tokens` over a pool of
+    # `max_sample_pool_size` sequences, so a large KV cache goes unused while
+    # starving the co-resident training ranks. At 0.80 the engine reserved
+    # ~141 GiB of KV cache (1.6M tokens) and trainer actors aborted with
+    # HSA_STATUS_ERROR_OUT_OF_RESOURCES.
+    mem_fraction_static: 0.45
+    extra_args:
+      max_num_batched_tokens: 8192
+      # A sparse-attention target pins the KV block size, and the extraction
+      # engine must select an attention backend whose kernel block sizes divide
+      # it. The backend has to be named here rather than left to the runtime:
+      # the engine is constructed in-process, so the serve scripts' command line
+      # does not apply and VLLM_ATTENTION_BACKEND is no longer honoured.
+      attention_backend: TRITON_ATTN
+      block_size: 128
+      enable_prefix_caching: false
+      language_model_only: true
+      moe_backend: aiter
+
+mooncake:
+  master_server_address: null
+  metadata_server: null
+  protocol: tcp
+  global_segment_size: 32GB
+  local_buffer_size: 4GB
+  max_seq_len: 8192
+
+output_dir: /workspace/training
+cache_dir: /workspace/cache
+model_download_dir: null

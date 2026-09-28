@@ -11,6 +11,12 @@ from onnx import numpy_helper
 from onnxslim import slim
 
 from quark.common.utils.log import ScreenLogger
+from quark.torch.export.qat_export_passes import (
+    fold_constant_reshape_after_dequant,
+    fold_quantizers_for_weight,
+    merge_consecutive_slices,
+    merge_equivalent_constant_dequantizers,
+)
 
 logger = ScreenLogger(__name__)
 
@@ -34,6 +40,28 @@ def export_onnx_model_optimization(onnx_graph: str) -> None:
     # if int32 quant(usually for bias), as QuantizeLinear not support int32 runtime,
     #   so we caclulate the int32 bias and saved in DequantizeLinear and delete QuantizeLinear node
     fold_quantizers_for_bias(onnx_graph)
+    # All of the following are QAT-only post-export passes (quark/torch/export/
+    #   qat_export_passes.py); the PTQ path in quark.onnx never calls
+    #   export_onnx_model_optimization, and none of these change QAT training.
+    # 1. Fold constant float -> Q -> DQ into int -> DQ (weights, PRelu slopes,
+    #    constant Add/Div operands), matching PTQ's pre-quantized constants.
+    fold_quantizers_for_weight(onnx_graph)
+    # 2. Fold the residual constant Unsqueeze that broadcasts a 1-D PRelu slope
+    #    into the constant, matching PTQ (which ships the slope already shaped).
+    fold_constant_reshape_after_dequant(onnx_graph)
+    # 3. Merge two per-axis Slices separated by a transparent Q/DQ pair into one
+    #    multi-axis Slice, matching PTQ.
+    merge_consecutive_slices(onnx_graph)
+    # Run onnxslim for other structural simplifications.
+    model = onnx.load(onnx_graph)
+    try:
+        model = slim(model)
+    except Exception:
+        logger.warning("onnxslim failed during export_onnx_model_optimization, skipping")
+    onnx.save(model, onnx_graph)
+    # 4. Merge the per-branch cloned slope DequantizeLinear nodes (from step 2) into one shared
+    #    DequantizeLinear per constant, matching PTQ.
+    merge_equivalent_constant_dequantizers(onnx_graph)
     return
 
 

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "quark_install_result",
+  "description": "Outcome of quark-install: which Quark version was installed, optional extras, and verification.",
+  "type": "object",
+  "required": [
+    "status",
+    "quark_version"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "failed",
+        "skipped"
+      ]
+    },
+    "quark_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "install_source": {
+      "type": "string",
+      "enum": [
+        "pypi",
+        "source",
+        "wheel"
+      ]
+    },
+    "extras_installed": {
+      "type": "object",
+      "properties": {
+        "onnxruntime": {
+          "type": "boolean"
+        },
+        "llm_ptq_deps": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "import_ok": {
+          "type": "boolean"
+        },
+        "kernel_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "onnx_ops_ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

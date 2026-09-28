@@ -113,7 +113,7 @@ def test_qronos_basic_correctness(dtype: str, qscheme: str, model_id: str):
 @pytest.mark.parametrize("dtype", ["uint4", "mxfp4"])
 @pytest.mark.parametrize("qscheme", ["per_group", "per_channel"])
 def test_qronos_correctness(dtype: str, qscheme: str):
-    model_id = "meta-Llama/Llama-3.2-3B"
+    model_id = "meta-llama/Llama-3.2-3B"
 
     if dtype == "uint4":
         if qscheme == "per_group":

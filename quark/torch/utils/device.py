@@ -17,6 +17,18 @@ from torch.distributed._tensor import distribute_tensor, Replicate, DTensor
 """
 
 
+def get_gpu_arch() -> str:
+    """Return the ROCm gfx architecture of device 0, or "" if there is no GPU."""
+    if not torch.cuda.is_available():
+        return ""
+    return str(torch.cuda.get_device_properties(0).gcnArchName).split(":", 1)[0]
+
+
+def is_gfx950() -> bool:
+    """True if device 0 is gfx950 (MI350), the target of the A8W4 / MXFP4 kernels."""
+    return get_gpu_arch() == "gfx950"
+
+
 def e4m3fn_to_e4m3fnuz(tensor: torch.Tensor, tensor_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     scale = 2.0
 

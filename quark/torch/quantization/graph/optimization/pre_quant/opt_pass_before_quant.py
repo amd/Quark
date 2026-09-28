@@ -6,6 +6,7 @@ import copy
 import operator
 import sys
 from math import sqrt
+from typing import Any
 
 import torch
 from torch.fx import GraphModule, Node
@@ -17,6 +18,7 @@ from quark.torch.quantization.graph.optimization.utils import _copy_node_meta_in
 from quark.torch.quantization.graph.torch_utils import (
     BATCHNORM_OPS_WO_TRAIN,
     QUANT_CONV_LIKE_MODULE,
+    QUANT_CONV_WO_BN,
     _is_sample_split_node,
     _is_split_with_size_node,
     is_adaptive_avg_pool2d_node,
@@ -53,6 +55,8 @@ __all__ = [
     "ConvertAdaptiveavgpool2d2Quantadaptiveavgpool2DQOPass",
     "ConverAvgpool2d2QuantAvgPool2dQOPass",
     "ConvertLeakyReLu2QuantLeakyReLuQOPass",
+    "FoldConstantDivQOPass",
+    "FoldConvScalarMulQOPass",
 ]
 
 
@@ -851,3 +855,263 @@ class ConvertLeakyReLu2QuantLeakyReLuQOPass(OptPassBase):
             m.graph.eliminate_dead_code()
             m.recompile()
         return m
+
+
+class FoldConstantDivQOPass(OptPassBase):
+    """Fold Div nodes whose all inputs are traceable to constants.
+
+    PTQ (quark.onnx) runs onnxslim on the float ONNX graph before quantization,
+    which constant-folds expressions like [w, h] / 2 into a single tensor.
+    In QAT the same computation appears in the FX graph as a chain of ops
+    (lift_fresh_copy -> detach_ -> view -> div) whose result is always constant
+    given fixed input shapes.
+
+    This pass identifies Div (and Mul) nodes where ALL inputs trace back to
+    get_attr / lift_fresh_copy / Python literals, evaluates the result eagerly,
+    stores it as a new get_attr node, and replaces the Div with the constant.
+    Running before calibration ensures no redundant runtime Div nodes appear
+    in the exported ONNX.
+    """
+
+    def requires(self, graph_module: GraphModule) -> None:
+        pass
+
+    def _trace_const(self, node: Any, graph_module: GraphModule, depth: int = 0) -> torch.Tensor | None:
+        """Return tensor value if node is fully constant, else None."""
+        if depth > 10:
+            return None
+        if isinstance(node, int | float) and not isinstance(node, bool):
+            return torch.tensor(float(node))
+        if not isinstance(node, Node):
+            return None
+        if node.op == "get_attr":
+            try:
+                tensor = graph_module.get_buffer(node.target)
+                return tensor.detach().clone()
+            except Exception:
+                pass
+            try:
+                return _get_tensor_constant_from_node(node, graph_module).detach().clone()
+            except Exception:
+                return None
+        if node.op == "call_function":
+            target = node.target
+            if target in (
+                torch.ops.aten.lift_fresh_copy.default,
+                torch.ops.aten.detach_.default,
+                torch.ops.aten.detach.default,
+                torch.ops.aten.alias.default,
+                torch.ops.aten.contiguous.default,
+            ):
+                return self._trace_const(node.args[0], graph_module, depth + 1)
+            if target == torch.ops.aten.view.default:
+                input_tensor = self._trace_const(node.args[0], graph_module, depth + 1)
+                if input_tensor is None:
+                    return None
+                shape = node.args[1]
+                return input_tensor.view(shape)
+            if target in (torch.ops.aten.unsqueeze.default, torch.ops.aten.unsqueeze_copy.default):
+                input_tensor = self._trace_const(node.args[0], graph_module, depth + 1)
+                if input_tensor is None:
+                    return None
+                return input_tensor.unsqueeze(node.args[1])
+            if target == torch.ops.aten.linspace.default:
+                # linspace(start, end, steps) — fully determined constant
+                start, end, steps = node.args[0], node.args[1], node.args[2]
+                dtype = node.kwargs.get("dtype", torch.float32)
+                device = node.kwargs.get("device", None)
+                return torch.linspace(start, end, steps, dtype=dtype, device=device)
+            if target == torch.ops.aten.stack.default:
+                tensors = [self._trace_const(a, graph_module, depth + 1) for a in node.args[0]]
+                if any(t is None for t in tensors):
+                    return None
+                dim = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim", 0)
+                return torch.stack(tensors, dim=dim)
+            if target == operator.getitem:
+                # getitem(meshgrid_result, index): trace the tuple-producing node
+                container = self._trace_const_tuple(node.args[0], graph_module, depth + 1)
+                if container is None:
+                    return None
+                return container[node.args[1]]
+            if target in (torch.ops.aten.div.Tensor, torch.ops.aten.div.Scalar):
+                numerator = self._trace_const(node.args[0], graph_module, depth + 1)
+                denominator = self._trace_const(node.args[1], graph_module, depth + 1)
+                if numerator is None or denominator is None:
+                    return None
+                return numerator / denominator
+            if target in (torch.ops.aten.mul.Tensor, torch.ops.aten.mul.Scalar):
+                left = self._trace_const(node.args[0], graph_module, depth + 1)
+                right = self._trace_const(node.args[1], graph_module, depth + 1)
+                if left is None or right is None:
+                    return None
+                return left * right
+        return None
+
+    def _trace_const_tuple(
+        self, node: Any, graph_module: GraphModule, depth: int = 0
+    ) -> tuple[torch.Tensor, ...] | None:
+        """Return a tuple of constant tensors for tuple-producing ops (e.g. meshgrid)."""
+        if depth > 10 or not isinstance(node, Node) or node.op != "call_function":
+            return None
+        if node.target == torch.ops.aten.meshgrid.indexing:
+            tensors = [self._trace_const(a, graph_module, depth + 1) for a in node.args[0]]
+            if any(t is None for t in tensors):
+                return None
+            indexing = node.kwargs.get("indexing", "ij")
+            return tuple(torch.meshgrid(*tensors, indexing=indexing))
+        return None
+
+    # Ops whose output is fully determined once all inputs are constant.
+    # PTQ (quark.onnx) pre-computes these on the float graph; QAT keeps them as
+    # runtime nodes. Folding them here removes that QAT-vs-PTQ divergence.
+    _FOLDABLE_TARGETS = (
+        torch.ops.aten.div.Tensor,
+        torch.ops.aten.div.Scalar,
+        torch.ops.aten.unsqueeze.default,
+        torch.ops.aten.unsqueeze_copy.default,
+        torch.ops.aten.stack.default,
+    )
+
+    def call(self, graph_module: GraphModule) -> GraphModule:
+        count = 0
+        nodes_to_erase: list[Node] = []
+        attr_counter = [0]
+
+        for node in list(graph_module.graph.nodes):
+            if node.op != "call_function" or node.target not in self._FOLDABLE_TARGETS:
+                continue
+
+            # Fold only when the node's result is fully constant.
+            result = self._trace_const(node, graph_module)
+            if result is None:
+                continue
+
+            # Store the folded constant as a graph attr, matching the existing
+            # convention in convert_scalars_to_attrs (register_buffer + get_attr).
+            attr_counter[0] += 1
+            attr_name = f"_folded_const_{attr_counter[0]}"
+            graph_module.register_buffer(attr_name, result)
+            # The new get_attr node's meta["val"] must describe the folded
+            # constant's own shape/dtype, not the original node output's.
+            fake_mode = node.meta["val"].fake_mode
+            with graph_module.graph.inserting_before(node):
+                new_node = graph_module.graph.get_attr(attr_name)
+                new_node.meta["val"] = fake_mode.from_tensor(result, static_shapes=True)
+                new_node.meta["skip_quant"] = node.meta.get("skip_quant", False)
+
+            node.replace_all_uses_with(new_node)
+            nodes_to_erase.append(node)
+            count += 1
+            logger.info("FoldConstantDivQOPass: folded constant %s %s", node.target, node.name)
+
+        # Clean up nodes that became dead after replacement
+        for dead_node in nodes_to_erase:
+            if not dead_node.users:
+                graph_module.graph.erase_node(dead_node)
+
+        if count > 0:
+            graph_module.graph.eliminate_dead_code()
+            graph_module.recompile()
+        return graph_module
+
+
+class FoldConvScalarMulQOPass(OptPassBase):
+    """Fold Conv -> Mul(scalar) into Conv by absorbing the scalar into the weight.
+
+    PTQ (quark.onnx) runs onnxslim on the float ONNX graph before quantization,
+    which folds constant scalar multipliers (e.g. z * 32) into adjacent Conv
+    weights.  In QAT the same pattern appears in the FX graph as:
+
+        QuantConv (call_module) -> aten.mul.Tensor(conv_out, scalar)
+
+    This pass detects that pattern and multiplies the scalar into the Conv
+    weight in-place, then rewires the graph to bypass the Mul node.  Running
+    before calibration ensures the observer sees the folded output range,
+    matching PTQ behavior exactly.
+
+    Only fires when:
+    - The Mul has exactly one non-scalar input (the Conv output).
+    - The scalar operand is a Python float or int literal.
+    - The Conv module has a single user (the Mul) so folding is safe.
+    """
+
+    def requires(self, graph_module: GraphModule) -> None:
+        pass
+
+    def call(self, graph_module: GraphModule) -> GraphModule:
+        count = 0
+        nodes_to_erase: list[Node] = []
+
+        for mul_node in list(graph_module.graph.nodes):
+            if mul_node.op != "call_function" or mul_node.target not in (
+                torch.ops.aten.mul.Tensor,
+                torch.ops.aten.mul.Scalar,
+            ):
+                continue
+
+            args = mul_node.args
+            if len(args) != 2:
+                continue
+
+            def _try_scalar(arg: Any) -> float | None:
+                """Return float scalar if arg is a literal or a single-element attr node."""
+                if isinstance(arg, int | float) and not isinstance(arg, bool):
+                    return float(arg)
+                if isinstance(arg, Node) and arg.op == "get_attr":
+                    try:
+                        t = _get_tensor_constant_from_node(arg, graph_module)
+                        if isinstance(t, torch.Tensor) and t.numel() == 1:
+                            return float(t.item())
+                    except Exception:
+                        pass
+                return None
+
+            scalar_from_arg0 = _try_scalar(args[0])
+            scalar_from_arg1 = _try_scalar(args[1])
+            if scalar_from_arg1 is not None and isinstance(args[0], Node):
+                conv_node, scalar = args[0], scalar_from_arg1
+            elif scalar_from_arg0 is not None and isinstance(args[1], Node):
+                conv_node, scalar = args[1], scalar_from_arg0
+            else:
+                continue
+
+            if abs(scalar - 1.0) < 1e-6:
+                continue
+
+            if not isinstance(conv_node, Node) or conv_node.op != "call_module":
+                continue
+            conv_module = graph_module.get_submodule(conv_node.target)
+            # Only fold into a plain Conv/Linear (no fused BN). QUANT_CONV_LIKE_MODULE
+            # also covers Conv+BN modules whose BN is not yet merged at this stage
+            # (merge_bn runs during freeze). Scaling the raw conv weight there would
+            # be renormalized away by BN, silently producing wrong output.
+            if not isinstance(conv_module, QUANT_CONV_WO_BN):
+                continue
+
+            if len(conv_node.users) != 1:
+                continue
+
+            with torch.no_grad():
+                conv_module.weight.mul_(scalar)
+                if conv_module.bias is not None:
+                    conv_module.bias.mul_(scalar)
+
+            mul_node.replace_all_uses_with(conv_node)
+            nodes_to_erase.append(mul_node)
+            # Also erase the scalar attr node if it has no other users
+            scalar_arg_node = args[1] if scalar_from_arg1 is not None else args[0]
+            if isinstance(scalar_arg_node, Node) and len(scalar_arg_node.users) == 1:
+                nodes_to_erase.append(scalar_arg_node)
+            count += 1
+            logger.info(
+                "FoldConvScalarMulQOPass: absorbed scalar %.4f into %s",
+                scalar,
+                conv_node.target,
+            )
+
+        for dead_node in nodes_to_erase:
+            graph_module.graph.erase_node(dead_node)
+        if count > 0:
+            graph_module.graph.eliminate_dead_code()
+            graph_module.recompile()
+        return graph_module

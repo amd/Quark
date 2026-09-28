@@ -20,7 +20,7 @@ from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, get_named_linears, move_to_device
-from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.prepare import init_blockwise_algo, init_device_map, reset_model_kv_cache
 from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
@@ -222,6 +222,8 @@ class OsscarProcessor(BaseAlgoProcessor):
 
         self.model = model
         self.damp_percent = pruning_algo_config.damp_percent
+        # If accelerate is used, the model will have the attribute _hf_hook
+        self.using_accelerate = hasattr(self.model, "_hf_hook")
         self.true_sequential = pruning_algo_config.true_sequential
         self.inside_layer_modules = pruning_algo_config.inside_layer_modules
         self.mlp_pruning_modules = pruning_algo_config.mlp_pruning_modules
@@ -241,11 +243,11 @@ class OsscarProcessor(BaseAlgoProcessor):
         num_batches = len(self.inps)
         layer_inputs = list(self.inps)  # pragma: no cover
         layer_outputs: list[torch.Tensor] = []
-        forward_pass_use_cache = self.model.config.use_cache
-        self.model.config.use_cache = False
+        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
 
-        for i in range(len(self.modules)):
-            self.modules[i] = self.modules[i].to("cpu")
+        if not self.using_accelerate:
+            for i in range(len(self.modules)):
+                self.modules[i] = self.modules[i].to("cpu")
         clear_memory()
 
         for i in tqdm(range(len(self.modules)), desc="OSSCAR"):
@@ -323,6 +325,10 @@ class OsscarProcessor(BaseAlgoProcessor):
                 cache_examples_on_gpu,
             )
 
+            # accelerate-todo: force_layer_back_to_cpu is only set when this layer started on
+            # CPU, which under accelerate means the device map placed it there -- so returning it
+            # by hand is the same desync the bulk offload above avoids. Not fixed here: covering
+            # it needs the full per-layer body, so it belongs in its own change.
             layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
 
             del layer
@@ -330,4 +336,4 @@ class OsscarProcessor(BaseAlgoProcessor):
             del layer_inputs
             layer_inputs, layer_outputs = layer_outputs, []  # noqa
             clear_memory()
-        self.model.config.use_cache = forward_pass_use_cache
+        reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)

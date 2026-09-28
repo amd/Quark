@@ -57,7 +57,38 @@ class QuarkDiffusersQuantizer(DiffusersQuantizer):
 
         if self.pre_quantized:
             # Reload path: swap in quantized modules for the state dict to populate.
-            process_model_transformation(model, qconfig)
+            # The exporter records how the weights were serialized in the "export" block
+            # (weight_format/pack_method). For a real_quantized (packed) checkpoint, build
+            # packed QParamsLinear via _map_to_quark so the packed low-precision weights
+            # load directly; otherwise fall back to the fake-quant QuantLinear transform.
+            export_block = quant_config_dict.get("export", {}) or {}
+            weight_format = export_block.get("weight_format", "fake_quantized")
+            pack_method = export_block.get("pack_method", "reorder")
+            if weight_format == "real_quantized":
+                from quark.torch.export.api import _map_to_quark
+                from quark.torch.export.nn.modules.qparamslinear import QparamsOperator
+
+                _map_to_quark(model, qconfig, pack_method=pack_method, custom_mode="quark")
+
+                # _map_to_quark packs nn.Linear only. Every other quantized module type
+                # (QuantConv2d in UNet models) is serialized in the fake-quant layout, so
+                # its quantizers have to be rebuilt too or the layer reloads as a plain
+                # float module holding the master weight, its exported scales unused, and
+                # silently runs unquantized.
+                #
+                # The packed modules are excluded by name rather than relying on
+                # QParamsLinear not being an exact LAYER_TO_QUANT_LAYER_MAP key, and a
+                # second QConfig is built because setup_config_per_layer rewrites
+                # config.exclude in place.
+                unpacked_config = QConfig.from_dict(quant_config_dict)
+                unpacked_config.exclude = list(unpacked_config.exclude) + [
+                    name
+                    for name, module in model.named_modules()  # type: ignore[attr-defined]
+                    if isinstance(module, QparamsOperator)
+                ]
+                process_model_transformation(model, unpacked_config)
+            else:
+                process_model_transformation(model, qconfig)
         else:
             # On-the-fly path: quantize after loading; reject configs needing calibration.
             if qconfig_needs_activation_calibration(qconfig):
@@ -82,7 +113,17 @@ class QuarkDiffusersQuantizer(DiffusersQuantizer):
         **kwargs: Any,
     ) -> bool:
         module, _ = get_module_from_name(model, param_name)
-        return isinstance(module, QuantMixin | FakeQuantizeBase)
+        if isinstance(module, QuantMixin | FakeQuantizeBase):
+            return True
+        # Packed (real_quantized) reload: params live on QParamsLinear / its export
+        # real-quantizer submodules (e.g. the e8m0 weight scale is uint8). Route them
+        # through create_quantized_param so they load WITHOUT a dtype cast -- otherwise
+        # diffusers' default loader casts the uint8 e8m0 scale to the model dtype, and
+        # the later `scale.view(torch.uint8)` in unpack_params mis-reads it (4x blow-up).
+        from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
+        from quark.torch.export.nn.modules.realquantizer import RealQuantizerBase
+
+        return isinstance(module, QParamsLinear | RealQuantizerBase)
 
     def create_quantized_param(
         self,

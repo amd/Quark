@@ -5,17 +5,16 @@
 """
 Lazy-loader: stream decoder-block weights one block at a time.
 
-If free CPU RAM is enough to hold all decoder block parameters, weights are
-kept in CPU RAM and transferred CPU↔GPU around each block's forward().  This
-avoids all disk I/O after the initial load and is fast enough for autoregressive
-generation.
+Decoder block weights that are already materialised are kept in CPU RAM and
+transferred CPU↔GPU around each block's forward().  This avoids all disk I/O
+after the initial load and is fast enough for autoregressive generation.
 
-If free RAM is insufficient, weights are discarded to the meta device after each
-block forward and re-read from the safetensors checkpoint on the next call
-(original disk-streaming behaviour).
+Blocks whose weights are on the meta device have nothing to keep, so they are
+re-read from the safetensors checkpoint on each forward (disk streaming).
 
-Only ``nn.Parameter`` weights are managed.  Buffers (``inv_freq``, RoPE caches,
-etc.) are left untouched.
+Decoder block ``nn.Parameter`` weights are managed lazily. Non-decoder
+parameters and live buffers are moved to the target device during ``prepare()`` so
+the patched model is runnable immediately.
 """
 
 import json
@@ -25,6 +24,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from quark.common.utils.log import ScreenLogger
 
@@ -90,6 +90,45 @@ def _reattach_weight_scales(block: nn.Module) -> None:
             weight.scale = scale
 
 
+def _move_non_decoder_params_and_buffers_to_device(
+    model: nn.Module,
+    decoder_layers_path: str,
+    target_device: torch.device,
+) -> None:
+    """Move non-decoder parameters and live buffers needed around lazy blocks.
+
+    A tied parameter (``lm_head.weight`` is ``embed_tokens.weight``) is reached twice by
+    ``named_modules()``. It is moved once and reused, so the pair stays tied and the
+    embedding is not duplicated on ``target_device``.
+    """
+    # id(original) -> (original, moved). The original is kept alive in the value: once its
+    # last module slot is rewritten it could be freed and its id reused by another
+    # parameter, aliasing two unrelated weights onto the same tensor.
+    moved_params: dict[int, tuple[nn.Parameter, nn.Parameter]] = {}
+
+    for module_name, module in model.named_modules():
+        in_decoder_block = module_name == decoder_layers_path or module_name.startswith(f"{decoder_layers_path}.")
+        if not in_decoder_block:
+            for param_name, param in list(module._parameters.items()):
+                if param is None or param.is_meta:
+                    continue
+                cached = moved_params.get(id(param))
+                if cached is None:
+                    moved_param = nn.Parameter(
+                        param.to(target_device),
+                        requires_grad=param.requires_grad,
+                    )
+                    # Carry over attributes hung on the parameter, e.g. `weight.scale`.
+                    moved_param.__dict__.update(param.__dict__)
+                    moved_params[id(param)] = (param, moved_param)
+                else:
+                    moved_param = cached[1]
+                module._parameters[param_name] = moved_param
+        for buffer_name, buffer in list(module._buffers.items()):
+            if buffer is not None and not buffer.is_meta:
+                module._buffers[buffer_name] = buffer.to(target_device)
+
+
 def _swap_out_params_to_meta(block: nn.Module, keys: list[str]) -> None:
     """Replace the given parameters with meta-device placeholders."""
     for key in keys:
@@ -122,6 +161,7 @@ def _make_forward_hooks(
     state_dict_transform: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None,
     cpu_cache: dict[str, torch.Tensor] | None = None,
     reattach_scales: Callable[[nn.Module], None] | None = None,
+    progress_label: Callable[[], str] = lambda: "",
 ) -> tuple[Any, Any]:
     """Return (pre_hook, post_hook) for one decoder block.
 
@@ -138,6 +178,9 @@ def _make_forward_hooks(
         # The model is in eval mode so weights are never modified during forward —
         # no need to copy them back; just restore from the original cpu_cache.
         def pre_hook(mod: nn.Module, _inputs: tuple[object, ...]) -> None:
+            # `tqdm.write` rather than `logger.info`: this fires inside the calibration
+            # progress bar's loop, and a plain write would tear the bar on every block.
+            tqdm.write(f"Calibrating decoder layer {progress_label()}")
             state_dict = {k: t.to(target_device, non_blocking=True) for k, t in cpu_cache.items()}
             if state_dict_transform is not None:
                 state_dict = state_dict_transform(state_dict)
@@ -152,6 +195,9 @@ def _make_forward_hooks(
     else:
         # Disk-streaming: read from checkpoint each forward, discard after.
         def pre_hook(mod: nn.Module, _inputs: tuple[object, ...]) -> None:
+            # `tqdm.write` rather than `logger.info`: this fires inside the calibration
+            # progress bar's loop, and a plain write would tear the bar on every block.
+            tqdm.write(f"Calibrating decoder layer {progress_label()}")
             state_dict = get_module_weight_by_name(
                 block_name,
                 weight_map=weight_map,
@@ -184,133 +230,194 @@ def _make_forward_hooks(
 # ---------------------------------------------------------------------------
 
 
-def prepare(
-    model: nn.Module,
-    pretrained_model_name_or_path: str,
-    target_device: torch.device | str = "cuda",
-    decoder_layers_path: str | None = None,
-    state_dict_transform: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None,
-    n_gpu_blocks: int = 0,
-) -> None:
-    """
-    Prepare *model* for lazy per-block execution.
+class PerBlockLazyLoader:
+    """Streams decoder-block weights so only a few blocks are resident at a time.
 
-    Automatically selects the offload backend for blocks beyond *n_gpu_blocks*:
+    Constructing the loader patches *model* in place; :meth:`finalize` undoes the patch.
+    The loader owns the hook state, so callers hold the object instead of probing the model.
 
-    * **CPU RAM** (preferred): if free RAM ≥ remaining block parameter footprint,
-      block weights are moved to CPU RAM.  Each forward call transfers one block
-      CPU→GPU→CPU with no disk access.
-    * **Disk streaming** (fallback): block parameters are discarded to the meta
-      device and re-read from the safetensors checkpoint on each forward call.
+    The offload backend for blocks beyond *n_gpu_blocks* is chosen automatically:
+
+    * **CPU RAM** (preferred): blocks whose weights are materialised are held in CPU RAM and
+      moved CPU->GPU->CPU around each forward. Costs no extra RAM -- the cache shares storage
+      with the parameters it replaces -- and the checkpoint index is never read.
+    * **Disk streaming** (fallback): blocks whose weights are on meta are re-read from the
+      safetensors shards each forward, which needs ``model.safetensors.index.json``.
 
     :param nn.Module model: Model with weights already loaded on CPU.
-    :param str pretrained_model_name_or_path: Path to the checkpoint directory
-        containing ``model.safetensors.index.json``.
-    :param torch.device | str target_device: GPU device. Default ``"cuda"``.
-    :param str | None decoder_layers_path: Dotted path to the ``nn.ModuleList``
-        of decoder blocks. Auto-detected when ``None``.
-    :param callable | None state_dict_transform: Optional transform applied to
-        each block's raw state dict before swapping params in (disk mode only).
-    :param int n_gpu_blocks: Number of leading decoder blocks to keep permanently
-        on *target_device*.  These blocks are moved to GPU immediately and no
-        swap hooks are registered for them.  Default ``0`` (all blocks offloaded).
+    :param str pretrained_model_name_or_path: Path to the checkpoint directory.
+    :param torch.device | str target_device: Device blocks are streamed onto. Default ``"cuda"``.
+    :param str | None decoder_layers_path: Dotted path to the ``nn.ModuleList`` of decoder
+        blocks. Auto-detected when ``None``.
+    :param callable | None state_dict_transform: Optional transform applied to each block's
+        raw state dict before swapping params in (disk mode only).
+    :param int n_gpu_blocks: Number of leading decoder blocks kept permanently on
+        *target_device*. No swap hooks are registered for them. Default ``0``.
+    :param bool weights_modified_in_memory: Set when the weights no longer match the
+        checkpoint -- an algorithm such as AWQ or GPTQ has edited them in place. Disk
+        streaming would read the unmodified tensors back and silently undo that, so it is
+        refused rather than selected.
+    :raises NotImplementedError: In disk-streaming mode, when the weights have been modified
+        in memory, when the checkpoint has no ``model.safetensors.index.json``, or when its
+        keys do not match the module paths of the decoder blocks.
     """
-    target_device = torch.device(target_device)
 
-    index_path = os.path.join(pretrained_model_name_or_path, "model.safetensors.index.json")
-    if not os.path.exists(index_path):
-        logger.warning(
-            "lazy_loader: index file not found at %s. "
-            "A sharded checkpoint with model.safetensors.index.json is required. "
-            "No patches applied.",
-            index_path,
+    def __init__(
+        self,
+        model: nn.Module,
+        pretrained_model_name_or_path: str,
+        target_device: torch.device | str = "cuda",
+        decoder_layers_path: str | None = None,
+        state_dict_transform: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None,
+        n_gpu_blocks: int = 0,
+        weights_modified_in_memory: bool = False,
+        n_batches: int = 0,
+    ) -> None:
+        self.model = model
+        self.model_dir = pretrained_model_name_or_path
+        self.target_device = torch.device(target_device)
+        self.state_dict_transform = state_dict_transform
+        self.weights_modified_in_memory = weights_modified_in_memory
+        # Calibration replays every block once per batch, so the progress line carries the batch
+        # it belongs to. 0 means the caller could not tell us how many batches there will be.
+        self.n_batches = max(0, n_batches)
+        self._batch_index = 0
+        self.hook_handles: list[Any] = []
+        self.cpu_caches: list[dict[str, torch.Tensor] | None] = []
+        self.weight_map: dict[str, str] = {}
+        self.patched = False
+        # Set for real below; defined up front so an unpatched loader is still safe to inspect.
+        self.layers_path = ""
+        self.block_container = nn.ModuleList()
+        self.n_gpu_blocks = 0
+        self.use_cpu_ram = False
+
+        layers_path = decoder_layers_path if decoder_layers_path is not None else infer_decoder_layers_path(model)
+        block_container = dict(model.named_modules(remove_duplicate=False)).get(layers_path)
+        if not isinstance(block_container, nn.ModuleList) or not layers_path:
+            logger.warning(
+                "lazy_loader: could not locate a root-level nn.ModuleList at path %r. No patches applied.",
+                layers_path,
+            )
+            return
+
+        self.layers_path = layers_path
+        self.block_container = block_container
+        n_blocks = len(block_container)
+        self.n_gpu_blocks = max(0, min(n_gpu_blocks, n_blocks))
+        offload_blocks = list(block_container)[self.n_gpu_blocks :]
+
+        self.use_cpu_ram = self._choose_backend(offload_blocks, n_blocks)
+        if not self.use_cpu_ram:
+            if weights_modified_in_memory:
+                raise NotImplementedError(
+                    "Per-block disk streaming re-reads block weights from the checkpoint, which "
+                    "would discard the in-memory weight modifications made before calibration "
+                    "(AWQ, GPTQ, SmoothQuant, rotation). Materialise the decoder block weights so "
+                    "they can be cached in CPU RAM, or drop the algorithm."
+                )
+            # Only disk streaming re-reads the checkpoint, so only it needs the index.
+            self.weight_map = self._load_and_validate_weight_map()
+
+        _move_non_decoder_params_and_buffers_to_device(model, layers_path, self.target_device)
+
+        for idx, block in enumerate(block_container):
+            if idx < self.n_gpu_blocks:
+                self._make_block_resident(block)
+                self.cpu_caches.append(None)  # sentinel: block is GPU-resident
+                continue
+            self._offload_block(block, idx, n_blocks)
+
+        setattr(model, _MODEL_ATTR, self)
+        self.patched = True
+
+    def _choose_backend(self, offload_blocks: list[nn.Module], n_blocks: int) -> bool:
+        """Return True to hold offloaded blocks in CPU RAM, False to stream them from disk.
+
+        Weights that are already materialised are kept in CPU RAM. Moving them into
+        `cpu_caches` costs nothing: `.cpu()` on a CPU tensor returns the tensor itself, so
+        the cache shares storage with the parameter it replaces and RSS is unchanged.
+
+        Disk streaming is therefore only for blocks with nothing to keep -- weights on the
+        meta device, which have to come from the checkpoint whatever we do.
+
+        The earlier heuristic compared `MemAvailable` against the offloaded bytes, as if the
+        cache were a second copy. Since the model is already resident by the time the loader
+        runs, that demanded roughly twice the model size in RAM and pushed the exact case
+        this flow exists for onto the slow, checkpoint-backed path.
+        """
+        resident_offload_bytes = sum(
+            p.numel() * p.element_size() for block in offload_blocks for p in block.parameters() if not p.is_meta
         )
-        return
+        use_cpu_ram = resident_offload_bytes > 0
 
-    with open(index_path) as f:
-        weight_map: dict[str, str] = json.load(f).get("weight_map", {})
-
-    layers_path = decoder_layers_path if decoder_layers_path is not None else infer_decoder_layers_path(model)
-    block_container = dict(model.named_modules(remove_duplicate=False)).get(layers_path)
-
-    if not isinstance(block_container, nn.ModuleList) or not layers_path:
-        logger.warning(
-            "lazy_loader: could not locate a root-level nn.ModuleList at path %r. No patches applied.",
-            layers_path,
+        # Debug, not info: the offload split is diagnostic detail, the per-block progress
+        # is what a user watching a long run needs.
+        logger.debug(
+            "lazy_loader: %d/%d blocks GPU-resident; %d blocks offloaded (%.1f GB) → %s",
+            self.n_gpu_blocks,
+            n_blocks,
+            n_blocks - self.n_gpu_blocks,
+            resident_offload_bytes / 1e9,
+            "CPU RAM" if use_cpu_ram else "disk",
         )
-        return
+        return use_cpu_ram
 
-    n_blocks = len(block_container)
-    n_gpu_blocks = max(0, min(n_gpu_blocks, n_blocks))
-    offload_blocks = list(block_container)[n_gpu_blocks:]
+    def _load_and_validate_weight_map(self) -> dict[str, str]:
+        """Read the checkpoint index and check it actually describes the decoder blocks."""
+        index_path = os.path.join(self.model_dir, "model.safetensors.index.json")
+        if not os.path.exists(index_path):
+            raise NotImplementedError(
+                f"Per-block disk streaming needs a sharded checkpoint index at {index_path}. "
+                "Free up RAM to use the index-free CPU RAM backend instead."
+            )
 
-    # Only nn.Parameter weights are swapped; live buffers (e.g. inv_freq, RoPE caches)
-    # stay on their original device. If a block's forward reads such a buffer, the
-    # buffer-on-CPU vs activation-on-target-device mismatch raises at runtime. Warn so
-    # the caller can move RoPE computation outside the block or keep the block resident.
-    blocks_with_live_buffers = []
-    for block_index, block in enumerate(offload_blocks):
-        has_live_buffer = False
-        for submodule in block.modules():
-            for buffer in submodule._buffers.values():
-                if buffer is not None and not buffer.is_meta:
-                    has_live_buffer = True
-                    break
-            if has_live_buffer:
-                break
-        if has_live_buffer:
-            blocks_with_live_buffers.append(n_gpu_blocks + block_index)
-    if blocks_with_live_buffers:
-        logger.warning(
-            "lazy_loader: offloaded blocks %s contain live buffers (e.g. inv_freq / RoPE caches) "
-            "that are NOT moved with the block. If a block's forward reads such a buffer, a "
-            "device-mismatch error will be raised. Compute RoPE outside the decoder block or keep "
-            "these blocks GPU-resident via n_gpu_blocks.",
-            blocks_with_live_buffers,
-        )
+        with open(index_path) as f:
+            weight_map: dict[str, str] = json.load(f).get("weight_map", {})
 
-    # Decide whether to use CPU RAM offload or disk streaming for offloaded blocks.
-    total_offload_bytes = sum(
-        p.numel() * p.element_size() for block in offload_blocks for p in block.parameters() if not p.is_meta
-    )
-    try:
-        with open("/proc/meminfo") as f:
-            free_ram_bytes = next(int(line.split()[1]) * 1024 for line in f if line.startswith("MemAvailable:"))
-    except Exception:
-        free_ram_bytes = 0
-    use_cpu_ram = total_offload_bytes > 0 and free_ram_bytes >= total_offload_bytes
+        # Blocks are looked up by module path; a checkpoint keyed differently (e.g. a
+        # multimodal one saved by an older transformers) would load zero tensors per block.
+        block_prefix = f"{self.layers_path}."
+        if not any(key.startswith(block_prefix) for key in weight_map):
+            sample = ", ".join(sorted({key.rsplit(".", 1)[0] for key in list(weight_map)[:64]})[:3])
+            raise NotImplementedError(
+                f"No key in {index_path} starts with {block_prefix!r} (checkpoint uses e.g. {sample}), "
+                "so every block would load zero tensors. Free up RAM to use the CPU RAM backend."
+            )
+        return weight_map
 
-    logger.info(
-        "lazy_loader: %d/%d blocks GPU-resident; %d blocks offloaded (%.1f GB) → %s (free RAM %.1f GB)",
-        n_gpu_blocks,
-        n_blocks,
-        n_blocks - n_gpu_blocks,
-        total_offload_bytes / 1e9,
-        "CPU RAM" if use_cpu_ram else "disk",
-        free_ram_bytes / 1e9,
-    )
+    def _make_block_resident(self, block: nn.Module) -> None:
+        """Move a block to the target device once, with no swap hooks."""
+        for mod in block.modules():
+            for pname, param in list(mod._parameters.items()):
+                if param is not None and not param.is_meta:
+                    mod._parameters[pname] = nn.Parameter(
+                        param.data.to(self.target_device),
+                        requires_grad=param.requires_grad,
+                    )
+        _reattach_weight_scales(block)
 
-    hook_handles: list[torch.utils.hooks.RemovableHook] = []
-    cpu_caches: list[dict[str, torch.Tensor] | None] = []
+    def _progress_label(self, idx: int, n_blocks: int) -> str:
+        """Build the progress label for one block, counting batches off the first hooked block.
 
-    for idx, block in enumerate(block_container):
-        # ── GPU-resident block: move to device once, no swap hooks ───────────
-        if idx < n_gpu_blocks:
-            for mod in block.modules():
-                for pname, param in list(mod._parameters.items()):
-                    if param is not None and not param.is_meta:
-                        mod._parameters[pname] = nn.Parameter(
-                            param.data.to(target_device),
-                            requires_grad=param.requires_grad,
-                        )
-            _reattach_weight_scales(block)
-            cpu_caches.append(None)  # sentinel: block is GPU-resident
-            continue
+        :param int idx: Index of the block in the decoder stack.
+        :param int n_blocks: Total number of decoder blocks.
+        :return: ``"3/92"``, or ``"3/92 (batch 2/3)"`` when there is more than one batch.
+        """
+        # GPU-resident blocks are never hooked, so the first hooked block marks a new batch.
+        if idx == self.n_gpu_blocks:
+            self._batch_index += 1
+        label = f"{idx + 1}/{n_blocks}"
+        if self.n_batches > 1:
+            return f"{label} (batch {self._batch_index}/{self.n_batches})"
+        if self.n_batches == 0 and self._batch_index > 1:
+            return f"{label} (batch {self._batch_index})"
+        return label
 
-        # ── Offloaded block: CPU RAM or disk streaming ────────────────────────
+    def _offload_block(self, block: nn.Module, idx: int, n_blocks: int) -> None:
+        """Offload a block and register the hooks that stream it back in around forward."""
         cpu_cache: dict[str, torch.Tensor] | None = None
-
-        if use_cpu_ram:
+        if self.use_cpu_ram:
             # Collect current CPU params into a dict, then offload to meta.
             cpu_cache = {}
             for mod_name, mod in block.named_modules():
@@ -322,84 +429,106 @@ def prepare(
                             torch.empty_like(param, device="meta"),
                             requires_grad=param.requires_grad,
                         )
-            cpu_caches.append(cpu_cache)
+            self.cpu_caches.append(cpu_cache)
         else:
             _offload_block_params_to_meta(block)
+            self.cpu_caches.append(None)
 
-        block_name = f"{layers_path}.{idx}"
         pre_hook, post_hook = _make_forward_hooks(
-            block_name,
-            weight_map,
-            pretrained_model_name_or_path,
-            target_device,
-            state_dict_transform,
+            f"{self.layers_path}.{idx}",
+            self.weight_map,
+            self.model_dir,
+            self.target_device,
+            self.state_dict_transform,
             cpu_cache,
             reattach_scales=_reattach_weight_scales,
+            progress_label=lambda: self._progress_label(idx, n_blocks),
         )
-        hook_handles.append(block.register_forward_pre_hook(pre_hook, with_kwargs=False))
-        hook_handles.append(block.register_forward_hook(post_hook, with_kwargs=False))
+        self.hook_handles.append(block.register_forward_pre_hook(pre_hook, with_kwargs=False))
+        self.hook_handles.append(block.register_forward_hook(post_hook, with_kwargs=False))
 
-    setattr(
+    def finalize(self, target_device: torch.device | str | None = None) -> None:
+        """Remove the hooks and bring every decoder block back onto a real device.
+
+        After this call the model behaves like a normally loaded model.
+
+        :param torch.device | str | None target_device: Where to place the restored blocks.
+            Defaults to the device the loader was streaming onto.
+        """
+        if not self.patched:
+            return
+        if target_device is not None:
+            self.target_device = torch.device(target_device)
+
+        for handle in self.hook_handles:
+            handle.remove()
+        self.hook_handles = []
+
+        logger.info("lazy_loader: finalize — reloading all decoder block weights onto %s …", self.target_device)
+
+        for idx, block in enumerate(self.block_container):
+            if idx < self.n_gpu_blocks:
+                continue  # GPU-resident block: never offloaded
+            if self.use_cpu_ram:
+                cached = self.cpu_caches[idx]
+                if cached is None:
+                    continue
+                _swap_in_params(block, {k: t.to(self.target_device) for k, t in cached.items()})
+            else:
+                block_name = f"{self.layers_path}.{idx}"
+                state_dict = get_module_weight_by_name(
+                    block_name,
+                    weight_map=self.weight_map,
+                    model_dir=self.model_dir,
+                    device="cpu",
+                    strip_prefix=block_name,
+                )
+                if not state_dict:
+                    raise RuntimeError(
+                        f"Per-block finalize could not read any weight for {block_name} from {self.model_dir}. "
+                        "The block would be left on the meta device and exported empty."
+                    )
+                _swap_in_params(block, {k: t.to(self.target_device) for k, t in state_dict.items()})
+            _reattach_weight_scales(block)
+
+        self.patched = False
+        if getattr(self.model, _MODEL_ATTR, None) is self:
+            delattr(self.model, _MODEL_ATTR)
+        logger.info("lazy_loader: finalized — all decoder block weights on %s.", self.target_device)
+
+
+def prepare(
+    model: nn.Module,
+    pretrained_model_name_or_path: str,
+    target_device: torch.device | str = "cuda",
+    decoder_layers_path: str | None = None,
+    state_dict_transform: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None,
+    n_gpu_blocks: int = 0,
+    weights_modified_in_memory: bool = False,
+    n_batches: int = 0,
+) -> PerBlockLazyLoader:
+    """Patch *model* for lazy per-block execution and return the loader that owns it.
+
+    Thin wrapper over :class:`PerBlockLazyLoader`; see it for the parameters and for the
+    backend-selection rules.
+    """
+    return PerBlockLazyLoader(
         model,
-        _MODEL_ATTR,
-        {
-            "hook_handles": hook_handles,
-            "block_container": block_container,
-            "target_device": target_device,
-            "layers_path": layers_path,
-            "weight_map": weight_map,
-            "model_dir": pretrained_model_name_or_path,
-            "cpu_caches": cpu_caches,
-        },
+        pretrained_model_name_or_path,
+        target_device=target_device,
+        decoder_layers_path=decoder_layers_path,
+        state_dict_transform=state_dict_transform,
+        n_gpu_blocks=n_gpu_blocks,
+        weights_modified_in_memory=weights_modified_in_memory,
+        n_batches=n_batches,
     )
 
 
 def finalize(model: nn.Module) -> None:
+    """Finalize the loader attached to *model*, if any. No-op when it was never patched.
+
+    :param nn.Module model: Model previously passed to :func:`prepare`.
     """
-    Remove per-block hooks and move all decoder block weights to the target device.
-
-    After this call the model behaves like a normally loaded model.
-
-    :param nn.Module model: Model previously prepared with :func:`prepare`.
-    """
-    state = getattr(model, _MODEL_ATTR, None)
-    if state is None:
-        return
-
-    for handle in state["hook_handles"]:
-        handle.remove()
-
-    block_container: nn.ModuleList = state["block_container"]
-    target_device: torch.device = state["target_device"]
-    cpu_caches: list[dict[str, torch.Tensor]] = state.get("cpu_caches", [])
-
-    logger.info("lazy_loader: finalize — reloading all decoder block weights onto %s …", target_device)
-
-    if cpu_caches:
-        # RAM offload: move from cpu_cache to GPU.
-        # Entries are None for GPU-resident blocks (already on target_device).
-        for idx, block in enumerate(block_container):
-            if idx < len(cpu_caches) and cpu_caches[idx] is not None:
-                gpu_sd = {k: t.to(target_device) for k, t in cpu_caches[idx].items()}
-                _swap_in_params(block, gpu_sd)
-                _reattach_weight_scales(block)
-    else:
-        # Disk mode: reload from checkpoint.
-        weight_map: dict[str, str] = state["weight_map"]
-        model_dir: str = state["model_dir"]
-        layers_path: str = state["layers_path"]
-        for idx, block in enumerate(block_container):
-            block_name = f"{layers_path}.{idx}"
-            sd = get_module_weight_by_name(
-                block_name,
-                weight_map=weight_map,
-                model_dir=model_dir,
-                device="cpu",
-                strip_prefix=block_name,
-            )
-            if sd:
-                _swap_in_params(block, {k: t.to(target_device) for k, t in sd.items()})
-                _reattach_weight_scales(block)
-
-    delattr(model, _MODEL_ATTR)
-    logger.info("lazy_loader: finalized — all decoder block weights on %s.", target_device)
+    loader: PerBlockLazyLoader | None = getattr(model, _MODEL_ATTR, None)
+    if loader is not None:
+        loader.finalize()

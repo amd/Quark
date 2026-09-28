@@ -256,7 +256,7 @@ def handle_generated_files(build_dir: str, abs_lib_path: str, file_name: str, ex
                     os.rename(original_file_path, abs_lib_path)
                 elif not f.endswith(ext_name):
                     os.remove(original_file_path)
-            except OSError as e:
+            except OSError as e:  # pragma: no cover - requires real filesystem error
                 logger.warning(f"Handling file error: {e}")
 
 

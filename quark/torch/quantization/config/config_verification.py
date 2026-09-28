@@ -21,6 +21,7 @@ QUANTIZED_DTYPES = frozenset(
         Dtype.uint4,
         Dtype.int3,
         Dtype.int2,
+        Dtype.uint2,
         Dtype.fp8_e4m3,
         Dtype.fp8_e5m2,
         Dtype.fp6_e3m2,
@@ -126,7 +127,7 @@ class ConfigVerifier:
 
         """Verify and analyze the quantization configuration."""
         # Process global config
-        if self.config.global_quant_config is not None:
+        if self.config.global_quant_config is not None and self.config.global_quant_config != QLayerConfig():
             self._update_flags(self.config.global_quant_config)
 
         # Process layer type configs

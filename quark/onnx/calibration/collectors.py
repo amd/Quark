@@ -17,7 +17,8 @@ from typing import Any
 import numpy as np
 from joblib import Parallel, delayed  # type: ignore
 from numpy.typing import NDArray
-from onnxruntime.quantization.calibrate import CalibrationDataCollector, HistogramCollector
+from onnx import TensorProto
+from onnxruntime.quantization.calibrate import CalibrationDataCollector, CalibrationMethod, HistogramCollector
 from onnxruntime.quantization.quant_utils import QuantType
 from tqdm import tqdm
 
@@ -152,8 +153,8 @@ class OverridedHistogramCollector(HistogramCollector):  # type: ignore
         """
         Compute percentile-based thresholds for each tensor in the histogram.
 
-        :return: Dictionary mapping tensor names to threshold tuples.
-        :rtype: dict[str, tuple[NDArray]]
+        :return: Dictionary mapping tensor names to ``(rmin, rmax)`` threshold tuples.
+        :rtype: dict[str, tuple[NDArray[Any], NDArray[Any]]]
         """
         if self.percentile < 0 or self.percentile > 100:
             raise ValueError("Invalid percentile. Must be in range 0 <= percentile <= 100.")
@@ -584,6 +585,119 @@ def compute_minmse_from_histogram(
     rmin_mse = np.array((float(qmin) - float(zero_point)) * float(scale_mse), dtype=rmin.dtype)
     rmax_mse = np.array((float(qmax) - float(zero_point)) * float(scale_mse), dtype=rmax.dtype)
     return tensor_name, (rmin_mse, rmax_mse)
+
+
+def compute_lwp_scale_zp(rmin: Any, rmax: Any, q_min: int, q_max: int) -> tuple[float, int]:
+    """Derive the (float) scale and zero-point used by the LayerWisePercentile family
+    to score a candidate percentile range.
+
+    This is the single source of truth for the scale/zp formula shared by both LWP
+    selection paths (the raw-data path via
+    :meth:`LayerWisePercentileCalibrater.cal_one_layer_metric` and the histogram path
+    :func:`compute_lwp_metric_from_histogram`). Keeping it in one place avoids the
+    formula drifting between paths, which would make them select different percentiles
+    for the same tensor.
+
+    The scale/zero-point are computed by the shared :func:`compute_scale_zp` (the same
+    helper used by the final quantizer), so the error LWP scores matches the error the
+    tensor will actually incur once quantized. We call it in asymmetric MinMax mode
+    (``symmetric=False``, ``use_pof2s=False``) to get the plain affine quant step; the
+    symmetry folding, if any, is already baked into the candidate ranges upstream.
+
+    ``compute_scale_zp`` follows the ``r = s(q - z)`` convention and returns ``[z, s]``,
+    whereas the LWP quant/dequant uses ``q = round(x/s) - zp`` (i.e. ``zp = -z``). We
+    flip the sign here so callers keep the ``(scale, zp)`` contract unchanged.
+
+    :param rmin: Range minimum for the candidate (scalar or 0-d array).
+    :param rmax: Range maximum for the candidate (scalar or 0-d array).
+    :param int q_min: Minimum quantized integer value for the activation type.
+    :param int q_max: Maximum quantized integer value for the activation type.
+    :return: ``(scale, zero_point)`` with ``scale`` a float and ``zero_point`` an int.
+    :rtype: tuple[float, int]
+    """
+    rmin_arr = np.asarray(rmin, dtype=np.float32)
+    rmax_arr = np.asarray(rmax, dtype=np.float32)
+    qmin_arr = np.asarray(q_min, dtype=np.int32)
+    qmax_arr = np.asarray(q_max, dtype=np.int32)
+    zero_point, scale = compute_scale_zp(
+        rmin_arr,
+        rmax_arr,
+        qmin_arr,
+        qmax_arr,
+        TensorProto.INT8,
+        CalibrationMethod.MinMax,
+        symmetric=False,
+        use_pof2s=False,
+    )
+    return float(scale), -int(zero_point)
+
+
+def compute_lwp_metric_from_histogram(
+    histogram: tuple[Any, Any, Any, Any],
+    candidate_ranges: list[tuple[Any, Any]],
+    q_min: int,
+    q_max: int,
+    lwp_metric: str = "mae",
+) -> NDArray[Any]:
+    """Compute the LayerWisePercentile selection metric for each candidate percentile
+    range directly from a pre-built histogram, avoiding a second inference pass.
+
+    This mirrors :meth:`LayerWisePercentileCalibrater.cal_one_layer_metric` but works
+    on histogram bin centres weighted by their counts instead of the raw activation
+    samples. The scale/zero-point derivation per candidate is identical to that method,
+    so the count-weighted error over the histogram matches the per-sample error over the
+    raw data, up to bin discretisation. For the symmetric case (the default) the
+    percentile collector builds an *absolute value* histogram (see
+    ``OverridedHistogramCollector.collect_absolute_value``); the symmetric quant/dequant
+    error is an even function of the input, so folding onto the absolute-value histogram
+    is exact. For the asymmetric case ``collect_value`` builds a signed histogram and the
+    same bin-centre computation applies directly.
+
+    :param tuple histogram: ``(hist, hist_edges, ...)`` for one tensor, as stored in
+        ``OverridedHistogramCollector.histogram_dict``. Only the first two entries are
+        used: ``hist`` is the bin counts, ``hist_edges`` the bin edges
+        (len == len(hist) + 1).
+    :param list candidate_ranges: One range entry per percentile candidate, in the same
+        order as the candidates. Each entry is what ``compute_percentile`` produces — a
+        ``(rmin, rmax)`` tuple.
+    :param int q_min: Minimum quantized integer value for the activation type.
+    :param int q_max: Maximum quantized integer value for the activation type.
+    :param str lwp_metric: ``"mae"`` (mean absolute error) or ``"mse"`` (mean squared
+        error). Defaults to ``"mae"``.
+    :return: Array of per-candidate metrics (lower is better), aligned with
+        ``candidate_ranges``.
+    :rtype: NDArray[Any]
+    """
+    hist, hist_edges = histogram[0], histogram[1]
+    hist_f64 = np.asarray(hist, dtype=np.float64)
+    total = hist_f64.sum()
+    if total == 0:
+        # No data fell into this tensor's histogram; report zero error for every
+        # candidate so argmin degenerates to the first (tightest) percentile.
+        return np.zeros(len(candidate_ranges), dtype=np.float64)
+
+    bin_centres = (np.asarray(hist_edges[:-1], dtype=np.float64) + np.asarray(hist_edges[1:], dtype=np.float64)) / 2
+
+    metrics = np.zeros(len(candidate_ranges), dtype=np.float64)
+    for idx, candidate in enumerate(candidate_ranges):
+        rmin, rmax = candidate[0], candidate[1]
+        # Identical scale/zp derivation to cal_one_layer_metric (raw-data path),
+        # via the shared LWP helper so all selection paths stay in lockstep.
+        temp_scale, temp_zp = compute_lwp_scale_zp(rmin, rmax, q_min, q_max)
+
+        q = np.round(bin_centres / temp_scale - temp_zp)
+        q = np.clip(q, q_min, q_max)
+        dq = (q + temp_zp) * temp_scale
+        diff = bin_centres - dq
+
+        if lwp_metric == "mse":
+            metrics[idx] = float(np.sum(hist_f64 * diff * diff) / total)
+        elif lwp_metric == "mae":
+            metrics[idx] = float(np.sum(hist_f64 * np.abs(diff)) / total)
+        else:
+            raise ValueError(f"Unknown lwp_metric {lwp_metric!r}. Expected 'mae' or 'mse'.")
+
+    return metrics
 
 
 class PowOfTwoCollector(CalibrationDataCollector):  # type: ignore

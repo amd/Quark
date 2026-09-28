@@ -16,94 +16,149 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from quark.common.utils.log import ScreenLogger
-from quark.torch.algorithm.utils.module import get_device, get_nested_attr_from_module
+from quark.torch.algorithm.utils.module import get_device, get_layer_idx, get_nested_attr_from_module
 from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
 
 
+class _StopForward(Exception):
+    """Raised by the calibration pre-hook to abort the forward once layer 0's inputs are captured."""
+
+
+def _has_mixed_layer_types(model: nn.Module) -> bool:
+    """Check if the model has mixed layer types.
+    Args:
+        model: The PyTorch neural network module to check.
+    Returns:
+        True if the model has more than one unique layer type, False otherwise.
+    """
+    model_config = getattr(model, "config", None)
+    config = getattr(model_config, "text_config", model_config)
+    layer_types = getattr(config, "layer_types", None)
+    return layer_types is not None and len(set(layer_types)) > 1
+
+
 def cache_model_inps(
     model: nn.Module, modules: nn.ModuleList, samples: DataLoader[torch.Tensor]
 ) -> tuple[nn.ModuleList, dict[str, Any], list[torch.Tensor]]:
+    """Capture calibration input embeddings and forward kwargs.
+
+    For uniform-attention models we hook layer 0 and early-exit the forward as soon as its inputs are
+    captured, replaying that one shared kwargs dict through every layer.
+
+    Models like Gemma2/Gemma3 interleave ``sliding_attention`` and ``full_attention`` layers, which
+    receive a different ``attention_mask`` (sliding vs full causal) and -- for Gemma3 -- a different
+    ``position_embeddings`` (local vs global RoPE table). Replaying layer 0's kwargs through every layer
+    would apply the wrong mask/rotary to layers of the other type. For these we hook *every* layer and run
+    a real full forward *once* to record each layer's own kwargs keyed by layer index under the
+    ``_per_layer_kwargs`` key for replay to resolve.
+
+    Only the *first* sample runs the full forward: per-layer kwargs depend on the input shape/positions,
+    not its values, so same-shaped calibration samples produce identical kwargs (and replay already uses
+    one representative set against every captured input). Subsequent samples early-exit at layer 0 like the
+    uniform path, so a mixed model costs one full forward plus N-1 layer-0-only forwards rather than N.
+    """
+    mixed = _has_mixed_layer_types(model)
     inps: list[torch.Tensor] = []
-    layer_args: list[torch.Tensor | None] = []
     layer_kwargs: dict[str, Any] = {}
+    per_layer_kwargs: dict[int, dict[str, Any]] = {}
+    captured_per_layer = False  # set once the first full forward has recorded every layer's kwargs
+    offloaded_devices: dict[int, torch.device] = {}  # layers pulled on-device for the full forward
 
-    # get input and kwargs to layer 0
-    # with_kwargs is only supported in PyTorch 2.0
-    # use this Catcher hack for now
-    class Catcher(nn.Module):
-        def __init__(
-            self,
-            module: nn.Module,
-            inps: list[torch.Tensor],
-            layer_args: list[torch.Tensor | None],
-            layer_kwargs: dict[str, Any],
-        ) -> None:
-            super().__init__()
-            self.module = module
-            self.inps = inps
-            self.layer_args = layer_args
-            self.layer_kwargs = layer_kwargs
+    def catch_hook(module: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        """Forward pre-hook to capture layer inputs and kwargs for calibration.
+        Captures the input tensors and forward kwargs for each layer during model calibration.
+        Handles device management for offloaded layers and controls forward propagation flow.
+        Args:
+            module: The layer module being hooked.
+            args: Positional arguments passed to the module's forward method.
+            kwargs: Keyword arguments passed to the module's forward method.
+        Side Effects:
+            - Moves offloaded layers to the input device and tracks original device in offloaded_devices.
+            - Captures per-layer kwargs in per_layer_kwargs for mixed-layer models.
+            - Appends layer 0 inputs to inps list.
+            - Updates layer_kwargs with layer 0's forward kwargs.
+            - Raises _StopForward to abort forward pass after layer 0 input capture (conditional).
+        Raises:
+            _StopForward: When layer 0 input is captured and per-layer kwargs are not needed.
+        """
+        # Pull an offloaded layer onto the input's device just before it runs (no-op when already there).
+        # Accelerate-managed layers stay excluded: their hook owns the execution device, so moving
+        # them here just swaps a cuda/cpu mismatch for cuda:N/cuda:M. Callers must therefore not
+        # strand them off-device (see ``AutoSmoothQuantProcessor.init_quant``).
+        hidden = args[0] if args else kwargs["hidden_states"]
+        module_device = get_device(module)
+        if not hasattr(module, "_hf_hook") and module_device != hidden.device:
+            offloaded_devices[id(module)] = module_device
+            module.to(hidden.device)
+        own_kwargs = {k: v for k, v in kwargs.items() if k != "hidden_states"}
+        if len(args) > 1:
+            params = list(inspect.signature(module.forward).parameters)
+            for name, value in zip(params[1 : len(args)], args[1:], strict=True):
+                own_kwargs.setdefault(name, value)
+        if mixed and not captured_per_layer:
+            per_layer_kwargs[get_layer_idx(module)] = own_kwargs
+        if module is modules[0]:
+            inps.append(args[0].detach() if args else kwargs["hidden_states"].detach())
+            layer_kwargs.clear()
+            layer_kwargs.update(own_kwargs)
+            # Per-layer kwargs need one full forward; afterwards (and always for uniform models) only
+            # layer 0's input is needed, so abort the rest of the forward.
+            if not mixed or captured_per_layer:
+                raise _StopForward
+        if mixed and not captured_per_layer and module is modules[-1]:
+            orig_device = offloaded_devices.pop(id(module), None)
+            if orig_device is not None:
+                module.to(orig_device)
+            raise _StopForward
 
-        # in case need module's attribute is explicitly needed
-        def __getattr__(self, name: str) -> Any:
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.module, name)
-
-        def forward(self, *args: torch.Tensor, **kwargs: Any) -> None:
-            # assume first input to forward is hidden states
-            if len(args) > 0:
-                hidden_states = args[0]
-                if len(self.layer_args) == 0:
-                    self.layer_args.extend(
-                        args[1:]
-                    )  # For attention_mask and rotary_pos_emb, the value of the new input is always same, so it is kept once
-            else:
-                first_key = list(kwargs.keys())[0]
-                hidden_states = kwargs.pop(first_key)
-
-            self.inps.append(hidden_states)
-            self.layer_kwargs.update(kwargs)
-            raise ValueError  # early exit to break later inference
-
-        # patch layer 0 to catch input and kwargs
+    def restore_hook(module: nn.Module, args: Any, output: Any) -> None:
+        """Restore offloaded layers to their original device after forward pass.
+        This hook is called after a module's forward pass completes. If the module was
+        temporarily moved to a different device for execution, it is moved back to its
+        original device.
+        Args:
+            module: The module that just completed its forward pass.
+            args: Forward pass arguments (unused).
+            output: Forward pass output (unused).
+        """
+        # Send a just-in-time-loaded layer back to where it came from once its forward is done.
+        orig_device = offloaded_devices.pop(id(module), None)
+        if orig_device is not None:
+            module.to(orig_device)
 
     cur_layer_device = (
         get_device(modules[0])
         if get_device(modules[0]) != torch.device("meta")
         else modules[0]._hf_hook.execution_device
     )
-    required_kwargs = inspect.signature(modules[0].forward).parameters
-    modules[0] = Catcher(modules[0], inps, layer_args, layer_kwargs)
-    logger.info("Caching model inputs for quantization algorithm...")
-    for sample in tqdm(samples, desc="Caching layer inputs"):
-        if isinstance(sample, torch.Tensor):
-            with contextlib.suppress(ValueError):  # work with early exit
-                model(sample.to(cur_layer_device), use_cache=False)
-        else:
-            with contextlib.suppress(ValueError):  # work with early exit
-                model(**{key: val.to(cur_layer_device) for key, val in sample.items()})
-    del samples
-    modules[0] = modules[0].module  # restore
 
+    # Mixed models need every layer's kwargs, so hook all layers and run a full forward; uniform models
+    # only need layer 0 and bail out via _StopForward.
+    hooked = modules if mixed else modules[:1]
+    handles = [m.register_forward_pre_hook(catch_hook, with_kwargs=True) for m in hooked]
+    handles += [m.register_forward_hook(restore_hook) for m in hooked]
+
+    logger.info("Caching model inputs for quantization algorithm...")
+    with torch.no_grad():
+        for sample in tqdm(samples, desc="Caching layer inputs"):
+            with contextlib.suppress(_StopForward):  # full forward only on the first mixed-model sample
+                if isinstance(sample, torch.Tensor):
+                    model(sample.to(cur_layer_device), use_cache=False)
+                else:
+                    model(**{key: val.to(cur_layer_device) for key, val in sample.items()})
+            # After the first mixed-model sample, every layer's kwargs are recorded; later samples
+            # early-exit at layer 0 like the uniform path.
+            captured_per_layer = True
+
+    for h in handles:
+        h.remove()
+    del samples
     clear_memory()
 
-    arg_idx = 0
-
-    for k, v in required_kwargs.items():
-        if k == "hidden_states" or k in layer_kwargs or v.kind == v.VAR_KEYWORD:
-            # `layer_args` here holds the positional arguments from position one, so
-            # `arg_idx` is not incremented here.
-            continue
-        elif arg_idx < len(layer_args):  # pragma: no cover
-            layer_kwargs[k] = layer_args[arg_idx]
-            arg_idx += 1
-        else:
-            break
-
+    if mixed:
+        layer_kwargs["_per_layer_kwargs"] = per_layer_kwargs
     return modules, layer_kwargs, inps
 
 

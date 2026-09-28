@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.distributed._tensor import DTensor, Replicate, distribute_tensor  # type: ignore[attr-defined]
 from tqdm import tqdm
 
-from quark.common.utils.import_utils import is_accelerate_available
+from quark.common.utils.import_utils import is_accelerate_available, is_transformers_available
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.rotation.rotation import RotationProcessor
 from quark.torch.algorithm.rotation.rotation_utils import InputRotationWrapperHadamard, InputRotationWrapperOrthogonal
@@ -50,7 +50,6 @@ from quark.torch.utils import (
     getattr_recursive,
     setattr_recursive,
 )
-from quark.torch.utils.llm import preprocess_for_quantization
 
 if is_accelerate_available():
     from accelerate.utils.modeling import find_tied_parameters, get_state_dict_from_offload, named_module_tensors
@@ -100,9 +99,35 @@ _TOKENIZER_FILENAMES = frozenset(
 )
 
 
+def get_source_name_or_path(model: nn.Module) -> str | None:
+    """Return ``config._name_or_path`` if there is one; a plain ``nn.Module`` has no ``config``."""
+    return getattr(getattr(model, "config", None), "_name_or_path", None)
+
+
+def resolve_checkpoint_dir(name_or_path: str) -> Path:
+    """Turn a ``_name_or_path`` into the directory holding that checkpoint.
+
+    A local directory is used as-is; anything else is looked up as a model ID in the transformers
+    cache. Failure raises rather than returning ``None``, leaving the policy to each caller.
+    """
+    source_model_dir = Path(name_or_path)
+    if source_model_dir.is_dir():
+        return source_model_dir
+
+    if not is_transformers_available():
+        raise ImportError(
+            f"Resolving the model ID {name_or_path!r} to a local directory requires transformers, "
+            "which is not installed."
+        )
+
+    from transformers.utils import cached_file  # type: ignore[attr-defined]
+
+    return Path(cached_file(name_or_path, "config.json", local_files_only=True)).parent
+
+
 def restore_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> list[str]:
     """
-    Restore auxiliary files that exist in the source model directory but are missing from an
+    Restore auxiliary files that exist in the source model snapshot but are missing from an
     export directory (e.g. ``preprocessor_config.json``, ``LICENSE``).
 
     Tokenizer files (``tokenizer.json``, ``tokenizer_config.json``, etc.) are always
@@ -113,8 +138,8 @@ def restore_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> list[s
     Restoring auxiliary files is best-effort: any error is logged as a warning and never
     propagated, so it can never fail an otherwise-successful export.
 
-    :param Union[str, Path, None] src_dir: Source model directory to copy files from.
-        If ``None``, not an existing directory, or equal to ``dst_dir``, nothing is copied.
+    :param Union[str, Path, None] src_dir: Source model directory or cached Hugging Face model
+        ID to copy files from. If ``None``, unavailable, or equal to ``dst_dir``, nothing is copied.
     :param Union[str, Path] dst_dir: Export directory to restore files into.
 
     :return: List of file names that were copied.
@@ -122,8 +147,16 @@ def restore_aux_files(src_dir: str | Path | None, dst_dir: str | Path) -> list[s
     if not src_dir:
         return []
     src = Path(src_dir)
+    if not src.is_dir():
+        try:
+            from transformers.utils import cached_file  # type: ignore[attr-defined]
+
+            local_config = cached_file(str(src_dir), "config.json", local_files_only=True)
+            src = Path(local_config).parent
+        except Exception:
+            return []
     dst = Path(dst_dir)
-    if not src.is_dir() or src.resolve() == dst.resolve():
+    if src.resolve() == dst.resolve():
         return []
 
     restored: list[str] = []
@@ -183,7 +216,12 @@ def preprocess_import_info(
             if fnmatch.fnmatch(layer_name, "*.k_scale"):
                 prefix = layer_name.split("k_scale")[0]
                 for k_v_name in kv_layers_name:
-                    full_scale_name = prefix + k_v_name.split("*")[-1] + ".output_scale"
+                    # `k_v_name` is a fnmatch pattern such as "*k_proj" or "*self_attn.k_proj". We only
+                    # need the leaf module name (the last path segment) to append to the checkpoint
+                    # prefix; splitting on "*" instead would keep multi-segment patterns intact and
+                    # duplicate part of the prefix (e.g. "...self_attn.self_attn.k_proj.output_scale").
+                    leaf_module_name = k_v_name.rsplit(".", 1)[-1].lstrip("*")
+                    full_scale_name = prefix + leaf_module_name + ".output_scale"
                     model_state_dict[full_scale_name] = model_state_dict[layer_name]
                 del model_state_dict[layer_name]
                 del model_state_dict[prefix + "v_scale"]
@@ -318,7 +356,8 @@ def _route_prequantized_layers(
 
         native_config = convert_prequantized_module_to_quark_config(module)
         if native_config is None or not _quant_tensor_configs_match(native_config.weight, layer_config.weight):
-            dequant_linear = dequantize_prequantized_to_linear(module, dtype=model_dtype)
+            # Requantize from fp32 to avoid double rounding.
+            dequant_linear = dequantize_prequantized_to_linear(module, dtype=torch.float32)
             setattr_recursive(model, name, dequant_linear)
             converted += 1
             del module
@@ -382,6 +421,9 @@ def _build_quantized_model(
 
     # TODO: doing this here, frankly I don't like. We need in the future to have a proper better solution.
     # reload=True: remove `gate_up_proj` in any case, and do not modify the router.
+    # Imported here because ``quark.torch.utils.llm`` imports this module in turn.
+    from quark.torch.utils.llm import preprocess_for_quantization
+
     preprocess_for_quantization(model, reload=True)
     model_dtype = getattr(getattr(model, "config", None), "torch_dtype", None)
     prequant_converted_count, prequant_preserved_count = _route_prequantized_layers(

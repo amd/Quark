@@ -29,7 +29,7 @@ def create_tmp_dir(prefix: str) -> tempfile.TemporaryDirectory[str]:
             # Add this line to valid the provided path, and create a such dir just in case if the use forgets to do so
             os.makedirs(abs_path, exist_ok=True)
             cache_dir = tempfile.TemporaryDirectory(prefix=prefix, dir=abs_path, ignore_cleanup_errors=True)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires real filesystem error
             logger.warning(
                 f"Fall back to your system tmp directory because failed to locate your specified tmp directory {TMP_DIR}, due to {e}."
             )
@@ -78,7 +78,7 @@ def get_memory_usage() -> float:
         )  # Available memory in KB
         used_memory = total_memory - available_memory  # Used memory in KB
         memory_usage = (used_memory / total_memory) * 100  # Percentage usage
-    else:
+    else:  # pragma: no cover - non-Linux/Windows platform
         memory_usage = 0.0
         logger.warning(f"{system_platform} is not supported! Only Linux and Windows platform are supported now.")
 

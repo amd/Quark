@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from quark.common.utils.log import ScreenLogger
-from quark.torch.algorithm.utils.module import get_device, get_dtype, move_to_device
+from quark.torch.algorithm.utils.module import get_device, get_dtype, move_to_device, resolve_per_layer_kwargs
 from quark.torch.algorithm.utils.utils import TensorData, clear_memory
 
 logger = ScreenLogger(__name__)
@@ -65,6 +65,8 @@ def block_forward(
     if get_device(layer) != torch.device("meta"):
         layer = move_to_device(layer, device)
 
+    module_kwargs = resolve_per_layer_kwargs(layer, module_kwargs)
+
     assert not isinstance(layer_inputs, torch.Tensor)
     for j in range(num_batches):
         layer_input = move_to_device(layer_inputs[j], device)
@@ -91,6 +93,7 @@ def blockwise_training(
     max_grad_norm: float,
     layer_index: int,
 ) -> None:
+    module_kwargs = resolve_per_layer_kwargs(layer, module_kwargs)  # pragma: no cover
     criterion = nn.MSELoss()
 
     num_update_steps_per_epoch = max(len(layer_inputs), 1)
@@ -162,6 +165,7 @@ def blockwise_eval(
     criterion: nn.Module,
     device: torch.device,
 ) -> float:
+    module_kwargs = resolve_per_layer_kwargs(layer, module_kwargs)  # pragma: no cover
     ret_loss = 0.0
     with torch.no_grad():
         layer.eval()

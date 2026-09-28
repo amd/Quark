@@ -27,7 +27,9 @@ from quark.torch.export.nn.modules.quark_linear_base import QuarkLinearBase
 from quark.torch.export.nn.modules.realquantizer import SequentialRealQuantizer
 from quark.torch.kernel.aiter import is_aiter_available
 from quark.torch.quantization.config.type import Dtype, QSchemeType
-from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+    _QParamsLinearBridge,
+)
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 
 logger = ScreenLogger(__name__)
@@ -48,6 +50,8 @@ class NativeInferenceMode(Enum):
 
     FP8_PER_TENSOR = auto()
     MXFP4 = auto()
+    FLYDSL_A8W4 = auto()
+    FLYDSL_SVDQUANT = auto()
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +295,9 @@ def _require_aiter() -> None:
         )
 
 
-def _resolve_qspec_from_source(source: nn.Linear) -> tuple[Dtype, QSchemeType, int | None]:
+def _resolve_qspec_from_source(
+    source: nn.Linear,
+) -> tuple[Dtype, QSchemeType, int | None]:
     if isinstance(source, QParamsLinear):
         wq = source.weight_quantizer
         if wq is None:

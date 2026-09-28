@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_joint_tuning.optim.amp import NativeScalerWithGradNormCount
-from quark.torch.algorithm.utils.module import get_device, move_to_device
+from quark.torch.algorithm.utils.module import get_device, move_to_device, resolve_per_layer_kwargs
 from quark.torch.algorithm.utils.utils import clear_memory
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -95,6 +95,7 @@ def _align_attention_mask_for_input(attention_mask: Any, input_tensor: torch.Ten
 def _build_layer_forward_kwargs(
     layer: nn.Module, module_kwargs: dict[str, Any], input_tensor: torch.Tensor, device: torch.device
 ) -> dict[str, Any]:
+    module_kwargs = resolve_per_layer_kwargs(layer, module_kwargs)
     params = inspect.signature(layer.forward).parameters
     accepts_var_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
     filtered_kwargs: dict[str, Any] = {}

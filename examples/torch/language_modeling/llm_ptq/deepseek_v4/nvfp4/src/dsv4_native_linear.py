@@ -19,14 +19,14 @@ on CPU (the model is far larger than one GPU). This module provides:
   scalar-placeholder ``nn.Linear`` proxy to Quark and dequantizes its stored
   weight to BF16 only transiently inside ``forward`` (keeping GPU memory near-zero
   for inactive blocks).
-* :func:`wrap_native_linears` — replace the MoE expert linears (routed + shared)
-  with :class:`NativeLinear`.
+* :func:`wrap_native_linears` — replace every non-excluded linear with
+  :class:`NativeLinear`.
 """
 
 from __future__ import annotations
 
 import json
-import re as _re
+from fnmatch import fnmatch
 from pathlib import Path
 
 import torch
@@ -290,31 +290,26 @@ class NativeLinear(nn.Module):
         return out
 
 
-# Wrap both routed experts (ffn.experts.<n>.w{1,2,3}, FP4 native) AND the
-# shared expert (ffn.shared_experts.w{1,2,3}, FP8 native), so we collect input
-# stats for both.
-_ROUTED_EXPERT_WRAP_RE = _re.compile(r"\.ffn\.(?:experts\.\d+|shared_experts)\.w[123]$")
+def wrap_native_linears(model: nn.Module, exclude_layers: list[str] | None = None) -> int:
+    """Replace DeepSeek-V4 linears with NativeLinear so Quark can calibrate them.
 
-
-def wrap_native_linears(model: nn.Module) -> int:
-    """Replace MoE expert linears (w1/w2/w3) with NativeLinear.
-
-    Matches both routed experts (ffn.experts.<n>.w{1,2,3}) and the shared
-    expert (ffn.shared_experts.w{1,2,3}).  Other linears (attention, gate,
-    lm_head) keep their original DS-V4 ``Linear`` class (which inherits
-    ``nn.Module``, not ``nn.Linear``).  Quark only sees ``nn.Linear``
-    subclasses, so only the wrapped proxies become QuantLinear — no exclude
-    list needed.
+    A candidate is any module of class ``Linear`` / ``ColumnParallelLinear`` /
+    ``RowParallelLinear`` carrying a real weight; candidates whose name matches an
+    ``exclude_layers`` fnmatch pattern are left in their original FP4/FP8 format, the rest
+    are wrapped. This is exclude-only like Stage 1, so passing the SAME ``exclude_layers``
+    to both stages keeps weight quantization and input_scale calibration on the same
+    modules.
     """
     _target_class_names = {"Linear", "ColumnParallelLinear", "RowParallelLinear"}
+    exclude_layers = exclude_layers or []
     count = 0
 
     for parent_name, parent_mod in list(model.named_modules()):
         for child_name, child_mod in list(parent_mod.named_children()):
             full_name = f"{parent_name}.{child_name}" if parent_name else child_name
-            if not _ROUTED_EXPERT_WRAP_RE.search(full_name):
-                continue
             if type(child_mod).__name__ not in _target_class_names:
+                continue
+            if any(fnmatch(full_name, pat) for pat in exclude_layers):
                 continue
             w_param = child_mod._parameters.get("weight")
             if w_param is None or w_param.is_meta:

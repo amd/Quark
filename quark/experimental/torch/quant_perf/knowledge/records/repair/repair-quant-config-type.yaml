@@ -1,0 +1,24 @@
+schema_version: 1
+id: repair.quark.quant-config-structural-branch.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - quark variant takes the wrong load-time code path
+    - keyerror on a nested module prefix
+  keywords: [QuarkConfig, isinstance, quant_config, prefix, multimodal]
+summary: A structural loader branch may omit QuarkConfig and select the wrong model prefix or fused mapping.
+guidance:
+  - Add QuarkConfig only to branches making structural model decisions.
+  - Do not add QuarkConfig to a format-specific transform without proving format compatibility.
+required_checks: [load, inference, accuracy]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/quark-inference-engine-debug-tips/entries/quark-missing-from-quant-config-isinstance-check.md
+  sha256: 0fd21c728064ec4cc16a7825d089f6d555697bc0627931be60c1110756b7b655

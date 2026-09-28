@@ -1,0 +1,25 @@
+schema_version: 1
+id: repair.vllm.quark.merged-column-scale-broadcast.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [accuracy_gap]
+  keywords: [linear_attn, in_proj_qkv, weight_loader_v2, finfo]
+summary: A fused per-tensor weight scale must be broadcast to every covered merged-column shard.
+guidance:
+  - Identify tuple shard IDs that span multiple output partitions.
+  - Copy the one per-tensor scale into every covered scale slot.
+  - Do not leave uncovered slots at the finfo minimum sentinel.
+  - Re-run the original real quantized accuracy gate.
+required_checks: [load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: real_quantized_accuracy
+provenance:
+  kind: curated_migration
+  source: legacy_repair_experience
+  framework_version: releases/v0.19.1
+  migrated_at: "2026-08-14"

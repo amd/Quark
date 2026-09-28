@@ -8,6 +8,7 @@ import ast
 import importlib
 import inspect
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -31,6 +32,12 @@ _BROAD_EQ_IGNORED_EXPERTS = {
     # Excluded per request.
     ("transformers.models.qwen3_moe.modeling_qwen3_moe", "Qwen3MoeExperts"),
     ("transformers.models.llama4.modeling_llama4", "Llama4TextExperts"),
+    # From transformers 5.4 the `@strict` Ernie4_5_VLMoeTextConfig types `moe_intermediate_size` as
+    # list[int],
+    # so it cannot be shrunk to a scalar; the experts class then calls `torch.empty(<list>)` and raises
+    # `TypeError: type must be tuple of ints, but got list`. The config is fundamentally incompatible
+    # with the broad shrink-and-compare harness, so exclude it.
+    ("transformers.models.ernie4_5_vl_moe.modeling_ernie4_5_vl_moe", "Ernie4_5_VLMoeMoeExperts"),
 }
 
 
@@ -310,18 +317,14 @@ class TestQuarkExpertsBranchCoverage:
         assert not hasattr(nongated_hf_experts, "up_proj")
         assert not hasattr(nongated_hf_experts, "down_proj")
 
-    def test_forward_skips_sentinel_expert_index(self, monkeypatch):
+    def test_forward_skips_sentinel_expert_index(self):
         quark = QuarkExperts(self._DummyNonGatedHFExperts())
-        original_one_hot = torch.nn.functional.one_hot
-
-        def _one_hot_with_sentinel(index: torch.Tensor, num_classes: int = -1):
-            one_hot = original_one_hot(index, num_classes + 1)
-            one_hot[..., num_classes] = 1
-            return one_hot
-
-        monkeypatch.setattr(torch.nn.functional, "one_hot", _one_hot_with_sentinel)
         hidden_states = torch.randn(4, 3)
-        top_k_index = torch.zeros((4, 1), dtype=torch.long)
+        # Expert-parallel routing marks unused slots with the sentinel id `num_experts`,
+        # which has no expert module behind it. `forward` allocates the extra one-hot
+        # column for it (`num_classes=num_experts + 1`) and skips the slot.
+        top_k_index = torch.full((4, 1), quark.num_experts, dtype=torch.long)
+        top_k_index[::2] = 0
         top_k_weights = torch.ones((4, 1), dtype=hidden_states.dtype)
         out = quark(hidden_states, top_k_index, top_k_weights)
         assert out.shape == hidden_states.shape
@@ -397,6 +400,38 @@ class TestQuarkQwen3MoeTopKRouter:
         score_sums = router_scores.sum(dim=-1)
         torch.testing.assert_close(score_sums, torch.ones_like(score_sums), rtol=1e-5, atol=1e-5)
 
+    def test_pre_5_6_contract_returns_softmax_probabilities(self, monkeypatch):
+        """Before transformers 5.6.0 the first element is the float32 softmax, not the raw logits.
+
+        CI only exercises the post-5.6 contract, but `pyproject.toml` still admits older transformers>5
+        releases, where returning raw logits would silently disagree with the module being replaced.
+        """
+        from transformers import Qwen3MoeConfig
+        from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeTopKRouter
+
+        from quark.torch.utils.llm.module_replacement import quark_experts
+
+        hidden_dim, num_experts, top_k = 8, 4, 2
+        router = (
+            Qwen3MoeTopKRouter(
+                Qwen3MoeConfig(hidden_size=hidden_dim, num_experts=num_experts, num_experts_per_tok=top_k)
+            )
+            .to(torch_device)
+            .eval()
+        )
+        quark_router = quark_experts.QuarkQwen3MoeTopKRouter.from_hf(router)
+        hidden_states = torch.randn(3, hidden_dim, device=torch_device, dtype=router.weight.dtype)
+
+        monkeypatch.setattr(quark_experts, "_QWEN3_ROUTER_RETURNS_RAW_LOGITS", False)
+        with torch.no_grad():
+            first, router_scores, _ = quark_router(hidden_states)
+            router_logits = nn.Linear.forward(quark_router, hidden_states)
+            expected = torch.nn.functional.softmax(router_logits, dtype=torch.float, dim=-1)
+
+        assert first.dtype == torch.float32
+        assert router_scores.dtype == torch.float32
+        torch.testing.assert_close(first, expected, rtol=1e-5, atol=1e-5)
+
 
 @pytest.mark.skipif(
     not is_transformers_available() or not is_transformers_version_higher_or_equal("5.0.0"),
@@ -440,7 +475,7 @@ class TestQuarkGptOssTopKRouter:
         torch.testing.assert_close(quark_indices, hf_indices)
         torch.testing.assert_close(quark_scores_dense, hf_scores_topk, rtol=1e-5, atol=1e-5)
 
-    def test_weight_and_bias_properties_proxy_linear_parameters(self):
+    def test_is_linear_with_direct_parameters(self):
         from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
 
         router = QuarkGptOssTopKRouter(
@@ -450,8 +485,10 @@ class TestQuarkGptOssTopKRouter:
             device=torch.device("cpu"),
             dtype=torch.float32,
         )
-        assert router.weight is router.linear.weight
-        assert router.bias is router.linear.bias
+        assert isinstance(router, nn.Linear)
+        assert router.weight.shape == (4, 8)
+        assert router.bias is not None
+        assert router.bias.shape == (4,)
 
     def test_state_dict_uses_prefix_and_destination(self):
         from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
@@ -473,16 +510,11 @@ class TestQuarkGptOssTopKRouter:
         assert "router.bias" in state
         assert "weight" not in state
         assert "bias" not in state
-        torch.testing.assert_close(state["router.weight"], router.linear.weight)
-        torch.testing.assert_close(state["router.bias"], router.linear.bias)
+        torch.testing.assert_close(state["router.weight"], router.weight)
+        torch.testing.assert_close(state["router.bias"], router.bias)
 
-    def test_load_state_dict_loads_legacy_flat_keys(self):
-        """A flat (no '.linear.') checkpoint loads via the public load_state_dict path.
-
-        The router exposes its inner linear's params as '<prefix>weight'/'<prefix>bias'
-        in state_dict(); load_state_dict must accept the same naming and route it
-        to self.linear correctly, with strict=True passing.
-        """
+    def test_load_state_dict_loads_direct_keys(self):
+        """The router accepts the upstream direct weight and bias keys strictly."""
         from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
 
         class Parent(nn.Module):
@@ -497,18 +529,18 @@ class TestQuarkGptOssTopKRouter:
                 )
 
         dst = Parent()
-        expected_weight = torch.randn_like(dst.router.linear.weight)
-        expected_bias = torch.randn_like(dst.router.linear.bias)
-        legacy_state_dict = {
+        expected_weight = torch.randn_like(dst.router.weight)
+        expected_bias = torch.randn_like(dst.router.bias)
+        state_dict = {
             "router.weight": expected_weight.clone(),
             "router.bias": expected_bias.clone(),
         }
 
-        result = dst.load_state_dict(legacy_state_dict, strict=True)
+        result = dst.load_state_dict(state_dict, strict=True)
         assert result.missing_keys == []
         assert result.unexpected_keys == []
-        torch.testing.assert_close(dst.router.linear.weight, expected_weight)
-        torch.testing.assert_close(dst.router.linear.bias, expected_bias)
+        torch.testing.assert_close(dst.router.weight, expected_weight)
+        torch.testing.assert_close(dst.router.bias, expected_bias)
 
     def test_full_model_load_state_dict_strict_round_trip(self):
         """Strict round-trip via the real model.load_state_dict path.
@@ -532,15 +564,11 @@ class TestQuarkGptOssTopKRouter:
                     device=torch.device("cpu"),
                     dtype=torch.float32,
                 )
-                # Sibling submodule at the same prefix level -- ensures the
-                # loader's prefix recursion still works after the rewrite hook.
                 self.sibling = nn.Linear(8, 8, bias=True)
 
         src = Parent()
         dst = Parent()
 
-        # Sanity check the exported keys use the legacy (no ".linear.") naming
-        # for the router but normal naming for the sibling.
         state_dict = src.state_dict()
         assert "gate.weight" in state_dict
         assert "gate.bias" in state_dict
@@ -553,156 +581,16 @@ class TestQuarkGptOssTopKRouter:
         with torch.no_grad():
             for p in dst.parameters():
                 p.add_(1.0)
-        assert not torch.equal(dst.gate.linear.weight, src.gate.linear.weight)
+        assert not torch.equal(dst.gate.weight, src.gate.weight)
 
         result = dst.load_state_dict(state_dict, strict=True)
         assert result.missing_keys == []
         assert result.unexpected_keys == []
 
-        torch.testing.assert_close(dst.gate.linear.weight, src.gate.linear.weight)
-        torch.testing.assert_close(dst.gate.linear.bias, src.gate.linear.bias)
+        torch.testing.assert_close(dst.gate.weight, src.gate.weight)
+        torch.testing.assert_close(dst.gate.bias, src.gate.bias)
         torch.testing.assert_close(dst.sibling.weight, src.sibling.weight)
         torch.testing.assert_close(dst.sibling.bias, src.sibling.bias)
-
-    def test_full_model_load_state_dict_strict_with_linear_subtree(self):
-        """Strict load when self.linear has its own submodule (e.g. a quantizer).
-
-        After Quark patches the router's linear with a quantized linear, the
-        linear gains submodules with their own parameters (weight_quantizer.scale,
-        weight_quantizer.zero_point, ...) but the exported state_dict still drops
-        the ".linear." segment for everything in the subtree. The fix must
-        rewrite ALL keys at the router's prefix (not just weight/bias) so that
-        PyTorch's recursion into self.linear.weight_quantizer also resolves.
-        """
-        from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
-
-        class FakeWeightQuantizer(nn.Module):
-            def __init__(self, num_experts: int) -> None:
-                super().__init__()
-                self.scale = nn.Parameter(torch.rand(num_experts))
-                self.zero_point = nn.Parameter(torch.randn(num_experts))
-
-        class FakeQuantizedLinear(nn.Linear):
-            def __init__(self, in_features: int, out_features: int) -> None:
-                super().__init__(in_features, out_features, bias=True)
-                self.weight_quantizer = FakeWeightQuantizer(out_features)
-
-        class Parent(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.gate = QuarkGptOssTopKRouter(
-                    hidden_dim=8,
-                    num_experts=4,
-                    top_k=2,
-                    device=torch.device("cpu"),
-                    dtype=torch.float32,
-                )
-                # Patch the inner linear with one that owns a quantizer subtree.
-                self.gate.linear = FakeQuantizedLinear(8, 4)
-                self.sibling = nn.Linear(8, 8, bias=True)
-
-        src = Parent()
-        dst = Parent()
-
-        state_dict = src.state_dict()
-        # The router subtree must be exported in flat (no ".linear.") form for
-        # both the linear params AND the quantizer submodule's params.
-        assert "gate.weight" in state_dict
-        assert "gate.bias" in state_dict
-        assert "gate.weight_quantizer.scale" in state_dict
-        assert "gate.weight_quantizer.zero_point" in state_dict
-        assert "gate.linear.weight" not in state_dict
-        assert "gate.linear.weight_quantizer.scale" not in state_dict
-
-        with torch.no_grad():
-            for p in dst.parameters():
-                p.add_(1.0)
-
-        result = dst.load_state_dict(state_dict, strict=True)
-        assert result.missing_keys == []
-        assert result.unexpected_keys == []
-
-        torch.testing.assert_close(dst.gate.linear.weight, src.gate.linear.weight)
-        torch.testing.assert_close(dst.gate.linear.bias, src.gate.linear.bias)
-        torch.testing.assert_close(
-            dst.gate.linear.weight_quantizer.scale,
-            src.gate.linear.weight_quantizer.scale,
-        )
-        torch.testing.assert_close(
-            dst.gate.linear.weight_quantizer.zero_point,
-            src.gate.linear.weight_quantizer.zero_point,
-        )
-        torch.testing.assert_close(dst.sibling.weight, src.sibling.weight)
-        torch.testing.assert_close(dst.sibling.bias, src.sibling.bias)
-
-    def test_full_model_load_state_dict_accepts_new_naming(self):
-        """A checkpoint that already uses '<prefix>linear.<name>' must still load."""
-        from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
-
-        class Parent(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.gate = QuarkGptOssTopKRouter(
-                    hidden_dim=8,
-                    num_experts=4,
-                    top_k=2,
-                    device=torch.device("cpu"),
-                    dtype=torch.float32,
-                )
-
-        src = Parent()
-        dst = Parent()
-
-        new_style_state_dict = {
-            "gate.linear.weight": src.gate.linear.weight.detach().clone(),
-            "gate.linear.bias": src.gate.linear.bias.detach().clone(),
-        }
-        with torch.no_grad():
-            for p in dst.parameters():
-                p.add_(1.0)
-
-        result = dst.load_state_dict(new_style_state_dict, strict=True)
-        assert result.missing_keys == []
-        assert result.unexpected_keys == []
-        torch.testing.assert_close(dst.gate.linear.weight, src.gate.linear.weight)
-        torch.testing.assert_close(dst.gate.linear.bias, src.gate.linear.bias)
-
-    def test_full_model_load_state_dict_mixed_naming_prefers_new_key(self):
-        """When both '<prefix>X' and '<prefix>linear.X' are present, the new-style
-        key must win and the legacy key must NOT clobber it."""
-        from quark.torch.utils.llm.module_replacement.quark_experts import QuarkGptOssTopKRouter
-
-        class Parent(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.gate = QuarkGptOssTopKRouter(
-                    hidden_dim=8,
-                    num_experts=4,
-                    top_k=2,
-                    device=torch.device("cpu"),
-                    dtype=torch.float32,
-                )
-
-        dst = Parent()
-        new_weight = torch.randn_like(dst.gate.linear.weight)
-        new_bias = torch.randn_like(dst.gate.linear.bias)
-        legacy_weight = torch.randn_like(dst.gate.linear.weight)
-        legacy_bias = torch.randn_like(dst.gate.linear.bias)
-        # Both naming styles in the same checkpoint; new-style should win.
-        mixed_state_dict = {
-            "gate.linear.weight": new_weight.clone(),
-            "gate.linear.bias": new_bias.clone(),
-            "gate.weight": legacy_weight.clone(),
-            "gate.bias": legacy_bias.clone(),
-        }
-
-        # strict=False because the legacy keys are intentionally left over and
-        # will be reported as unexpected.
-        result = dst.load_state_dict(mixed_state_dict, strict=False)
-        assert "gate.weight" in result.unexpected_keys
-        assert "gate.bias" in result.unexpected_keys
-        torch.testing.assert_close(dst.gate.linear.weight, new_weight)
-        torch.testing.assert_close(dst.gate.linear.bias, new_bias)
 
 
 @pytest.mark.skipif(
@@ -759,6 +647,7 @@ class TestQuarkGraniteMoeHybridMoE:
 
     def test_forward_equivalence(self):
         from transformers import AutoModelForCausalLM
+        from transformers.models.granitemoehybrid import modeling_granitemoehybrid as granite_mod
         from transformers.models.granitemoehybrid.configuration_granitemoehybrid import GraniteMoeHybridConfig
         from transformers.models.granitemoehybrid.modeling_granitemoehybrid import GraniteMoeHybridMoE
 
@@ -776,22 +665,59 @@ class TestQuarkGraniteMoeHybridMoE:
             layer_types=["attention"],
         )
         model = AutoModelForCausalLM.from_config(config).to(torch_device).eval()
-        result = _get_hf_module(model, GraniteMoeHybridMoE)
-        assert result is not None, "GraniteMoeHybridMoE not found in model"
-        _, hf_moe = result
-
-        quark_moe = PREPROCESS_REGISTRY[GraniteMoeHybridMoE].from_hf(hf_moe)
-        dtype = next(hf_moe.parameters()).dtype
         torch.manual_seed(42)
         batch, seq, hidden = 2, 4, config.hidden_size
-        hidden_states = torch.randn(batch, seq, hidden, device=torch_device, dtype=dtype)
+        hidden_states = torch.randn(batch, seq, hidden, device=torch_device)
 
-        with torch.no_grad():
-            hf_out = hf_moe(hidden_states)
-            quark_out = quark_moe(hidden_states)
+        if hasattr(granite_mod, "GraniteMoeHybridExperts"):
+            # Fused layout (transformers >= 5.13): GraniteMoeHybridMoE = router + a decorated
+            # GraniteMoeHybridExperts handled by the generic QuarkExperts (like GPT-OSS). The
+            # whole-MoE replacement is intentionally not registered, so validate the experts path.
+            experts_result = _get_hf_module(model, granite_mod.GraniteMoeHybridExperts)
+            assert experts_result is not None, "GraniteMoeHybridExperts not found in model"
+            _, hf_experts = experts_result
+            router_result = _get_hf_module(model, granite_mod.GraniteMoeHybridTopKRouter)
+            assert router_result is not None, "GraniteMoeHybridTopKRouter not found in model"
+            _, hf_router = router_result
 
-        hf_hidden = hf_out[0] if isinstance(hf_out, tuple) else hf_out
-        torch.testing.assert_close(quark_out, hf_hidden, rtol=1e-4, atol=1e-4)
+            dtype = next(hf_experts.parameters()).dtype
+            hidden_states_flat = hidden_states.reshape(-1, hidden).to(dtype)
+            with torch.no_grad():
+                # GraniteMoeHybridTopKRouter returns (top_k_index, top_k_weights, router_logits).
+                top_k_index, top_k_weights, _ = hf_router(hidden_states_flat)
+                hf_out = hf_experts(hidden_states_flat, top_k_index, top_k_weights)
+                quark_experts = QuarkExperts(hf_experts)
+                quark_out = quark_experts(hidden_states_flat, top_k_index, top_k_weights)
+            torch.testing.assert_close(quark_out, hf_out, rtol=1e-4, atol=1e-4)
+        else:
+            # Legacy layout: whole-module replacement is registered.
+            result = _get_hf_module(model, GraniteMoeHybridMoE)
+            assert result is not None, "GraniteMoeHybridMoE not found in model"
+            _, hf_moe = result
+
+            quark_moe = PREPROCESS_REGISTRY[GraniteMoeHybridMoE].from_hf(hf_moe)
+            dtype = next(hf_moe.parameters()).dtype
+            hidden_states = hidden_states.to(dtype)
+
+            with torch.no_grad():
+                hf_out = hf_moe(hidden_states)
+                quark_out = quark_moe(hidden_states)
+
+            hf_hidden = hf_out[0] if isinstance(hf_out, tuple) else hf_out
+            torch.testing.assert_close(quark_out, hf_hidden, rtol=1e-4, atol=1e-4)
+
+    def test_whole_moe_replacement_is_registered_only_for_the_legacy_layout(self):
+        """`QuarkGraniteMoeHybridMoE.from_hf` requires `input_linear`, which only the legacy layout has.
+
+        Registering it under the fused layout (transformers >= 5.13) would make
+        `_prepare_for_moe_quant` intercept every `GraniteMoeHybridMoE` and raise on the missing
+        attribute, so the registration has to follow the layout.
+        """
+        from transformers.models.granitemoehybrid import modeling_granitemoehybrid as granite_mod
+        from transformers.models.granitemoehybrid.modeling_granitemoehybrid import GraniteMoeHybridMoE
+
+        uses_fused_experts = hasattr(granite_mod, "GraniteMoeHybridExperts")
+        assert (GraniteMoeHybridMoE in PREPROCESS_REGISTRY) == (not uses_fused_experts)
 
 
 @pytest.mark.skipif(
@@ -1007,8 +933,38 @@ class TestQuarkExpertsBroadEquivalence:
                         queue.append(value)
 
     @staticmethod
+    def _shrink_config_attr(cfg, attr: str, value: int) -> str | None:
+        """Set ``cfg.<attr>`` to ``value``, returning a reason string when it could not be applied.
+
+        From transformers 5.4 many configs are `@strict` dataclasses with narrow field types
+        (e.g. `moe_intermediate_size: list[int] | None`) that reject a plain int, so retry with a
+        shape-preserving list before giving up.
+        """
+        current = getattr(cfg, attr)
+        candidates: list[Any] = [value]
+        if isinstance(current, list) and current:
+            candidates.append([value] * len(current))
+
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            try:
+                setattr(cfg, attr, candidate)
+            except Exception as exc:
+                last_exc = exc
+            else:
+                return None
+        return f"{attr}={value}: {last_exc!r}"
+
+    @staticmethod
     def _prepare_config_for_experts(cfg, module_path: str, _class_name: str):
-        # Keep dimensions small so broad parity testing remains fast and memory-safe.
+        """Shrink ``cfg`` in place so broad parity testing stays fast and memory-safe.
+
+        Returns the config plus the attributes that could not be shrunk. An ignored shrink failure
+        would leave the attribute at its full-size default, still instantiate, and silently run the
+        parity check at model scale, so `_build_experts_instance` rejects an incompletely shrunk
+        config instead of using it.
+        """
+        unshrunk = []
         for attr, value in (
             ("hidden_size", 64),
             ("intermediate_size", 128),
@@ -1016,12 +972,14 @@ class TestQuarkExpertsBroadEquivalence:
             ("n_routed_experts", 8),
             ("num_local_experts", 8),
             ("num_experts", 8),
+            ("num_experts_per_tok", 2),
+            ("num_experts_per_token", 2),
         ):
-            if hasattr(cfg, attr):
-                setattr(cfg, attr, value)
-        for attr, value in (("num_experts_per_tok", 2), ("num_experts_per_token", 2)):
-            if hasattr(cfg, attr):
-                setattr(cfg, attr, value)
+            if not hasattr(cfg, attr):
+                continue
+            reason = TestQuarkExpertsBroadEquivalence._shrink_config_attr(cfg, attr, value)
+            if reason is not None:
+                unshrunk.append(reason)
 
         if module_path == "transformers.models.dots1.modeling_dots1":
             if getattr(cfg, "n_routed_experts", None) is None:
@@ -1029,13 +987,8 @@ class TestQuarkExpertsBroadEquivalence:
             if getattr(cfg, "num_experts_per_tok", None) is None:
                 cfg.num_experts_per_tok = 2
 
-        if module_path == "transformers.models.ernie4_5_vl_moe.modeling_ernie4_5_vl_moe":
-            moe_intermediate_size = getattr(cfg, "moe_intermediate_size", None)
-            if isinstance(moe_intermediate_size, list) and len(moe_intermediate_size) > 0:
-                cfg.moe_intermediate_size = int(moe_intermediate_size[0])
-
         cfg._experts_implementation = "eager"
-        return cfg
+        return cfg, unshrunk
 
     @staticmethod
     def _build_experts_instance(module_path: str, class_name: str):
@@ -1048,7 +1001,10 @@ class TestQuarkExpertsBroadEquivalence:
         errors = []
 
         for cfg in TestQuarkExpertsBroadEquivalence._iter_candidate_configs(module):
-            cfg = TestQuarkExpertsBroadEquivalence._prepare_config_for_experts(cfg, module_path, class_name)
+            cfg, unshrunk = TestQuarkExpertsBroadEquivalence._prepare_config_for_experts(cfg, module_path, class_name)
+            if unshrunk:
+                errors.append(f"{type(cfg).__name__}: config not shrunk ({'; '.join(unshrunk)})")
+                continue
             try:
                 experts = experts_cls(cfg).eval()
                 return experts, cfg
@@ -1107,6 +1063,10 @@ class TestQuarkExpertsBroadEquivalence:
             actual = quark(hidden_states, top_k_index, top_k_weights)
 
             assert expected.shape == actual.shape
-            assert torch.allclose(expected, actual, rtol=1e-5, atol=1e-5), (
+            # QuarkExperts reorders the per-expert reductions relative to the HF eager path, so with
+            # randn-initialised weights and activations reaching O(1e2) magnitudes fp32 non-associativity
+            # produces diffs up to ~1e-4 (e.g. OpenAIPrivacyFilterExperts). A real logic mismatch differs
+            # by whole units, so use the same fp32-friendly tolerance as the fused-module tests above.
+            assert torch.allclose(expected, actual, rtol=1e-4, atol=1e-3), (
                 f"Mismatch for {module_path}:{class_name} max_abs_diff={(expected - actual).abs().max().item():.6e}"
             )

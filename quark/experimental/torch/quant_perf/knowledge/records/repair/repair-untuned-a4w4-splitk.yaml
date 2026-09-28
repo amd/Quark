@@ -1,0 +1,38 @@
+schema_version: 1
+id: repair.aiter.untuned-a4w4-splitk.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+  gpu_type: [mi350x, mi355x]
+match:
+  failure_class: [accuracy_gap, load_run, benchmark_execution]
+  keywords: [aiter, a4w4, mxfp4, split-k, garbage outputs, memory fault]
+summary: Validate untuned A4W4 split-K dispatch against a reference before changing checkpoint packing.
+guidance:
+  - Compare the raw packed weights and scales with the backend's documented reference layout.
+  - Reproduce the exact token, hidden, intermediate, expert, and top-k shape with a Torch reference.
+  - Compare split-K greater than one with split-K zero or one while keeping every other input unchanged.
+  - If only the untuned split-K path fails, use a validated non-split path or a compatible tuned configuration.
+  - Do not modify checkpoint weights, scales, or Quark calibration when the reference layout is already equivalent.
+  - Re-run load, inference, and the original real quantized accuracy gate.
+required_checks: [kernel_reference, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: kernel_reference_and_real_quantized_accuracy
+  validated_case:
+    model_arch: glm_moe_dsa
+    aiter_version: 0.1.13.post1
+    accelerator: gfx950
+    tensor_parallel_size: 8
+    experts: 256
+    hidden_size: 6144
+    intermediate_size_per_rank: 256
+    topk: 8
+    failure: split_k_2_memory_fault
+    result: split_k_0_and_1_matched_reference
+provenance:
+  kind: validated_session
+  source: glm53_quant_perf_recovery
+  validated_at: "2026-09-09"

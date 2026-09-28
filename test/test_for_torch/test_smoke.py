@@ -864,9 +864,6 @@ def test_smoke_prequantized_ppl_comparison(prequant_model_id: str, expected_laye
 
         ppl_requant = _compute_ppl(requant_model, tokenizer, torch_device)
 
-        del requant_model, prequant_model
-        torch.cuda.empty_cache()
-
     # --- Print comparison table ---
     print("\n" + "=" * 78)
     print(f"  {'Model':<50} {'Stage':<20} {'PPL':>6}")

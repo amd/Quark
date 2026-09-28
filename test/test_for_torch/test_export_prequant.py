@@ -175,6 +175,57 @@ def test_model_post_processor_routes_to_preserve_when_keep_flag_set() -> None:
     dequant_mock.assert_not_called()
 
 
+def test_export_cache_reclaim_synchronizes_each_used_cuda_device() -> None:
+    from quark.torch.export.main_export.model_post_process import (
+        _synchronize_devices_before_empty_cache,
+    )
+
+    calls: list[tuple[str, object | None]] = []
+    with (
+        patch.object(torch.cuda, "is_available", return_value=True),
+        patch.object(
+            torch.cuda,
+            "synchronize",
+            side_effect=lambda device: calls.append(("synchronize", device)),
+        ),
+        patch.object(
+            torch.cuda,
+            "empty_cache",
+            side_effect=lambda: calls.append(("empty_cache", None)),
+        ),
+    ):
+        _synchronize_devices_before_empty_cache(
+            {
+                torch.device("cuda:3"),
+                torch.device("cpu"),
+                torch.device("cuda:1"),
+                torch.device("cuda:3"),
+            }
+        )
+
+    assert calls == [
+        ("synchronize", torch.device("cuda:1")),
+        ("synchronize", torch.device("cuda:3")),
+        ("empty_cache", None),
+    ]
+
+
+def test_export_cache_reclaim_is_noop_without_cuda() -> None:
+    from quark.torch.export.main_export.model_post_process import (
+        _synchronize_devices_before_empty_cache,
+    )
+
+    with (
+        patch.object(torch.cuda, "is_available", return_value=False),
+        patch.object(torch.cuda, "synchronize") as synchronize_mock,
+        patch.object(torch.cuda, "empty_cache") as empty_cache_mock,
+    ):
+        _synchronize_devices_before_empty_cache({torch.device("cuda:0")})
+
+    synchronize_mock.assert_not_called()
+    empty_cache_mock.assert_not_called()
+
+
 def test_configs_match_block_size_normalised() -> None:
     """block_size as list vs tuple should still compare equal."""
     a = type("X", (), {})()
@@ -237,7 +288,9 @@ def _run_route(layer_config: object, native_config: object) -> tuple[int, int, o
         patch("quark.torch.export.utils.dequantize_prequantized_to_linear", return_value=replacement) as dequant_mock,
         patch("quark.torch.export.utils.setattr_recursive") as setattr_mock,
     ):
-        converted, preserved = _route_prequantized_layers(model, quantization_config=object(), model_dtype=None)
+        converted, preserved = _route_prequantized_layers(
+            model, quantization_config=object(), model_dtype=torch.bfloat16
+        )
     return converted, preserved, (dequant_mock, setattr_mock, replacement)
 
 
@@ -250,15 +303,15 @@ _PRESERVED = (0, 1)
 
 
 @pytest.mark.parametrize(
-    ("layer_config", "native_config", "expected"),
+    ("layer_config", "native_config", "expected", "expected_dtype"),
     [
-        pytest.param(None, _WeightCfg(object()), _DEQUANTIZED, id="no_layer_config"),
-        pytest.param(_WeightCfg(object()), None, _DEQUANTIZED, id="no_native_config"),
-        pytest.param(_WeightCfg(_FP8), _WeightCfg(_INT8), _DEQUANTIZED, id="config_mismatch"),
-        pytest.param(_WeightCfg(_FP8), _WeightCfg(_FP8), _PRESERVED, id="config_match"),
+        pytest.param(None, _WeightCfg(object()), _DEQUANTIZED, torch.bfloat16, id="no_layer_config"),
+        pytest.param(_WeightCfg(object()), None, _DEQUANTIZED, torch.float32, id="no_native_config"),
+        pytest.param(_WeightCfg(_FP8), _WeightCfg(_INT8), _DEQUANTIZED, torch.float32, id="config_mismatch"),
+        pytest.param(_WeightCfg(_FP8), _WeightCfg(_FP8), _PRESERVED, None, id="config_match"),
     ],
 )
-def test_route_prequantized_layers_branches(layer_config, native_config, expected) -> None:
+def test_route_prequantized_layers_branches(layer_config, native_config, expected, expected_dtype) -> None:
     converted, preserved, (dequant_mock, setattr_mock, replacement) = _run_route(layer_config, native_config)
     assert (converted, preserved) == expected
     if expected == _PRESERVED:
@@ -266,6 +319,7 @@ def test_route_prequantized_layers_branches(layer_config, native_config, expecte
         setattr_mock.assert_not_called()
     else:
         dequant_mock.assert_called_once()
+        assert dequant_mock.call_args.kwargs["dtype"] == expected_dtype
         setattr_mock.assert_called_once()
         assert setattr_mock.call_args.args[1] == "layer0"
         assert setattr_mock.call_args.args[2] is replacement

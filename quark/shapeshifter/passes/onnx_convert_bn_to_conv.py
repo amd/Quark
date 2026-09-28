@@ -78,8 +78,8 @@ class ONNXConvertBNToConvPass(ONNXPass):
             else:
                 multiplier = 1 / np.sqrt(bn_mv + bn_epsilon)
 
-            folded_conv_kernel = multiplier
-            folded_conv_bias = bn_beta + (-bn_mm) * multiplier
+            folded_conv_kernel = multiplier.astype(np.float32)
+            folded_conv_bias = (bn_beta + (-bn_mm) * multiplier).astype(np.float32)
             return folded_conv_kernel, folded_conv_bias
 
         nodes_to_remove: list[NodeProto] = []

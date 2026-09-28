@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "env_context",
+  "description": "Machine-level facts: OS, Python, accelerator, GPU. Owned by quark-env-preflight. Carries no installation actions or user intent.",
+  "type": "object",
+  "required": [
+    "environment",
+    "hardware"
+  ],
+  "properties": {
+    "environment": {
+      "type": "object",
+      "required": [
+        "os",
+        "python",
+        "containerized"
+      ],
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "python": {
+          "type": "string"
+        },
+        "containerized": {
+          "type": "boolean"
+        },
+        "container_runtime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "hardware": {
+      "type": "object",
+      "required": [
+        "accelerator"
+      ],
+      "properties": {
+        "accelerator": {
+          "type": "string",
+          "enum": [
+            "amd-rocm",
+            "nvidia-cuda",
+            "cpu",
+            "unknown"
+          ]
+        },
+        "cuda_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rocm_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gpu_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gpu_arch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_gb": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

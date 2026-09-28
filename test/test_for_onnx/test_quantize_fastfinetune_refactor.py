@@ -17,7 +17,15 @@ from quark.common.utils.testing_utils import (
     assert_outputs_equivalent,
     use_temporary_directory,
 )
-from quark.onnx import AdaRoundConfig, ModelQuantizer, QConfig, QLayerConfig, QuantGranularity, UInt8Spec
+from quark.onnx import (
+    AdaRoundConfig,
+    ModelQuantizer,
+    QConfig,
+    QLayerConfig,
+    QuantGranularity,
+    UInt8Spec,
+)
+from quark.onnx.algorithm import apply_FastFinetune
 from quark.onnx.algorithm.finetuning.create_torch.base_fn_quantizers import BFPQuantizer, MXQuantizer
 from quark.onnx.algorithm.finetuning.create_torch.base_qdq_quantizers import (
     FPQuantizer,
@@ -209,6 +217,46 @@ def tensor_quantize(output_dir, MemOptLevel: int = 0, save_and_restore: str | No
     return output
 
 
+def tensor_quantize_standalone(output_dir):
+    """Quantize first, then call apply_FastFinetune as a separate step."""
+    input_model_path, output_model_path = prepare_model(output_dir)
+    data_reader = prepare_data()
+
+    # Step 1: Quantize without fast finetune.
+    quantizer = ModelQuantizer(QConfig.get_default_config("A8W8"))
+    quantize_static(quantizer, input_model_path, output_model_path, data_reader)
+
+    # Step 2: Build finetuning options from AdaRoundConfig.
+    adaround_config = AdaRoundConfig(
+        learning_rate=0.1,
+        fixed_seed=1705472343,
+        batch_size=1,
+        num_iterations=100,
+        target_op_type=["Conv", "LayerNormalization"],
+        output_qdq=True,
+        mem_opt_level=0,
+        selective_update=True,
+    )
+    finetuning_options = adaround_config.get_options()
+
+    data_reader.rewind()
+    finetuning_data_reader = data_reader
+
+    # Step 3: Call apply_FastFinetune directly on the quantized model.
+    finetuned_model = apply_FastFinetune(
+        input_model_path,
+        output_model_path,
+        finetuning_data_reader,
+        False,
+        finetuning_options,
+    )
+
+    finetuned_model_path = Path(output_dir, "simple_custom_model_finetuned.onnx").as_posix()
+    onnx.save(finetuned_model, finetuned_model_path)
+
+    return infer_quantized_model(finetuned_model_path)
+
+
 class TestTensorQuantize(unittest.TestCase):
     @use_temporary_directory
     def test_quantize_fastfinetune0(self, tmpdir: str):
@@ -314,6 +362,11 @@ class TestTensorQuantize(unittest.TestCase):
             return tensor_quantize(subdir, MemOptLevel=0, save_and_restore=save_and_restore)
 
         out = run_onnx_op_variants(_pipeline)
+        assert_outputs_equivalent(out, output_tensor, atol=1e-1)
+
+    @use_temporary_directory
+    def test_quantize_fastfinetune_standalone(self, tmpdir: str):
+        out = run_onnx_op_variants(lambda: tensor_quantize_standalone(tmpdir))
         assert_outputs_equivalent(out, output_tensor, atol=1e-1)
 
 

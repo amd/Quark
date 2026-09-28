@@ -1,0 +1,25 @@
+schema_version: 1
+id: quantization.qwen35.tp8-mxfp4-flydsl.v1
+domain: quantization
+kind: known_issue
+status: validated
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+  gpu_type: [mi355x]
+  tp: [8]
+match:
+  keywords: [mxfp4_fp8, mxfp4, flydsl, tp8]
+summary: The recorded TP=8 mixed-precision FlyDSL stack failed GSM8K-200 while the corresponding TP=4 stack passed.
+guidance:
+  - Deprioritize only the exact recorded TP=8 stack.
+  - Do not generalize this observation to TP=4, another backend, or another framework/kernel revision.
+  - Always allow current real evaluation to override this history.
+required_checks: [post_export_accuracy]
+evidence:
+  level: E2
+  verdict: breaks
+provenance:
+  kind: curated_migration
+  source: legacy_quant_rules
+  migrated_at: "2026-08-14"

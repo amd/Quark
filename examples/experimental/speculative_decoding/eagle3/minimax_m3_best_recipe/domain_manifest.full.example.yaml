@@ -1,0 +1,46 @@
+# Replace every path and license with a public dataset export or a user-owned
+# JSONL file whose terms permit the intended use. No source weights are encoded.
+version: 1
+seed: 0
+max_samples_per_domain: 1000
+splits:
+  train: 0.98
+  eval: 0.02
+domains:
+  general_instruction:
+    sources:
+      - type: jsonl
+        name: public-general-instruction
+        path: REPLACE_WITH_GENERAL_INSTRUCTION_JSONL
+        license: REPLACE_WITH_LICENSE
+  code:
+    sources:
+      - type: jsonl
+        name: public-code
+        path: REPLACE_WITH_CODE_JSONL
+        license: REPLACE_WITH_LICENSE
+  math_reasoning:
+    sources:
+      - type: jsonl
+        name: public-math-reasoning
+        path: REPLACE_WITH_MATH_JSONL
+        license: REPLACE_WITH_LICENSE
+  question_answering:
+    sources:
+      - type: jsonl
+        name: public-question-answering
+        path: REPLACE_WITH_QA_JSONL
+        license: REPLACE_WITH_LICENSE
+  multilingual:
+    sources:
+      - type: jsonl
+        name: public-multilingual
+        path: REPLACE_WITH_MULTILINGUAL_JSONL
+        license: REPLACE_WITH_LICENSE
+  # Optional domains can be added with the same shape:
+  # long_context:
+  #   sources:
+  #     - type: jsonl
+  #       name: public-long-context
+  #       path: REPLACE_WITH_LONG_CONTEXT_JSONL
+  #       license: REPLACE_WITH_LICENSE

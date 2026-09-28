@@ -30,6 +30,20 @@ from quark.torch.utils import getattr_recursive, setattr_recursive
 logger = ScreenLogger(__name__)
 
 
+def _synchronize_devices_before_empty_cache(devices: set[torch.device]) -> None:
+    """Finish pending work on the supplied CUDA devices before releasing cached memory."""
+    if not torch.cuda.is_available():
+        return
+
+    cuda_devices = sorted(
+        (device for device in devices if device.type == "cuda"),
+        key=lambda device: -1 if device.index is None else device.index,
+    )
+    for device in cuda_devices:
+        torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
+
+
 class ModelPostProcessor:
     def __init__(
         self,
@@ -115,6 +129,7 @@ class ModelPostProcessor:
                 if isinstance(module, QuantLinear)
             ]
             processed_count = 0
+            pending_cuda_devices: set[torch.device] = set()
             for name in tqdm(quantlinear_names, desc="Converting QuantLinear for export", total=len(quantlinear_names)):
                 module = getattr_recursive(self._model, name)
                 if not isinstance(module, QuantLinear):
@@ -128,6 +143,8 @@ class ModelPostProcessor:
                     self.custom_mode,
                     self._config.pack_method,
                 )
+                if export_linear.weight.device.type == "cuda":
+                    pending_cuda_devices.add(export_linear.weight.device)
                 setattr_recursive(self._model, name, export_linear)
                 _release_module_tensors(module)
                 processed_count += 1
@@ -141,11 +158,10 @@ class ModelPostProcessor:
                 # the CUDA allocator.
                 if processed_count % 10 == 0 and torch.cuda.is_available():
                     # gc.collect()
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-            if torch.cuda.is_available():
-                # gc.collect()
-                torch.cuda.empty_cache()
+                    _synchronize_devices_before_empty_cache(pending_cuda_devices)
+                    pending_cuda_devices.clear()
+            # gc.collect()
+            _synchronize_devices_before_empty_cache(pending_cuda_devices)
         elif self._config.weight_format == "fake_quantized":
             logger.info("Fake_quantized: save float_w, scale and zero_point for operators...")
             named_modules = dict(self._model.named_modules(remove_duplicate=False))

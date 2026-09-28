@@ -696,9 +696,9 @@ _CALIB_KEY_TO_LOWER: tuple[tuple[str, str], ...] = (
     ("Percentile", "percentile"),
     ("LWPMetric", "lwp_metric"),
     ("PercentileCandidates", "percentile_candidates"),
+    ("LWPUseHistogram", "lwp_use_histogram"),
     ("MinMSEModePof2Scale", "minmse_mode"),
     ("CalibOptimizeMem", "optimize_mem"),
-    ("CalibOptimizeDisk", "optimize_disk"),
     ("CalibWorkerNum", "worker_num"),
     ("NumBins", "num_bins"),
     ("NumQuantizedBins", "num_quantized_bins"),
@@ -740,6 +740,7 @@ _QCFG_CATEGORIES: tuple[tuple[str, str, tuple[tuple[str, Any, frozenset[str] | N
         "Model simplification, operator fusion (LayerNorm, Gelu, InstanceNorm), BatchNorm folding, "
         "and format/layout conversion steps applied to the graph before quantization begins.",
         (
+            ("ShapeShifterYaml", None, None),
             ("PreprocessYAML", None, None),
             ("SkipPreprocess", False, None),
             ("OptimizeModel", True, None),
@@ -808,7 +809,7 @@ _QCFG_CATEGORIES: tuple[tuple[str, str, tuple[tuple[str, Any, frozenset[str] | N
         "Tunes calibration behaviour: range symmetry, moving-average smoothing, percentile thresholds, "
         "random-data input, per-tensor overrides, parallelism, memory/disk trade-offs, and "
         "save-restore checkpointing. Defaults for CalibTensorRangeSymmetric / Percentile / "
-        "CalibOptimizeMem / CalibOptimizeDisk / PercentileCandidates depend on calibrate_method and "
+        "CalibOptimizeMem / PercentileCandidates depend on calibrate_method and "
         "come from resolve_calibrator_extra_defaults().",
         (
             ("CalibTensorRangeSymmetric", False, None),
@@ -817,6 +818,7 @@ _QCFG_CATEGORIES: tuple[tuple[str, str, tuple[tuple[str, Any, frozenset[str] | N
             ("Percentile", 99.999, None),
             ("LWPMetric", "mae", None),
             ("PercentileCandidates", [99.99, 99.999, 99.99999], None),
+            ("LWPUseHistogram", True, None),
             ("UseRandomData", False, None),
             ("RandomDataReaderInputShape", {}, None),
             ("RandomDataReaderInputDataRange", None, None),
@@ -826,7 +828,6 @@ _QCFG_CATEGORIES: tuple[tuple[str, str, tuple[tuple[str, Any, frozenset[str] | N
             ("CalibDataSize", None, None),
             ("CalibWorkerNum", 1, None),
             ("CalibOptimizeMem", True, None),
-            ("CalibOptimizeDisk", False, None),
             ("NumBins", None, None),
             ("NumQuantizedBins", None, None),
             ("Scenario", None, None),
@@ -1070,7 +1071,7 @@ def print_effective_quantization_summary(
     # the summary categories use; user-supplied PascalCase values win.
     from quark.onnx.calibration.calibrators import resolve_calibrator_extra_defaults
 
-    overlay = resolve_calibrator_extra_defaults(effective_calibrate_method, effective_extra, emit_warnings=False)
+    overlay = resolve_calibrator_extra_defaults(effective_calibrate_method, effective_extra)
     display_extra: dict[str, Any] = dict(effective_extra)
     for pascal_key, lower_key in _CALIB_KEY_TO_LOWER:
         if lower_key in overlay and pascal_key not in display_extra:

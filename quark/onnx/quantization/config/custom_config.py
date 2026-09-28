@@ -15,7 +15,7 @@ from quark.onnx.quantization.quant_utils import ExtendedQuantFormat, ExtendedQua
 from .algorithm import AdaQuantConfig, AdaRoundConfig
 from .config import QConfig
 from .legacy import QuantizationConfig
-from .spec import BFloat16Spec, BFP16Spec, Int8Spec, Int16Spec, QLayerConfig, XInt8Spec
+from .spec import BFloat16Spec, BFP16Spec, Int8Spec, Int16Spec, MXInt8Spec, QLayerConfig, XInt8Spec
 
 DEFAULT_ADAROUND_PARAMS = {
     "DataSize": 1000,
@@ -734,11 +734,11 @@ S16S16_MIXED_S8S8_CONFIG = QuantizationConfig(
         "Percentile": 99.9999,
         "Int32Bias": False,
         "Int16Bias": False,
+        "WeightSymmetric": True,
+        "ActivationSymmetric": False,
         "ForceQuantizeNoInputCheck": True,
         "AutoMixprecision": {
-            "ActTargetQuantType": QuantType.QInt8,
-            "WeightTargetQuantType": QuantType.QInt8,
-            "OutputIndex": 0,
+            "TargetLayerConfig": QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec(), bias=Int8Spec()),
         },
     },
 )
@@ -755,12 +755,9 @@ BF16_MIXED_BFP16_CONFIG = QuantizationConfig(
         "DedicateDQNode": True,
         "CalibDataSize": 1,
         "AutoMixprecision": {
-            "ActTargetQuantType": ExtendedQuantType.QBFP,
-            "WeightTargetQuantType": ExtendedQuantType.QBFP,
+            "TargetLayerConfig": QLayerConfig(input_tensors=BFP16Spec(), weight=BFP16Spec(), bias=BFP16Spec()),
             "DualQuantNodes": True,
-            "OutputIndex": 0,
         },
-        "BFPAttributes": {**DEFAULT_BFP_PARAMS},
     },
 )
 
@@ -777,11 +774,9 @@ BF16_MIXED_BFP16_ADAQUANT_CONFIG = QuantizationConfig(
         "DedicateDQNode": True,
         "CalibDataSize": 1,
         "AutoMixprecision": {
-            "ActTargetQuantType": ExtendedQuantType.QBFP,
-            "WeightTargetQuantType": ExtendedQuantType.QBFP,
-            "OutputIndex": 0,
+            "TargetLayerConfig": QLayerConfig(input_tensors=BFP16Spec(), weight=BFP16Spec(), bias=BFP16Spec()),
+            "DualQuantNodes": True,
         },
-        "BFPAttributes": {**DEFAULT_BFP_PARAMS},
         "FastFinetune": DEFAULT_ADAQUANT_PARAMS,
     },
 )
@@ -798,12 +793,9 @@ BF16_MIXED_MXINT8_CONFIG = QuantizationConfig(
         "DedicateDQNode": True,
         "CalibDataSize": 1,
         "AutoMixprecision": {
-            "ActTargetQuantType": ExtendedQuantType.QMX,
-            "WeightTargetQuantType": ExtendedQuantType.QMX,
+            "TargetLayerConfig": QLayerConfig(input_tensors=MXInt8Spec(), weight=MXInt8Spec(), bias=MXInt8Spec()),
             "DualQuantNodes": True,
-            "OutputIndex": 0,
         },
-        "MXAttributes": {**DEFAULT_MICROSCALING_PARAMS},
     },
 )
 
@@ -820,12 +812,9 @@ BF16_MIXED_MXINT8_ADAQUANT_CONFIG = QuantizationConfig(
         "DedicateDQNode": True,
         "CalibDataSize": 1,
         "AutoMixprecision": {
-            "ActTargetQuantType": ExtendedQuantType.QMX,
-            "WeightTargetQuantType": ExtendedQuantType.QMX,
+            "TargetLayerConfig": QLayerConfig(input_tensors=MXInt8Spec(), weight=MXInt8Spec(), bias=MXInt8Spec()),
             "DualQuantNodes": True,
-            "OutputIndex": 0,
         },
-        "MXAttributes": {**DEFAULT_MICROSCALING_PARAMS},
         "FastFinetune": DEFAULT_ADAQUANT_PARAMS,
     },
 )

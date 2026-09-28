@@ -299,6 +299,10 @@ def is_leaky_relu_node(n: torch.fx.Node) -> bool:
     return n.op == "call_function" and n.target in [ops.aten.leaky_relu.default, ops.aten.leaky_relu_.default]
 
 
+def is_prelu_node(n: torch.fx.Node) -> bool:
+    return n.op == "call_function" and n.target in [ops.aten.prelu.default]
+
+
 def is_mul_node(n: torch.fx.Node) -> bool:
     return n.op == "call_function" and n.target in MUL_OPS
 

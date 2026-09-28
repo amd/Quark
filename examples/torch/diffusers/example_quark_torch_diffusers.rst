@@ -235,6 +235,126 @@ Flux-specific ``pipe_kwargs`` and exclude patterns.
    ).images[0]
    image.save("flux_svdquant_w4a16.png")
 
+Example 5: Wan2.2-TI2V-5B -- FP8 text-to-video
+----------------------------------------------
+
+Wan2.2 is a text-to-video pipeline.  The heavy submodule is
+``pipe.transformer`` (a ``WanTransformer3DModel``); TI2V-5B is
+single-transformer (``transformer_2`` is ``None``).  The pipeline runs
+in bfloat16 and returns video frames (``result.frames``) in ``[0, 1]``
+float, so scale by 255 before writing a video -- and write it with the
+bundled ``video_io.save_video`` helper rather than calling
+``diffusers.utils.export_to_video`` on the resulting ``uint8`` array:
+``export_to_video`` rescales a ``list[np.ndarray]`` by 255 on the
+assumption that it is still float, which wraps modulo 256 and
+colour-inverts every frame.  ``save_video`` converts to PIL first, which
+skips that branch.  This example uses FP8 E4M3 weight + activation,
+which needs a short calibration pass.
+
+.. code-block:: python
+
+   import numpy as np
+   import torch
+   from diffusers import WanPipeline
+   from video_io import save_video  # examples/torch/diffusers/video_io.py
+   from quark.torch import ModelQuantizer
+   from quark.torch.quantization import FP8E4M3PerTensorSpec
+   from quark.torch.quantization.config.config import QConfig, QLayerConfig
+   from quark.torch.utils.diffusers import get_calib_dataloader
+
+   pipe = WanPipeline.from_pretrained(
+       "Wan-AI/Wan2.2-TI2V-5B-Diffusers", torch_dtype=torch.bfloat16,
+   ).to("cuda")
+
+   prompts = [
+       "A serene lake reflecting mountains at sunset, gentle ripples on the water",
+       "A futuristic city with flying cars at night, neon lights",
+   ]
+
+   # Capture calibration at a small res / frame count to bound activation memory.
+   dataloader = get_calib_dataloader(
+       pipe, pipe.transformer, prompts, n_steps=20,
+       height=480, width=832, num_frames=17, guidance_scale=5.0,
+   )
+
+   fp8_spec = FP8E4M3PerTensorSpec(observer_method="min_max", is_dynamic=False).to_quantization_spec()
+   qconfig = QConfig(
+       global_quant_config=QLayerConfig(weight=fp8_spec, input_tensors=fp8_spec),
+       exclude=[
+           "*patch_embedding*", "*condition_embedder*", "*time_embedder*",
+           "*norm_out*", "*proj_out*",
+       ],
+   )
+
+   pipe.transformer = ModelQuantizer(qconfig).quantize_model(pipe.transformer, dataloader)
+
+   result = pipe(
+       "A golden retriever running through a field of autumn leaves",
+       height=480, width=832, num_frames=17, num_inference_steps=20, guidance_scale=5.0,
+   )
+   frames = (np.clip(np.asarray(result.frames[0]), 0.0, 1.0) * 255).round().astype(np.uint8)
+   save_video(frames, "wan22_5b_fp8.mp4", fps=16)
+
+The bundled ``quantize_diffusers.py`` wires this end to end (it
+auto-detects a Wan checkpoint and runs a generate-and-non-black smoke
+check in place of the image-only COCO CLIP/FID harness):
+
+.. code-block:: shell
+
+   python quantize_diffusers.py \
+       --model_id Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+       --quant_scheme w_fp8_a_fp8 \
+       --n_steps 20 --height 480 --width 832 --frames 17 \
+       --test --test_size 1
+
+Example 6: Wan2.2-A14B -- packed MXFP4 w4a8 export + native reload (video)
+--------------------------------------------------------------------------
+
+Wan2.2-T2V-A14B is a **dual-expert** text-to-video pipeline (two
+``WanTransformer3DModel`` submodules, ``transformer`` and ``transformer_2``).
+This example quantizes each expert to **w4a8** (per-1x32 MXFP4 weight + static
+FP8-e4m3 activation), exports **packed** ``float4_e2m1fn_x2`` weights (~1/4 the
+bf16 size) that ``WanPipeline.from_pretrained`` reloads directly into packed
+``QParamsLinear``, and runs the reloaded model on the **native FlyDSL / aiter
+w4a8** kernels (the packed weight is re-shuffled into the kernel layout at load).
+
+The full, runnable workflow lives in
+``examples/torch/diffusers/wan14b_w4a8/`` (``export_wan14b_w4a8.py`` /
+``reload_wan14b_w4a8.py`` / ``svd_correction.py``, plus the shared
+``examples/torch/diffusers/video_io.py``); see its ``README.md``.
+
+.. code-block:: shell
+
+   cd examples/torch/diffusers/wan14b_w4a8
+   export PYTHONPATH="<quark-repo>" HIP_VISIBLE_DEVICES=0
+
+   # quantize both experts + export packed fp4
+   python3 export_wan14b_w4a8.py --model /path/to/Wan2.2-T2V-A14B-Diffusers \
+       --out ./wan14b_w4a8_export --n_calib 4          # add --svd for SVDQuant
+
+   # reload via from_pretrained -> native w4a8 -> generate a video
+   python3 reload_wan14b_w4a8.py --export ./wan14b_w4a8_export \
+       --native_linear_mode mxfp4      # or flydsl_a8w4 / flydsl_svdquant / none
+
+Notes specific to Wan2.2:
+
+* **Packed real-quantized export must be requested explicitly** with
+  ``weight_format="real_quantized"`` -- diffusers models default to
+  ``fake_quantized``, since a packed checkpoint is only readable by a Quark that
+  has the packed reload path. With it set (as ``export_wan14b_w4a8.py`` does) the
+  on-disk ``.weight`` is packed fp4, and ``config.json`` records
+  ``quant_method=quark`` so ``from_pretrained`` auto-dispatches to the Quark
+  quantizer and rebuilds packed ``QParamsLinear``.
+* **SVDQuant low-rank** is not part of the diffusers module tree, so with
+  ``--svd`` it is saved to a side ``svd_correction.safetensors`` and re-attached
+  after load (``svd_correction.py``), then converted to the FlyDSL SVDQuant
+  kernel. Such an export stores the *residual* ``W - l2 @ l1``, so it also records
+  ``svdquant_correction_file: svd_correction.safetensors`` in ``config.json``; the
+  reload refuses a checkpoint naming a correction file that is not there, rather
+  than quietly serving an uncorrected model.
+* Requires gfx950 for the native kernels and a diffusers build with the Quark
+  auto-quantizer.
+
 Quick reference
 ---------------
 
@@ -250,6 +370,8 @@ Which submodule to quantize
    * - SDXL, SD 1.5, SD 2.1
      - ``pipe.unet``
    * - Flux, SD3, PixArt
+     - ``pipe.transformer``
+   * - Wan2.2 (TI2V-5B, T2V-A14B)
      - ``pipe.transformer``
 
 Pipeline-specific kwargs for ``get_calib_dataloader``
@@ -267,6 +389,8 @@ Pipeline-specific kwargs for ``get_calib_dataloader``
      - (defaults)
    * - Flux
      - ``height=1024, width=1024, guidance_scale=3.5, max_sequence_length=512``
+   * - Wan2.2 (video)
+     - ``height=480, width=832, num_frames=17, guidance_scale=5.0``
 
 Any kwargs accepted by ``pipe(...)`` can be passed -- the utilities
 are pipeline-agnostic.
@@ -294,6 +418,9 @@ branch.
      - same as SVDQuant exclude + ``*correction*``
    * - Flux
      - ``*x_embedder*``, ``*context_embedder*``, ``*time_text_embed*``, ``*norm_out*``, ``*proj_out*``, ``*norm1.linear*``, ``*norm1_context.linear*``
+     - same as SVDQuant exclude + ``*correction*``
+   * - Wan2.2
+     - ``*patch_embedding*``, ``*condition_embedder*``, ``*time_embedder*``, ``*norm_out*``, ``*proj_out*``
      - same as SVDQuant exclude + ``*correction*``
 
 Calibration data sizing

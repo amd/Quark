@@ -30,7 +30,10 @@ from quark.torch.quantization import (
     QLayerConfig,
     ScaleQuantSpec,
 )
-from quark.torch.quantization.file2file_quantization import quantize_model_per_safetensor
+from quark.torch.quantization.file2file_quantization import (
+    _weight_map_has_cross_shard_dependency,
+    quantize_model_per_safetensor,
+)
 
 if is_safetensors_available():
     from safetensors import safe_open
@@ -169,6 +172,51 @@ def test_file2file_single_stage_int4_per_tensor():
         output_weight_map = index_data["weight_map"]
         for layer_index in range(num_layers):
             assert f"layer_{layer_index}.linear.weight" in output_weight_map
+            assert f"layer_{layer_index}.linear.weight_scale" in output_weight_map
+
+
+@skip_if_no_gpu
+def test_file2file_multi_device_index_includes_generated_scales():
+    """Regression: the weight_map returned through the multi-device (``device=[...]``)
+    path must include every scale tensor produced during quantization, not just the
+    input weights. A shard worker builds its own weight_map, so a scale that is
+    written to the safetensors file but missing from the returned map yields an index
+    that cannot locate the scale downstream -- silently unusable output."""
+    num_layers = 3
+    tensor_shape = (32, 16)
+
+    int4_per_tensor_spec = Int4PerTensorSpec(is_dynamic=False).to_quantization_spec()
+    quantization_config = QConfig(global_quant_config=QLayerConfig(weight=int4_per_tensor_spec))
+
+    with tempfile.TemporaryDirectory() as input_directory, tempfile.TemporaryDirectory() as output_directory:
+        _create_fake_model_directory(
+            model_directory=input_directory,
+            tensor_shape=tensor_shape,
+            num_layers=num_layers,
+            dtype=torch.float16,
+        )
+
+        quantize_model_per_safetensor(
+            pretrained_model_path=input_directory,
+            quant_config=quantization_config,
+            save_path=output_directory,
+            keep_excluded_layers_as_original_model_state=False,
+            device=[torch_device],
+        )
+
+        output_index_path = os.path.join(output_directory, "model.safetensors.index.json")
+        with open(output_index_path) as index_file:
+            output_weight_map = json.load(index_file)["weight_map"]
+
+        output_safetensor_path = os.path.join(output_directory, "model-00001-of-00001.safetensors")
+        with safe_open(output_safetensor_path, framework="pt", device="cpu") as safetensor_file:
+            saved_keys = set(safetensor_file.keys())
+
+        # Every tensor on disk must be indexed, and the generated scales in particular.
+        assert saved_keys == set(output_weight_map), (
+            f"Index does not mirror saved tensors. Missing from index: {saved_keys - set(output_weight_map)}"
+        )
+        for layer_index in range(num_layers):
             assert f"layer_{layer_index}.linear.weight_scale" in output_weight_map
 
 
@@ -673,3 +721,247 @@ def test_file2file_scale_quant_with_exclude():
                 assert f"layer_{layer_index}.linear.weight_scale_2" in output_keys, (
                     f"layer_{layer_index} should have the global scale"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Cross-shard dependency: the extreme case that exposes the multi-GPU data
+# completeness problem.
+#
+# file2file processes one safetensors shard at a time. A quantized weight may
+# depend on a companion tensor (e.g. an FP8 weight's ``weight_scale_inv``) that
+# the checkpoint sharder placed in a *different* shard file. In single-device
+# mode the whole model is scanned sequentially, so a cross-file scale cache can
+# be pre-loaded and every dependency is reachable. In multi-device mode each
+# worker only owns a subset of shards; if a shard it owns references a tensor
+# that lives in a shard owned by another worker, the data is incomplete unless a
+# cross-shard patch mechanism supplies it.
+#
+# The helper below builds the most adversarial layout on purpose:
+#   * a weight and its scale are split into two different shards,
+#   * scales are scattered across several shards (not a simple A<->B pair),
+#   * shard sizes are deliberately uneven (load-imbalance),
+#   * both the ``_scale_inv`` and the DeepSeek-V4 sibling ``.scale`` naming
+#     conventions appear, so a mechanism that only recognizes ``_scale_inv``
+#     is proven insufficient.
+# ---------------------------------------------------------------------------
+
+
+def _create_cross_shard_fp8_model_directory(model_directory: str) -> dict[str, str]:
+    """
+    Create a multi-shard FP8 checkpoint where each weight's scale lives in a
+    *different* shard than the weight itself, using both the ``_scale_inv`` and
+    the sibling ``.scale`` naming conventions, with deliberately uneven shard
+    sizes.
+
+    Layout (weight_map), 4 shards:
+      * shard 1 (large): layer_0.linear.weight, layer_1.linear.weight
+      * shard 2 (small): layer_0.linear.weight_scale_inv   <- scale for layer_0, cross-shard
+      * shard 3 (large): layer_2.linear.weight, layer_3.linear.weight
+      * shard 4 (small): layer_1.linear.weight_scale_inv,  <- scale for layer_1, cross-shard
+                         layer_2.linear.scale,             <- sibling scale for layer_2, cross-shard
+                         layer_3.linear.scale              <- sibling scale for layer_3, cross-shard
+
+    Every weight's scale is in a different shard from the weight. A worker that
+    is assigned only shard 1 (the two layer weights) cannot dequantize them
+    without the scales that live in shards 2 and 4.
+
+    :param str model_directory: Directory to create the model in.
+    :return: The weight_map (tensor name -> shard filename) that was written.
+    :rtype: dict[str, str]
+    """
+    generator = torch.Generator()
+    generator.manual_seed(TEST_RANDOM_SEED)
+
+    large_shape = (256, 256)
+    scale_shape = (2, 2)  # block scale, much smaller than the weight
+
+    def fp8_weight(shape: tuple[int, int]) -> torch.Tensor:
+        return torch.randn(shape, dtype=torch.float16, generator=generator).to(torch.float8_e4m3fn)
+
+    def fp32_scale(shape: tuple[int, int]) -> torch.Tensor:
+        return torch.rand(shape, dtype=torch.float32, generator=generator) + 0.5
+
+    shard1 = "model-00001-of-00004.safetensors"
+    shard2 = "model-00002-of-00004.safetensors"
+    shard3 = "model-00003-of-00004.safetensors"
+    shard4 = "model-00004-of-00004.safetensors"
+
+    shard_tensors: dict[str, dict[str, torch.Tensor]] = {
+        shard1: {
+            "layer_0.linear.weight": fp8_weight(large_shape),
+            "layer_1.linear.weight": fp8_weight(large_shape),
+        },
+        shard2: {
+            "layer_0.linear.weight_scale_inv": fp32_scale(scale_shape),
+        },
+        shard3: {
+            "layer_2.linear.weight": fp8_weight(large_shape),
+            "layer_3.linear.weight": fp8_weight(large_shape),
+        },
+        shard4: {
+            "layer_1.linear.weight_scale_inv": fp32_scale(scale_shape),
+            "layer_2.linear.scale": fp32_scale(scale_shape),
+            "layer_3.linear.scale": fp32_scale(scale_shape),
+        },
+    }
+
+    weight_map: dict[str, str] = {}
+    for shard_filename, tensors in shard_tensors.items():
+        save_file(tensors, os.path.join(model_directory, shard_filename))
+        for tensor_name in tensors:
+            weight_map[tensor_name] = shard_filename
+
+    config = {
+        "model_type": "test",
+        "torch_dtype": "float16",
+        "quantization_config": {
+            "quant_method": "fp8",
+            "fmt": "e4m3",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [128, 128],
+        },
+    }
+    with open(os.path.join(model_directory, "config.json"), "w") as config_file:
+        json.dump(config, config_file)
+
+    index_data = {"metadata": {"total_size": 0}, "weight_map": weight_map}
+    with open(os.path.join(model_directory, "model.safetensors.index.json"), "w") as index_file:
+        json.dump(index_data, index_file)
+
+    return weight_map
+
+
+# _weight_map_has_cross_shard_dependency is imported from the production module
+# above so the test exercises the real implementation, not a local copy.
+
+
+def test_cross_shard_layout_is_detectable_from_index_without_loading_weights() -> None:
+    """
+    The cross-shard dependency must be detectable purely from
+    ``model.safetensors.index.json`` before any worker starts, since that is the
+    only information a multi-device pre-pass can use to decide whether shards are
+    self-contained.
+
+    This test does not require a GPU: it inspects the written index only.
+    """
+    with tempfile.TemporaryDirectory() as model_directory:
+        weight_map = _create_cross_shard_fp8_model_directory(model_directory)
+
+        # Sanity: the layout really did split each weight from its scale.
+        assert weight_map["layer_0.linear.weight"] != weight_map["layer_0.linear.weight_scale_inv"]
+        assert weight_map["layer_1.linear.weight"] != weight_map["layer_1.linear.weight_scale_inv"]
+        assert weight_map["layer_2.linear.weight"] != weight_map["layer_2.linear.scale"]
+        assert weight_map["layer_3.linear.weight"] != weight_map["layer_3.linear.scale"]
+
+        # The index alone is enough to detect the cross-shard split.
+        assert _weight_map_has_cross_shard_dependency(weight_map) is True
+
+        # Reload the on-disk index and confirm the same conclusion holds, since
+        # that is what the real code path reads.
+        with open(os.path.join(model_directory, "model.safetensors.index.json")) as index_file:
+            on_disk_weight_map = json.load(index_file)["weight_map"]
+        assert _weight_map_has_cross_shard_dependency(on_disk_weight_map) is True
+
+
+def test_cross_shard_detection_no_false_positive_for_moe_bf16() -> None:
+    """
+    Regression: independent Linear weights that share a module-name prefix but
+    carry no companion (scale/scale_inv) tensors must NOT trigger the cross-shard
+    dependency guard.
+
+    MoE models like Qwen3.5-35B split ``gate_up_proj.weight`` and
+    ``down_proj.weight`` across shards.  These are independent weights — each is
+    quantized using only its own data — so placing them in different shards
+    creates no data dependency between workers.  The old prefix-grouping heuristic
+    falsely flagged this layout and forced a single-device fallback on every real
+    MoE model.  This test locks in the corrected suffix-based detection so that
+    regression cannot be silently re-introduced.
+    """
+    # Simulate a MoE FFN block: gate_up_proj and down_proj are in different shards
+    # but neither has a companion scale/scale_inv tensor (pure bf16 model).
+    moe_weight_map = {
+        "model.layers.0.mlp.experts.gate_up_proj": "model-00001-of-00014.safetensors",
+        "model.layers.0.mlp.experts.down_proj": "model-00009-of-00014.safetensors",
+        "model.layers.1.mlp.experts.gate_up_proj": "model-00001-of-00014.safetensors",
+        "model.layers.1.mlp.experts.down_proj": "model-00009-of-00014.safetensors",
+        # Non-quantizable tensors
+        "model.embed_tokens.weight": "model-00001-of-00014.safetensors",
+        "model.norm.weight": "model-00014-of-00014.safetensors",
+    }
+    # No companion tensors in this weight_map → no cross-shard dependency.
+    assert _weight_map_has_cross_shard_dependency(moe_weight_map) is False
+
+
+def test_cross_shard_detection_covers_all_quantization_formats() -> None:
+    """
+    A companion tensor split across shards must be detected for EVERY supported
+    quantization format, otherwise a multi-device run would silently produce a
+    corrupted checkpoint (the worker owning the weight cannot reach its scale).
+
+    Covers the naming conventions file2file recovers:
+      - FP8 (DeepSeek-V3):  weight + weight_scale_inv
+      - FP8 sibling scale (DeepSeek-V4):  weight + .scale
+      - compressed-tensors: weight_packed / weight_scale / weight_shape /
+                            weight_zero_point / weight_g_idx / weight_global_scale
+      - NVFP4 / scale-quant: weight + weight_scale + weight_scale_2
+
+    For each format, the companion in a different shard from its weight must
+    return True; the same companion co-located with its weight must return False.
+    """
+    cross_shard_cases = {
+        "fp8_scale_inv": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_scale_inv": "s2.safetensors",
+        },
+        "fp8_sibling_scale": {
+            "layers.0.experts.0.w1.weight": "s1.safetensors",
+            "layers.0.experts.0.w1.scale": "s2.safetensors",
+        },
+        "compressed_weight_scale": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_scale": "s2.safetensors",
+        },
+        "compressed_weight_shape": {
+            "layers.0.q_proj.weight_packed": "s1.safetensors",
+            "layers.0.q_proj.weight_shape": "s2.safetensors",
+        },
+        "compressed_zero_point": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_zero_point": "s2.safetensors",
+        },
+        "compressed_g_idx": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_g_idx": "s2.safetensors",
+        },
+        "nvfp4_global_scale": {
+            "layers.0.q_proj.weight_packed": "s1.safetensors",
+            "layers.0.q_proj.weight_scale": "s1.safetensors",
+            "layers.0.q_proj.weight_global_scale": "s2.safetensors",
+        },
+        "scale_quant_scale_2": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_scale": "s1.safetensors",
+            "layers.0.q_proj.weight_scale_2": "s2.safetensors",
+        },
+    }
+    for format_name, weight_map in cross_shard_cases.items():
+        assert _weight_map_has_cross_shard_dependency(weight_map) is True, (
+            f"{format_name}: cross-shard companion must be detected"
+        )
+
+    # Same modules, all tensors co-located in one shard → no dependency.
+    co_located_cases = {
+        "fp8_scale_inv": {
+            "layers.0.q_proj.weight": "s1.safetensors",
+            "layers.0.q_proj.weight_scale_inv": "s1.safetensors",
+        },
+        "compressed_full": {
+            "layers.0.q_proj.weight_packed": "s1.safetensors",
+            "layers.0.q_proj.weight_scale": "s1.safetensors",
+            "layers.0.q_proj.weight_shape": "s1.safetensors",
+        },
+    }
+    for format_name, weight_map in co_located_cases.items():
+        assert _weight_map_has_cross_shard_dependency(weight_map) is False, (
+            f"{format_name}: co-located module must not be flagged"
+        )

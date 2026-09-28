@@ -1,0 +1,47 @@
+schema_version: 1
+id: repair.quark.weight-name-mapper.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - per-layer config in layer_quant_config has no effect
+    - excluded layers from the quark config are still being treated as quantized
+  keywords: [WeightsMapper, apply_weight_name_mapper, exclude_layers, layer_quant_config]
+summary: Align Quark HF layer names with the runtime vLLM module tree before matching excludes or overrides.
+guidance:
+  - Inspect the model's existing WeightsMapper bridge.
+  - Remap both exclude entries and layer_quant_config keys through the general mapper.
+  - Include module-only wildcard rules when testing the mapper, not just concrete weight names. For DeepSeek V4, a terminal shared_experts.w* rule must still cover the renamed down_proj and packed gate_up_proj.
+  - The validated V4 mapper translates the terminal shared_experts.w* pattern to shared_experts.*; its packed-module mapping separately resolves gate_up_proj to w1 and w3.
+  - Test wildcard and explicit w1/w2/w3 rules against both shared runtime projections so neither silently falls back to global FP8.
+  - Do not add a model-specific rename path when the shared mapper can express the relationship.
+required_checks: [load, inference, accuracy]
+evidence:
+  level: E2
+  additional_validated_cases:
+    - model_arch: deepseek_v4
+      framework_version: 0.25.0+rocm723
+      accelerator: gfx950
+      tensor_parallel_size: 2
+      level: E3
+      failure: shared_expert_source_overrides_did_not_match_renamed_runtime_projections
+      result: wildcard_and_explicit_source_rules_preserved_shared_mxfp4
+      verification_scope: Four shared-mapping cases passed; full offline GSM8K passed with the combined V4 repairs.
+      session_artifacts:
+        - repairs/shared-mapping-test-before.log
+        - repairs/shared-mapping-test-after.log
+        - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/quark-inference-engine-debug-tips/entries/weight-name-mapper-missing.md
+  sha256: e03937d769b185837ace130d8b0d5889f2deb2d03f89f70f5f2cce35be996e43
+  additional_sources:
+    - source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+      source_session_name: qwen35-accuracy-performance
+      managed_commit: abf19db634553f3eb0f11d6887ba0b7e833b15f2
+      validated_runtime_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+      validated_at: "2026-09-22"

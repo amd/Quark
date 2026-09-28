@@ -1152,7 +1152,9 @@ def test_torch_sigmoid_2_hardsigmoid_strategy(tmpdir: str):
                     else {"model": each_format_model, "dataloader": [example_inputs[0]]}
                 )
                 quantized_model = quantizer.quantize_model(**input_args)
-                assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [5, 0]
+                # HardSigmoid input is now quantized, adding one ScaledFakeQuantize under a
+                # non-empty config (5 -> 6); the empty config still yields 0.
+                assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) in [6, 0]
                 freeze_graph_module = quantizer.freeze(quantized_model.eval())
                 freeze_graph_module(*example_inputs)
                 assert fx_contains_op_num(freeze_graph_module, is_hardsigmoid_node) == 2

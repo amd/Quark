@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "hardware": {
+    "target": "mi355"
+  },
+  "deployment_backend": {
+    "name": "no_fusion"
+  },
+  "decision_space": {
+    "exclude_patterns": []
+  },
+  "sensitivity_profile": {
+    "methods": [
+      "weight_mse"
+    ]
+  },
+  "calibration": {
+    "dataset": "pileval",
+    "num_samples": 16,
+    "max_length": 512,
+    "batch_size": 1,
+    "revision": null
+  },
+  "search": {
+    "granularity": "fine",
+    "algorithm": "linear_programming",
+    "budget": {
+      "metric": "effective_bits",
+      "value": 8.5,
+      "scope": "quantizable"
+    },
+    "num_candidates": 5,
+    "diversity": {
+      "high_impact_fraction": 0.3,
+      "min_high_impact_differences": 1
+    }
+  },
+  "plan_selection": {
+    "evaluator": {
+      "backend": "hf",
+      "protocol": "token_ppl_v1"
+    },
+    "quality_gate": {
+      "metric": "ppl",
+      "dataset": "wikitext2",
+      "max_degradation": 0.02,
+      "num_chunks": 1,
+      "max_length": 2048,
+      "revision": null
+    },
+    "selection_policy": "lowest_effective_bits"
+  },
+  "output": {
+    "dir": "./mixed_precision_planner_run"
+  },
+  "seed": 42
+}

@@ -53,6 +53,18 @@ if is_compressed_tensors_available():
 logger = ScreenLogger(__name__)
 
 
+def _is_meta_device_map(device_map: object) -> bool:
+    """Return whether ``device_map`` requests a meta-only model."""
+    if isinstance(device_map, torch.device):
+        return device_map.type == "meta"
+    if isinstance(device_map, str):
+        try:
+            return torch.device(device_map).type == "meta"
+        except RuntimeError:
+            return device_map == "meta"
+    return device_map == "meta"
+
+
 # TODO: Remove all `  # pragma: no cover` in this file once once test/test_for_torch/test_inverse_quantizer.py's test_kimi_k25_quantize_export and test_kimi_k25_nvfp4_quantization_and_export are adapted to support transformers>=5.0 which is used in PR CIs.
 def _is_compressed_tensors_model(config: "AutoConfig") -> bool:  # pragma: no cover
     """
@@ -187,7 +199,7 @@ def _load_on_device_moe_batched(
 def _load_from_compressed_tensors(
     model_dir: str | Path,
     config: AutoConfig,
-    device_map: str | dict[str, int | str],
+    device_map: str | torch.device | dict[str, int | str],
     max_memory: dict[str, int | str] | None,
     trust_remote_code: bool,
 ) -> nn.Module:  # pragma: no cover
@@ -199,8 +211,9 @@ def _load_from_compressed_tensors(
       1. Build an empty model skeleton on meta device.
       2. Use ModelCompressor to set up quantized module structure
          (CompressedLinear on <=0.14, decompression hook on >=0.15).
-      3. Load safetensors weights from disk via accelerate.
-      4. Move the model to the target device(s).
+      3. For a meta target, return the structural model without reading checkpoint weights.
+      4. Otherwise, load safetensors weights from disk via accelerate.
+      5. Move the model to the target device(s).
     """
     logger.info("Detected compressed-tensors checkpoint; using compressed-tensors loading path.")
 
@@ -236,6 +249,10 @@ def _load_from_compressed_tensors(
     logger.info("Setting up quantized module structure via ModelCompressor...")
     apply_quantization_config(model, compressor.quantization_config, run_compressed=True)
     compressor.compress_model(model)
+
+    if _is_meta_device_map(device_map):
+        logger.info("Returning compressed-tensors structural model on meta without loading checkpoint weights.")
+        return model
 
     # Resolve device map.
     # Keep track of whether we need dispatch_model (multi-device) or a simple .to().

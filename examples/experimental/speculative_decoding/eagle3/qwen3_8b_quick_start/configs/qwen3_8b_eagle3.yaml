@@ -1,0 +1,75 @@
+# TorchSpec EAGLE-3 cold-start training recipe (default target: Qwen/Qwen3-8B) on
+# 8x AMD Instinct. Streaming extraction: 4 vLLM engines produce target hidden states,
+# 4 FSDP ranks train the draft (LlamaForCausalLMEagle3, full vocab -> vLLM-loadable).
+#
+# The common runner writes an active copy with target, data, output, chat
+# template, epochs and topology resolved for the selected profile.
+
+model:
+  target_model_path: /models/Qwen3-8B
+  trust_remote_code: true
+  draft_model_config: /workspace/runtime/draft_config.json
+  # The runner rewrites these by line-anchored `sed`, which silently no-ops when
+  # the key is absent -- so a target whose text tower is nested (for example
+  # model.language_model.embed_tokens.weight) could not override them at all.
+  # The values below are the flat Qwen3-8B layout and match the runner's own
+  # fallbacks exactly, so this profile resolves unchanged.
+  embedding_key: model.embed_tokens.weight
+  lm_head_key: lm_head.weight
+  norm_key: model.norm.weight
+
+dataset:
+  train_data_path: /workspace/data/onpolicy_train.jsonl
+  eval_data_path: /workspace/data/onpolicy_eval.jsonl
+  eval_interval: 500
+  chat_template: qwen
+  prompt_key: conversations
+
+training:
+  attention_backend: sdpa
+  continual_training: false
+  # Checkpoint to resume from; run_all.sh sets it when auto-resuming.
+  load_path: null
+  micro_batch_size: 1
+  draft_accumulation_steps: 8
+  learning_rate: 1e-4
+  max_grad_norm: 1.0
+  max_seq_length: 8192
+  num_epochs: 2
+  # The seed fixes the sampling order. Under seed 42 this dataset reaches a
+  # batch at step 272 that faults the ROCm trainer with a null GPU pointer in
+  # roughly four of five runs; seed 43 clears it. See the quick start's
+  # troubleshooting section.
+  seed: 43
+  training_num_gpus_per_node: 4
+  training_num_nodes: 1
+  ttt_length: 7
+  save_per_epoch: true
+  warmup_ratio: 0.015
+  gradient_checkpointing: true
+
+inference:
+  inference_engine_type: vllm
+  inference_num_gpus: 4
+  inference_num_gpus_per_engine: 1
+  inference_num_gpus_per_node: 8
+  max_sample_pool_size: 64
+  inference_buffer_threshold: 32
+  inference_batch_size: 8
+  vllm:
+    tp_size: 1
+    mem_fraction_static: 0.80
+    extra_args:
+      max_num_batched_tokens: 8192
+
+mooncake:
+  master_server_address: null
+  metadata_server: null
+  protocol: tcp
+  global_segment_size: 32GB
+  local_buffer_size: 4GB
+  max_seq_len: 8192
+
+output_dir: /workspace/outputs/qwen3-8b-eagle3
+cache_dir: /workspace/cache
+model_download_dir: null

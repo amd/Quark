@@ -3,24 +3,48 @@
 # SPDX-License-Identifier: MIT
 #
 
-import pytest
 
+import pytest
+import torch
+import torch.nn as nn
+
+from quark.torch.algorithm.utils.prepare import get_layers_for_scaling
 from quark.torch.quantization.config.algo_configs import (
+    AUTOROUND_MAP,
     AUTOSMOOTHQUANT_MAP,
     AWQ_MAP,
+    GPTAQ_MAP,
     GPTQ_MAP,
+    QRONOS_MAP,
     ROTATION_MAP,
     SQ_MAP,
     get_algo_config,
     get_supported_algorithm_types,
 )
 from quark.torch.quantization.config.config import (
+    AutoRoundConfig,
     AutoSmoothQuantConfig,
     AWQConfig,
+    GPTAQConfig,
     GPTQConfig,
+    QronosConfig,
     RotationConfig,
     SmoothQuantConfig,
 )
+
+# Qwen3.5 dense model type key, shared by the AWQ / GPTQ / Qronos / SmoothQuant / AutoRound maps.
+QWEN3_5_MODEL_TYPE = "qwen3_5"
+# Linear module names that are quantized inside a Qwen3.5 hybrid decoder layer. Standard
+# attention layers expose "self_attn.*" and gated-delta linear-attention layers expose
+# "linear_attn.*"; both sets are listed in the GPTQ/Qronos configs so a single config
+# covers every decoder layer.
+QWEN3_5_LINEAR_ATTENTION_MODULES = [
+    "linear_attn.in_proj_qkv",
+    "linear_attn.in_proj_z",
+    "linear_attn.in_proj_b",
+    "linear_attn.in_proj_a",
+    "linear_attn.out_proj",
+]
 
 
 def test_awq_map_basic():
@@ -135,6 +159,123 @@ def test_get_algo_config_existing():
     assert rotation_config is not None
     assert isinstance(rotation_config, RotationConfig)
     assert rotation_config.name == "rotation"
+
+
+def test_qwen3_5_present_in_all_maps():
+    """Verify qwen3_5 is registered for every supporting algorithm with the right config type."""
+    assert isinstance(AWQ_MAP[QWEN3_5_MODEL_TYPE], AWQConfig)
+    assert isinstance(GPTQ_MAP[QWEN3_5_MODEL_TYPE], GPTQConfig)
+    assert isinstance(GPTAQ_MAP[QWEN3_5_MODEL_TYPE], GPTAQConfig)
+    assert isinstance(QRONOS_MAP[QWEN3_5_MODEL_TYPE], QronosConfig)
+    assert isinstance(SQ_MAP[QWEN3_5_MODEL_TYPE], SmoothQuantConfig)
+    assert isinstance(AUTOSMOOTHQUANT_MAP[QWEN3_5_MODEL_TYPE], AutoSmoothQuantConfig)
+    assert isinstance(AUTOROUND_MAP[QWEN3_5_MODEL_TYPE], AutoRoundConfig)
+
+
+def test_qwen4_exp_present_in_all_maps():
+    """Both qwen4_exp keys are registered for every algorithm that supports the architecture.
+
+    file2file mode reads the raw top-level model_type ("qwen4_exp"); live model loading resolves
+    the nested text_config instead ("qwen4_exp_text"). Both must be registered, and must select
+    the same quantization scope -- only the decoder path differs (VL wrapper vs text-only).
+    """
+    for model_type in ("qwen4_exp", "qwen4_exp_text"):
+        assert isinstance(AWQ_MAP[model_type], AWQConfig)
+        assert isinstance(GPTQ_MAP[model_type], GPTQConfig)
+        assert isinstance(GPTAQ_MAP[model_type], GPTAQConfig)
+        assert isinstance(QRONOS_MAP[model_type], QronosConfig)
+        assert isinstance(AUTOSMOOTHQUANT_MAP[model_type], AutoSmoothQuantConfig)
+
+    for algo_map in (GPTQ_MAP, GPTAQ_MAP, QRONOS_MAP):
+        assert algo_map["qwen4_exp"].inside_layer_modules == algo_map["qwen4_exp_text"].inside_layer_modules
+
+
+def test_no_algo_map_still_keys_on_qwen3_5_text():
+    """
+    Guard against re-introducing the unreachable "qwen3_5_text" key.
+
+    "qwen3_5_text" is the model_type of the nested text_config; Quark resolves algorithm
+    configs against the top-level model_type, which is "qwen3_5" for every released
+    Qwen3.5 dense checkpoint. An entry keyed on "qwen3_5_text" can never be looked up.
+    """
+    for map_name, algo_map in [
+        ("AWQ_MAP", AWQ_MAP),
+        ("GPTQ_MAP", GPTQ_MAP),
+        ("QRONOS_MAP", QRONOS_MAP),
+        ("SQ_MAP", SQ_MAP),
+        ("AUTOROUND_MAP", AUTOROUND_MAP),
+    ]:
+        assert "qwen3_5_text" not in algo_map, (
+            f"{map_name} still keys on the unreachable 'qwen3_5_text'; use 'qwen3_5' instead"
+        )
+
+
+def test_qwen3_5_model_decoder_layers_path():
+    """
+    Verify the qwen3_5 configs point at the actual decoder layer path.
+
+    Qwen3_5ForConditionalGeneration wraps its decoder stack at
+    model.language_model.layers, not model.layers (the latter has no `.layers`
+    attribute and raises AttributeError when resolved against a loaded model).
+    """
+    for config in [
+        AWQ_MAP[QWEN3_5_MODEL_TYPE],
+        GPTQ_MAP[QWEN3_5_MODEL_TYPE],
+        QRONOS_MAP[QWEN3_5_MODEL_TYPE],
+        SQ_MAP[QWEN3_5_MODEL_TYPE],
+        AUTOROUND_MAP[QWEN3_5_MODEL_TYPE],
+    ]:
+        assert config.model_decoder_layers == "model.language_model.layers"
+
+
+def test_qwen3_5_via_get_algo_config():
+    """Verify get_algo_config resolves qwen3_5 for every newly supported algorithm."""
+    for algorithm_type, expected_config_type in [
+        ("awq", AWQConfig),
+        ("gptq", GPTQConfig),
+        ("qronos", QronosConfig),
+        ("smoothquant", SmoothQuantConfig),
+        ("autoround", AutoRoundConfig),
+    ]:
+        config = get_algo_config(algorithm_type, QWEN3_5_MODEL_TYPE)
+        assert config is not None, f"{algorithm_type} has no qwen3_5 config"
+        assert isinstance(config, expected_config_type)
+
+
+def test_qwen3_5_hybrid_layer_coverage():
+    """
+    Verify the blockwise qwen3_5 configs cover both attention variants of the
+    hybrid decoder.
+
+    Qwen3.5 dense layers alternate between standard attention (self_attn.*) and
+    gated-delta linear attention (linear_attn.*); both module-name sets plus the shared
+    MLP must appear in inside_layer_modules so a single config quantizes every layer.
+    """
+    for config in [
+        GPTQ_MAP[QWEN3_5_MODEL_TYPE],
+        QRONOS_MAP[QWEN3_5_MODEL_TYPE],
+        AUTOROUND_MAP[QWEN3_5_MODEL_TYPE],
+    ]:
+        inside_layer_modules = config.inside_layer_modules
+        assert "self_attn.q_proj" in inside_layer_modules
+        assert "self_attn.o_proj" in inside_layer_modules
+        for linear_attention_module in QWEN3_5_LINEAR_ATTENTION_MODULES:
+            assert linear_attention_module in inside_layer_modules
+        assert "mlp.gate_proj" in inside_layer_modules
+        assert "mlp.up_proj" in inside_layer_modules
+        assert "mlp.down_proj" in inside_layer_modules
+
+
+def test_qwen3_5_smoothquant_alpha():
+    """
+    Verify the qwen3_5 SmoothQuant config uses alpha=0.5.
+
+    The default alpha=1 pushes all quantization difficulty onto the weights and badly
+    hurts W8A8 accuracy on this model; alpha=0.5 is the validated value, so guard against
+    a regression back to the default.
+    """
+    smoothquant_config = SQ_MAP[QWEN3_5_MODEL_TYPE]
+    assert smoothquant_config.alpha == 0.5
 
 
 def test_get_algo_config_unsupported_model():
@@ -286,3 +427,219 @@ def test_config_consistency_across_maps():
         assert isinstance(config.r3, bool), f"Rotation {model_type} r3 not bool"
         assert isinstance(config.r4, bool), f"Rotation {model_type} r4 not bool"
         assert isinstance(config.scaling_layers, dict), f"Rotation {model_type} scaling_layers not dict"
+
+
+# ---------------------------------------------------------------------------
+# qwen3_5_moe — GPTQ
+# ---------------------------------------------------------------------------
+
+QWEN3_5_MOE_MODEL_TYPE = "qwen3_5_moe"
+
+QWEN3_5_LINEAR_ATTENTION_MODULES = [
+    "linear_attn.in_proj_qkv",
+    "linear_attn.in_proj_z",
+    "linear_attn.in_proj_a",
+    "linear_attn.in_proj_b",
+    "linear_attn.out_proj",
+]
+
+QWEN3_5_MOE_EXPERT_MODULES = [
+    "mlp.experts.*.up_proj",
+    "mlp.experts.*.gate_proj",
+    "mlp.experts.*.down_proj",
+    "mlp.shared_expert.gate_proj",
+    "mlp.shared_expert.up_proj",
+    "mlp.shared_expert.down_proj",
+]
+
+QWEN3_5_MOE_ROUTER_MODULES = ["mlp.gate", "mlp.shared_expert_gate"]
+
+
+def test_qwen3_5_moe_present_in_gptq_map():
+    """Verify qwen3_5_moe is registered in GPTQ with the right config type."""
+    assert isinstance(GPTQ_MAP[QWEN3_5_MOE_MODEL_TYPE], GPTQConfig)
+
+
+def test_qwen3_5_moe_via_get_algo_config():
+    """Verify get_algo_config resolves qwen3_5_moe for GPTQ."""
+    config = get_algo_config("gptq", QWEN3_5_MOE_MODEL_TYPE)
+    assert config is not None, "gptq has no qwen3_5_moe config"
+    assert isinstance(config, GPTQConfig)
+
+
+def test_qwen3_5_moe_model_decoder_layers_path():
+    """
+    Verify the qwen3_5_moe GPTQ config points at the actual decoder layer path.
+
+    Qwen3_5MoeForConditionalGeneration wraps its decoder stack at
+    model.language_model.layers, not model.layers.
+    """
+    assert GPTQ_MAP[QWEN3_5_MOE_MODEL_TYPE].model_decoder_layers == "model.language_model.layers"
+
+
+def test_qwen3_5_moe_gptq_covers_hybrid_attention_and_experts():
+    """
+    Verify the GPTQ qwen3_5_moe config covers both attention variants and the MoE block.
+
+    Qwen3.5 MoE layers alternate between standard attention (self_attn.*) and gated-delta
+    linear attention (linear_attn.*), and every layer carries a sparse MoE block with routed
+    experts plus a shared expert.
+    """
+    inside_layer_modules = GPTQ_MAP[QWEN3_5_MOE_MODEL_TYPE].inside_layer_modules
+    assert "self_attn.q_proj" in inside_layer_modules
+    assert "self_attn.o_proj" in inside_layer_modules
+    for linear_attention_module in QWEN3_5_LINEAR_ATTENTION_MODULES:
+        assert linear_attention_module in inside_layer_modules
+    for expert_module in QWEN3_5_MOE_EXPERT_MODULES:
+        assert expert_module in inside_layer_modules
+
+
+def test_qwen3_5_moe_gptq_excludes_router_projections():
+    """
+    Verify the router projections stay out of the GPTQ qwen3_5_moe config.
+
+    `mlp.gate` and `mlp.shared_expert_gate` are tiny [num_experts, hidden] projections whose
+    outputs choose experts; quantizing them changes routing decisions while saving nothing.
+    """
+    inside_layer_modules = GPTQ_MAP[QWEN3_5_MOE_MODEL_TYPE].inside_layer_modules
+    for router_module in QWEN3_5_MOE_ROUTER_MODULES:
+        assert router_module not in inside_layer_modules
+
+
+# qwen3_5_moe — AWQ and SmoothQuant
+def test_qwen3_5_moe_present_in_awq_and_sq_maps():
+    """Verify qwen3_5_moe is registered in AWQ and SmoothQuant with the right config types."""
+    assert isinstance(AWQ_MAP[QWEN3_5_MOE_MODEL_TYPE], AWQConfig)
+    assert isinstance(SQ_MAP[QWEN3_5_MOE_MODEL_TYPE], SmoothQuantConfig)
+
+
+def test_qwen3_5_moe_awq_and_sq_via_get_algo_config():
+    """Verify get_algo_config resolves qwen3_5_moe for AWQ and SmoothQuant."""
+    for algorithm_type, expected_type in [("awq", AWQConfig), ("smoothquant", SmoothQuantConfig)]:
+        config = get_algo_config(algorithm_type, QWEN3_5_MOE_MODEL_TYPE)
+        assert config is not None, f"{algorithm_type} has no qwen3_5_moe config"
+        assert isinstance(config, expected_type)
+
+
+def test_qwen3_5_moe_awq_and_sq_model_decoder_layers_path():
+    """Verify AWQ and SmoothQuant qwen3_5_moe configs use the correct decoder layer path."""
+    for config in [AWQ_MAP[QWEN3_5_MOE_MODEL_TYPE], SQ_MAP[QWEN3_5_MOE_MODEL_TYPE]]:
+        assert config.model_decoder_layers == "model.language_model.layers"
+
+
+def test_qwen3_5_moe_smoothquant_alpha():
+    """Verify the qwen3_5_moe SmoothQuant config uses alpha=0.5, same as the dense qwen3_5."""
+    assert SQ_MAP[QWEN3_5_MOE_MODEL_TYPE].alpha == 0.5
+
+
+# qwen3_5_moe — Qronos
+def test_qwen3_5_moe_present_in_qronos_map():
+    """Verify qwen3_5_moe is registered in Qronos with the right config type."""
+    assert isinstance(QRONOS_MAP[QWEN3_5_MOE_MODEL_TYPE], QronosConfig)
+
+
+def test_qwen3_5_moe_qronos_via_get_algo_config():
+    """Verify get_algo_config resolves qwen3_5_moe for Qronos."""
+    config = get_algo_config("qronos", QWEN3_5_MOE_MODEL_TYPE)
+    assert config is not None
+    assert isinstance(config, QronosConfig)
+
+
+def test_qwen3_5_moe_qronos_model_decoder_layers_path():
+    """Verify the Qronos qwen3_5_moe config uses the correct decoder layer path."""
+    assert QRONOS_MAP[QWEN3_5_MOE_MODEL_TYPE].model_decoder_layers == "model.language_model.layers"
+
+
+def test_qwen3_5_moe_qronos_covers_hybrid_attention_and_experts():
+    """Verify the Qronos config covers self_attn, linear_attn and MoE expert modules."""
+    inside = QRONOS_MAP[QWEN3_5_MOE_MODEL_TYPE].inside_layer_modules
+    assert "self_attn.q_proj" in inside
+    for m in QWEN3_5_LINEAR_ATTENTION_MODULES:
+        assert m in inside
+    for m in QWEN3_5_MOE_EXPERT_MODULES:
+        assert m in inside
+
+
+def test_qwen3_5_moe_qronos_excludes_router_projections():
+    """Verify the router projections stay out of the Qronos qwen3_5_moe config."""
+    inside = QRONOS_MAP[QWEN3_5_MOE_MODEL_TYPE].inside_layer_modules
+    for m in QWEN3_5_MOE_ROUTER_MODULES:
+        assert m not in inside
+
+
+@pytest.mark.parametrize("num_experts", [2, 32, 512])
+def test_qwen4_exp_scaling_layers_reference_real_modules(num_experts):
+    """qwen4_exp smoothing must resolve to every expert, whatever num_experts is.
+
+    Regression test: the original entries used `post_attention_layernorm` (this architecture has
+    no layernorm in the decoder layer at all) and unindexed `mlp.experts.gate_up_proj` /
+    `mlp.experts.down_proj`. After MoE preprocessing the hooked names are indexed
+    (`mlp.experts.<i>.down_proj`), so `fnmatch` matched nothing and every scaling group was
+    silently dropped -- AWQ/AutoSmoothQuant performed no smoothing at all.
+
+    Asserted against a real module tree rather than by pattern-matching the config strings: the
+    shipped bug was strings that looked entirely reasonable and resolved to nothing.
+    """
+    layer = nn.Module()
+    layer.mlp = nn.Module()
+    layer.mlp.experts = nn.ModuleList()
+    for _ in range(num_experts):
+        expert = nn.Module()
+        expert.gate_proj = nn.Linear(2, 2)
+        expert.up_proj = nn.Linear(2, 2)
+        expert.down_proj = nn.Linear(2, 2)
+        layer.mlp.experts.append(expert)
+    names = [f"mlp.experts.{i}.{p}" for i in range(num_experts) for p in ("gate_proj", "up_proj", "down_proj")]
+
+    for map_name, algo_map in (("AWQ_MAP", AWQ_MAP), ("AUTOSMOOTHQUANT_MAP", AUTOSMOOTHQUANT_MAP)):
+        for model_type in ("qwen4_exp", "qwen4_exp_text"):
+            groups = algo_map[model_type].scaling_layers
+            assert groups, f"{map_name}[{model_type}] has no scaling layers"
+            for entry in groups:
+                for path in (entry["prev_op"], entry["inp"], *entry["layers"]):
+                    assert "layernorm" not in path, (
+                        f"{map_name}[{model_type}] references {path!r}; the qwen4_exp decoder layer "
+                        "has no layernorm (its predecessor is a gated-residual hyper-connection)"
+                    )
+            # Through the production path, with every candidate hooked, so the only thing that can
+            # drop a group is the pattern itself.
+            input_feat = {name: torch.zeros(1, 2) for name in names}
+            resolved = get_layers_for_scaling(layer, input_feat, {}, groups)
+            targets = sum(len(entry["layers"]) for entry in resolved)
+            assert targets == num_experts, (
+                f"{map_name}[{model_type}] resolved {targets} target(s) against {num_experts} "
+                f"experts; every expert's down_proj must be smoothed"
+            )
+            # One unindexed MoE group expands to one entry per expert, so the count above is the
+            # real check; this just pins that no entry came back empty.
+            assert resolved and all(entry["layers"] for entry in resolved), (
+                f"{map_name}[{model_type}] has scaling group(s) that resolve to nothing"
+            )
+
+
+def test_qwen4_exp_inside_layer_modules_cover_routed_and_shared_experts():
+    """GPTQ-family selection must reach every routed expert and the shared expert.
+
+    Regression test: a path-like `mlp.experts.down_proj` never matches
+    `mlp.experts.<i>.down_proj` under `fnmatch`, so the Hessian processors selected zero layers
+    and GPTQ/GPTAQ/QRONOS silently degenerated to plain weight quantization. Leaf suffixes avoid
+    that and cover the shared expert with the same entry, since selection matches
+    `"*" + pattern` against the full module name.
+    """
+    import fnmatch
+
+    real = [f"mlp.experts.{i}.{proj}" for i in range(4) for proj in ("gate_proj", "up_proj", "down_proj")]
+    real += [f"mlp.shared_expert.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")]
+    for map_name, algo_map in (("GPTQ_MAP", GPTQ_MAP), ("GPTAQ_MAP", GPTAQ_MAP), ("QRONOS_MAP", QRONOS_MAP)):
+        for model_type in ("qwen4_exp", "qwen4_exp_text"):
+            selected = set()
+            for pattern in algo_map[model_type].inside_layer_modules:
+                selected |= set(fnmatch.filter(real, "*" + pattern))
+            assert selected == set(real), (
+                f"{map_name}[{model_type}] selects {len(selected)} of {len(real)} expert layers; "
+                "missing entries are silently skipped"
+            )
+            # The router-like gates pick experts rather than carry activations, and must not match.
+            gates = ["mlp.gate", "mlp.shared_expert_gate"]
+            for pattern in algo_map[model_type].inside_layer_modules:
+                assert not fnmatch.filter(gates, "*" + pattern), f"{pattern!r} matches a router gate"

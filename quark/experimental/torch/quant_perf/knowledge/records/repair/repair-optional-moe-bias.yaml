@@ -1,0 +1,24 @@
+schema_version: 1
+id: repair.vllm.quark.optional-moe-bias.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run]
+  error_contains: ["'NoneType' object has no attribute 'to'"]
+  keywords: [quark_moe, w13_bias, w2_bias]
+summary: Guard optional MoE bias tensors before post-load dtype conversion.
+guidance:
+  - Guard w13 and w2 bias tensors independently.
+  - Do not synthesize a bias for a biasless model.
+  - Preserve the existing Parameter replacement behavior when a bias exists.
+required_checks: [load, inference]
+evidence:
+  level: E3
+  verifier: load_inference
+provenance:
+  kind: external_commit
+  repository: vllm
+  commit: 9344c963c

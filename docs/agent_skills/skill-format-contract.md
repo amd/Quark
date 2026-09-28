@@ -1,41 +1,71 @@
 # Skill Format Contract
 
-Every `SKILL.md` must follow the template at `.claude/skills-impl/shared/templates/skill-template.md`. This contract explains what is checked and why.
+## Public entry
 
-## Frontmatter (required fields)
+Every public entry lives at `skills/<skill-name>/SKILL.md`. Its YAML frontmatter provides at least:
 
-| Field | Why |
-|-------|-----|
-| `name` | Used as the skill identifier across routing, logging, and evaluation. MUST carry the backend infix matching its `backend`/`<scope>/` (e.g. `quark-torch-*`, `quark-onnx-*`, or bare `quark-*` for shared) |
-| `description` | The trigger surface — Claude's harness picks a skill by prompt-matching this field. Backend-specific skills MUST include unambiguous backend keywords (torch: `PyTorch` / `HuggingFace safetensors` / `transformers`; onnx: `.onnx` / `onnxruntime`) so harness routing is deterministic |
-| `layer` | Must be one of `l0-foundation`, `l1-atomic`, `l2-workflows`, `l3-recipes`, `meta`. Determines what a skill is allowed to depend on (see `architecture.md`) |
-| `backend` | Must be one of `shared`, `torch`, `onnx`. Must equal the parent `<scope>/` directory in the path. Drives CI lint that prevents `shared` skills from importing torch-only or onnx-only modules, and prevents `torch` meta skills from referencing onnx upstream paths (and vice versa) |
-| `primary_artifact` | Names the main output artifact so downstream skills know what to expect |
-| `source_knowledge` | Links to upstream Quark docs or source files this skill is derived from. Keeps skills traceable when upstream changes |
+```yaml
+---
+name: <stable-kebab-case-name>
+description: <trigger-oriented responsibility and boundary>
+---
+```
 
-## Required Sections
+The public file determines whether the self-contained or transitional profile applies. Naming and
+placement rules are in [architecture.md](architecture.md).
 
-| Section | Purpose |
-|---------|---------|
-| `## Purpose` | One paragraph — what this skill does and why it exists as a separate unit |
-| `## Inputs` | What the skill needs before it can run (artifacts, user info, environment facts) |
-| `## Outputs` | What the skill produces (artifacts, reports, side effects) |
-| `## Interaction Flow` | The steps this skill walks through, following the five-stage interaction contract |
-| `## Recovery` | What to do when the skill fails — common errors, fallback actions |
+## Self-contained profile
 
-## Length Budgets
+- The top-level body is authoritative for interaction flow, checkpoints, outputs, recovery, and links.
+- Directly owned references, contracts, helpers, evals, ownership, and license material stay in the public entry directory as needed.
+- The primary instruction body does not delegate to `_legacy_impl/`.
+- The entry may define sections and checkpoints suited to its own workflow; the legacy template and validator are not its format.
 
-Skills load into Claude's context, so two hard caps apply:
+## Transitional profile
 
-- **`SKILL.md` body ≤ 315 lines.** Spill detail into sibling `references/`, `agents/`, or `scripts/` files. Caps the per-skill load cost.
-- **`description` ≤ 100 words.** Loaded into baseline context every session, so every word competes against other skills' triggers.
+- The top-level stub owns the stable public `name`, routing `description`, and delegation path.
+- The delegated body under `skills/_legacy_impl/<layer>/<scope>/<implementation-name>/SKILL.md` owns the executable flow, artifacts, checkpoints, and recovery.
+- A stub is not made self-contained by copying legacy content selectively; migration follows the ownership boundary in [architecture.md](architecture.md).
 
-Both caps are enforced as **blocking** by `.claude/skills-impl/meta/shared/quark-skill-creator/scripts/validate_skill.py` and reiterated in `CONTRIBUTING.md`.
+## Mechanical validation
 
-## Placeholder rule
+The [legacy validator](../../skills/_legacy_impl/meta/shared/quark-skill-creator/scripts/validate_skill.py)
+applies to delegated and internal legacy bodies. It requires these five
+frontmatter fields:
 
-`primary_artifact` must be a concrete filename (e.g. `validation_report.md`, `quant_plan.json`). Any value containing `<...>` angle brackets, `<TBD>`, or bare `TODO` is a blocking failure — these tokens are unresolved placeholders that should not ship.
+- `name`
+- `description`
+- `layer`
+- `primary_artifact`
+- `source_knowledge`
 
-## Validation
+It parses frontmatter as a YAML mapping and requires those keys to be present.
+When values use their expected types, it checks the name against
+`^[a-z][a-z0-9-]{0,63}$`, restricts `layer` to `l0-foundation`, `l1-atomic`,
+`l2-workflows`, `l3-recipes`, or `meta`, and requires these five body sections:
 
-`validate_skill.py` performs the mechanical pass (frontmatter, length, sections, placeholder, source_knowledge resolvability). Authors should run it before every commit and capture the resulting report (see `quark-skill-creator` Phase 5). Contractual / semantic review is a separate sub-agent pass — see `.claude/skills-impl/meta/shared/quark-skill-creator/agents/reviewer.md`.
+- `## Purpose`
+- `## Inputs`
+- `## Outputs`
+- `## Interaction Flow`
+- `## Recovery`
+
+For string values, the validator limits `description` to 100 words and rejects
+unresolved primary-artifact placeholders. For a `source_knowledge` list, each
+item must be a string and a repo-root-relative path; a missing known-upstream
+path warns, while other invalid or missing paths block. It limits the body to
+315 lines. Noncanonical artifact extensions and angle brackets in descriptions
+warn. Exit codes are 0 for pass, 1 for warnings only, and 2 for blocking
+findings.
+
+The current validator does not reject every wrong value type: type-specific
+checks are skipped when fields such as `name` or `layer` are not strings, or
+when `source_knowledge` is not a list. Treat this as a mechanical validation
+gap and catch it during semantic review until the validator is strengthened.
+
+`backend` is a legacy template convention that should match the parent scope,
+but the validator does not currently require or check it.
+
+Some grandfathered delegated bodies may still fail these checks; record those findings as
+migration debt rather than applying the legacy format to a public stub or self-contained entry.
+Mechanical validation does not replace semantic, link, contract, or runtime review.

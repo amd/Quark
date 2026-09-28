@@ -1,0 +1,23 @@
+schema_version: 1
+id: quant.mxfp4.frontier-moe-recipe.v1
+domain: quantization
+kind: reference
+status: advisory
+applicability:
+  gpu_type: [mi350x, mi355x]
+match:
+  symptoms: []
+  keywords: [mxfp4, moe, fp8, qwen]
+summary: Frontier MoE bring-up commonly starts with MXFP4 routed experts and higher precision for attention and shared experts.
+guidance:
+  - Treat the recipe as a candidate, not a winner or pruning rule.
+  - Keep linear attention, self attention, shared experts, and MTP independently configurable.
+  - Require real post-export evaluation because model-specific exceptions are common.
+required_checks: [post_export_accuracy, throughput]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: knowledge/concepts/mxfp4-frontier-model-bringup.md
+  sha256: da89a35955982de090e5a73d8d25101a6eef90dfcebc4454e4b28c59a6d2ba33

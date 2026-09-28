@@ -85,6 +85,7 @@ def main(args: argparse.Namespace) -> None:
     # 5. (Optional) Model Evaluation
     if not args.skip_evaluation:
         print("\n[INFO]: Evaluating ...")
+        args.use_ppl_eval_model = True
         eval_model(args, model, main_device)
 
 
@@ -115,6 +116,13 @@ if __name__ == "__main__":
     parser.add_argument("--seq_len", type=int, help="Sequence length of data", default=512)
     parser.add_argument("--skip_pruning", action="store_true")
     parser.add_argument("--skip_evaluation", action="store_true")
+    parser.add_argument(
+        "--evaluation_dataset",
+        help="Dataset for evaluation",
+        default="wikitext",
+        choices=["wikitext", "wikitext_gpt_oss_120b", "wikitext_gpt_oss_20b"],
+    )
+    parser.add_argument("--use_ppl_eval_model", action="store_true")
 
     parser.add_argument("--batch_size", help="Batch size for calibration.", type=int, default=1)
     parser.add_argument(
@@ -153,6 +161,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Providing `--apply_chat_template` without an argument will apply the default chat template to the prompt.",
     )
+    parser.add_argument("--use_mlperf_rouge", action="store_true")
+    parser.add_argument("--eval_data_dir", help="Dataset for evaluation", type=str, default=None)
 
     parser.add_argument("--pruning_algo", help="Pruning Algorithms.", default="osscar", choices=["osscar", None])
 

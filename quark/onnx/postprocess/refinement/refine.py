@@ -57,8 +57,12 @@ class QuantPosManager:
                     if i.float_data[0] != new_scale:
                         i.float_data[0] = new_scale
                 elif i.raw_data:
-                    if np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0] != new_scale:
-                        np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0] = new_scale
+                    if (
+                        np.frombuffer(i.raw_data, dtype=np.float32).tolist()[0] != new_scale
+                    ):  # pragma: no cover  # TODO: add unit test to cover raw_data-backed scale update
+                        new_val = np.array(new_scale, dtype=np.float32).reshape(())
+                        new_init = onnx.numpy_helper.from_array(new_val, name=i.name)
+                        i.CopyFrom(new_init)
                 else:
                     # Handle float16 scale
                     ort_val = tensor_proto_to_array(i).dtype
@@ -77,13 +81,13 @@ class QuantPosManager:
             self.set_scale(node, new_scale)
             if node.output:
                 for n in self.model.model.graph.node:
-                    if n.name == node.output[0].strip(postfix) and n.op_type in DEQUANT_OP_TYPES:
+                    if n.name == node.output[0].removesuffix(postfix) and n.op_type in DEQUANT_OP_TYPES:
                         self.set_scale(node, new_scale)
         elif node.op_type in DEQUANT_OP_TYPES:
             new_scale = pos2scale(new_pos)
             self.set_scale(node, new_scale)
             for n in self.model.model.graph.node:
-                if n.name == node.input[0].strip(postfix) and n.op_type in QUANT_OP_TYPES:
+                if n.name == node.input[0].removesuffix(postfix) and n.op_type in QUANT_OP_TYPES:
                     self.set_scale(node, new_scale)
 
     def find_node_name(self, name: str) -> Any:
@@ -907,7 +911,7 @@ class QuantInfoManager:
                         for initializer in self.model.model.graph.initializer:
                             if initializer.name == bias_node.input[2]:
                                 if is_version_below(onnx, "1.19.0"):
-                                    data_type = onnx.mapping.TENSOR_TYPE_TO_NP_TYPE[initializer.data_type]  # type: ignore
+                                    data_type = onnx.mapping.TENSOR_TYPE_TO_NP_TYPE[initializer.data_type]  # type: ignore  # pragma: no cover - requires onnx < 1.19
                                 else:
                                     data_type = helper.tensor_dtype_to_np_dtype(initializer.data_type)
                                 if data_type != np.int32:

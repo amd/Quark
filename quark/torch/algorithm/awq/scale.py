@@ -13,7 +13,7 @@ import torch.nn as nn
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.modules.act import ScaledActivation
-from quark.torch.algorithm.utils.utils import is_attention_module
+from quark.torch.algorithm.utils.utils import get_model_type_norm_constant, is_attention_module
 from quark.torch.utils import (
     assert_no_nan,
     getattr_recursive,
@@ -120,11 +120,10 @@ def scale_ln_fcs(ln: nn.Module, fcs: list[nn.Module], scales: torch.Tensor) -> N
     with OffloadParameter(ln):
         if hasattr(ln, "weight") and ln.weight is not None:
             scales = scales.to(ln.weight.device)
-            norm_class_name = str(ln.__class__).lower()
-            if "gemma" in norm_class_name or "qwen3_5" in norm_class_name:
-                ln.weight.data = (ln.weight.data + 1.0) / scales.to(ln.weight.device) - 1.0
-            else:
-                ln.weight.div_(scales.to(ln.weight.device))
+            # Centered RMSNorm (gemma pre-gemma4, qwen3_5) folds as ``(w + c) / s - c``; this
+            # reduces to the plain ``w / s`` division for gemma4/standard RMSNorm where ``c == 0``.
+            c = get_model_type_norm_constant(ln)
+            ln.weight.data = (ln.weight.data + c) / scales.to(ln.weight.device) - c
             update_offload_parameter(ln, "weight", ln.weight)
         else:  # for grok, the scale of RMSnorm is named by "scale"
             scales = scales.to(ln.scale.device)

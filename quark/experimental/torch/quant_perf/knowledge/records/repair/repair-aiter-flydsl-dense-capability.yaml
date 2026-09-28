@@ -1,0 +1,25 @@
+schema_version: 1
+id: repair.aiter.flydsl.mxfp4-dense-capability.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run]
+  error_contains: [FlyDSL backend is unavailable in the installed AITER build]
+  keywords: [flydsl, mxfp4, a4w4]
+summary: The active AITER source must expose the dense FlyDSL MXFP4 entry points required by vLLM.
+guidance:
+  - Verify the active runtime origin before editing source.
+  - Restore the dense FlyDSL API and weight-preparation entry points in the managed kernel repository.
+  - Rebuild the affected extension and rerun load and inference.
+required_checks: [runtime_origin, build, load, inference]
+evidence:
+  level: E3
+  verifier: load_inference
+provenance:
+  kind: external_commits
+  repository: aiter
+  base_commit: 21ae71991e4e3cc0d19645927bb50977ad105de1
+  origin_commits: [a03ac4314, 1e7f42ada, 762c3a540]

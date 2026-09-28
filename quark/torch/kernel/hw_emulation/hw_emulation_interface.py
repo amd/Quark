@@ -21,7 +21,7 @@ from quark.torch.kernel.float8_e5m3 import (
     float32_qdq_to_float8_e5m3_func,
 )
 from quark.torch.kernel.hw_emulation.extensions import kernel_ext
-from quark.torch.quantization.config.type import Dtype, QSchemeType
+from quark.torch.quantization.config.type import MX6, MX9, Dtype, QSchemeType
 from quark.torch.quantization.utils import (
     calculate_qmin_qmax,
     even_round,
@@ -50,22 +50,41 @@ logger = ScreenLogger(__name__)
 # - using inputs as torch.Tensor (activation) or torch.nn.Parameter (weight), PyTorch bug. Reference: https://github.com/pytorch/pytorch/issues/165051 (`0/0: expected type of 'args[1]' to be a tensor type, ' but found <class 'torch.nn.parameter.Parameter'>`)
 RECOMPILATION_LIMIT = 48 * max(1, torch.cuda.device_count())
 
+# Dynamo raises `FailOnRecompileLimitHit` on whichever of its two limits is reached first, so both
+# are raised here: `recompile_limit` (PyTorch default 8) and `accumulated_recompile_limit` (default
+# 256). Raising only the former would still leave `scaled_fake_quantize` capped at 256, which
+# `RECOMPILATION_LIMIT` exceeds from 6 devices up. The `max()` below keeps either limit from being
+# lowered below its PyTorch default.
+TORCH_DEFAULT_LIMITS: dict[str, int]
 if Version(torch.__version__) >= Version("2.7"):
-    if torch._dynamo.config.recompile_limit == 8:
-        torch._dynamo.config.recompile_limit = RECOMPILATION_LIMIT
-    else:
-        if torch._dynamo.config.recompile_limit < RECOMPILATION_LIMIT:
+    TORCH_DEFAULT_LIMITS = {"recompile_limit": 8, "accumulated_recompile_limit": 256}
+elif Version(torch.__version__) >= Version("2.5"):  # pragma: no cover
+    TORCH_DEFAULT_LIMITS = {"cache_size_limit": 8, "accumulated_cache_size_limit": 256}
+else:  # pragma: no cover
+    TORCH_DEFAULT_LIMITS = {}
+
+
+def raise_dynamo_recompilation_limits(target_limit: int = RECOMPILATION_LIMIT) -> None:
+    """Raise every Dynamo limit in ``TORCH_DEFAULT_LIMITS`` that is still at its PyTorch default up to
+    ``target_limit``. A limit the user set themselves is left alone: it is never lowered, and never
+    raised either, only reported when it sits below what `scaled_fake_quantize` needs.
+
+    Called at import; also called directly by the tests, which is why it is a function rather than a
+    module-level loop.
+    """
+    for config_name, torch_default in TORCH_DEFAULT_LIMITS.items():
+        current_limit = getattr(torch._dynamo.config, config_name)
+        expected_limit = max(torch_default, target_limit)
+
+        if current_limit == torch_default:
+            setattr(torch._dynamo.config, config_name, expected_limit)
+        elif current_limit < expected_limit:
             logger.warning(
-                f"Detected user-specified torch._dynamo.config.recompile_limit={torch._dynamo.config.recompile_limit}. This may be too small for AMD Quark needs that expects >={RECOMPILATION_LIMIT} (as different quantization schemes, different devices may trigger `scaled_fake_quantize` recompilations), and may trigger `torch._dynamo.exc.FailOnRecompileLimitHit` error."
+                f"Detected user-specified torch._dynamo.config.{config_name}={current_limit}. This may be too small for AMD Quark needs that expects >={expected_limit} (as different quantization schemes, different devices may trigger `scaled_fake_quantize` recompilations), and may make AMD Quark fall back to the much slower non-compiled `scaled_fake_quantize`."
             )
-elif Version(torch.__version__) >= Version("2.5"):
-    if torch._dynamo.config.cache_size_limit == 8:
-        torch._dynamo.config.cache_size_limit = RECOMPILATION_LIMIT
-    else:
-        if torch._dynamo.config.cache_size_limit < RECOMPILATION_LIMIT:
-            logger.warning(
-                f"Detected user-specified torch._dynamo.config.recompile_limit={torch._dynamo.config.cache_size_limit}. This may be too small for AMD Quark needs that expects >={RECOMPILATION_LIMIT} (as different quantization schemes, different devices may trigger `scaled_fake_quantize` recompilations), and may trigger `torch._dynamo.exc.FailOnRecompileLimitHit` error."
-            )
+
+
+raise_dynamo_recompilation_limits()
 
 __all__ = [
     "quant_fp8_e4m3",
@@ -1118,10 +1137,21 @@ def fake_quantize_mx(
     return output_tensor.transpose(axis, -1)
 
 
-def fake_quantize_mx6_mx9(input_tensor: torch.Tensor, axis: int, block_size: int, **kwargs: Any) -> torch.Tensor:
-    quant_bit = kwargs["quant_bit"]
-    input_shape = list(input_tensor.shape)
-    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+def _compute_mx_exponents(
+    input_tensor: torch.Tensor, axis: int, block_size: int, sub_block_size: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute the two-level MicroeXponent exponents shared by the MX6/MX9 fake and real paths.
+
+    Returns ``(blocked_input, max_exp, shared_exp, sub_shift_bits)``, where ``blocked_input`` is
+    ``input_tensor`` reshaped to ``(rows, num_blocks, block_size)``, ``max_exp`` is the block
+    exponent with shape ``(rows, num_blocks, 1)``, ``sub_shift_bits`` is the 0/1 shift of each
+    sub-block with shape ``(rows, num_blocks, block_size // sub_block_size)``, and ``shared_exp``
+    is ``max_exp`` minus that shift, broadcast back over every element of the block.
+    """
+    # Subnormals all report exponent -127 from the IEEE exponent field, so the step derived
+    # from them is meaningless. Flush them, as the ONNX kernel and the hardware do.
+    smallest_normal = torch.finfo(input_tensor.dtype).smallest_normal
+    input_tensor = torch.where(input_tensor.abs() < smallest_normal, 0.0, input_tensor)
 
     block_x = reshape_to_blocks(input_tensor.detach(), block_size, axis)
 
@@ -1131,45 +1161,128 @@ def fake_quantize_mx6_mx9(input_tensor: torch.Tensor, axis: int, block_size: int
     block_x = torch.nan_to_num(block_x, nan=0.0, posinf=0.0, neginf=0.0)
 
     amax, _ = torch.max(torch.abs(block_x), dim=-1, keepdim=True)
-    scale = t_exponent(amax)
+    max_exp = t_exponent(amax)
 
-    input_dtype = input_tensor.dtype
-    max_exp = scale
+    blocked_input = reshape_to_blocks(input_tensor, block_size, axis)
 
-    shape_list = list(input_tensor.shape)
-    shape_list[axis], shape_list[-1] = shape_list[-1], shape_list[axis]
-    input_tensor = reshape_to_blocks(input_tensor, block_size, axis)
-
-    t_exp = t_exponent(input_tensor)
+    t_exp = t_exponent(blocked_input)
     idx2 = max_exp - t_exp >= 1
 
     # shared prime bit
-    number_count_shared_prime_bit = 2
-    assert idx2.shape[-1] % number_count_shared_prime_bit == 0
+    assert idx2.shape[-1] % sub_block_size == 0
     old_shape = idx2.shape
-    target_shape = old_shape[0:-1] + (old_shape[-1] // number_count_shared_prime_bit, number_count_shared_prime_bit)
+    target_shape = old_shape[0:-1] + (old_shape[-1] // sub_block_size, sub_block_size)
     idx2 = idx2.reshape(target_shape)
-    idx2 = torch.sum(idx2, -1, keepdim=True) == number_count_shared_prime_bit
-    repeat_times = [1 for i in range(len(idx2.shape))]
-    repeat_times[-1] = number_count_shared_prime_bit
-    idx2 = idx2.repeat(repeat_times)
-    idx2 = idx2.reshape(old_shape)
+    # A sub-block shifts only when every one of its elements sits below the block exponent.
+    sub_shift_bits = torch.sum(idx2, -1, keepdim=True) == sub_block_size
+    repeat_times = [1 for _ in range(len(sub_shift_bits.shape))]
+    repeat_times[-1] = sub_block_size
+    idx2 = sub_shift_bits.repeat(repeat_times).reshape(old_shape)
 
     shared_exp = idx2 * (-1) + max_exp
+
+    return blocked_input, max_exp, shared_exp, sub_shift_bits.squeeze(-1)
+
+
+def _mx6_mx9_codes(
+    blocked_input: torch.Tensor, shared_exp: torch.Tensor, quant_bit: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Round a blocked input to MX6/MX9 integer codes, returning ``(codes, scale)``.
+
+    Dequantizing is ``codes * scale``, which is what ``fake_quantize_mx6_mx9`` returns.
+    """
     scale = torch.pow(2.0, shared_exp - quant_bit + 2)
 
-    quant_max = (
-        torch.clamp_max(torch.pow(2.0, max_exp.to(torch.float64) + 1) - scale, torch.finfo(torch.float32).max).to(
-            torch.float32
-        )
-        / scale
-    )
+    # The element field is quant_bit bits wide including the sign, and an element is encoded
+    # against its own sub-block's step, so the bound is this constant rather than something
+    # derived from max_exp -- which was one bit too loose wherever the sub-block shift fired.
+    quant_max = float(2 ** (quant_bit - 1) - 1)
 
-    output_tensor = torch.round(input_tensor / scale)
-    output_tensor = torch.clamp(output_tensor, -quant_max, quant_max) * scale
+    codes = torch.round(blocked_input / scale)
+    codes = torch.clamp(codes, -quant_max, quant_max)
+
+    return codes, scale
+
+
+def _can_read_values(tensor: torch.Tensor) -> bool:
+    """False while tracing, where branching on a tensor's values is a data-dependent graph break."""
+    if torch.compiler.is_compiling() or torch._guards.detect_fake_mode() is not None:
+        return False
+    return not isinstance(tensor, torch._subclasses.FakeTensor)
+
+
+def fake_quantize_mx6_mx9(input_tensor: torch.Tensor, axis: int, block_size: int, **kwargs: Any) -> torch.Tensor:
+    quant_bit = kwargs["quant_bit"]
+    sub_block_size = kwargs["sub_block_size"]
+    input_shape = list(input_tensor.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+
+    input_dtype = input_tensor.dtype
+
+    blocked_input, _, shared_exp, _ = _compute_mx_exponents(input_tensor, axis, block_size, sub_block_size)
+    codes, scale = _mx6_mx9_codes(blocked_input, shared_exp, quant_bit)
+
+    output_tensor = codes * scale
+
+    # nan_to_num above only cleans `block_x`, so the data path still carries any Inf, which
+    # the clamp would saturate to quant_max -- turning an overflow into a plausible finite
+    # number. Restore the non-finite inputs so they propagate, as NaN already does.
+    output_tensor = torch.where(torch.isfinite(blocked_input), output_tensor, blocked_input)
 
     output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
     output_tensor = output_tensor[:, : input_shape[-1]].reshape(input_shape).to(input_dtype)
+    return output_tensor.transpose(axis, -1)
+
+
+def real_quantize_mx6_mx9(input_tensor: torch.Tensor, axis: int, block_size: int, **kwargs: Any) -> torch.Tensor:
+    """Emit MX6/MX9 codes together with their inlined exponents.
+
+    Each block of ``block_size`` elements widens to ``block_size + 2`` values laid out as
+    ``[block_exp, sub_block_bits_packed, codes...]``. ``sub_block_bits_packed`` holds one bit per
+    sub-block, bit ``j`` being the shift of sub-block ``j``. Dequantizing a block is
+    ``codes * 2 ** (block_exp - shift - quant_bit + 2)``, which reproduces
+    :func:`fake_quantize_mx6_mx9` exactly.
+
+    The values are still float, so this is a layout change rather than a size reduction: a block
+    costs ``block_size + 2`` floats instead of the 12 bytes (MX6) or 18 bytes (MX9) the format
+    budgets for it. Nothing packs them yet, and export is not wired up either --
+    ``StaticNonScaledRealQuantizer.to_real_quantize_params`` asserts on ``mx_element_dtype``,
+    which the MX6/MX9 specs do not set; ``create_pack_method`` has no ``Pack_mx6``/``Pack_mx9``
+    and falls back to the identity ``PackMethod``; and ``Dtype.to_torch_packed_dtype`` still
+    reports mx6/mx9 as unserializable. Reaching this kernel today means calling
+    ``torch.ops.quark.non_scaled_real_quantize`` directly.
+
+    Only finite inputs are meaningful: MX6/MX9 have no encoding for Inf or NaN, so those
+    positions carry whatever the clamp produced. Real quantize runs on trained weights, where
+    they do not occur.
+    """
+    quant_bit = kwargs["quant_bit"]
+    sub_block_size = kwargs["sub_block_size"]
+
+    input_shape = list(input_tensor.shape)
+    input_shape[-1], input_shape[axis] = input_shape[axis], input_shape[-1]
+    assert input_shape[-1] % block_size == 0
+
+    blocked_input, max_exp, shared_exp, sub_shift_bits = _compute_mx_exponents(
+        input_tensor, axis, block_size, sub_block_size
+    )
+    codes, _ = _mx6_mx9_codes(blocked_input, shared_exp, quant_bit)
+
+    if __debug__ and _can_read_values(codes):
+        # Non-finite inputs are excluded -- they have no MX encoding at all, see the docstring.
+        element_max = float(2 ** (quant_bit - 1) - 1)
+        finite_codes = codes[torch.isfinite(blocked_input)]
+        assert bool(torch.all(finite_codes.abs() <= element_max)), (
+            f"element code out of range: |code| exceeds the {quant_bit}-bit signed field's {element_max}."
+        )
+
+    bit_weights = torch.pow(2.0, torch.arange(sub_shift_bits.size(-1), device=codes.device, dtype=torch.float32))
+    packed_bits = torch.sum(sub_shift_bits.to(torch.float32) * bit_weights, dim=-1, keepdim=True)
+
+    output_tensor = torch.cat([max_exp.to(codes.dtype), packed_bits.to(codes.dtype), codes], dim=-1)
+    output_tensor = output_tensor.reshape(output_tensor.size(0), -1)
+    input_shape[-1] = input_shape[-1] // block_size * (block_size + 2)
+    output_tensor = output_tensor[:, : input_shape[-1]].reshape(input_shape)
     return output_tensor.transpose(axis, -1)
 
 
@@ -1301,6 +1414,13 @@ def non_scaled_real_quantize(
 def non_scaled_real_quantize_impl(
     input_tensor: torch.Tensor, quant_dtype: str, mx_element_dtype: str, axis: int, block_size: int
 ) -> torch.Tensor:
+    # NOTE: `bfp16` also routes to `StaticNonScaledRealQuantizer` and is blocked by this same
+    # dispatch; it is the intended next addition here once it grows a real-quantize kernel.
+    if quant_dtype in DTYPE_TO_NON_SCALED_REAL_QUANTIZE_FUNCS:
+        return DTYPE_TO_NON_SCALED_REAL_QUANTIZE_FUNCS[quant_dtype](
+            input_tensor=input_tensor, axis=axis, block_size=block_size
+        )
+
     assert quant_dtype == "mx" and mx_element_dtype in ["fp4", "fp6_e2m3", "fp6_e3m2"], (
         "Only mxfp4, mxfp6_e2m3 and mxfp6_e3m2 is supported!"
     )
@@ -1961,6 +2081,7 @@ def _dequantize_with_dtype_convert(inputs: torch.Tensor, quant_dtype: str) -> to
 
 DTYPE_TO_DEQUANTIZE_FUNCS = {
     Dtype.int2.value: dequantize_int,
+    Dtype.uint2.value: dequantize_int,
     Dtype.int3.value: dequantize_int,
     Dtype.int4.value: dequantize_int,
     Dtype.uint4.value: dequantize_int,
@@ -1978,6 +2099,7 @@ DTYPE_TO_DEQUANTIZE_FUNCS = {
 
 DTYPE_TO_FAKE_QUANTIZE_FUNCS = {
     Dtype.int2.value: fake_quantize_int,
+    Dtype.uint2.value: fake_quantize_int,
     Dtype.int3.value: fake_quantize_int,
     Dtype.int4.value: fake_quantize_int,
     Dtype.uint16.value: fake_quantize_int,
@@ -1999,13 +2121,21 @@ DTYPE_TO_FAKE_QUANTIZE_FUNCS = {
 DTYPE_TO_NON_SCALED_FAKE_QUANTIZE_FUNCS = {
     Dtype.bfp16.value: fake_quantize_bfp16,
     Dtype.mx.value: fake_quantize_mx,
-    Dtype.mx6.value: partial(fake_quantize_mx6_mx9, quant_bit=5),
-    Dtype.mx9.value: partial(fake_quantize_mx6_mx9, quant_bit=8),
+    Dtype.mx6.value: partial(fake_quantize_mx6_mx9, quant_bit=MX6.element_bits, sub_block_size=MX6.k2),
+    Dtype.mx9.value: partial(fake_quantize_mx6_mx9, quant_bit=MX9.element_bits, sub_block_size=MX9.k2),
     Dtype.fp8_e5m3.value: fake_quantize_float8_e5m3,
+}
+
+# Consumed by `non_scaled_real_quantize_impl`. The scaled table below (`DTYPE_TO_REAL_QUANTIZE_FUNCS`)
+# is a different dispatch: it feeds `scaled_real_quantize_impl`, which passes scale/zero_point.
+DTYPE_TO_NON_SCALED_REAL_QUANTIZE_FUNCS = {
+    Dtype.mx6.value: partial(real_quantize_mx6_mx9, quant_bit=MX6.element_bits, sub_block_size=MX6.k2),
+    Dtype.mx9.value: partial(real_quantize_mx6_mx9, quant_bit=MX9.element_bits, sub_block_size=MX9.k2),
 }
 
 DTYPE_TO_REAL_QUANTIZE_FUNCS = {
     Dtype.int2.value: real_quantize_int,
+    Dtype.uint2.value: real_quantize_int,
     Dtype.int3.value: real_quantize_int,
     Dtype.int4.value: real_quantize_int,
     Dtype.uint4.value: real_quantize_int,

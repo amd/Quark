@@ -22,7 +22,6 @@ reconstructed from the saved state written by ``dsv4_offload``.
 from __future__ import annotations
 
 import math
-import re as _re
 from collections import defaultdict
 from pathlib import Path
 
@@ -32,8 +31,18 @@ import torch.nn as nn
 from quark.torch.quantization.nn.modules.quantize_linear import QuantMixin
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
 
-_ROUTED_PROXY_RE = _re.compile(r"^layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.proxy$")
-_SHARED_PROXY_RE = _re.compile(r"^layers\.(\d+)\.ffn\.shared_experts\.(w[123])\.proxy$")
+# Every collected input-quantizer name ends in ``.proxy`` (the NativeLinear
+# submodule Quark quantizes); the checkpoint key swaps ``.proxy`` -> ``.input_scale``.
+_PROXY_SUFFIX = ".proxy"
+
+
+def _template(name: str) -> str:
+    """Group key for the never-fired fill: mask whole-number path segments so
+    siblings differing only by a layer/expert index collapse together, e.g.
+    ``layers.3.ffn.experts.17.w1`` -> ``layers.*.ffn.experts.*.w1`` (the ``w1``
+    suffix is kept, so the fill stays projection-specific).
+    """
+    return ".".join("*" if seg.isdigit() else seg for seg in name.split("."))
 
 
 def _is_static_pertensor_stage(stage) -> bool:
@@ -141,81 +150,90 @@ def collect_input_minmax(
 # Convert collected input_scale -> NVFP4 safetensors layout
 # ---------------------------------------------------------------------------
 #
-# The collected `scale_map` keys look like the wrapped proxy module names:
-#     layers.<L>.ffn.experts.<E>.<wK>.proxy            (routed)
-#     layers.<L>.ffn.shared_experts.<wK>.proxy         (shared)
-# The HF checkpoint stores each as its own F32 scalar tensor named:
-#     layers.<L>.ffn.experts.<E>.<wK>.input_scale
-#     layers.<L>.ffn.shared_experts.<wK>.input_scale
-# So conversion is rename + reshape + (small) fill of never-routed experts.
+# The set of keys is driven entirely by which modules were wrapped (i.e. by the
+# ``--exclude_layers`` passed to Stage 2), not by any hardcoded layer/expert layout.
 
 
-def build_input_scale_tensors(scale_map, n_experts_per_layer):
+def build_input_scale_tensors(scale_map, wrapped_names, n_experts_per_layer=None):
     """Convert {proxy_name: scale} -> {hf_key: F32 scalar tensor} + report.
 
-    - routed experts: emit all (layer, expert, proj); fill missing ones with
-      the max over calibrated experts in that (layer, proj).
-    - shared experts: emit one per (layer, proj) when present (always active).
+    ``wrapped_names`` is the full set of wrapped proxy module names (everything
+    Quark calibrated, including sparse experts that never fired during calibration
+    and so are absent from ``scale_map``). Each name maps 1:1 to an HF key by
+    swapping the trailing ``.proxy`` for ``.input_scale``: names in ``scale_map``
+    take their calibrated value; names missing from it (never fired) are filled with
+    the max calibrated scale among names sharing their template (see
+    :func:`_template`), which never clips.
+
+    ``n_experts_per_layer`` (optional) is only a sanity cross-check: it does not
+    affect the output. When given, per-expert templates (those varying over >=2
+    numeric path segments) are expected to emit ``n_layers * n_experts_per_layer``
+    keys; any shortfall is reported in ``report['expert_count_mismatches']``.
     """
-    by_group = defaultdict(dict)  # (L, proj) -> {expert: scale}
-    shared = {}  # (L, proj) -> scale
-    layers_seen = set()
-    for k, v in scale_map.items():
-        m = _ROUTED_PROXY_RE.match(k)
-        if m:
-            layer, expert, proj = int(m.group(1)), int(m.group(2)), m.group(3)
-            by_group[(layer, proj)][expert] = float(v)
-            layers_seen.add(layer)
-            continue
-        ms = _SHARED_PROXY_RE.match(k)
-        if ms:
-            layer, proj = int(ms.group(1)), ms.group(2)
-            shared[(layer, proj)] = float(v)
-            layers_seen.add(layer)
 
-    if not by_group:
-        raise ValueError("no routed-expert scales collected; nothing to convert")
+    # Fill key: (layer_index, per-layer template) so never-fired experts are filled
+    # with the max scale from calibrated siblings in the SAME layer only.
+    # Example: "layers.3.ffn.experts.17.w1.proxy" -> (3, "layers.*.ffn.experts.*.w1.proxy")
+    def _fill_key(name: str) -> tuple:
+        segs = name.split(".")
+        layer = next((int(s) for s in segs if s.isdigit()), None)
+        return (layer, _template(name))
 
-    n_layers = max(layers_seen) + 1
-    projections = ("w1", "w2", "w3")
-    fill_value = {g: max(e.values()) for g, e in by_group.items()}
+    by_fill_key = defaultdict(list)
+    for name, sc in scale_map.items():
+        by_fill_key[_fill_key(name)].append(float(sc))
+    fill_value = {k: max(v) for k, v in by_fill_key.items()}
 
     tensors = {}
-    n_calibrated = n_filled = n_shared = 0
-    filled_groups = defaultdict(int)
-    for layer in range(n_layers):
-        for expert in range(n_experts_per_layer):
-            for proj in projections:
-                group = (layer, proj)
-                if group not in fill_value:
-                    raise ValueError(f"layer {layer} proj {proj}: no calibrated expert; cannot derive a fill value")
-                experts = by_group[group]
-                if expert in experts:
-                    val = experts[expert]
-                    n_calibrated += 1
-                else:
-                    val = fill_value[group]
-                    n_filled += 1
-                    filled_groups[group] += 1
-                key = f"layers.{layer}.ffn.experts.{expert}.{proj}.input_scale"
-                tensors[key] = torch.tensor(val, dtype=torch.float32)
-
-    for layer in range(n_layers):
-        for proj in projections:
-            if (layer, proj) not in shared:
-                continue
-            key = f"layers.{layer}.ffn.shared_experts.{proj}.input_scale"
-            tensors[key] = torch.tensor(shared[(layer, proj)], dtype=torch.float32)
-            n_shared += 1
+    n_calibrated = n_filled = 0
+    filled_templates = defaultdict(int)
+    for name in wrapped_names:
+        if not name.endswith(_PROXY_SUFFIX):
+            continue
+        key = name[: -len(_PROXY_SUFFIX)] + ".input_scale"
+        if name in scale_map:
+            val = float(scale_map[name])
+            n_calibrated += 1
+        else:
+            fk = _fill_key(name)
+            if fk not in fill_value:
+                raise ValueError(
+                    f"{name}: never fired and no calibrated sibling in layer {fk[0]} "
+                    f"template '{fk[1]}'; cannot derive a fill value"
+                )
+            val = fill_value[fk]
+            n_filled += 1
+            filled_templates[fk[1]] += 1
+        tensors[key] = torch.tensor(val, dtype=torch.float32)
 
     report = {
-        "n_layers": n_layers,
-        "n_experts_per_layer": n_experts_per_layer,
         "n_total": len(tensors),
         "n_calibrated": n_calibrated,
         "n_filled": n_filled,
-        "n_shared": n_shared,
-        "filled_groups": dict(filled_groups),
-        "fill_value": fill_value,
+        "filled_templates": dict(filled_templates),
     }
+    if n_experts_per_layer:
+        report["expert_count_mismatches"] = _check_expert_count(tensors, n_experts_per_layer)
     return tensors, report
+
+
+def _check_expert_count(tensors, n_experts_per_layer):
+    """Cross-check emitted per-expert keys against ``n_experts_per_layer``.
+
+    Per-expert templates vary over >=2 numeric path segments; the leading numeric
+    segment is the layer index. Each such template should emit
+    ``n_layers * n_experts_per_layer`` keys. Returns
+    [(template, expected, actual), ...] for any that don't.
+    """
+    by_template = defaultdict(list)
+    for key in tensors:
+        by_template[_template(key)].append(key)
+    mismatches = []
+    for tmpl, keys in by_template.items():
+        if tmpl.count("*") < 2:
+            continue
+        layers = {next(s for s in k.split(".") if s.isdigit()) for k in keys}
+        expected = len(layers) * n_experts_per_layer
+        if len(keys) != expected:
+            mismatches.append((tmpl, expected, len(keys)))
+    return mismatches

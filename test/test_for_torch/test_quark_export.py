@@ -165,7 +165,7 @@ AWQ_CONFIG = AWQConfig(
     model_decoder_layers="model.decoder.layers",
 )
 
-EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
+EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
 sys.path.append("..")
 
 
@@ -524,7 +524,10 @@ def test_int16_onnx_export(tmpdir: str):
 
         ortSession = ort.InferenceSession(tmpdir + "/quark_model.onnx")
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "Conv") == 2
-        assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 7
+        # export_onnx folds the weight-constant QuantizeLinear into the DequantizeLinear
+        # (fold_quantizers_for_weight), so the pipeline graph has fewer QuantizeLinear than
+        # the bare torch.onnx.export API graph above.
+        assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 3
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "DequantizeLinear") == 7
     torch.cuda.empty_cache()
 
@@ -581,7 +584,10 @@ def test_int32_onnx_export(tmpdir: str):
 
         ortSession = ort.InferenceSession(tmpdir + "/quark_model.onnx")
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "Conv") == 2
-        assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 5
+        # export_onnx folds the weight-constant QuantizeLinear into the DequantizeLinear
+        # (fold_quantizers_for_weight), so the pipeline graph has fewer QuantizeLinear than
+        # the bare torch.onnx.export API graph above.
+        assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "QuantizeLinear") == 3
         assert onnx_contains_op_num(tmpdir + "/quark_model.onnx", "DequantizeLinear") == 7
     torch.cuda.empty_cache()
 
@@ -658,3 +664,25 @@ def test_restore_aux_files(tmp_path):
     with mock.patch("quark.torch.export.utils.shutil.copy2", side_effect=OSError("disk full")):
         assert restore_aux_files(src2, dst3) == []
     assert not (dst3 / "merges.txt").exists()
+
+
+def test_restore_aux_files_resolves_cached_huggingface_source(monkeypatch, tmp_path):
+    from quark.torch.export.utils import restore_aux_files
+
+    src = tmp_path / "snapshot"
+    dst = tmp_path / "export"
+    src.mkdir()
+    dst.mkdir()
+    config = src / "config.json"
+    config.write_text("{}")
+    (dst / "config.json").write_text('{"exported": true}')
+    (src / "processor_config.json").write_text('{"processor_class": "ExampleProcessor"}')
+    monkeypatch.setattr(
+        "transformers.utils.cached_file",
+        lambda model_ref, filename, local_files_only: str(config),
+    )
+
+    restored = restore_aux_files("org/multimodal-model", dst)
+
+    assert restored == ["processor_config.json"]
+    assert (dst / "processor_config.json").read_text() == '{"processor_class": "ExampleProcessor"}'

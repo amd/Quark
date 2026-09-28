@@ -115,6 +115,35 @@ build_docs() {
     # Delete unused files
     rm -f ./_docs/readme_for_zip.md
 
+    # Contrib components are self-contained: each ships its docs under
+    # quark/contrib/<component>/docs/. Copy each into a per-component subdir of the
+    # build tree (preserving structure so per-component index.rst files never
+    # collide). intro_contrib.rst auto-indexes them via a :glob: toctree
+    # (contrib/*/index), so contributors never edit core doc files. This runs
+    # before the notebook enforcement below so a stray .ipynb under a component's
+    # docs/ is caught (tutorials must live under the root tutorials/ folder).
+    # -mindepth/-maxdepth 2 pins the match to quark/contrib/<component>/docs so a
+    # nested */docs at any deeper level cannot collide onto a component name.
+    find ../quark/contrib -mindepth 2 -maxdepth 2 -type d -name docs | while IFS= read -r docdir; do
+        comp="$(basename "$(dirname "${docdir}")")"
+        mkdir -p "./_docs/contrib/${comp}"
+        cp -r "${docdir}/." "./_docs/contrib/${comp}/"
+    done
+    # The contrib toctree in intro_contrib.rst globs contrib/*/index; when no
+    # component ships docs yet, synthesize a placeholder index so the glob matches
+    # something and the build does not warn (CI builds with --fail-on-warning).
+    if ! ls ./_docs/contrib/*/index.rst >/dev/null 2>&1; then
+        mkdir -p ./_docs/contrib/_placeholder
+        cat > ./_docs/contrib/_placeholder/index.rst <<'EOF'
+No contrib component documentation yet
+======================================
+
+No ``contrib`` component currently ships documentation. See
+:doc:`../../intro_contrib` for how to add a component under
+``quark/contrib/<component>/docs/``.
+EOF
+    fi
+
     # Enforce that all Jupyter notebooks are stored in the allowed Sphinx directories
     enforce_jupyter_notebook_are_stored_on_tutorials_folder "./source/tutorials/*,./_docs/tutorials/*"
 
@@ -218,7 +247,6 @@ build_docs() {
     find ../examples/onnx -type f -name "*.rst" | while IFS= read -r mdfile; do
         cp ${mdfile} ./_docs/onnx/
     done
-
     echo "[QUARK-INFO] Building Quark documentation..."
 
     mkdir -p ./_docs/output/

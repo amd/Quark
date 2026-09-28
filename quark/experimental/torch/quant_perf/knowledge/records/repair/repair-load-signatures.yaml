@@ -1,0 +1,30 @@
+schema_version: 1
+id: repair.vllm.load-signatures.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - memory access fault
+    - param_data.shape
+    - weight key not found
+    - kv cache memory
+    - MXFP4 block scale loaded as a per-expert scalar
+  keywords: [load, quark, packed, aiter, enforce_eager, max_model_len]
+summary: Route common ROCm vLLM loading failures by signature and checkpoint provenance.
+guidance:
+  - Detect quant_method=quark before applying generic packed-weight fixes.
+  - Treat draft or MTP shape mismatches in Quark exports as possible recipe exclusion gaps.
+  - When _load_per_tensor_weight_scale assigns a multidimensional ByteTensor to a scalar expert slot, verify that the FusedMoE module resolved the expert layer override instead of the global quantization config.
+  - Apply environment or TP changes only when the matching signature establishes that cause.
+  - If no curated signature matches, permit bounded semantic repair only when the root traceback frame belongs to a managed framework or kernel workspace.
+required_checks: [load, inference]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/vllm-load-verify/references/loading-failures.md
+  sha256: f41212c81ed8d18bbf43328523c97cb39f637bf0a7e53acdda4ad949cfdb5312

@@ -14,8 +14,13 @@ from tqdm import tqdm
 
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import move_to_device
-from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.module import move_to_device, resolve_per_layer_kwargs
+from quark.torch.algorithm.utils.prepare import (
+    get_model_layers,
+    init_blockwise_algo,
+    init_device_map,
+    reset_model_kv_cache,
+)
 from quark.torch.pruning.config import LayerImportancePruneConfig
 from quark.torch.utils import getattr_recursive, setattr_recursive
 
@@ -36,6 +41,8 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
     ) -> None:
         self.model = model
         # -------init prune config ---------
+        # If accelerate is used, the model will have the attribute _hf_hook
+        self.using_accelerate = hasattr(self.model, "_hf_hook")
         self.model_decoder_layers: str = pruning_algo_config.model_decoder_layers
         self.layer_norm_field: str = pruning_algo_config.layer_norm_field
         self.delete_layers_index: list[int] = pruning_algo_config.delete_layers_index
@@ -66,8 +73,9 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
             _, self.module_kwargs, self.layer_inputs = init_blockwise_algo(
                 self.model, self.model_decoder_layers, self.test_dataset
             )  # type: ignore
-            for i in range(len(self.decode_layers)):  # to save memory
-                self.decode_layers[i] = self.decode_layers[i].to("cpu")
+            if not self.using_accelerate:
+                for i in range(len(self.decode_layers)):  # to save memory
+                    self.decode_layers[i] = self.decode_layers[i].to("cpu")
             torch.cuda.empty_cache()
         else:
             self.eval_func = self._fast_eval_model  # type: ignore
@@ -103,8 +111,9 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
                 else CUDA
             )
             move_to_device(layer, layer_device)
+            layer_kwargs = resolve_per_layer_kwargs(layer, self.module_kwargs)  # pragma: no cover
             additional_layer_inputs = {}
-            for k, v in self.module_kwargs.items():
+            for k, v in layer_kwargs.items():  # pragma: no cover
                 if isinstance(v, torch.Tensor):
                     additional_layer_inputs[k] = move_to_device(v, layer_device)
                 elif isinstance(v, tuple) and all(isinstance(x, torch.Tensor) for x in v):
@@ -117,10 +126,13 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
             layer_outputs = []
             for j in range(num_batches):
                 layer_input = move_to_device(layer_inputs[j], layer_device)
-                layer_output = layer(layer_input, **additional_layer_inputs)[0]
+                layer_output = layer(layer_input, **additional_layer_inputs)  # pragma: no cover
+                if isinstance(layer_output, tuple):  # pragma: no cover
+                    layer_output = layer_output[0]
                 layer_outputs.append(layer_output)
 
-            layer = move_to_device(layer, CPU)
+            if not self.using_accelerate:
+                layer = move_to_device(layer, CPU)
             layer_inputs, layer_outputs = layer_outputs, []
             torch.cuda.empty_cache()
 
@@ -165,58 +177,60 @@ class LayerImportancePrunerProcessor(BaseAlgoProcessor):
         return
 
     def apply(self) -> None:
-        forward_pass_use_cache = self.model.config.use_cache
-        original_model_ppl = self.eval_func(  # pragma: no cover
-            self.model, remain_layer_idx=list(range(self.num_hidden_layers))
-        )
-        bf_prune_param = sum(p.numel() for p in self.model.parameters())
-        logger.info(f"Original PPL: {original_model_ppl.item()} param: {bf_prune_param}")
-        # assume you skip the quant process
-        if len(self.delete_layers_index) > 0:
-            self._trim_layers(self.delete_layers_index)
-            remained_layer = [i for i in range(self.num_hidden_layers) if i not in self.delete_layers_index]
-            ppl = self.eval_func(self.model, remain_layer_idx=remained_layer)
-            logger.info(f"User assigned to delete {self.delete_layers_index}, final PPL: {ppl.item()}")
-            return
+        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
+        try:
+            original_model_ppl = self.eval_func(self.model, remain_layer_idx=list(range(self.num_hidden_layers)))
+            bf_prune_param = sum(p.numel() for p in self.model.parameters())
+            logger.info(f"Original PPL: {original_model_ppl.item()} param: {bf_prune_param}")
+            # assume you skip the quant process
+            if len(self.delete_layers_index) > 0:
+                self._trim_layers(self.delete_layers_index)
+                remained_layer = [i for i in range(self.num_hidden_layers) if i not in self.delete_layers_index]
+                ppl = self.eval_func(self.model, remain_layer_idx=remained_layer)
+                logger.info(f"User assigned to delete {self.delete_layers_index}, final PPL: {ppl.item()}")
+                return
 
-        total_layer_num = len(self.decode_layers)
-        for i in range(total_layer_num + 1 - self.delete_layer_num):
-            layers_to_trim = list(range(i, i + self.delete_layer_num))  # pragma: no cover
-            self._trim_layers(layers_to_trim)
-            remained_layer = [i for i in range(self.num_hidden_layers) if i not in layers_to_trim]
-            ppl = self.eval_func(self.model, remain_layer_idx=remained_layer)
-            logger.info(f"After delete {layers_to_trim} layers, the PPL: {ppl.item()}")
-            #  results recording
-            if ppl < self.min_ppl:
-                self.min_ppl = ppl
-                self.best_del_idx = layers_to_trim
-            self.ppl_list.append(ppl)
-            self.delete_list.append(layers_to_trim)
+            total_layer_num = len(self.decode_layers)
+            for i in range(total_layer_num + 1 - self.delete_layer_num):
+                layers_to_trim = list(range(i, i + self.delete_layer_num))
+                self._trim_layers(layers_to_trim)
+                remained_layer = [i for i in range(self.num_hidden_layers) if i not in layers_to_trim]
+                ppl = self.eval_func(self.model, remain_layer_idx=remained_layer)
+                logger.info(f"After delete {layers_to_trim} layers, the PPL: {ppl.item()}")
+                #  results recording
+                if ppl < self.min_ppl:
+                    self.min_ppl = ppl
+                    self.best_del_idx = layers_to_trim
+                self.ppl_list.append(ppl)
+                self.delete_list.append(layers_to_trim)
 
-        # generate pruned model TODO
-        self._trim_layers(self.best_del_idx)
-        for need_delete_layer in self.best_del_idx[::-1]:
-            self.decode_layers[need_delete_layer].to(CPU)
-            del self.decode_layers[need_delete_layer]
+            # generate pruned model TODO
+            self._trim_layers(self.best_del_idx)
+            for need_delete_layer in self.best_del_idx[::-1]:
+                # accelerate-exempt: this layer is being deleted from the model on the next line, so
+                # there is no dispatch state left to desync.
+                self.decode_layers[need_delete_layer].to(CPU)
+                del self.decode_layers[need_delete_layer]
 
-        # TODO may modify config after pruning
-        self.model.config.num_hidden_layers = self.num_hidden_layers - len(self.best_del_idx)
+            # TODO may modify config after pruning
+            self.model.config.num_hidden_layers = self.num_hidden_layers - len(self.best_del_idx)
 
-        # This is very Transformers-library specific.
-        # The cache logic expects set `layer_idx` to be at most `self.model.config.num_hidden_layers - 1`.
-        decoder_layers = getattr_recursive(self.model, self.model_decoder_layers)
-        for i in range(len(decoder_layers)):
-            for _, submodule in decoder_layers[i].named_modules():
-                if hasattr(submodule, "layer_idx"):
-                    submodule.layer_idx = i
+            # This is very Transformers-library specific.
+            # The cache logic expects set `layer_idx` to be at most `self.model.config.num_hidden_layers - 1`.
+            decoder_layers = getattr_recursive(self.model, self.model_decoder_layers)
+            for i in range(len(decoder_layers)):
+                for _, submodule in decoder_layers[i].named_modules():
+                    if hasattr(submodule, "layer_idx"):
+                        submodule.layer_idx = i
 
-        logger.info(
-            f"PPL influence pruning finished, finally delete {self.best_del_idx} as has minmal PPL: {self.min_ppl}"
-        )
-        aft_prune_param = sum(p.numel() for p in self.model.parameters())
-        logger.info(
-            f"Before pruning param: {bf_prune_param} PPL: {original_model_ppl.item()} \n \
-                    after pruning param: {aft_prune_param} PPL: {self.min_ppl.item()}"
-        )
-        torch.cuda.empty_cache()
-        self.model.config.use_cache = forward_pass_use_cache
+            logger.info(
+                f"PPL influence pruning finished, finally delete {self.best_del_idx} as has minmal PPL: {self.min_ppl}"
+            )
+            aft_prune_param = sum(p.numel() for p in self.model.parameters())
+            logger.info(
+                f"Before pruning param: {bf_prune_param} PPL: {original_model_ppl.item()} \n \
+                        after pruning param: {aft_prune_param} PPL: {self.min_ppl.item()}"
+            )
+            torch.cuda.empty_cache()
+        finally:
+            reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)

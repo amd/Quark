@@ -268,7 +268,7 @@ def test_load_multi_device(working_dir: str, weight_format: str):
     )
     quant_config = QConfig(global_quant_config=INT8_PER_TENSOR_CONFIG)
 
-    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
     if working_dir is not None:
@@ -321,7 +321,7 @@ class TestTensorParallel(TestCasePlus):
 
 if __name__ == "__main__":
     # The script below is meant to be run under torch.distributed, on a machine with multiple GPUs:
-    # CUDA_VISIBLE_DEVICES=0,1 RUN_SLOW=1 pytest -sv ./test_eval_tp.py
+    # CUDA_VISIBLE_DEVICES=0,1 QUARK_TEST_WITH_SLOW=1 pytest -sv ./test_eval_tp.py
     # or
     # PYTHONPATH="src" python -m torch.distributed.run --nproc_per_node 2 ./tests/tp/test_tp.py
 

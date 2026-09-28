@@ -16,7 +16,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from quark.torch.quantization.cache_integration import QuarkQuantizedCache
+from quark.torch.quantization.cache_integration import QuarkCacheLayer, QuarkQuantizedCache
 
 
 def _make_cache():
@@ -58,3 +58,41 @@ def test_load_from_state_dict_missing_config_key_is_a_no_op():
     handles this)."""
     cache = _make_cache()
     cache.load_from_state_dict({}, nn.Linear(1, 1))
+
+
+def test_cache_layer_reports_unbounded_length():
+    """Both max-length accessors must report -1 so HF treats the layer as dynamic.
+
+    Which of the two a given transformers release calls depends on its Cache API vintage, so they
+    have to agree; a fixed length here would make HF pre-allocate and truncate the KV cache.
+    """
+    layer = QuarkCacheLayer()
+
+    assert layer.get_max_cache_shape() == -1
+    assert layer.get_max_length() == -1
+
+
+@pytest.mark.parametrize(
+    "query_length",
+    [3, torch.arange(3)],
+    ids=["int query_length", "cache_position tensor"],
+)
+def test_cache_layer_mask_sizes_count_new_tokens_for_both_hf_signatures(query_length):
+    """New tokens must extend the reported KV length under either HF argument shape.
+
+    transformers 5.x hands the mask builder a plain int where releases up to 5.2 handed it a
+    ``cache_position`` tensor. Sizing off ``len()`` alone counts zero new tokens for the int, which
+    silently understates ``kv_length`` by the whole query and mis-sizes the attention mask.
+    """
+    layer = QuarkCacheLayer()
+    layer.update_lengths(5)
+
+    assert layer.get_mask_sizes(query_length) == (8, 5)
+
+
+def test_cache_layer_mask_sizes_without_query_length():
+    """No query length means nothing new to attend to, so KV length stays at the cached prefix."""
+    layer = QuarkCacheLayer()
+    layer.update_lengths(5)
+
+    assert layer.get_mask_sizes(None) == (5, 5)

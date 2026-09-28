@@ -36,6 +36,18 @@ def is_aiter_available() -> bool:
     return _is_aiter_available()
 
 
+def is_flydsl_available() -> bool:
+    """Proxy for FlyDSL A8W4 kernel usability (native_linear_mode='flydsl_a8w4').
+
+    The kernels need both the package and a new enough version, so this is the
+    conjunction of the two checks in ``import_utils``.
+    """
+    from quark.common.utils.import_utils import is_flydsl_available as _is_flydsl_available
+    from quark.common.utils.import_utils import is_flydsl_version_supported as _is_flydsl_version_supported
+
+    return _is_flydsl_available() and _is_flydsl_version_supported()
+
+
 def _transfer_hf_hook(old_module: nn.Module, new_module: nn.Module) -> None:
     """Move accelerate's ``_hf_hook`` from a replaced module to its replacement.
 
@@ -61,7 +73,7 @@ class RuntimeOptions:
     """Runtime toggles for native inference conversion."""
 
     # Select native linear implementation at conversion time.
-    # Supported values: "auto", "fp8_per_tensor", "mxfp4".
+    # Supported values: "auto", "fp8_per_tensor", "mxfp4", "flydsl_a8w4".
     native_linear_mode: str = "auto"
     # Enable preshuffle kernels for the FP8 per-tensor native linear.
     use_preshuffle: bool = False
@@ -99,6 +111,8 @@ def calculate_qmin_qmax(dtype: Dtype) -> tuple[int | float, int | float]:
         return -4, 3
     elif dtype == Dtype.int2:
         return -2, 1
+    elif dtype == Dtype.uint2:
+        return 0, 3
     elif dtype == Dtype.fp8_e4m3:
         return -448, 448
     elif dtype == Dtype.fp8_e5m2:
@@ -166,7 +180,7 @@ def get_dtype_params(dtype: str | Dtype) -> tuple[int, int, int]:
     elif dtype == Dtype.int3:
         ebits, mbits = 0, 3
         emax = 0
-    elif dtype == Dtype.int2:
+    elif dtype == Dtype.int2 or dtype == Dtype.uint2:
         ebits, mbits = 0, 2
         emax = 0
     elif dtype == Dtype.fp8_e5m2:
@@ -296,10 +310,12 @@ def even_round(max_abs: torch.Tensor, dtype: Dtype | str) -> torch.Tensor:
 
 
 def count_calibration_tokens(
-    dataloader: DataLoader[torch.Tensor]
-    | DataLoader[list[dict[str, torch.Tensor]]]
-    | DataLoader[dict[str, torch.Tensor]]
-    | DataLoader[list["BatchFeature"]],
+    dataloader: (
+        DataLoader[torch.Tensor]
+        | DataLoader[list[dict[str, torch.Tensor]]]
+        | DataLoader[dict[str, torch.Tensor]]
+        | DataLoader[list["BatchFeature"]]
+    ),
 ) -> int:
     total_tokens = 0
     for data in dataloader:
@@ -360,12 +376,17 @@ def enable_native_inference(
     from quark.torch.quantization.nn.modules import (
         QuantLinear,
         aiter_fp4_inference_linear,  # noqa: F401
+        flydsl_a8w4_inference_linear,  # noqa: F401
+        flydsl_svdquant_inference_linear,  # noqa: F401
     )
     from quark.torch.quantization.nn.modules.aiter_fp8_inference_linear import (
         aiter_native_linear_from_module,
     )
     from quark.torch.quantization.nn.modules.aiter_svdquant_inference_linear import (
         svdquant_native_linear_from_error_corrected_module,
+    )
+    from quark.torch.quantization.nn.modules.flydsl_svdquant_inference_linear import (
+        flydsl_svdquant_native_linear_from_error_corrected_module,
     )
     from quark.torch.quantization.nn.modules.native_inference_linear_common import (
         NativeInferenceLinear,
@@ -382,6 +403,8 @@ def enable_native_inference(
         "auto": None,
         "fp8_per_tensor": NativeInferenceMode.FP8_PER_TENSOR,
         "mxfp4": NativeInferenceMode.MXFP4,
+        "flydsl_a8w4": NativeInferenceMode.FLYDSL_A8W4,
+        "flydsl_svdquant": NativeInferenceMode.FLYDSL_SVDQUANT,
     }
     if options.native_linear_mode not in mode_map:
         raise ValueError(
@@ -399,7 +422,14 @@ def enable_native_inference(
     # is converted here).
     ecm_names = [name for name, module in model.named_modules() if isinstance(module, ErrorCorrectedModule)]
     ecm_child_prefixes = tuple(name + "." for name in ecm_names)
-    convert_ecm = forced_mode in (None, NativeInferenceMode.MXFP4)
+    convert_ecm = forced_mode in (
+        None,
+        NativeInferenceMode.MXFP4,
+        NativeInferenceMode.FLYDSL_SVDQUANT,
+    )
+    # The fused FlyDSL SVDQuant path is selected explicitly; auto/mxfp4 keep the
+    # aiter MXFP4 residual + separate low-rank correction.
+    use_flydsl_svdquant = forced_mode is NativeInferenceMode.FLYDSL_SVDQUANT
 
     candidates: list[str] = []
     for name, module in model.named_modules():
@@ -416,8 +446,13 @@ def enable_native_inference(
     if convert_ecm:
         for name in ecm_names:
             ecm = model.get_submodule(name)
+            _builder = (
+                flydsl_svdquant_native_linear_from_error_corrected_module
+                if use_flydsl_svdquant
+                else svdquant_native_linear_from_error_corrected_module
+            )
             try:
-                native_layer = svdquant_native_linear_from_error_corrected_module(
+                native_layer = _builder(
                     ecm,
                     overlap_streams=options.svdquant_overlap_streams,
                     use_preshuffle=options.use_preshuffle,
@@ -433,13 +468,22 @@ def enable_native_inference(
             del ecm
             converted += 1
 
+    # Plain (non-ECM) quantized layers have no low-rank correction, so the fused
+    # SVDQuant mode is meaningless for them. Route them to a residual GEMM at the same
+    # activation precision the ECM layers use, so a single mode does not mix MXFP4 and
+    # MXFP8 activations: the FlyDSL a8w4 GEMM for w4a8.
+    plain_forced_mode: NativeInferenceMode | None
+    if use_flydsl_svdquant:
+        plain_forced_mode = NativeInferenceMode.FLYDSL_A8W4
+    else:
+        plain_forced_mode = forced_mode
     for name in candidates:
         module = model.get_submodule(name)
         try:
             native_layer = aiter_native_linear_from_module(
                 module,
                 use_preshuffle=options.use_preshuffle,
-                forced_mode=forced_mode,
+                forced_mode=plain_forced_mode,
             )
         except (ValueError, ImportError) as e:
             logger.warning(
@@ -467,24 +511,23 @@ def disable_native_inference(model: nn.Module) -> int:
     :return: Number of layers converted back to base ``QParamsLinear``.
     :rtype: int
     """
-    from quark.torch.quantization.nn.modules.aiter_svdquant_inference_linear import (
-        AiterSVDQuantMXFP4NativeInferenceLinear,
-    )
     from quark.torch.quantization.nn.modules.native_inference_linear_common import (
         NativeInferenceLinear,
     )
 
-    # SVDQuant composites must be reverted to an ErrorCorrectedModule (not a
-    # single QParamsLinear), and their inner residual native linear must not be
-    # reverted independently.
-    svdquant_names = [
-        name for name, module in model.named_modules() if isinstance(module, AiterSVDQuantMXFP4NativeInferenceLinear)
-    ]
+    # SVDQuant composites (aiter MXFP4 or FlyDSL fused a8w4) must be reverted to
+    # an ErrorCorrectedModule (not a single QParamsLinear), and their inner
+    # residual native linear must not be reverted independently. Both composite
+    # backends expose ``to_error_corrected_module``.
+    def _is_svdquant_composite(m: nn.Module) -> bool:
+        return isinstance(m, NativeInferenceLinear) and hasattr(m, "to_error_corrected_module")
+
+    svdquant_names = [name for name, module in model.named_modules() if _is_svdquant_composite(module)]
     svdquant_child_prefixes = tuple(name + "." for name in svdquant_names)
 
     replacements: list[tuple[str, nn.Module]] = []
     for name, module in model.named_modules():
-        if isinstance(module, AiterSVDQuantMXFP4NativeInferenceLinear):
+        if _is_svdquant_composite(module):
             replacements.append((name, module.to_error_corrected_module()))
         elif isinstance(module, NativeInferenceLinear):
             if name.startswith(svdquant_child_prefixes):

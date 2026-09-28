@@ -36,9 +36,9 @@ extra_options_keys_mapping = [
     ("Scenario", "scenario"),
     ("LWPMetric", "lwp_metric"),
     ("PercentileCandidates", "percentile_candidates"),
+    ("LWPUseHistogram", "lwp_use_histogram"),
     ("MinMSEModePof2Scale", "minmse_mode"),
     ("CalibOptimizeMem", "optimize_mem"),
-    ("CalibOptimizeDisk", "optimize_disk"),
     ("CalibWorkerNum", "worker_num"),
 ]
 
@@ -115,7 +115,7 @@ def run_calibration(
             calib_extra_options,
         )
 
-    except OSError as e:
+    except OSError as e:  # pragma: no cover - requires real disk-space / IO failure
         logger.error(f"Encountered an error (commonly due to insufficient disk space for the temporary directory): {e}")
 
         if calibrate_method in [
@@ -151,7 +151,9 @@ def run_calibration(
                 "Please provide another temporary directory with sufficient disk space via the option 'TmpDir'."
             )
 
-    except onnxruntime.capi.onnxruntime_pybind11_state.RuntimeException as e:
+    except (
+        onnxruntime.capi.onnxruntime_pybind11_state.RuntimeException
+    ) as e:  # pragma: no cover - requires real ORT session-init failure
         logger.error(f"Encountered an error (commonly occurs when initializing an inference session): {e}")
 
         if isinstance(execution_providers, list) and "CPUExecutionProvider" not in execution_providers:
@@ -171,7 +173,7 @@ def run_calibration(
         else:
             logger.warning("Please switch to another execution provider via the argument 'execution_providers'.")
 
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - requires real ORT failure / host OOM
         memory_usage = get_memory_usage()
         logger.warning(f"Currently the host memory usage is {memory_usage:.1f}%.")
 

@@ -163,7 +163,7 @@ class DaliLoaderWrapper:
         self.total_samples = total_samples
         self.batch_size = batch_size
 
-    def __iter__(self) -> Iterator[Any]:
+    def __iter__(self) -> Iterator[Any]:  # pragma: no cover - requires nvidia DALI iterator (GPU)
         return iter(self.loader)
 
     def __len__(self) -> int:
@@ -178,7 +178,7 @@ def build_nv_gds_dataloader(
     num_threads: int = 4,
     device_id: int = 0,
     shuffle: bool = True,
-) -> DaliLoaderWrapper:
+) -> DaliLoaderWrapper:  # pragma: no cover - requires nvidia DALI + GPU Direct Storage
     """
     Build a DALI DataLoader using GPU Direct Storage (GDS) to read three sets of .npy files
     from a single data_dir, separated by file prefixes:
@@ -203,7 +203,7 @@ def build_nv_gds_dataloader(
         :param files: A list of file paths to write to the temporary file
         :return: The path to the created temporary file
         """
-        with NamedTemporaryFile(mode="w+", delete=False) as tmp:  # pragma: no cover
+        with NamedTemporaryFile(mode="w+", delete=False) as tmp:
             for f in files:
                 tmp.write(f + "\n")
             tmp.flush()
@@ -307,7 +307,7 @@ def train_torch_module_api(
     Call torch training classes for adaround or adaquant
     """
     if isinstance(inp_data_quant, list) and len(inp_data_quant) > 0 and isinstance(inp_data_quant[0], str):
-        if gds_info["use_gds"]:
+        if gds_info["use_gds"]:  # pragma: no cover - use_gds requires nvidia DALI + GPU
             train_dataset = build_nv_gds_dataloader(inp_data_quant, inp_data_float, out_data_float, train_params)
         else:
             train_dataset = TrainDataset(inp_data_quant, inp_data_float, out_data_float)  # type: ignore

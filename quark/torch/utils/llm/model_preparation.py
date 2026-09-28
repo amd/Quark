@@ -2,9 +2,12 @@
 # Copyright (C) 2023 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import json
 import os
 import random
 import sys
+from collections import defaultdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -12,18 +15,24 @@ from tqdm import tqdm
 
 from quark.common.utils.import_utils import (
     is_psutil_available,
+    is_safetensors_available,
     is_torch_available,
     is_transformers_available,
     is_transformers_version_higher_or_equal,
 )
+from quark.torch.export.utils import get_source_name_or_path
 from quark.torch.integrations.compressed_tensors.loading import (
     _is_compressed_tensors_model,
+    _is_meta_device_map,
     _load_from_compressed_tensors,
 )
 from quark.torch.utils.llm.preprocessing import maybe_save_preprocessors
 
 if is_psutil_available():
     import psutil  # type: ignore[import-untyped]
+
+if is_safetensors_available():
+    import safetensors
 
 if is_torch_available():
     import torch
@@ -50,11 +59,6 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("5.0"
 elif is_transformers_available():  # pragma: no cover
     _hf_loader_module = None  # type: ignore[assignment]
 
-if is_transformers_available() and is_transformers_version_higher_or_equal("5.0.0"):
-    from transformers.models.qwen3_moe.modeling_qwen3_moe import (  # type: ignore[attr-defined]
-        Qwen3MoeExperts,
-        Qwen3MoeSparseMoeBlock,
-    )
 if is_transformers_available() and is_transformers_version_higher_or_equal("4.55.1"):
     from transformers import Mxfp4Config  # type: ignore[attr-defined]
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts, GptOssMLP
@@ -67,7 +71,11 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("4.57
     )
 
 if is_transformers_available() and is_transformers_version_higher_or_equal("5.2.0"):
-    from transformers import Qwen3_5MoeForConditionalGeneration
+    from transformers import Qwen3_5ForConditionalGeneration, Qwen3_5MoeForConditionalGeneration
+
+if is_transformers_available() and is_transformers_version_higher_or_equal("5.16.0"):  # pragma: no cover
+    # Unreachable below transformers 5.16, which is where qwen4_exp first ships.
+    from transformers import Qwen4ExpForConditionalGeneration  # type: ignore[attr-defined]
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import PreTrainedTokenizerBase
@@ -83,8 +91,6 @@ from .module_replacement.replacement_utils import (
     replace_gptoss_mlp_with_linear_router,
     replace_granite_moe_experts_with_linear,
     replace_llama4_experts_with_sequential,
-    replace_qwen3_moe_experts_with_linear,
-    replace_qwen3moe_sparse_moe_block_with_linear_gate,
     replace_qwen3vlmoe_experts_with_linear,
 )
 
@@ -98,21 +104,42 @@ _HUGE_MOE_LINEAR_THRESHOLD = 30000
 _VM_MAX_MAP_COUNT_SAFE = 1048576
 _VM_MAX_MAP_COUNT_RECOMMENDED = 4194304
 
+_GIB = 1024**3
+_KIB = 1024
+
+# Activation budget for one per_block calibration forward: a ~250 GiB MI350 minus 100 GiB for the
+# resident decoder layer. That layer is ~50 GiB on Qwen3.8-2.4T-A95B (5 TB of weights / 92 layers);
+# the 2x reserve covers the fake-quantized weight copies built during the forward, and fragmentation.
+_CALIB_RESERVED_GIB = 150
+# bf16 activations alive per token inside one decoder layer: 2*(3h + 2*top_k*h + 3*top_k*i) bytes,
+# i.e. residual/norm/combine, the MoE gather buffer, and the expert intermediates. ~400 KiB at
+# h=8192, moe_intermediate=2048, top_k=8, the largest MoE shape we target; dense models are ~20x under.
+_ACT_PER_TOKEN_KIB = 400
+
+
+def _num_hidden_layers(config: object | None) -> int | None:
+    """``num_hidden_layers`` from *config*, unwrapping one level of ``text_config`` for VLMs.
+
+    Returns ``None`` if *config* is ``None`` or doesn't expose a positive ``num_hidden_layers``.
+    """
+    if config is None:
+        return None
+    text_config = getattr(config, "text_config", None) or config
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+    return num_layers if isinstance(num_layers, int) and num_layers > 0 else None
+
 
 def _estimate_quantized_linears(config: object | None) -> int:
     """Rough count of nn.Linear layers Quark will wrap, derived from HF config.
 
     Used as a size signal for the HF loader throttle. Probes the common alias
-    set (``n_routed_experts`` / ``num_local_experts`` / ``num_experts``) and
-    unwraps one level of ``text_config`` for VLM/multimodal wrappers.
+    set (``n_routed_experts`` / ``num_local_experts`` / ``num_experts``).
     Returns 0 if the config doesn't expose ``num_hidden_layers``.
     """
-    if config is None:
+    num_layers = _num_hidden_layers(config)
+    if num_layers is None:
         return 0
     text_config = getattr(config, "text_config", None) or config
-    num_layers = getattr(text_config, "num_hidden_layers", None)
-    if not isinstance(num_layers, int) or num_layers <= 0:
-        return 0
     num_experts = (
         getattr(text_config, "n_routed_experts", None)
         or getattr(text_config, "num_local_experts", None)
@@ -251,19 +278,6 @@ def _legacy_prepare_for_moe_quant(model: nn.Module, reload: bool = False) -> Non
         for name, module in model.named_modules(remove_duplicate=False):
             if isinstance(module, Qwen3VLMoeTextExperts):
                 replace_qwen3vlmoe_experts_with_linear(module)
-    elif model.config.model_type == "qwen3_moe":
-        # transformers<5 used split experts and nn.Linear gate - no need to patch in this case.
-        if is_transformers_version_higher_or_equal("5.0.0"):
-            for name, module in tqdm(
-                model.named_modules(remove_duplicate=False), desc="Replacing Qwen3MoeExperts to use nn.Linear"
-            ):
-                if isinstance(module, Qwen3MoeExperts):
-                    replace_qwen3_moe_experts_with_linear(module, reload=reload)
-
-                # NOTE: MOE router patching is useful only in case the router is quantized,
-                # or in case we use rotation.
-                if isinstance(module, Qwen3MoeSparseMoeBlock):
-                    replace_qwen3moe_sparse_moe_block_with_linear_gate(moe_block=module)
 
 
 def _prepare_for_moe_quant(model: nn.Module, reload: bool = False) -> None:
@@ -274,12 +288,6 @@ def _prepare_for_moe_quant(model: nn.Module, reload: bool = False) -> None:
     if config is None:
         logger.warning("Model has no config; skipping MoE preprocess")
         return
-    model_type = config.model_type
-
-    if model_type in ["qwen3_5"]:
-        raise ValueError(
-            f"The quantization of MoE layer for model architecture {model_type} is not yet supported in Quark."
-        )
 
     for name, module in model.named_modules(remove_duplicate=False):
         module_type = type(module)
@@ -328,6 +336,120 @@ def prepare_for_moe_quant(model: nn.Module, reload: bool = False) -> None:
         _legacy_prepare_for_moe_quant(model, reload)
 
 
+def _module_bytes(module: nn.Module) -> int:
+    """Bytes held by *module*'s parameters and buffers, counting shared tensors once."""
+    return sum(t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers()))
+
+
+def _per_block_resident_bytes(model: nn.Module) -> tuple[int, int] | None:
+    """Bytes of the largest decoder block, and of everything outside the decoder stack.
+
+    Both numbers come out of the same budget. ``per_block_runner.prepare()`` loads the non-block
+    modules (embeddings, final norm, lm_head) onto the target device once and keeps them there for
+    the whole run, so they occupy memory the calibration activations cannot use. And block sizes
+    are not uniform: MoE stacks front-load dense layers (``first_k_dense_replace``) or interleave
+    them, so the block that has to fit is the largest one, not the last one and not an
+    ``model_bytes / num_layers`` average that gets diluted by the smaller dense layers.
+
+    :param nn.Module model: Model to inspect.
+    :return: ``(largest_block_bytes, non_block_bytes)``, or ``None`` if the decoder block stack
+        can't be located.
+    """
+    try:
+        # Imported lazily: per_block_runner pulls in safetensors unconditionally, which is an
+        # optional dependency for this module (see is_safetensors_available() above).
+        from quark.torch.utils.per_block_runner.utils import infer_decoder_layers_path
+    except ImportError:
+        return None
+    layers_path = infer_decoder_layers_path(model)
+    if not layers_path:
+        return None
+    block_container = dict(model.named_modules(remove_duplicate=False)).get(layers_path)
+    if not isinstance(block_container, nn.ModuleList) or len(block_container) == 0:
+        return None
+    block_bytes = [_module_bytes(block) for block in block_container]
+    # Clamped because a tensor shared across blocks is counted once in the model total but once
+    # per block in the sum, which would otherwise drive the remainder negative.
+    non_block_bytes = max(0, _module_bytes(model) - sum(block_bytes))
+    return max(block_bytes), non_block_bytes
+
+
+def get_per_block_calib_batch_size(
+    num_calib_data: int,
+    seq_len: int,
+    device: torch.device | str | None = None,
+    model: nn.Module | None = None,
+    n_gpu_resident_blocks: int = 0,
+) -> int:
+    """Return the largest per_block calibration batch whose activations fit in the reserved budget.
+
+    per_block streams every decoder block CPU->GPU around each forward, so a larger batch means
+    fewer transfers but more activation memory. Pinning the batch to *num_calib_data* ignores
+    *seq_len* and runs out of memory on long sequences, so derive it from the budget instead.
+
+    When *device* is CUDA and *model*'s decoder block stack can be located, the budget is derived
+    from that device's actual free memory (``torch.cuda.mem_get_info``) minus everything
+    ``per_block_runner.prepare()`` will pin there afterwards -- the non-block modules (embeddings,
+    final norm, lm_head), the ``--gpu_resident_blocks`` permanently resident decoder blocks, and
+    headroom for the one block streamed in during the forward -- instead of the static MI350-shaped
+    estimate, so it scales with the card and with whatever else is already using it. Falls back to
+    the static estimate otherwise, so behavior is unchanged for non-CUDA runs or callers that don't
+    pass *model*.
+
+    :param int num_calib_data: Total number of calibration samples; the batch cannot exceed it.
+    :param int seq_len: Sequence length of each calibration sample.
+    :param device: Device per_block calibration streams decoder blocks onto.
+    :param model: Model being calibrated; used to estimate what stays resident on *device*.
+    :param int n_gpu_resident_blocks: Decoder blocks kept permanently resident on *device*.
+    :return: Batch size in ``[1, num_calib_data]``.
+    """
+    reserved_bytes = _CALIB_RESERVED_GIB * _GIB
+    torch_device = torch.device(device) if device is not None else None
+    resident = _per_block_resident_bytes(model) if model is not None else None
+    if torch_device is not None and torch_device.type == "cuda" and resident is not None:
+        block_bytes, non_block_bytes = resident
+        free_bytes, _ = torch.cuda.mem_get_info(torch_device)
+        resident_bytes = non_block_bytes + n_gpu_resident_blocks * block_bytes
+        # The block streamed in for the current forward is also resident; double it for the
+        # fake-quantized weight copy and fragmentation, the same margin the static estimate used.
+        reserved_bytes = max(0, free_bytes - resident_bytes - 2 * block_bytes)
+    max_tokens = reserved_bytes // (_ACT_PER_TOKEN_KIB * _KIB)
+    return max(1, min(num_calib_data, max_tokens // seq_len))
+
+
+def move_model_to_device_if_it_fits(model: nn.Module, device: torch.device) -> nn.Module:
+    """Move *model* to *device* when its weights fit there, otherwise leave it where it is.
+
+    per_block finalizes the model onto CPU, but evaluation runs on a single device, so the whole
+    model has to be resident. That is only possible when it fits: weights are fake-quantized in the
+    original dtype unless native inference is enabled, so quantization does not shrink them.
+
+    :param nn.Module model: Model to move.
+    :param torch.device device: Target device.
+    :return: The model, moved only if the weights fit in the device's free memory.
+    """
+    current_device = getattr(model, "device", None)
+    if current_device is not None and current_device.type == device.type:
+        if device.index is None or current_device.index == device.index:
+            return model
+
+    if device.type != "cuda":
+        return model.to(device)
+
+    model_bytes = sum(t.numel() * t.element_size() for t in (*model.parameters(), *model.buffers()))
+    free_bytes, _ = torch.cuda.mem_get_info(device)
+    # Keep 10% of the free memory for evaluation activations and the KV cache.
+    if model_bytes >= free_bytes * 0.9:
+        logger.warning(
+            f"Keeping the model on CPU: it needs {model_bytes / _GIB:.1f} GiB but {device} only has "
+            f"{free_bytes / _GIB:.1f} GiB free. Evaluation will be slow, and kernels that require "
+            f"accelerator tensors will fail. Evaluate the exported checkpoint separately instead."
+        )
+        return model
+    logger.info(f"Moving model to {device}.")
+    return model.to(device)
+
+
 def get_model(
     ckpt_path: str,
     data_type: str = "auto",
@@ -361,6 +483,13 @@ def get_model(
             device_map = create_auto_adjusted_device_map(config)
         else:
             device_map = "auto"
+            if max_memory is None:
+                # Leave real headroom per device (get_device_max_memory reserves
+                # ~50% of GPU0, ~87.5% of others) so accelerate cannot greedily
+                # cram the whole model onto one device when every visible GPU
+                # reports similar free memory (no naturally-constrained device
+                # to force a split).
+                max_memory = get_device_max_memory()
 
     # TODO: Remove `_load_from_compressed_tensors` once native Transformers/compressed-tensors/Kimi compatibility is stable and fast.
     # TODO: Remove all `  # pragma: no cover` in this file once once test/test_for_torch/test_inverse_quantizer.py's test_kimi_k25_quantize_export and test_kimi_k25_nvfp4_quantization_and_export are adapted to support transformers>=5.0 which is used in PR CIs.
@@ -376,6 +505,8 @@ def get_model(
         )
         model.config._name_or_path = ckpt_path
         model.eval()
+        if data_type == "auto" and not _is_meta_device_map(device_map):
+            _restore_fp32_params_from_source(model, ckpt_path)
         return model, None
 
     # ``--multi_gpu`` and ``--multi_device`` both produce multi-GPU placement; treat
@@ -383,45 +514,25 @@ def get_model(
     # deadlock / post-load caching_allocator_warmup OOM on GPU 0).
     is_multi_gpu = bool(multi_gpu) or multi_device
     _hf_loader_saved = _set_hf_loader_workers(_hf_loader_target_workers(is_multi_gpu, config))
+    load_kwargs = {
+        "torch_dtype": model_dtype,
+        "device_map": device_map,
+        "max_memory": max_memory,
+        "trust_remote_code": trust_remote_code,
+        "attn_implementation": attn_implementation,
+    }
     try:
         if config.model_type == "mllama":
-            model = MllamaForConditionalGeneration.from_pretrained(
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
-            )  # type: ignore[no-untyped-call]
+            model = MllamaForConditionalGeneration.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
         elif config.model_type == "llama4":
-            model = Llama4ForConditionalGeneration.from_pretrained(
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
-            )  # type: ignore[no-untyped-call]
+            model = Llama4ForConditionalGeneration.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
         elif config.model_type == "gpt_oss":
             quantization_config = Mxfp4Config(dequantize=True)  # type: ignore[misc]
             model = AutoModelForCausalLM.from_pretrained(
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
-                quantization_config=quantization_config,
+                ckpt_path, quantization_config=quantization_config, **load_kwargs
             )  # type: ignore[no-untyped-call]
         elif config.model_type == "minimax_m3_vl":
-            model = AutoModelForImageTextToText.from_pretrained(
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
-            )  # type: ignore[no-untyped-call]
+            model = AutoModelForImageTextToText.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
             if (
                 trust_remote_code
                 and hasattr(model, "register_for_auto_class")
@@ -429,44 +540,41 @@ def get_model(
                 and "AutoModelForCausalLM" in config.auto_map
             ):
                 model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
+        elif config.model_type == "muse_glimmer":
+            # VLM wrapper, not registered under AutoModelForCausalLM.
+            model = AutoModelForImageTextToText.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
         elif config.model_type == "qwen3_vl_moe":
             model = Qwen3VLMoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
+                ckpt_path, **load_kwargs
             )  # type: ignore[no-untyped-call]
         elif config.model_type == "qwen3_5_moe":
             model = Qwen3_5MoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
+                ckpt_path, **load_kwargs
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "qwen3_5":
+            model = Qwen3_5ForConditionalGeneration.from_pretrained(  # type: ignore[misc]
+                ckpt_path, **load_kwargs
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "qwen4_exp":
+            # The composite (vision + text) wrapper. AutoModelForCausalLM would resolve the nested
+            # text config and build the text-only model, silently dropping the vision tower from
+            # the exported checkpoint; the text-only path is reached via model_type
+            # "qwen4_exp_text" instead.
+            model = Qwen4ExpForConditionalGeneration.from_pretrained(  # type: ignore[misc]
+                ckpt_path, **load_kwargs
             )  # type: ignore[no-untyped-call]
         elif config.model_type == "deepseek_vl_v2":
-            model = AutoModel.from_pretrained(
-                ckpt_path,
-                device_map=device_map,
-                torch_dtype=model_dtype,
-                max_memory=max_memory,
-                trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
-                use_safetensors=True,
-            )  # type: ignore[no-untyped-call]
+            model = AutoModel.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
+        elif config.model_type == "deepseek_v4":
+            from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+            # vLLM registers a different config under the same model_type.
+            # Transformers' model needs its own complete architecture config.
+            config = DeepseekV4Config.from_pretrained(ckpt_path)
+            model = AutoModelForCausalLM.from_pretrained(ckpt_path, config=config, **load_kwargs)
         else:
             try:
-                model = AutoModelForCausalLM.from_pretrained(
-                    ckpt_path,
-                    device_map=device_map,
-                    torch_dtype=model_dtype,
-                    max_memory=max_memory,
-                    trust_remote_code=trust_remote_code,
-                    attn_implementation=attn_implementation,
-                )  # type: ignore[no-untyped-call]
+                model = AutoModelForCausalLM.from_pretrained(ckpt_path, **load_kwargs)  # type: ignore[no-untyped-call]
             except Exception:
                 # Some models / transformers versions do not accept attn_implementation.
                 logger.exception(
@@ -514,7 +622,95 @@ def get_model(
     model.eval()  # type: ignore[no-untyped-call]
     model_dtype = next(model.parameters()).dtype
 
+    if data_type == "auto" and not _is_meta_device_map(device_map):
+        _restore_fp32_params_from_source(model, ckpt_path)
+
     return model, model_dtype
+
+
+def _restore_fp32_params_from_source(model: "nn.Module", ckpt_path: str) -> None:
+    """
+    Restore parameters/buffers that are float32 in the source checkpoint but were downcast
+    during loading (e.g. Kimi-K2.5 missing _keep_in_fp32_modules = ["MoEGate"] causes
+    e_score_correction_bias to be silently cast to bfloat16 with torch_dtype="auto").
+
+    Reads only safetensors headers (via lazy tensor slices) to detect mismatches; full
+    tensor data is loaded only for the affected parameters.
+    """
+    if not is_safetensors_available():
+        return
+
+    # Resolve ckpt_path: local directory first, then HuggingFace cache.
+    source_dir = Path(ckpt_path)
+    if not source_dir.exists():
+        if not is_transformers_available():
+            return
+        try:
+            from transformers.utils import cached_file  # type: ignore[attr-defined]
+
+            local_config = cached_file(ckpt_path, "config.json", local_files_only=True)
+            source_dir = Path(local_config).parent
+        except Exception:
+            # Best-effort restore: e.g. the model wasn't loaded from a locally cached HF repo.
+            # Not finding a source checkpoint to compare against is not an error condition.
+            logger.info(
+                "[restore_fp32_params] Could not resolve source dir for %s, skipping.",
+                ckpt_path,
+                allow_duplicate=False,
+            )
+            return
+
+    index_path = source_dir / "model.safetensors.index.json"
+    single_path = source_dir / "model.safetensors"
+    if index_path.exists():
+        with open(index_path) as f:
+            shard_names: list[str] = list(set(json.load(f)["weight_map"].values()))
+    elif single_path.exists():
+        shard_names = ["model.safetensors"]
+    else:
+        # E.g. the checkpoint is stored as pytorch_model.bin instead of safetensors.
+        logger.info(
+            "[restore_fp32_params] No safetensors files found under %s, skipping.",
+            source_dir,
+            allow_duplicate=False,
+        )
+        return
+
+    # Collect float32 keys from source checkpoint headers (no tensor data loaded).
+    fp32_keys_to_shard_name: dict[str, Path] = {}
+    for shard_name in shard_names:
+        shard_path = source_dir / shard_name
+        try:
+            with safetensors.safe_open(str(shard_path), framework="pt", device="cpu") as f:
+                for key in f.keys():  # noqa: SIM118
+                    if f.get_slice(key).get_dtype() == "F32":
+                        fp32_keys_to_shard_name[key] = shard_path
+        except (OSError, safetensors.SafetensorError):
+            logger.warning("[restore_fp32_params] Could not read header from %s, skipping.", shard_path)
+            continue
+
+    model_params = dict(model.named_parameters())
+    model_params.update(model.named_buffers())
+    downcast_keys = [k for k in fp32_keys_to_shard_name if k in model_params and model_params[k].dtype != torch.float32]
+    if not downcast_keys:
+        return
+
+    logger.warning(
+        "[restore_fp32_params] %d parameter(s) are float32 in source but downcast during loading "
+        "(likely missing _keep_in_fp32_modules). Restoring: %s%s",
+        len(downcast_keys),
+        downcast_keys[:10],
+        " ..." if len(downcast_keys) > 10 else "",
+    )
+    keys_by_shard: dict[Path, list[str]] = defaultdict(list)
+    for key in downcast_keys:
+        keys_by_shard[fp32_keys_to_shard_name[key]].append(key)
+    for shard_path, keys in keys_by_shard.items():
+        with safetensors.safe_open(str(shard_path), framework="pt", device="cpu") as f:
+            for key in keys:
+                param = model_params[key]
+                # Use .data = to preserve float32 dtype; .copy_() would cast to the existing bfloat16.
+                param.data = f.get_tensor(key).to(param.device)
 
 
 def create_model_skeleton(
@@ -547,11 +743,10 @@ def save_model(model: nn.Module, tokenizer: "PreTrainedTokenizerBase | None", sa
 
     if tokenizer is not None:
         tokenizer.save_pretrained(save_dir)  # type: ignore[attr-defined]
-    elif tokenizer is None and getattr(model.config, "_name_or_path", None):  # type: ignore[attr-defined]  # pragma: no cover
-        maybe_save_preprocessors(
-            model.config._name_or_path,
-            save_dir,
-        )
+    else:  # pragma: no cover
+        name_or_path = get_source_name_or_path(model)
+        if name_or_path:
+            maybe_save_preprocessors(name_or_path, save_dir)
 
 
 def set_seed(seed: int) -> None:

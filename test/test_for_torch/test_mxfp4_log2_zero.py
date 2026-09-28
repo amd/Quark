@@ -243,3 +243,56 @@ class TestBug3ProposedFix:
 
         assert torch.isfinite(fixed_result), "Fixed version produces finite value"
         assert fixed_result == -126.0, "log2(2^-126) should be -126"
+
+
+class TestBug20EvenRoundingMode:
+    """BUG-020: downcast_to_mxfp_torch silently applies ROUND_DOWN math for EVEN mode.
+
+    The torch reference path has ``if ROUND_UP ... else ROUND_DOWN`` with no EVEN
+    branch, so EVEN requests silently fall through to ROUND_DOWN.  This produces a
+    2× scale error for any input whose max_abs sits in the upper half of a power-of-2
+    octave relative to max_quant_val.
+    """
+
+    def test_even_scale_differs_from_round_down_when_max_abs_in_upper_octave(self) -> None:
+        """EVEN rounding must produce a larger scale than ROUND_DOWN when max_abs sits
+        in the upper half of a power-of-2 octave.
+
+        For mxfp4 e2m1 (max_quant_val=6.0) with all-5.0 input (max_abs=5.0):
+          ROUND_DOWN: floor_mantissa(5/6 ≈ 0.833) = 0.5  → scale_uint8 = 126
+          EVEN:       round 5.0 toward nearest pow2 boundary → 4.0,
+                      scale = 2^(floor(log2(4)) − 2) = 1.0   → scale_uint8 = 127
+
+        This test FAILS with current code (EVEN falls through to ROUND_DOWN, returning
+        scale_uint8=126) and passes after the fix adds a proper EVEN branch.
+        """
+        from quark.torch.kernel.mx.triton import DequantScaleRoundingMode, downcast_to_mxfp_torch
+
+        # 32 elements all equal to 5.0: max_abs=5.0, which lies in the upper half of
+        # the [4, 8) power-of-2 octave, so EVEN produces a different (larger) scale.
+        x = torch.full((1, 32), 5.0, dtype=torch.float32)
+
+        _, scale_round_down = downcast_to_mxfp_torch(
+            x,
+            out_quant_type=torch.uint8,
+            axis=-1,
+            DEQUANT_SCALE_ROUNDING_MODE=DequantScaleRoundingMode.ROUND_DOWN,
+        )
+        _, scale_even = downcast_to_mxfp_torch(
+            x,
+            out_quant_type=torch.uint8,
+            axis=-1,
+            DEQUANT_SCALE_ROUNDING_MODE=DequantScaleRoundingMode.EVEN,
+        )
+
+        # Sanity-check the ROUND_DOWN baseline: 5/6 ≈ 0.833 → strip mantissa → 0.5
+        # → biased fp32 exponent field = 0x3F000000 >> 23 = 126
+        assert scale_round_down.item() == 126, (
+            f"ROUND_DOWN baseline: expected scale_uint8=126 (0.5), got {scale_round_down.item()}"
+        )
+        # EVEN must NOT equal ROUND_DOWN for this input: expected scale_uint8=127 (1.0)
+        assert scale_even.item() == 127, (
+            f"BUG-020: EVEN rounding returned scale_uint8={scale_even.item()} "
+            f"but expected 127 (dequant_scale=1.0); "
+            "EVEN mode is silently using ROUND_DOWN math in downcast_to_mxfp_torch"
+        )

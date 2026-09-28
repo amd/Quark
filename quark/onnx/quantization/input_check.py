@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +17,12 @@ from quark.onnx.calibration import Int16Method, LayerWiseMethod, PowerOfTwoMetho
 from quark.onnx.quantization.quant_utils import (
     DEQUANT_OP_TYPES,
     FN_OP_TYPES,
+    FP8_MIN_OPSET,
     QUANT_OP_TYPES,
     ExtendedQuantFormat,
     ExtendedQuantType,
+    get_opset_version,
+    is_fp8_qtype,
 )
 
 logger = ScreenLogger(__name__)
@@ -42,6 +46,36 @@ def check_qdq_model(input_model: str | Path | onnx.ModelProto) -> bool:
     qdq_ops = QUANT_OP_TYPES + DEQUANT_OP_TYPES + FN_OP_TYPES
     is_qdq_model = any(op in qdq_ops for op in nodes)
     return is_qdq_model
+
+
+def check_fp8_opset_conversion_required(
+    model: onnx.ModelProto,
+    activation_type: QuantType | ExtendedQuantType,
+    weight_type: QuantType | ExtendedQuantType,
+) -> bool:
+    """Whether ``model`` must be converted to ``FP8_MIN_OPSET`` before FP8 quantization.
+
+    Float8 QuantizeLinear/DequantizeLinear only load in ONNX Runtime at opset
+    >= ``FP8_MIN_OPSET``, so a lower-opset model has to be converted before QDQ
+    insertion when either quant type targets FP8.
+
+    :param model: the float model to inspect.
+    :param activation_type: activation quant type requested by the caller.
+    :param weight_type: weight quant type requested by the caller.
+    :return: True if an FP8 type is requested and the model opset is too low.
+    """
+    if not (is_fp8_qtype(activation_type) or is_fp8_qtype(weight_type)):
+        return False
+
+    current_opset = get_opset_version(model)
+    if current_opset >= FP8_MIN_OPSET:
+        return False
+
+    logger.warning(
+        f"FP8 quantization requires opset >= {FP8_MIN_OPSET}, but the input model is "
+        f"opset {current_opset}. Automatically converting the model to opset {FP8_MIN_OPSET}."
+    )
+    return True
 
 
 @log_errors
@@ -134,7 +168,7 @@ def check_crypto_mode_arguments(
         )
 
     if extra_options.get("EncryptionAlgorithm", "") == "AES-256":
-        if not _is_package_available("cryptography")[0]:
+        if not _is_package_available("cryptography")[0]:  # pragma: no cover - requires cryptography to be missing
             raise ImportError(
                 "The 'cryptography' package is required for crypto mode but not installed. "
                 "Please install it via 'pip install \"amd-quark[crypto]\"' (pins the patched "
@@ -148,3 +182,105 @@ def check_crypto_mode_arguments(
     if extra_options.get("CalibOptimizeMem", True):
         logger.warning("The optimization of memory consumption for calibration will be disabled in crypto mode.")
         extra_options["CalibOptimizeMem"] = False
+
+
+@log_errors
+def check_quantization_preference_arguments(
+    calibrate_method: CalibrationMethod | PowerOfTwoMethod | Int16Method | LayerWiseMethod,
+    include_fast_ft: bool,
+    extra_options: dict[str, Any],
+) -> None:
+    """The option 'QuantizationPreference' is used to configure advanced options on top of the user's settings
+    for optimization, with the optimizations focused on the calibration and fast fine-tuning stages.
+    Options are:
+        'accuracy': Prioritize the quantization quality, for high-precision requirements.
+        'speed': Accelerate the quantization process, for faster applications.
+        'resource_efficiency': Minimize RAM/VRAM/disk usage, for resource-constrained environments.
+        The default value is None, which means the quantization strategy is determined by the user's configuration.
+    """
+    preference = extra_options.get("QuantizationPreference")
+    if preference is None:
+        return None
+    elif preference not in ["accuracy", "speed", "resource_efficiency"]:
+        raise ValueError("The 'QuantizationPreference' must be one of 'accuracy', 'speed', or 'resource_efficiency'.")
+
+    if include_fast_ft:
+        if "FastFinetune" not in extra_options:
+            extra_options["FastFinetune"] = {}
+
+    if preference == "accuracy":
+        if calibrate_method is PowerOfTwoMethod.MinMSE and extra_options.get("MinMSEModePof2Scale", "All") != "All":
+            extra_options["MinMSEModePof2Scale"] = "All"
+            logger.warning("The 'MinMSEModePof2Scale' has been changed to 'All' for accuracy optimization.")
+
+        if include_fast_ft:
+            if extra_options["FastFinetune"].get("EarlyStop", False):
+                extra_options["FastFinetune"]["EarlyStop"] = False
+                logger.warning("The 'FastFinetune.EarlyStop' has been disabled for accuracy optimization.")
+            if not extra_options["FastFinetune"].get("UpdateBias", False):
+                extra_options["FastFinetune"]["UpdateBias"] = True
+                logger.warning("The 'FastFinetune.UpdateBias' has been changed to True for accuracy optimization.")
+            if not extra_options["FastFinetune"].get("OutputQDQ", False):
+                extra_options["FastFinetune"]["OutputQDQ"] = True
+                logger.warning("The 'FastFinetune.OutputQDQ' has been changed to True for accuracy optimization.")
+
+    elif preference == "speed":
+        if calibrate_method is PowerOfTwoMethod.MinMSE and extra_options.get("MinMSEModePof2Scale", "All") == "All":
+            if "NumBins" not in extra_options or extra_options["NumBins"] == 0:
+                # The NumBins equals to 0 means it does not compute with histogram, which is not efficient.
+                extra_options["NumBins"] = 2048
+                logger.warning("The 'NumBins' has been changed to 2048 for speed optimization.")
+        if calibrate_method is LayerWiseMethod.LayerWisePercentile and not extra_options.get("LWPUseHistogram", True):
+            extra_options["LWPUseHistogram"] = True
+            logger.warning("The 'LWPUseHistogram' has been changed to True for speed optimization.")
+
+        if "CalibOptimizeMem" not in extra_options or extra_options.get("CalibOptimizeMem", True):
+            extra_options["CalibOptimizeMem"] = False
+            logger.warning("The 'CalibOptimizeMem' has been changed to False for speed optimization.")
+        if "CalibWorkerNum" not in extra_options or extra_options.get("CalibWorkerNum", 1) > 1:
+            extra_options["CalibWorkerNum"] = min(multiprocessing.cpu_count(), 8)
+            logger.warning(
+                f"The 'CalibWorkerNum' has been changed to {min(multiprocessing.cpu_count(), 8)} for speed optimization."
+            )
+
+        if include_fast_ft:
+            if not extra_options["FastFinetune"].get("EarlyStop", False):
+                extra_options["FastFinetune"]["EarlyStop"] = True
+                logger.warning("The 'FastFinetune.EarlyStop' has been enabled for speed optimization.")
+            if extra_options["FastFinetune"].get("MemOptLevel", 1) != 0:
+                extra_options["FastFinetune"]["MemOptLevel"] = 0
+                logger.warning("The 'FastFinetune.MemOptLevel' has been changed to 0 for speed optimization.")
+            if extra_options["FastFinetune"].get("NumWorkers", 1) == 1:
+                extra_options["FastFinetune"]["NumWorkers"] = min(multiprocessing.cpu_count(), 8)
+                logger.warning(
+                    f"The 'FastFinetune.NumWorkers' has been changed to {min(multiprocessing.cpu_count(), 8)} for speed optimization."
+                )
+
+    elif preference == "resource_efficiency":
+        if calibrate_method is PowerOfTwoMethod.MinMSE and extra_options.get("MinMSEModePof2Scale", "All") == "All":
+            if "NumBins" not in extra_options or extra_options["NumBins"] == 0:
+                # The NumBins equals to 0 means it does not compute with histogram, which is not efficient.
+                extra_options["NumBins"] = 2048
+                logger.warning("The 'NumBins' has been changed to 2048 for resource efficiency optimization.")
+        if calibrate_method is LayerWiseMethod.LayerWisePercentile and not extra_options.get("LWPUseHistogram", True):
+            extra_options["LWPUseHistogram"] = True
+            logger.warning("The 'LWPUseHistogram' has been changed to True for resource efficiency optimization.")
+
+        if "CalibOptimizeMem" not in extra_options or not extra_options.get("CalibOptimizeMem", True):
+            extra_options["CalibOptimizeMem"] = True
+            logger.warning("The 'CalibOptimizeMem' has been changed to True for resource efficiency optimization.")
+        if "CalibWorkerNum" not in extra_options or extra_options.get("CalibWorkerNum", 1) > 1:
+            extra_options["CalibWorkerNum"] = 1
+            logger.warning("The 'CalibWorkerNum' has been changed to 1 for resource efficiency optimization.")
+
+        if include_fast_ft:
+            if extra_options["FastFinetune"].get("MemOptLevel", 1) != 2:
+                extra_options["FastFinetune"]["MemOptLevel"] = 2
+                logger.warning(
+                    "The 'FastFinetune.MemOptLevel' has been changed to 2 for resource efficiency optimization."
+                )
+            if extra_options["FastFinetune"].get("NumWorkers", 1) > 1:
+                extra_options["FastFinetune"]["NumWorkers"] = 1
+                logger.warning(
+                    "The 'FastFinetune.NumWorkers' has been changed to 1 for resource efficiency optimization."
+                )

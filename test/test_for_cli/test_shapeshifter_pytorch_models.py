@@ -264,6 +264,128 @@ output_model_path: {tmpdir / "output.pt"}
             traced_model, (torch.jit.ScriptModule, torch.jit.RecursiveScriptModule), "Should be traced"
         )
 
+    def test_weights_only_defaults_to_true(self) -> None:
+        """PytorchModelConfig defaults to the secure weights_only=True (CWE-502)."""
+        config = PytorchModelConfig(input_model_path=Path("model.pt"))
+        self.assertTrue(config.weights_only, "weights_only must default to True (safe)")
+
+    @use_temporary_directory
+    def test_load_full_module_without_optin_raises_actionable_error(self, tmpdir: str) -> None:
+        """Loading a full nn.Module under the safe default fails with opt-in guidance."""
+        tmpdir = Path(tmpdir)
+
+        model = SimpleModel()
+        model_path = tmpdir / "model.pt"
+        torch.save(model, model_path)
+
+        # No weights_only specified -> inherits the secure default (True).
+        model_config = PytorchModelConfig(input_model_path=model_path, map_location="cpu")
+        run_config = RunConfig(
+            input_model_config=model_config,
+            passes={"pytorch_remove_dropout": {}},
+            output_model_path=str(tmpdir / "output.pt"),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            shapeshifter(run_config)
+
+        error_msg = str(ctx.exception)
+        self.assertIn("weights_only=False", error_msg, "Error must tell the user how to opt in")
+        self.assertIn("weights_only=True", error_msg, "Error must name the safe default that failed")
+
+    @use_temporary_directory
+    def test_explicit_weights_only_false_still_loads(self, tmpdir: str) -> None:
+        """Explicit weights_only=False remains a working opt-in for trusted files."""
+        tmpdir = Path(tmpdir)
+
+        model = SimpleModel()
+        model_path = tmpdir / "model.pt"
+        torch.save(model, model_path)
+
+        output_path = tmpdir / "output.pt"
+        model_config = PytorchModelConfig(input_model_path=model_path, weights_only=False, map_location="cpu")
+        run_config = RunConfig(
+            input_model_config=model_config,
+            passes={"pytorch_remove_dropout": {}},
+            output_model_path=str(output_path),
+        )
+
+        shapeshifter(run_config)
+
+        self.assertTrue(output_path.exists())
+        output_model = torch.load(output_path, weights_only=False)
+        has_dropout = any(isinstance(m, nn.Dropout) for m in output_model.modules())
+        self.assertFalse(has_dropout, "Dropout should be removed")
+
+    @use_temporary_directory
+    def test_legacy_config_format_no_longer_forces_unsafe_load(self, tmpdir: str) -> None:
+        """The legacy top-level config format must not silently force weights_only=False."""
+        tmpdir = Path(tmpdir)
+
+        model = SimpleModel()
+        model_path = tmpdir / "model.pt"
+        torch.save(model, model_path)
+
+        # Legacy format: top-level input_model_path, no weights_only key.
+        config_path = tmpdir / "config.yaml"
+        with open(config_path, "w") as f:
+            f.write(
+                f"""input_model_path: {model_path}
+passes:
+  pytorch_remove_dropout: {{}}
+output_model_path: {tmpdir / "output.pt"}
+"""
+            )
+
+        # Without an explicit opt-in the full-module load must fail closed.
+        with self.assertRaises(ValueError) as ctx:
+            cli(["shapeshifter", str(config_path)])
+        self.assertIn("weights_only=False", str(ctx.exception))
+
+    @use_temporary_directory
+    def test_legacy_config_format_honors_explicit_optin(self, tmpdir: str) -> None:
+        """The legacy top-level config format honors an explicit weights_only opt-in."""
+        tmpdir = Path(tmpdir)
+
+        model = SimpleModel()
+        model_path = tmpdir / "model.pt"
+        torch.save(model, model_path)
+
+        output_path = tmpdir / "output.pt"
+        config_path = tmpdir / "config.yaml"
+        with open(config_path, "w") as f:
+            f.write(
+                f"""input_model_path: {model_path}
+weights_only: false
+passes:
+  pytorch_remove_dropout: {{}}
+output_model_path: {output_path}
+"""
+            )
+
+        cli(["shapeshifter", str(config_path)])
+
+        self.assertTrue(output_path.exists())
+        output_model = torch.load(output_path, weights_only=False)
+        has_dropout = any(isinstance(m, nn.Dropout) for m in output_model.modules())
+        self.assertFalse(has_dropout, "Dropout should be removed")
+
+    @use_temporary_directory
+    def test_missing_file_does_not_suggest_weights_only_optin(self, tmpdir: str) -> None:
+        """A non-unpickling failure (missing file) must not be masked by the opt-in guidance."""
+        tmpdir = Path(tmpdir)
+
+        # File does not exist -> torch.load raises FileNotFoundError, not an UnpicklingError.
+        model_config = PytorchModelConfig(input_model_path=tmpdir / "missing.pt", map_location="cpu")
+        run_config = RunConfig(
+            input_model_config=model_config,
+            passes={"pytorch_remove_dropout": {}},
+            output_model_path=str(tmpdir / "output.pt"),
+        )
+
+        with self.assertRaises(FileNotFoundError):
+            shapeshifter(run_config)
+
 
 if __name__ == "__main__":
     unittest.main()

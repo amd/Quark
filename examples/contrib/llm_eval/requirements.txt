@@ -11,7 +11,11 @@ onnx
 onnx_ir
 onnxruntime
 onnxruntime_extensions
-onnxruntime_genai>=0.6.0
+# Pin: onnxruntime_genai 0.16.0 imports Qwen3_5ForConditionalGeneration at module import time
+# (transformers v5 only) and requires onnxruntime>=1.30. This env is held on transformers 4.57.x
+# because optimum[onnxruntime] -> optimum-onnx caps transformers<4.58.0. Relax this upper bound
+# together with the transformers pin in .github/workflows/weekly_llm_eval.yml once that cap is lifted.
+onnxruntime_genai>=0.6.0,<0.16
 optimum[onnxruntime]
 py7zr
 rouge_score

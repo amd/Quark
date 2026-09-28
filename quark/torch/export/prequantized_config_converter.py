@@ -284,6 +284,20 @@ class FP8LinearConfigConverter(PrequantizedConfigConverter):
         )
 
 
+class FP8ExpertLinearConfigConverter(FP8LinearConfigConverter):
+    """Converter for FP8ExpertLinear, a per-expert slice of a fused FP8Experts MoE module.
+
+    See ``quark.torch.utils.llm.module_replacement.quark_experts``. The expert slice
+    carries ``weight`` / ``weight_scale_inv`` / ``block_size`` / ``bias``, but not
+    ``activation_scheme`` (unlike transformers' ``FP8Linear``). Inherited ``convert()``
+    therefore always takes the ``getattr(..., "dynamic")`` fallback. That is correct
+    for the dynamic checkpoints this path handles; static activation scales are not
+    represented on the expert slice.
+    """
+
+    supported_module_class_name = "FP8ExpertLinear"
+
+
 # ============================================================================
 #  Converter registry and public dispatch
 # ============================================================================
@@ -293,6 +307,7 @@ PREQUANTIZED_CONFIG_CONVERTERS: dict[str, PrequantizedConfigConverter] = {
     for converter in [
         CompressedTensorsConfigConverter(),
         FP8LinearConfigConverter(),
+        FP8ExpertLinearConfigConverter(),
     ]
 }
 

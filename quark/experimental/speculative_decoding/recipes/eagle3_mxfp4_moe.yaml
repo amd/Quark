@@ -1,0 +1,66 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Public large-model adapter template. It contains public model metadata,
+# generic defaults, and explicit user-supplied placeholders only. Validate the
+# resolved configuration on the intended ROCm/vLLM stack before a full run.
+
+method: eagle3
+
+execution:
+  backend: torchspec
+  profile: quick
+  runner_profile: minimax_m3_best_recipe
+  cache_dir: ~/.cache/amd-quark/eagle3
+  image: quark-specdec-rocm:latest
+  target_tp_size: 4
+  world_size: 8
+
+model:
+  target_model_path: amd/MiniMax-M3-MXFP4
+  trust_remote_code: true
+  # Public adapter metadata for the target's nested text tower.
+  embedding_key: language_model.model.embed_tokens.weight
+  lm_head_key: language_model.lm_head.weight
+  norm_key: language_model.model.norm.weight
+
+eagle:
+  eagle_architecture_config:
+    num_hidden_layers: 1
+    fc_norm: true
+    norm_output: true
+  ttt_length: 7
+    # Width, attention geometry, and vocabulary default to the target config.
+  # Auxiliary layers and unroll settings use the runner's generic defaults.
+
+data:
+  auto_generate: true
+  # The runner profile supplies the small repository-authored smoke manifest.
+  # Override data.domain_manifest with a reviewed public/local full manifest.
+
+training:
+  extraction: streaming
+  cold_start: true
+  train_backend: torchspec
+  num_gpus_per_node: 8
+  # Peak for a draft this wide. The Qwen quick start's 1e-4 is tuned against a
+  # 4096-wide draft over an 8B target; this one is 6144 wide over a 232B MoE.
+  learning_rate: 5.0e-5
+  lr_schedule: cosine
+  warmup_ratio: 0.015
+  num_epochs: 1
+  quick_num_epochs: 1
+  output_dir: ckpts/minimax-m3-eagle3-public
+
+quant:
+  target: mxfp4
+
+benchmark:
+  # Matched against the Qwen quick start so a large-model result is measured on
+  # the same footing. quick_* keep the smoke profile cheap.
+  num_prompts: 40
+  rounds: 3
+  quick_num_prompts: 8
+  quick_rounds: 1
+  min_speedup: 0
+  min_served_al: 0

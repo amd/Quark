@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 import copy
+from collections import deque
 from enum import Enum
 from typing import Any
 
@@ -17,6 +18,7 @@ from quark.onnx.quantization.quant_utils import (
     get_model_node_output_node_name_dict,
     get_model_weight_name_dict,
     get_output_nodes_of_node,
+    get_tensor_to_consumer,
     get_weight_from_weight_name,
     get_weights_node_of_node,
     remove_initializers,
@@ -44,6 +46,11 @@ def check_conv_layers_group(
         return True, 1
     logger.info(f"the node:{cle_conv} group does not support CLE.")
     return False, 0
+
+
+def _get_trans_b(node: NodeProto) -> int:
+    """Look up a Gemm node's transB by name (ONNX does not fix attribute order); defaults to 0."""
+    return next((a.i for a in node.attribute if a.name == "transB"), 0)
 
 
 def _calc_scale(
@@ -132,7 +139,7 @@ def _cross_layer_equalize(
     head_w_data_reshaped = head_w_data.reshape(oc, -1)
 
     if head_conv.op_type == "Gemm":
-        if head_conv.attribute[1].name == "transB" and head_conv.attribute[1].i == 0:
+        if _get_trans_b(head_conv) == 0:
             head_w_data_reshaped = head_w_data_reshaped.T
 
     head_weights = head_w_data_reshaped
@@ -165,7 +172,7 @@ def _cross_layer_equalize(
             ic = tail_w_b[0].dims[1]
         tail_weights = tail_w_trans_data.reshape(ic, -1)
     elif tail_conv.op_type == "Gemm":
-        if tail_conv.attribute[1].name == "transB" and tail_conv.attribute[1].i == 0:
+        if _get_trans_b(tail_conv) == 0:
             tail_weights = tail_w_data
         else:
             tail_weights = tail_w_data.T
@@ -177,8 +184,8 @@ def _cross_layer_equalize(
         # scale shape (oc,) -> (oc, 1, 1, ...) to match weight [oc, ic, k...]
         scale_shape = (scale.size,) + (1,) * (head_w_data.ndim - 1)
         head_w_data = head_w_data * scale.reshape(scale_shape)
-    elif tail_conv.op_type == "Gemm":
-        if tail_conv.attribute[1].name == "transB" and tail_conv.attribute[1].i == 0:
+    elif head_conv.op_type == "Gemm":
+        if _get_trans_b(head_conv) == 0:
             head_w_data = head_w_data * scale.reshape(1, -1)
         else:
             head_w_data = head_w_data * scale.reshape(-1, 1)
@@ -212,7 +219,7 @@ def _cross_layer_equalize(
         else:
             tail_w_data = tail_w_data * (1 / scale.reshape(-1, 1, 1, 1))
     elif tail_conv.op_type == "Gemm":
-        if tail_conv.attribute[1].name == "transB" and tail_conv.attribute[1].i == 0:
+        if _get_trans_b(tail_conv) == 0:
             tail_w_data = tail_w_data * (1 / scale.reshape(-1, 1))
         else:
             tail_w_data = tail_w_data * (1 / scale.reshape(1, -1))
@@ -666,3 +673,217 @@ def cle_transforms(
         cle_total_layer_diff_threshold,
     )
     return equalization.model
+
+
+# Positively-homogeneous pass-through ops (f(s*x)=s*f(x), s>0): a per-channel scale
+# reaches the downstream BatchNorm unchanged. Clip(0,6)/HardSwish/Sigmoid are NOT.
+_STEM_HOMOGENEOUS_OPS = {"Relu", "MaxPool", "AveragePool", "GlobalAveragePool", "Identity"}
+
+
+def _tensor_channels(graph: onnx.GraphProto, tensor_name: str) -> int:
+    """Channel count (NCHW dim 1) from static shape info, or -1 if unknown."""
+    for vi in list(graph.value_info) + list(graph.input) + list(graph.output):
+        if vi.name == tensor_name:
+            dims = vi.type.tensor_type.shape.dim
+            if len(dims) >= 2 and dims[1].dim_value > 0:
+                return int(dims[1].dim_value)
+    return -1
+
+
+def _find_stem_conv(graph: onnx.GraphProto, equalization: "Equalization", graph_inputs: set[str]) -> NodeProto | None:
+    """First quantizable group==1 Conv fed directly by a graph input, or None."""
+    for node in graph.node:
+        if node.op_type != "Conv" or not equalization.should_quantize_node(node):
+            continue
+        if not any(inp in graph_inputs for inp in node.input):
+            continue
+        group = next((a.i for a in node.attribute if a.name == "group"), 1)
+        if group == 1:
+            return node
+    return None
+
+
+def _pad_is_zero(node: NodeProto, weight_dict: dict[str, Any]) -> bool:
+    """True iff this Pad is constant-mode with a statically-zero pad value, so a
+    per-channel scale still passes through (f(s*x)=s*f(x)); else False -> caller aborts.
+    """
+    mode = "constant"
+    value_attr = None
+    for attr in node.attribute:
+        if attr.name == "mode":
+            mode = attr.s.decode() if isinstance(attr.s, bytes) else str(attr.s)
+        elif attr.name == "value":  # opset < 11: pad value is an attribute
+            value_attr = attr.f
+    if mode != "constant":
+        return False
+    if value_attr is not None and value_attr != 0.0:
+        return False
+    if len(node.input) >= 3 and node.input[2]:  # opset >= 11: input constant_value
+        cval_init = weight_dict.get(node.input[2])
+        if cval_init is None:  # dynamic pad value, not statically zero
+            return False
+        if np.any(numpy_helper.to_array(cval_init) != 0):
+            return False
+    return True
+
+
+def _concat_offset(graph: onnx.GraphProto, node: NodeProto, tensor: str) -> int:
+    """Channel offset added by a Concat: the sum of channels of all inputs before
+    `tensor`. Returns -1 if axis != 1 or any preceding input's channel count is
+    statically unknown (caller aborts).
+    """
+    axis = next((a.i for a in node.attribute if a.name == "axis"), 1)
+    if axis != 1:
+        return -1
+    offset = 0
+    for inp in node.input:
+        if inp == tensor:
+            return offset
+        ch = _tensor_channels(graph, inp)
+        if ch < 0:
+            return -1
+        offset += ch
+    # Unreachable: `tensor` is always in node.input, so the loop returns first; -1 mirrors the other give-up paths.
+    return -1  # pragma: no cover
+
+
+def _detect_stem_bn_groups(
+    model: ModelProto, equalization: "Equalization"
+) -> tuple[NodeProto | None, int, list[tuple[NodeProto, int]]]:
+    """Find the stem conv (first group==1 Conv fed by a graph input) and the
+    downstream BatchNorms reachable through homogeneous ops / Concat, with each
+    BN's channel offset. Any other op aborts detection. Returns (None, 0, []) on failure.
+    """
+    graph = model.graph
+    weight_dict = get_model_weight_name_dict(graph)
+    consumers = get_tensor_to_consumer(model)
+
+    stem = _find_stem_conv(graph, equalization, {i.name for i in graph.input})
+    if stem is None:
+        return None, 0, []
+
+    w_name = next((inp for inp in stem.input if inp in weight_dict), None)
+    if w_name is None:
+        return None, 0, []
+    cout = int(numpy_helper.to_array(weight_dict[w_name]).shape[0])
+
+    # BFS from stem output, tracking channel offset until each BatchNorm.
+    bn_groups: list[tuple[NodeProto, int]] = []
+    visited: set[tuple[str, str, int]] = set()
+    queue: deque[tuple[str, int]] = deque((out, 0) for out in stem.output)
+
+    while queue:
+        tensor, offset = queue.popleft()
+        for node in consumers.get(tensor, []):
+            key = (node.name, tensor, offset)
+            if key in visited:  # pragma: no cover - DAG re-convergence guard
+                continue
+            visited.add(key)
+
+            op = node.op_type
+            if op == "BatchNormalization":
+                # Fold writes gamma/mean[offset : offset+cout]; if this BN can't hold
+                # that span, abort here so _stem_equalize can trust every BN is foldable.
+                gamma = weight_dict.get(node.input[1])
+                if gamma is None or gamma.dims[0] < offset + cout:
+                    have = "missing" if gamma is None else gamma.dims[0]
+                    logger.warning(
+                        f"[stem-eq] BN '{node.name}' scale channels {have} < offset+cout {offset + cout}, skip stem-eq."
+                    )
+                    return None, 0, []
+                bn_groups.append((node, offset))
+                continue
+
+            delta = 0  # channels prepended before `tensor` (only Concat shifts it)
+            if op in _STEM_HOMOGENEOUS_OPS:
+                pass
+            elif op == "Pad":
+                if not _pad_is_zero(node, weight_dict):
+                    return None, 0, []
+            elif op == "Concat":
+                delta = _concat_offset(graph, node, tensor)
+                if delta < 0:
+                    return None, 0, []
+            else:
+                return None, 0, []
+
+            for out in node.output:
+                queue.append((out, offset + delta))
+
+    if not bn_groups:
+        return None, 0, []
+    return stem, cout, bn_groups
+
+
+def _stem_equalize(model: ModelProto, stem: NodeProto, cout: int, bn_groups: list[tuple[NodeProto, int]]) -> None:
+    """Scale weak stem channels up by s_i=clip(target/absmax_i,1,_CLAMP) and fold 1/s
+    into each downstream BN (gamma/=s, mean*=s), which keeps FP32 output exact.
+    Early-returns (leaving the model untouched) log why, so a no-op is never silent.
+    """
+    # Empirical constants. TODO: explore adapting these per-model instead of fixing them.
+    _LIVE_EPS = 1e-6  # channels with absmax below this are treated as dead (skip scaling)
+    _CLAMP = 16.0  # upper bound on the per-channel scale, to avoid over-amplifying noise
+
+    graph = model.graph
+    weight_dict = get_model_weight_name_dict(graph)
+
+    init_inputs = [inp for inp in stem.input if inp in weight_dict]
+    w_name = init_inputs[0]
+    b_name = init_inputs[1] if len(init_inputs) > 1 else None
+
+    W = numpy_helper.to_array(weight_dict[w_name]).astype(np.float32)
+    absmax = np.abs(W).reshape(cout, -1).max(axis=1)
+    live = absmax > _LIVE_EPS
+    if live.sum() == 0:
+        logger.info(f"[stem-eq] stem='{stem.name}' has no live channel (all near-zero) -> no-op.")
+        return
+    target = absmax[live].max()
+
+    s = np.ones(cout, dtype=np.float32)
+    s[live] = np.clip(target / absmax[live], 1.0, _CLAMP)
+
+    def _replace(name: str, arr: NDArray[np.float32]) -> None:
+        old = weight_dict[name]
+        graph.initializer.remove(old)
+        new = numpy_helper.from_array(arr.astype(np.float32), name)
+        graph.initializer.append(new)
+        weight_dict[name] = new
+
+    _replace(w_name, W * s[:, None, None, None])
+    if b_name is not None:
+        B = numpy_helper.to_array(weight_dict[b_name]).astype(np.float32)
+        _replace(b_name, B * s)
+
+    # ONNX BN inputs: X, scale(gamma), B(beta), input_mean, input_var.
+    for bn, offset in bn_groups:
+        gamma_name = bn.input[1]
+        mean_name = bn.input[3]
+        gamma = numpy_helper.to_array(weight_dict[gamma_name]).astype(np.float32).copy()
+        mean = numpy_helper.to_array(weight_dict[mean_name]).astype(np.float32).copy()
+        sl = slice(offset, offset + cout)
+        gamma[sl] = gamma[sl] / s
+        mean[sl] = mean[sl] * s
+        _replace(gamma_name, gamma)
+        _replace(mean_name, mean)
+        logger.info(f"[stem-eq]   folded into BN '{bn.name}' at channels [{offset}:{offset + cout}]")
+
+
+def stem_equalize_transforms(
+    model: ModelProto,
+    op_types_to_quantize: list[str],
+    nodes_to_quantize: list[str],
+    nodes_to_exclude: list[str],
+) -> Any:
+    """One-shot stem equalization, complementing Conv->Conv CLE for the stem conv
+    whose downstream is a BN fan-out. No-op when no stem/BN pattern is found.
+
+    Runs automatically when include_cle is enabled, but depends on no CLE state,
+    so it can also be called directly on its own.
+    """
+    equalization = Equalization(model, op_types_to_quantize, nodes_to_quantize, nodes_to_exclude)
+    stem, cout, bn_groups = _detect_stem_bn_groups(model, equalization)
+    if stem is None:
+        logger.info("[stem-eq] no matching stem/BN pattern -> no-op (model unchanged)")
+        return model
+    _stem_equalize(model, stem, cout, bn_groups)
+    return model

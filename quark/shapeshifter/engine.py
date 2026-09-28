@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 
+import pickle
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -58,8 +59,11 @@ class Engine:
                     "model_type": model_type,
                     "input_model_path": config.pop("input_model_path"),
                 }
-                if model_type == "pytorch":
-                    config["input_model_config"]["weights_only"] = False
+                if model_type == "pytorch" and "weights_only" in config:
+                    # Honor an explicit top-level weights_only if the user set one; otherwise
+                    # inherit PytorchModelConfig's safe default (True). We never silently force
+                    # the unsafe path -- loading a full nn.Module requires opting in to False.
+                    config["input_model_config"]["weights_only"] = config.pop("weights_only")
 
             self._config = RunConfig(**config)
         elif isinstance(config, RunConfig):
@@ -204,7 +208,23 @@ class Engine:
         logger.info(f"Loading PyTorch model from: {path}")
         logger.info(f"Load config: weights_only={config.weights_only}, map_location={config.map_location}")
 
-        model = torch.load(path, map_location=config.map_location, weights_only=config.weights_only)
+        try:
+            model = torch.load(path, map_location=config.map_location, weights_only=config.weights_only)
+        except pickle.UnpicklingError as e:
+            # A weights_only=True load rejects full pickled objects (e.g. an nn.Module) with an
+            # UnpicklingError. Only this failure mode is fixable by opting into weights_only=False,
+            # so we scope the actionable guidance to it and let unrelated errors (missing file,
+            # permission, invalid map_location) propagate untouched.
+            if config.weights_only:
+                raise ValueError(
+                    f"Failed to load '{path}' with weights_only=True (the safe default). This usually "
+                    f"means the file contains a full pickled object (e.g. an nn.Module), which "
+                    f"Shapeshifter's PyTorch passes require. To load it, set weights_only=False in your "
+                    f"PytorchModelConfig (or 'weights_only: false' in your config file). WARNING: "
+                    f"weights_only=False executes arbitrary code on load -- only use it for files you "
+                    f"trust. Original error: {e}"
+                ) from e
+            raise
 
         # Handle different checkpoint formats
         if callable(model):

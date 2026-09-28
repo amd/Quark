@@ -1,67 +1,52 @@
 # Artifact Contracts
 
-These are the canonical handoff surface between Quark skills. **Each artifact has exactly one producer.** When a downstream skill needs combined facts, it reads multiple artifacts; producers never share write access to the same file.
+## Run-scoped ownership
 
-## `session_context.json`
+Artifact ownership is scoped to one workflow or run directory. Within that
+scope, one producing skill or workflow owns an artifact throughout its
+lifecycle and may create and update it across steps. Other producers must not
+write the same path concurrently. Separate runs may use the same filename
+without sharing ownership.
 
-- producer: `quark-torch-router`
-- consumers: all downstream skills
-- purpose: capture user goal, selected workflow, constraints, and unresolved questions
-- failure fallback: return a partial context with `open_questions` populated
-- references: may include `env_context_ref`, `workspace_context_ref`, `pytorch_install_result_ref`, `quark_install_result_ref` pointing at the relevant artifact files when downstream decisions need them
+## Contract resolution
 
-## `env_context.json`
+- A self-contained entry's top-level `SKILL.md` defines output paths and
+  lifecycle; directly owned runtime contracts live beside that entry.
+- For a transitional entry, the public stub routes and the delegated
+  `_legacy_impl` body defines artifacts and lifecycle.
+- Contracts under
+  [`skills/_legacy_impl/shared/contracts/`](../../skills/_legacy_impl/shared/contracts/)
+  are compatibility contracts for delegated and internal legacy
+  implementations. Resolve a contract from the producing skill's profile; a
+  familiar filename alone does not select a global schema.
 
-- producer: `quark-env-preflight`
-- consumers: `quark-torch-router`, `quark-torch-install`, `quark-install`, `quark-torch-model-intake`, `quark-torch-quant-plan`, `quark-torch-llm-ptq-workflow`, `quark-torch-debug`
-- purpose: capture machine-level facts — OS, Python, accelerator, GPU details — independent of any installation action
-- failure fallback: leave unresolved fields as `null` or `"unknown"`; surface gaps to `quark-torch-router` for `session_context.json`'s `open_questions`
+## Current shared and Torch primary artifacts
 
-## `workspace_context.json`
+This inventory intentionally leaves ONNX artifact details to a later
+backend-specific update.
 
-- producer: `quark-workspace-validate`
-- consumers: `quark-torch-model-intake`, `quark-torch-llm-ptq-workflow`, `quark-torch-export`
-- purpose: record validated model paths, output directories, and repo locations, distinguished as local vs HuggingFace ID
-- failure fallback: keep ambiguous references unresolved; surface to `quark-torch-router` for `open_questions`
+### Shared
 
-## `pytorch_install_result.json`
+| Producer | Primary artifact |
+|---|---|
+| [`quark-env-preflight`](../../skills/quark-env-preflight/SKILL.md) | `env_context.json` |
+| [`quark-install`](../../skills/quark-install/SKILL.md) | `quark_install_result.json` |
+| [`quark-create-shapeshifter-pass`](../../skills/quark-create-shapeshifter-pass/SKILL.md) | `shapeshifter_pass.py` |
 
-- producer: `quark-torch-install`
-- consumers: `quark-install`, `quark-torch-llm-ptq-workflow`, `quark-torch-debug`
-- purpose: record what PyTorch build was installed and verified — version, accelerator backend tag, verification status
-- failure fallback: emit `status: "failed"` with the exact failing verification command
+### Torch
 
-## `quark_install_result.json`
+| Producer | Primary artifact |
+|---|---|
+| [`quark-torch-ptq`](../../skills/quark-torch-ptq/SKILL.md) | `model_analysis.json`, `quant_plan.json`, `run_manifest.yaml`, and the confirmed quantized-model directory |
+| [`quark-torch-quant-perf`](../../skills/quark-torch-quant-perf/SKILL.md) | `session_report.md` and the structured `session_breakdown.json` |
+| [`quark-torch-install`](../../skills/quark-torch-install/SKILL.md) | `pytorch_install_result.json` |
+| [`quark-torch-model-intake`](../../skills/quark-torch-model-intake/SKILL.md) | `model_analysis.json` |
+| [`quark-torch-result-validator`](../../skills/quark-torch-result-validator/SKILL.md) | `validation_report.md` |
+| [`quark-torch-llm-eval`](../../skills/quark-torch-llm-eval/SKILL.md) | `$EVAL_STATE_DIR/eval_report.md` |
+| [`quark-torch-file2file-quantization`](../../skills/quark-torch-file2file-quantization/SKILL.md) | `run_manifest.yaml`, generated wrapper or conversion scripts, and the quantized checkpoint |
+| [`quark-torch-shrink-model`](../../skills/quark-torch-shrink-model/SKILL.md) | `shrink_result.md` and the destination model, or JSON-only test output |
 
-- producer: `quark-install`
-- consumers: `quark-torch-llm-ptq-workflow`, `quark-torch-quant-plan`, `quark-torch-debug`
-- purpose: record installed Quark version, optional extras (ONNX runtime, LLM PTQ deps), and verification status
-- failure fallback: emit `status: "failed"` with the exact failing verification command
-
-## `model_analysis.json`
-
-- producer: `quark-torch-model-intake`
-- consumers: `quark-torch-quant-plan`, `quark-torch-llm-ptq-workflow`, `quark-torch-debug`
-- purpose: store model family, structure cues, loading risks, and quantization-sensitive components
-- failure fallback: emit `analysis_status: "partial"` and enumerate unresolved model risks
-
-## `quant_plan.json`
-
-- producer: `quark-torch-quant-plan`
-- consumers: `quark-torch-llm-ptq-workflow`, `quark-torch-export`, `quark-torch-debug`
-- purpose: record the proposed quantization scheme, exclusions, overrides, algorithm choice, and evaluation intent
-- failure fallback: emit a draft plan with `requires_confirmation: true`
-
-## `run_manifest.yaml`
-
-- producer: `quark-torch-llm-ptq-workflow`
-- consumers: `quark-torch-export`, `quark-torch-debug`, `quark-torch-eval-runner`
-- purpose: define commands, inputs, outputs, checkpoints, and expected artifacts for an executable run
-- failure fallback: emit a manual-only manifest with missing steps listed under `blocked_by`
-
-## `validation_report.md`
-
-- producer: `quark-torch-debug`, `quark-torch-eval-runner`, governance skills (each produces its own report file — not a shared mutable artifact)
-- consumers: users, maintainers, regression review
-- purpose: summarize execution results, failures, applied fixes, evidence, and next actions
-- failure fallback: write a diagnostic report even when execution did not start
+Legacy internal routing, workspace validation, and planning may also produce
+`session_context.json`, `workspace_context.json`, and `quant_plan.json` using
+the transitional shared contracts. These are internal handoffs, not additional
+public entries.

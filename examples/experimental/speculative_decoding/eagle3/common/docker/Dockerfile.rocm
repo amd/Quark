@@ -1,0 +1,44 @@
+# Shared EAGLE-3 training/serving image for AMD ROCm.
+#
+# The base provides vLLM's hidden-state extraction hook and EAGLE-3 draft
+# support. TorchSpec is mounted at runtime at a pinned revision.
+#
+# The runner builds this file from eagle3/common/docker.
+#
+# v0.28.0 is required. Any replacement must keep
+# Python 3.12 (hardcoded in the paths below) and gfx942/gfx950.
+
+ARG VLLM_ROCM_IMAGE=vllm/vllm-openai-rocm:v0.28.0
+FROM ${VLLM_ROCM_IMAGE}
+
+RUN python - > /tmp/constraints.txt <<'PY'
+import importlib.metadata as m
+for p in ["torch","vllm","transformers","numpy","protobuf","datasets","accelerate",
+          "pydantic","aiohttp","tokenizers","safetensors","triton","pytorch-triton-rocm",
+          "ray","numba","pyzmq"]:
+    try: print(f"{p}=={m.version(p)}")
+    except Exception: pass
+PY
+
+# `nvidia-cuda-runtime-cu12` only supplies the libcudart.so.12 file required by
+# Mooncake's prebuilt wheel. This image runs on ROCm and uses no NVIDIA hardware.
+RUN pip install --no-cache-dir -c /tmp/constraints.txt \
+        omegaconf ray wandb \
+        "mooncake-transfer-engine>=0.3.10.post1" nvidia-cuda-runtime-cu12
+
+# Mooncake's single-node TCP path does not call the CUDA driver. Provide no-op
+# symbols so its prebuilt extension can load in a ROCm-only container.
+RUN MC=$(python -c "import mooncake,os;print(os.path.dirname(mooncake.__file__))") && \
+    nm -D --undefined-only "$MC"/engine.so "$MC"/store.so 2>/dev/null \
+      | awk '{print $NF}' | sed 's/@.*//' | grep -E '^cu[A-Z]' | sort -u > /tmp/cusyms.txt && \
+    { echo 'int __stub(){return 999;}'; \
+      while read s; do echo "int $s() __attribute__((alias(\"__stub\")));"; done < /tmp/cusyms.txt; } > /tmp/cudastub.c && \
+    gcc -shared -fPIC -Wl,-soname,libcuda.so.1 -o /usr/local/lib/libcuda.so.1 /tmp/cudastub.c && \
+    ldconfig
+
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib:${LD_LIBRARY_PATH}
+ENV PYTHONPATH=/workspace/TorchSpec:${PYTHONPATH}
+
+RUN python -c "from mooncake.engine import TransferEngine; from mooncake.store import MooncakeDistributedStore; print('mooncake import OK on ROCm')"
+
+WORKDIR /workspace

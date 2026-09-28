@@ -16,20 +16,15 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import os
 from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from quark.common.utils.import_utils import is_huggingface_hub_available
 from quark.common.utils.log import ScreenLogger
-
-if is_huggingface_hub_available():
-    from huggingface_hub import try_to_load_from_cache
-
 from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
+from quark.torch.export.utils import get_source_name_or_path, resolve_checkpoint_dir
 from quark.torch.quantization.config.template import LLMTemplate
 from quark.torch.quantization.inverse_quantizer import (
     dequantize_prequantized_to_linear,
@@ -74,7 +69,7 @@ def apply_prequantized_routing(quant_config: QConfig, model: nn.Module) -> None:
 
     model_config = getattr(model, "config", None)
     in_memory_quantization_config = getattr(model_config, "quantization_config", None)
-    name_or_path = getattr(model_config, "_name_or_path", None)
+    name_or_path = get_source_name_or_path(model)
     # Fast-path for regular nn.Module models: no in-memory HF quant config and no
     # checkpoint locator means no routing metadata source (including disk fallback).
     if in_memory_quantization_config is None and not name_or_path:
@@ -153,7 +148,7 @@ def dequantize_prequantized_linears(model: nn.Module) -> None:
         logger.info("Dequantized %d pre-quantized module(s)", count)
 
 
-def _read_quant_config_field(quantization_config: object | None, field: str) -> Any:
+def _read_quant_config_field(quantization_config: object | dict[str, Any] | None, field: str) -> Any:
     """Read one field from HF's in-memory ``quantization_config``.
 
     After ``from_pretrained`` this is a typed config object (e.g. ``Mxfp4Config``),
@@ -162,6 +157,8 @@ def _read_quant_config_field(quantization_config: object | None, field: str) -> 
     """
     if quantization_config is None:
         return None
+    if isinstance(quantization_config, dict):
+        return quantization_config.get(field)
     return getattr(quantization_config, field, None)
 
 
@@ -206,27 +203,21 @@ def _collect_lost_mxfp4_layers(model: nn.Module, linear_namespace: set[str]) -> 
 def _on_disk_quantization_config(model: nn.Module) -> dict[str, Any]:
     """Read the raw ``quantization_config`` block from the source ``config.json``.
 
-    Fallback when HF wiped ``model.config.quantization_config`` (after dequant) or
-    replaced it with a typed config (e.g. ``Mxfp4Config(dequantize=True)``) that drops
-    fields like ``modules_to_not_convert``. Resolves from a local checkpoint dir,
-    otherwise the HF cache via the repo id stored on ``config._name_or_path``.
-    Returns ``{}`` when the file isn't reachable or parseable.
+    Fallback for when HF wiped ``model.config.quantization_config`` (after dequant) or replaced it
+    with a typed config (e.g. ``Mxfp4Config(dequantize=True)``) that drops fields like
+    ``modules_to_not_convert``. Returns ``{}`` if the file is unreachable or unparseable, since a
+    fallback coming up empty must never abort the run -- hence the broad catch.
     """
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    name_or_path = get_source_name_or_path(model)
     if not name_or_path:
         return {}
-    if os.path.isdir(name_or_path):
-        config_path: str | None = os.path.join(name_or_path, "config.json")
-    else:
-        if not is_huggingface_hub_available():
-            return {}
-        config_path = try_to_load_from_cache(name_or_path, "config.json")
-    if not config_path or not os.path.isfile(config_path):
-        return {}
     try:
-        with open(config_path) as fp:
+        with open(resolve_checkpoint_dir(name_or_path) / "config.json") as fp:
             raw = json.load(fp)
-    except (OSError, json.JSONDecodeError):
+    except Exception as error:
+        # Debug, not warning: coming up empty is an expected outcome for a fallback, and the
+        # caller carries on either way.
+        logger.debug("Cannot read the source quantization_config for %r (%s).", name_or_path, error)
         return {}
     return raw.get("quantization_config") or {}
 

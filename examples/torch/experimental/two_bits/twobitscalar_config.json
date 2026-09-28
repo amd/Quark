@@ -1,0 +1,12 @@
+{
+  "name": "twobitscalar",
+  "bits": 2,
+  "group_size": 64,
+  "act_scale_alpha": 0.5,
+  "enable_incoherence": true,
+  "use_lloyd_max_levels": true,
+  "exclude_layers": [
+    "*embed_tokens*",
+    "*lm_head*"
+  ]
+}

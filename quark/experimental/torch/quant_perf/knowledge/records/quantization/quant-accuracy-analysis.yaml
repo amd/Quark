@@ -1,0 +1,22 @@
+schema_version: 1
+id: quant.accuracy.partition-analysis.v1
+domain: quantization
+kind: validated_playbook
+status: validated
+applicability: {}
+match:
+  symptoms: []
+  keywords: [accuracy, exclusion, partition, binary search]
+summary: Isolate quantization loss by partition or exclusion search before changing the global scheme.
+guidance:
+  - Compare module or partition groups while keeping the remaining model native.
+  - Use binary search only over a deterministic ordered layer set.
+  - Persist the evaluation profile and sample count with every result.
+required_checks: [baseline_accuracy, post_export_accuracy]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: knowledge/concepts/quant-accuracy-analysis.md
+  sha256: f6e953db3526d2a2b423ceba10d0b2ae349a521f25ace8138dfc91d2b55a675c

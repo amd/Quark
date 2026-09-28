@@ -52,12 +52,48 @@ class BaseMX(BaseDataType):
     pass
 
 
+class BaseMicroexponent(BaseDataType):
+    """
+    Base class for the MicroeXponent (MX4/MX6/MX9) two-level block formats.
+
+    Attributes:
+        bitwidth (int): The ONNX ``bit_width`` attribute value for this format, as consumed
+            by the ``BFPQuantizeDequantize`` custom op. This is a *format selector*, not a
+            per-element width -- see ``avg_bits_per_element`` and ``element_bits``.
+        k1 (int): Number of elements sharing the first-level (block) scale.
+        k2 (int): Number of elements sharing the second-level (sub-block) scale.
+        d1 (int): Bit-width of the first-level block scale.
+        d2 (int): Bit-width of the second-level sub-block scale.
+        mantissa_bits (int): Mantissa bits per element (``m`` in the paper).
+        element_bits (int): Bits per stored element code, ``mantissa_bits + 1`` for the
+            sign bit. This is the ``quant_bit`` value passed to the emulation kernel.
+        avg_bits_per_element (int): Amortized storage cost per element,
+            ``(m + 1) + d1 / k1 + d2 / k2``. This is the number the format is named after.
+    """
+
+    k1: int
+    k2: int
+    d1: int
+    d2: int
+    mantissa_bits: int
+    element_bits: int
+    avg_bits_per_element: int
+
+
 class BaseInt2(BaseDataType):
     """Signed 2-bit integer quantization data type."""
 
     bitwidth = 2
     min_value = -2
     max_value = 1
+
+
+class BaseUInt2(BaseDataType):
+    """Unsigned 2-bit integer quantization data type."""
+
+    bitwidth = 2
+    min_value = 0
+    max_value = 3
 
 
 class BaseInt3(BaseDataType):
@@ -238,22 +274,43 @@ class BaseMXFP4_E2M1(BaseDataType):
     max_value = 6.0
 
 
-class BaseMX4(BaseDataType):
-    """shared 4-bit microscaling data type."""
+class BaseMX4(BaseMicroexponent):
+    """MX4 MicroeXponent data type: 4 amortized bits per element."""
 
     bitwidth = 11
+    k1 = 16
+    k2 = 2
+    d1 = 8
+    d2 = 1
+    mantissa_bits = 2
+    element_bits = 3
+    avg_bits_per_element = 4
 
 
-class BaseMX6(BaseDataType):
-    """shared 6-bit microscaling data type."""
+class BaseMX6(BaseMicroexponent):
+    """MX6 MicroeXponent data type: 6 amortized bits per element."""
 
     bitwidth = 13
+    k1 = 16
+    k2 = 2
+    d1 = 8
+    d2 = 1
+    mantissa_bits = 4
+    element_bits = 5
+    avg_bits_per_element = 6
 
 
-class BaseMX9(BaseDataType):
-    """shared 9-bit microscaling data type."""
+class BaseMX9(BaseMicroexponent):
+    """MX9 MicroeXponent data type: 9 amortized bits per element."""
 
     bitwidth = 16
+    k1 = 16
+    k2 = 2
+    d1 = 8
+    d2 = 1
+    mantissa_bits = 7
+    element_bits = 8
+    avg_bits_per_element = 9
 
 
 class BaseMXInt8(BaseDataType):

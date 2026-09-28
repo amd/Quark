@@ -49,4 +49,29 @@ def infer_decoder_layers_path(model: nn.Module) -> str:
         return roots
 
     root_paths = _filter_root_paths(modulelist_paths)
-    return root_paths[0] if root_paths else ""
+    if not root_paths:
+        return ""
+
+    # Multimodal models often expose both vision encoder layers and language
+    # decoder layers. Prefer the language/text decoder stack when it is present.
+    preferred_paths = (
+        "model.language_model.layers",
+        "language_model.layers",
+        "model.text_model.layers",
+        "text_model.layers",
+        "model.decoder.layers",
+        "decoder.layers",
+        "model.layers",
+        "layers",
+        "transformer.h",
+    )
+    for preferred_path in preferred_paths:
+        if preferred_path in root_paths:
+            return preferred_path
+
+    for path in root_paths:
+        path_parts = path.split(".")
+        if "language_model" in path_parts or "text_model" in path_parts:
+            return path
+
+    return root_paths[0]

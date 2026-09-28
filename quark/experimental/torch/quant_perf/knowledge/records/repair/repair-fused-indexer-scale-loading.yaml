@@ -1,0 +1,35 @@
+schema_version: 1
+id: repair.vllm.quark.fused-indexer-scale-loading.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run]
+  error_contains: [wk_weights_proj.input_scale, wk_weights_proj.weight_scale]
+  keywords: [indexer, wk, weights_proj, input_scale, weight_scale, fused]
+summary: Load separately exported indexer projections into their fused runtime parameter without inventing fused checkpoint scale names.
+guidance:
+  - Keep checkpoint parameter and scale names aligned with the original wk and weights_proj modules.
+  - Map wk and weights_proj weights to shards zero and one of the fused runtime parameter.
+  - When the fused destination is BF16, dequantize per-tensor or per-block FP8 weights before loading them.
+  - Consume an original activation input_scale when the fused destination does not retain activation quantization metadata.
+  - Do not make Quark export a runtime-internal fused parameter name.
+  - Re-run parameter mapping, load, inference, and the original real quantized accuracy gate.
+required_checks: [parameter_mapping, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: load_inference_and_real_quantized_accuracy
+  validated_case:
+    model_arch: glm_moe_dsa
+    framework_version: 0.24.0+rocm723
+    accelerator: gfx950
+    tensor_parallel_size: 8
+    failure: wk_weights_proj_input_scale_keyerror
+    result: fused_shard_dequantization_restored_load
+provenance:
+  kind: validated_session
+  source: glm53_quant_perf_recovery
+  managed_commit: dd5ce6ad2878ed644adc2b9342b2b229f136c8e5
+  validated_at: "2026-09-09"

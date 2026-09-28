@@ -4,6 +4,8 @@
 #
 """Quark Algorithm/Pre-Quant Optimization API for PyTorch."""
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 from packaging import version
@@ -11,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from quark.common.utils.import_utils import is_transformers_available
 from quark.common.utils.log import ScreenLogger
+from quark.experimental.torch.twobitscalar.twobitscalar import TwoBitScalarProcessor
 from quark.torch.algorithm.awq.auto_smooth import AutoSmoothQuantProcessor
 from quark.torch.algorithm.awq.awq import AwqProcessor
 from quark.torch.algorithm.awq.smooth import SmoothQuantProcessor
@@ -35,9 +38,11 @@ if is_transformers_available():
 
 logger = ScreenLogger(__name__)
 
-__all__ = ["apply_advanced_quant_algo", "apply_advanced_pruning_algo", "blockwise_tuning_algo"]
+__all__ = ["apply_advanced_quant_algo", "apply_advanced_pruning_algo", "blockwise_tuning_algo", "get_processor"]
 
-PROCESSOR_MAP = {
+# `type[Any]` rather than `type[BaseAlgoProcessor]`: the entries share the processor protocol but
+# not all of them subclass the ABC, and the blockwise ones take a fourth constructor argument.
+PROCESSOR_MAP: dict[str, type[Any]] = {
     "rotation": RotationProcessor,
     "quarot": RotationProcessor,
     "smooth": SmoothQuantProcessor,
@@ -51,7 +56,30 @@ PROCESSOR_MAP = {
     "blockwise_joint_tuning": BlockwiseJointTuningProcessor,
     "layer_importance_depth_pruning": LayerImportancePrunerProcessor,
     "svdquant": SVDQuantProcessor,
+    "twobitscalar": TwoBitScalarProcessor,
 }
+
+
+def get_processor(name: str) -> type[Any]:
+    """Return the processor class that runs the algorithm called ``name``.
+
+    The registry is consulted before ``PROCESSOR_MAP``, so a ``QuarkAlgorithm`` claiming a core
+    algorithm's name takes over dispatch for it — the same precedence the config loader uses.
+
+    :param str name: The algorithm name, as it appears in the config's ``name`` field.
+    :return: The processor class to instantiate.
+    :rtype: type[Any]
+    :raises KeyError: If neither the registry nor ``PROCESSOR_MAP`` knows the name.
+    """
+    # Imported lazily: an algorithm module imports the processors this module imports, so a
+    # module-level import here risks a cycle.
+    from quark.torch.algorithm.registry import ALGORITHM_REGISTRY
+
+    algorithm = ALGORITHM_REGISTRY.get(name)
+    if algorithm is not None:
+        return algorithm.algo_processor
+
+    return PROCESSOR_MAP[name]
 
 
 @torch.no_grad()
@@ -78,7 +106,7 @@ def apply_advanced_quant_algo(
             device_map = get_device_map(model, is_accelerate)
 
             logger.info(f"Applying {config.algo_config[i].name} processing/algorithm...")
-            processor = PROCESSOR_MAP[config.algo_config[i].name](model, config.algo_config[i], dataloader)
+            processor = get_processor(config.algo_config[i].name)(model, config.algo_config[i], dataloader)
             processor.apply()
 
             model = set_device_map(model, device_map)
@@ -132,13 +160,33 @@ def apply_advanced_pruning_algo(
 
         device_map = get_device_map(model, is_accelerate)
 
-        pruner = PROCESSOR_MAP[config.algo_config.name](model, config.algo_config, dataloader)
+        pruner = get_processor(config.algo_config.name)(model, config.algo_config, dataloader)
         pruner.apply()
 
         model = set_device_map(model, device_map)
 
         logger.info("Advanced pruning algorithm end.")
     return model
+
+
+def _get_blockwise_processor_map() -> dict[str, type]:
+    """Processors reachable only through :func:`blockwise_tuning_algo` -- NOT the shared
+    ``PROCESSOR_MAP`` that ``apply_advanced_quant_algo`` uses for the standard
+    ``QConfig``/``ModelQuantizer.quantize_model()`` path, which only supplies 3 constructor args.
+
+    ``AutoRoundProcessor`` is imported here, not at module top: ``quark.experimental.torch.
+    autoround.wrapper`` imports ``quark.torch.quantization.config.type``, which (via
+    ``quark.torch``'s own ``__init__``) re-enters ``quark.torch.algorithm.api`` while this module
+    is still initializing -- a real circular import if ``AutoRoundProcessor`` were imported
+    eagerly at module load time. Deferring the import to call time (after all modules have
+    finished loading) breaks the cycle.
+    """
+    from quark.experimental.torch.autoround.autoround import AutoRoundProcessor
+
+    return {
+        "autoround": AutoRoundProcessor,
+        **PROCESSOR_MAP,
+    }
 
 
 def blockwise_tuning_algo(
@@ -156,7 +204,11 @@ def blockwise_tuning_algo(
 
         device_map = get_device_map(model, is_accelerate)
 
-        processor = PROCESSOR_MAP[blockwise_tuning_config.name](fp_model, model, blockwise_tuning_config, dataloader)
+        blockwise_processor_map = _get_blockwise_processor_map()
+        processor = blockwise_processor_map[blockwise_tuning_config.name](
+            fp_model, model, blockwise_tuning_config, dataloader
+        )
+
         processor.apply()
 
         model = set_device_map(model, device_map)

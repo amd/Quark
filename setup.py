@@ -4,6 +4,7 @@
 #
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -380,6 +381,17 @@ def get_package_data():
             "src/**/*",
             "include/**/*",
         ],
+        "quark.experimental.speculative_decoding.recipes": [
+            "*.yaml",
+        ],
+        "quark.experimental.torch.quant_perf": [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "README.md",
+            "agent-instructions/*.md",
+            "evaluation/policies/*.json",
+            "knowledge/records/**/*.yaml",
+        ],
     }
     return package_data
 
@@ -387,6 +399,59 @@ def get_package_data():
 class BuildCommand(_build_py):
     def run(self):
         super().run()
+        # The validated EAGLE-3 runner is also a standalone source-tree example.
+        # Copy that canonical asset tree into the wheel so `python -m
+        # quark.experimental.speculative_decoding.run` works from any directory
+        # after installation.
+        source = Path(_setup_py_dir) / "examples" / "experimental" / "speculative_decoding"
+        destination = (
+            Path(self.build_lib)
+            / "quark"
+            / "experimental"
+            / "speculative_decoding"
+            / "_torchspec_assets"
+        )
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(
+            source,
+            destination,
+            # Outputs default outside this tree, so these normally match
+            # nothing; they are the same net MANIFEST.in keeps for a checkout
+            # that ran an older build. ignore_patterns matches names at every
+            # level, so this is one list rather than one entry per profile.
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".gitignore",
+                "__pycache__",
+                ".pytest_cache",
+                "TorchSpec",
+                "models",
+                "data",
+                "outputs",
+                "training",
+                "runtime",
+                "release",
+                "cache",
+                "logs",
+                "ckpts",
+                "report.json",
+                "*.log",
+                "*.tmp",
+            ),
+        )
+
+        # Package the canonical Agent Skills as wheel resources. The source
+        # tree remains the only manually maintained copy.
+        skills_source = Path(_setup_py_dir) / "skills"
+        skills_destination = Path(self.build_lib) / "quark" / "_bundled_skills"
+        if skills_destination.exists():
+            shutil.rmtree(skills_destination)
+        shutil.copytree(
+            skills_source,
+            skills_destination,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
 
 
 if HAS_TORCH:
@@ -551,6 +616,25 @@ setup(
     ext_modules=ext_modules,
     include_package_data=True,
     package_data=get_package_data(),
+    # Contrib components keep their docs/ and test/ inside
+    # quark/contrib/<component>/. Those are documentation/test assets, not runtime
+    # code: docs/ is rendered into the documentation site and test/ runs from the
+    # source checkout, so neither should be bundled into the installed wheel.
+    # (A component's runnable examples/ and tutorials/ live at the repository root,
+    # not under the package, so they are never wheel candidates in the first place.)
+    # exclude_package_data drops only data files; the importable contrib .py modules
+    # themselves are still shipped. The "" key applies to every package and patterns
+    # are relative to each package's own directory, so a component's docs/ and test/
+    # subfolders are matched (core packages declare no such data, so this is a no-op
+    # for them).
+    exclude_package_data={
+        "": [
+            "docs/*",
+            "docs/**/*",
+            "test/*",
+            "test/**/*",
+        ],
+    },
     cmdclass=cmdclass,
     install_requires=install_requires,
     # Keep in sync with ``pyproject.toml::[project].requires-python``.

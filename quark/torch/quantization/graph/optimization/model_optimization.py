@@ -116,6 +116,12 @@ def apply_pre_hw_constrain_passes(model: torch.fx.GraphModule) -> torch.fx.Graph
     pass_manager.add_pass(opt_pre_qt_pass.ConvertSilu2HardswishQOPass())
     # 11. change ops.aten.leaky_relu to QuantLeakyReLU
     pass_manager.add_pass(opt_pre_qt_pass.ConvertLeakyReLu2QuantLeakyReLuQOPass())
+    # 12. fold all-constant Div nodes (e.g. grid normalization [w,h]/2) into
+    #     constant attrs before calibration, matching PTQ onnxslim behavior.
+    pass_manager.add_pass(opt_pre_qt_pass.FoldConstantDivQOPass())
+    # 13. fold QuantConv -> Mul(scalar) into the Conv weight before calibration,
+    #     matching PTQ behavior where onnxslim folds the scalar before quantization.
+    pass_manager.add_pass(opt_pre_qt_pass.FoldConvScalarMulQOPass())
     model = pass_manager(model)
     return model
 

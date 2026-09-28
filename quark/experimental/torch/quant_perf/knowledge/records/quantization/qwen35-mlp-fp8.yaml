@@ -1,0 +1,22 @@
+schema_version: 1
+id: quantization.qwen35.mlp-fp8.v1
+domain: quantization
+kind: quantization_rule
+status: validated
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+match:
+  keywords: [mlp, moe, fp8]
+summary: FP8 routed experts preserved real accuracy on the validated Qwen3.5 MoE stack.
+guidance:
+  - Keep this as an architecture-specific candidate rather than a universal MoE rule.
+  - Re-run real post-export accuracy on a changed framework, backend, or model revision.
+required_checks: [post_export_accuracy, throughput]
+evidence:
+  level: E2
+  verdict: ok
+provenance:
+  kind: curated_migration
+  source: legacy_quant_rules
+  migrated_at: "2026-08-14"

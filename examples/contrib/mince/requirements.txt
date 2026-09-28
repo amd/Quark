@@ -1,0 +1,6 @@
+lm-eval
+numpy>=1.21
+
+# Optional extras (not required to run the core size -> freeze -> score -> validate flow):
+#   matplotlib   enables `size.py --plot` (size.py imports it lazily and skips the plot if absent)
+#   pytest       only needed to run the unit tests under quark/contrib/mince/test

@@ -6,10 +6,12 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from quark.common.utils.log import ScreenLogger
 
+from .spec import QLayerConfig
 from .utils import config_to_dict
 
 logger = ScreenLogger(__name__)
@@ -22,6 +24,10 @@ class AlgoConfig(ABC):
 
     def to_dict(self) -> dict[str, Any]:
         return config_to_dict(self)
+
+    def get_options(self) -> dict[str, Any]:
+        """Get the extra_options-like dict based on the attributes of the algorithm."""
+        return self._get_config({})
 
 
 class SmoothQuantConfig(AlgoConfig):
@@ -211,145 +217,6 @@ class GPTQConfig(AlgoConfig):
         if "MSE" not in extra_options["GPTQParams"]:
             gptq_config["GPTQParams"]["MSE"] = self.mse
         return gptq_config
-
-
-class AutoMixprecisionConfig(AlgoConfig):
-    """Configuration for the automatic mixed precision.
-
-    Mixed precision is a highly effective technique in the field of quantization. When low-bit quantization
-    leads to poor accuracy, quantizing part of the tensors or layers with higher bit-width can often
-    significantly improve the overall quantization accuracy.
-
-    Automatic mixed-precision algorithms can automatically identify tensors or layers that suffer from
-    low-bit quantization errors and replace them with higher-bit quantization, thereby enhancing the
-    final model performance.
-
-    :param int data_size: The size of the data used for mix-precision. Defaults to 10000000.
-    :param Tuple[str, ...] target_op_type: The user defined op type set for mix-precision. Defaults to (‘Conv’, ‘ConvTranspose’, ‘Gemm’, ‘MatMul’).
-    :param QuantType target_quant_type: Activation data type to be mixed in the model if 'act_target_quant_type' is not given.
-                                        Error will be raised if 'target_quant_type', 'act_target_quant_type' and 'weight_target_quant_type' are not given.
-    :param QuantType act_target_quant_type: Activation data type to be mixed in the model. If both 'act_target_quant_type' and 'weight_target_quant_type' are not specified,
-                                            the 'act_target_quant_type' will be same as 'target_quant_type'.
-                                            If only 'act_target_quant_type' is not specified, it will be the original activation_type.
-    :param QuantType weight_target_quant_type: Weight data type to be mixed in the model. If both 'act_target_quant_type' and 'weight_target_quant_type' are not specified,
-                                               the 'weight_target_quant_type' will be same as 'target_quant_type'.
-                                               If only 'weight_target_quant_type' is not specified, it will be the original weight_type.
-    :param QuantType bias_target_quant_type: Bias data type to be mixed in the model. If 'bias_target_quant_type' is not specified and Int32Bias is True,
-                                             the 'bias_target_quant_type' will be int32. If 'bias_target_quant_type' is not specified and Int32Bias is False,
-                                             the 'bias_target_quant_type' will be same as 'weight_target_quant_type'.
-    :param bool dual_quant_nodes: Some backend compilers require that two types of quantization nodes exist simultaneously on the tensors which connect two different precision nodes,
-                                  for example, they require the tensor that connects BFP16 Conv and BF16 Reshape has a BFP node and a QDQ pair both. Defaults to False.
-    :param int output_index: The index of model output to be calculated for loss. Defaults to 0.
-    :param float l2_target: The L2 metric as a target. Defaults to 0.5.
-    :param Optional[float] top1_acc_target: The Top1 accuracy as a target. Defaults to None.
-    :param Any evaluate_function: The function to measure top1 accuracy loss. Input of the function is model output(numpy tensor),
-                                  output of the function is top1 accuracy(between 0~1).
-                                  If 'evaluate_function' is not specified while 'top1_acc_target' is given, error will be raised.
-    :param int num_target: The number of nodes for mix-precision to minimize the loss. Defaults to 0.
-    :param List[str] target_tensors: The names of nodes to mix into the target quant type. Defaults to [].
-    :param List[str] target_indices: The indices (based on sensitivity analysis results) of the nodes to mix into the target quant type. Defaults to [].
-    :param List[str] exclude_indices: The indices (based on sensitivity analysis results) of the nodes not to mix into the target quant type. Defaults to [].
-    :param bool no_input_qdq_shared: Whether to skip the nodes who shared the input Q/DQ pair with other nodes. Defaults to True.
-    :param bool auto_mix_use_fast_ft: Whether to perform fast finetune to improve accuracy after mixed a layer. Defaults to False.
-    """
-
-    def __init__(
-        self,
-        data_size: int = 10000000,
-        target_op_type: tuple[str, ...] = ("Conv", "ConvTranspose", "Gemm", "MatMul"),
-        target_quant_type: Any = None,
-        act_target_quant_type: Any = None,
-        weight_target_quant_type: Any = None,
-        bias_target_quant_type: Any = None,
-        dual_quant_nodes: bool = False,
-        output_index: int = 0,
-        l2_target: float = 0.5,
-        top1_acc_target: float | None = None,
-        evaluate_function: Any = None,
-        num_target: int = 0,
-        target_tensors: list[str] = [],
-        target_indices: list[Any] = [],
-        exclude_indices: list[Any] = [],
-        no_input_qdq_shared: bool = True,
-        auto_mix_use_fast_ft: bool = False,
-    ) -> None:
-        self.name: str = "auto_mixprecision"
-        self.data_size = data_size
-        self.target_op_type = target_op_type
-        self.target_quant_type = target_quant_type
-        self.act_target_quant_type = act_target_quant_type
-        self.weight_target_quant_type = weight_target_quant_type
-        self.bias_target_quant_type = bias_target_quant_type
-        self.dual_quant_nodes = dual_quant_nodes
-        self.output_index = output_index
-        self.l2_target = l2_target
-        self.top1_acc_target = top1_acc_target
-        self.evaluate_function = evaluate_function
-        self.num_target = num_target
-        self.target_tensors = target_tensors
-        self.target_indices = target_indices
-        self.exclude_indices = exclude_indices
-        self.no_input_qdq_shared = no_input_qdq_shared
-        self.auto_mix_use_fast_ft = auto_mix_use_fast_ft
-
-    def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
-        auto_mixprecision_config: dict[str, Any] = dict()
-        auto_mixprecision_config["AutoMixprecision"] = {}
-        if "AutoMixprecision" not in extra_options:
-            extra_options["AutoMixprecision"] = {}
-        if "DataSize" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["DataSize"] = self.data_size
-        if "TargetOpType" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["TargetOpType"] = self.target_op_type
-        if "TargetQuantType" not in extra_options["AutoMixprecision"]:
-            if self.target_quant_type is not None:
-                auto_mixprecision_config["AutoMixprecision"]["TargetQuantType"] = self.target_quant_type.map_onnx_format
-            else:
-                auto_mixprecision_config["AutoMixprecision"]["TargetQuantType"] = self.target_quant_type
-        if "ActTargetQuantType" not in extra_options["AutoMixprecision"]:
-            if self.act_target_quant_type is not None:
-                auto_mixprecision_config["AutoMixprecision"]["ActTargetQuantType"] = (
-                    self.act_target_quant_type.map_onnx_format
-                )
-            else:
-                auto_mixprecision_config["AutoMixprecision"]["ActTargetQuantType"] = self.act_target_quant_type
-        if "WeightTargetQuantType" not in extra_options["AutoMixprecision"]:
-            if self.weight_target_quant_type is not None:
-                auto_mixprecision_config["AutoMixprecision"]["WeightTargetQuantType"] = (
-                    self.weight_target_quant_type.map_onnx_format
-                )
-            else:
-                auto_mixprecision_config["AutoMixprecision"]["WeightTargetQuantType"] = self.weight_target_quant_type
-        if "BiasTargetQuantType" not in extra_options["AutoMixprecision"]:
-            if self.bias_target_quant_type is not None:
-                auto_mixprecision_config["AutoMixprecision"]["BiasTargetQuantType"] = (
-                    self.bias_target_quant_type.map_onnx_format
-                )
-            else:
-                auto_mixprecision_config["AutoMixprecision"]["BiasTargetQuantType"] = self.bias_target_quant_type
-        if "DualQuantNodes" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["DualQuantNodes"] = self.dual_quant_nodes
-        if "OutputIndex" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["OutputIndex"] = self.output_index
-        if "L2Target" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["L2Target"] = self.l2_target
-        if "Top1AccTarget" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["Top1AccTarget"] = self.top1_acc_target
-        if "EvaluateFunction" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["EvaluateFunction"] = self.evaluate_function
-        if "NumTarget" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["NumTarget"] = self.num_target
-        if "TargetTensors" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["TargetTensors"] = self.target_tensors
-        if "TargetIndices" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["TargetIndices"] = self.target_indices
-        if "ExcludeIndices" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["ExcludeIndices"] = self.exclude_indices
-        if "NoInputQDQShared" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["NoInputQDQShared"] = self.no_input_qdq_shared
-        if "AutoMixUseFastFT" not in extra_options["AutoMixprecision"]:
-            auto_mixprecision_config["AutoMixprecision"]["AutoMixUseFastFT"] = self.auto_mix_use_fast_ft
-        return auto_mixprecision_config
 
 
 class AdaRoundConfig(AlgoConfig):
@@ -789,6 +656,195 @@ def _resolove_algo_conflict(algorithms: list[AlgoConfig]) -> list[AlgoConfig]:
             continue
         new_algorithms.add(algo)
     return list(new_algorithms)
+
+
+class AutoMixprecisionConfig(AlgoConfig):
+    """Configuration for automatic mixed precision on quantized ONNX models.
+
+    :param target_layer_config: Required. One of three forms:
+
+        - **Single** ``QLayerConfig`` — applied to every candidate.
+        - **Dict** ``{QLayerConfig: list[str]}`` — maps each config to the
+          candidate names (node names) that should use it.  One entry may map
+          to ``[]`` to act as the global fallback for unlisted candidates.
+        - **List** ``[QLayerConfig, ...]`` — multi-config mode.  Sensitivity
+          analysis scores every config per candidate and the one yielding the
+          smallest score is selected for mixing.
+    :param tuple[str, ...] | list[str] target_op_type: ONNX op_types that are candidates.
+    :param list[str] include_layers: Layer names to include for mixing precision.
+    :param list[str] exclude_layers: Layer names to exclude from mixing precision.
+    :param str | Path | None subgraph_json: Path to subgraph partition JSON.
+        When provided, subgraph-wise analysis is used; otherwise layer-wise.
+    :param int data_size: Number of calibration samples (0 = all).
+    :param int metric_output_index: Model output index used for metric computation.
+    :param Callable | None metric_distance_fn: (float_out, quant_out) -> float; lower=better.
+        Takes priority over *metric_default* when provided.
+    :param Callable | None metric_evaluate_fn: (model_out) -> float; higher=better.
+        Takes priority over *metric_default* when provided.
+    :param str metric_default: Name of the built-in distance metric to use when neither
+        *metric_distance_fn* nor *metric_evaluate_fn* is given.  Supported values:
+        ``"l2"`` (default) — mean L2 norm of element-wise differences;
+        ``"kl"`` — mean KL divergence KL(P_float ‖ P_quant);
+        ``"cosine"`` — mean cosine distance (1 − cosine_similarity);
+        ``"sqnr"`` — mean negative SQNR in dB (set a negative ``metric_threshold``,
+        e.g. ``-30`` to stop when SQNR drops below 30 dB);
+        ``"psnr"`` — mean negative PSNR in dB (set a negative ``metric_threshold``,
+        e.g. ``-20`` to stop when PSNR drops below 20 dB).
+    :param float | None metric_threshold: The accuracy threshold for the promotion loop.
+        When set to ``None``, only sensitivity analysis is performed and the
+        mixing (promotion) step is skipped entirely — useful for inspecting
+        per-layer sensitivity scores without modifying the model.
+        When set to ``0`` (default), the threshold is disabled and all candidates are
+        promoted regardless of their score.
+    :param str metric_optimize_object: Optimization objective. ``"speed"``
+        (default) targets a high-precision baseline (e.g. Int16) and mixes in
+        lower-precision layers (e.g. Int8) to maximize performance while keeping
+        the metric below ``metric_threshold``. ``"quality"`` targets a
+        low-precision baseline (e.g. Int8) and mixes in higher-precision layers
+        (e.g. Int16) to maximize accuracy; the loop stops as soon as the metric
+        drops to or below ``metric_threshold``.
+    :param str | Path | None sensitivity_cache_file: Path for caching sensitivity
+        analysis results. If the file exists, results are loaded from it and
+        analysis is skipped. If it does not exist, analysis runs and results
+        are saved to it. When ``None`` (default), no caching is performed.
+    :param bool dual_quant_nodes: Insert paired Q/DQ paths at precision boundaries.
+    :param bool no_input_qdq_shared: Skip nodes whose activation Q/DQ is shared.
+    :param str shared_param_mode: How to handle scale/zp initializers that are shared
+        between the promoted Q/DQ pair and other nodes (e.g. Q/DQ nodes at input and
+        output of Transpose). ``"propagate"`` (default) keeps the shared initializer and
+        updates the op_type/domain of every node that references it so that all users
+        remain consistent with the new dtype. ``"unshare"`` gives the promoted pair
+        its own copy of the initializer and leaves the original shared one untouched.
+    :param int worker_num: Number of parallel workers for sensitivity analysis.
+        Each worker scores one candidate spec independently. Default is ``1`` (serial).
+    """
+
+    def __init__(
+        self,
+        target_layer_config: "QLayerConfig | dict[QLayerConfig, list[str]] | list[QLayerConfig]",
+        target_op_type: tuple[str, ...] | list[str] = ("Conv", "ConvTranspose", "Gemm", "MatMul"),
+        subgraph_json: str | Path | None = None,
+        include_layers: list[str] | None = None,
+        exclude_layers: list[str] | None = None,
+        data_size: int = 0,
+        metric_output_index: int = 0,
+        metric_distance_fn: Callable[..., float] | None = None,
+        metric_evaluate_fn: Callable[..., float] | None = None,
+        metric_default: str = "l2",
+        metric_threshold: float | None = 0,
+        metric_optimize_object: str = "speed",
+        sensitivity_cache_file: str | Path | None = None,
+        worker_num: int = 1,
+        dual_quant_nodes: bool = False,
+        no_input_qdq_shared: bool = False,
+        shared_param_mode: str = "propagate",
+    ) -> None:
+        self.name: str = "auto_mixprecision"
+        self.target_layer_config = target_layer_config
+        self.target_op_type = tuple(target_op_type)
+        self.subgraph_json = subgraph_json
+        self.include_layers: list[str] = include_layers or []
+        self.exclude_layers: list[str] = exclude_layers or []
+        self.data_size = data_size
+        self.metric_output_index = metric_output_index
+        self.metric_distance_fn = metric_distance_fn
+        self.metric_evaluate_fn = metric_evaluate_fn
+        self.metric_default = metric_default
+        self.metric_threshold = metric_threshold
+        if metric_optimize_object not in ("speed", "quality"):
+            raise ValueError(f"metric_optimize_object must be 'speed' or 'quality', got '{metric_optimize_object}'")
+        self.metric_optimize_object = metric_optimize_object
+        self.sensitivity_cache_file = sensitivity_cache_file
+        self.worker_num = worker_num
+        self.dual_quant_nodes = dual_quant_nodes
+        self.no_input_qdq_shared = no_input_qdq_shared
+        if shared_param_mode not in ("propagate", "unshare"):
+            raise ValueError(f"shared_param_mode must be 'propagate' or 'unshare', got '{shared_param_mode}'")
+        self.shared_param_mode = shared_param_mode
+
+    def _get_config(self, extra_options: dict[str, Any]) -> dict[str, Any]:
+        auto_mixprecision_config: dict[str, Any] = dict()
+        auto_mixprecision_config["AutoMixprecision"] = {}
+        if "AutoMixprecision" not in extra_options:
+            extra_options["AutoMixprecision"] = {}
+        if "TargetLayerConfig" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["TargetLayerConfig"] = self.target_layer_config
+        if "TargetOpType" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["TargetOpType"] = self.target_op_type
+        if "SubgraphJson" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["SubgraphJson"] = self.subgraph_json
+        if "IncludeLayers" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["IncludeLayers"] = self.include_layers
+        if "ExcludeLayers" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["ExcludeLayers"] = self.exclude_layers
+        if "DataSize" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["DataSize"] = self.data_size
+        if "MetricOutputIndex" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricOutputIndex"] = self.metric_output_index
+        if "MetricDistanceFn" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricDistanceFn"] = self.metric_distance_fn
+        if "MetricEvaluateFn" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricEvaluateFn"] = self.metric_evaluate_fn
+        if "MetricDefault" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricDefault"] = self.metric_default
+        if "MetricThreshold" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricThreshold"] = self.metric_threshold
+        if "MetricOptimizeObject" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["MetricOptimizeObject"] = self.metric_optimize_object
+        if "SensitivityCacheFile" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["SensitivityCacheFile"] = self.sensitivity_cache_file
+        if "WorkerNum" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["WorkerNum"] = self.worker_num
+        if "DualQuantNodes" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["DualQuantNodes"] = self.dual_quant_nodes
+        if "NoInputQDQShared" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["NoInputQDQShared"] = self.no_input_qdq_shared
+        if "SharedParamMode" not in extra_options["AutoMixprecision"]:
+            auto_mixprecision_config["AutoMixprecision"]["SharedParamMode"] = self.shared_param_mode
+        return auto_mixprecision_config
+
+    @classmethod
+    def _from_extra_options(cls, extra_options: dict[str, Any]) -> "AutoMixprecisionConfig":
+        """Build AutoMixprecisionConfig from legacy extra_options dict (pipeline-internal use)."""
+        amp_config = extra_options.get("AutoMixprecision", {})
+
+        target_layer_config = amp_config.get("TargetLayerConfig", None)
+        if target_layer_config is None:
+            logger.warning("The target_layer_config is required but was not set in extra options.")
+        elif isinstance(target_layer_config, dict):
+            first_value = next(iter(target_layer_config.values()))
+            if isinstance(first_value, dict):
+                # This means "TargetLayerConfig" is a dict-like QLayerConfig, for example:
+                # {"input_tensors": {"data_type": "Int8", "scale_type": "ScaleType.Float32"},
+                #  "output_tensors": {"data_type": "Int16", "scale_type": "ScaleType.Float32"}}
+                target_layer_config = QLayerConfig.from_dict(target_layer_config)
+        elif isinstance(target_layer_config, list):
+            # This means "TargetLayerConfig" is a list of dicts, for example:
+            # [{"input_tensors": {"data_type": "Int8", "scale_type": "ScaleType.Float32"}}, ...]
+            if target_layer_config and isinstance(target_layer_config[0], dict):
+                target_layer_config = [QLayerConfig.from_dict(e) for e in target_layer_config]
+
+        return cls(
+            target_layer_config=target_layer_config,
+            target_op_type=tuple(amp_config.get("TargetOpType", ("Conv", "ConvTranspose", "Gemm", "MatMul"))),
+            subgraph_json=amp_config.get("SubgraphJson"),
+            include_layers=amp_config.get("IncludeLayers", []),
+            exclude_layers=amp_config.get("ExcludeLayers", []),
+            data_size=amp_config.get("DataSize", 1000),
+            metric_output_index=amp_config.get("MetricOutputIndex", 0),
+            metric_distance_fn=amp_config.get("MetricDistanceFn"),
+            metric_evaluate_fn=amp_config.get("MetricEvaluateFn"),
+            metric_default=amp_config.get("MetricDefault", "l2"),
+            metric_threshold=None
+            if "MetricThreshold" in amp_config and amp_config["MetricThreshold"] is None
+            else float(amp_config.get("MetricThreshold", 0)),
+            metric_optimize_object=amp_config.get("MetricOptimizeObject", "speed"),
+            sensitivity_cache_file=amp_config.get("SensitivityCacheFile"),
+            worker_num=amp_config.get("WorkerNum", 1),
+            dual_quant_nodes=amp_config.get("DualQuantNodes", False),
+            no_input_qdq_shared=amp_config.get("NoInputQDQShared", False),
+            shared_param_mode=amp_config.get("SharedParamMode", "propagate"),
+        )
 
 
 ALGO_NAME_TO_CLASS = {

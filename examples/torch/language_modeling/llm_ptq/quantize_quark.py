@@ -18,6 +18,7 @@ from quark.common.utils.log import ScreenLogger
 from quark.torch import (
     LLMTemplate,
     ModelQuantizer,
+    QuantFlow,
     RuntimeOptions,
     export_gguf,
     export_onnx,
@@ -38,8 +39,10 @@ from quark.torch.utils.llm import (
     check_compatibility_before_quantization,
     get_calib_dataloader,
     get_model,
+    get_per_block_calib_batch_size,
     get_tokenizer,
     maybe_save_preprocessors,
+    move_model_to_device_if_it_fits,
     preprocess_for_quantization,
 )
 
@@ -144,9 +147,24 @@ def main(args: argparse.Namespace) -> None:
     # Initialize global profiler
     profiler = GlobalProfiler(output_path=os.path.join(args.output_dir, "quark_profile.yaml"))
 
+    # Resolve which quantization execution flow to run. `--quant_flow` is the canonical
+    # selector; `--file2file_quantization` is a deprecated alias kept for backward
+    # compatibility (it already shipped and is documented before `--quant_flow` existed).
+    # `--file2file_quantization` always wins when set, regardless of `--quant_flow`.
+    if args.file2file_quantization:
+        warnings.warn(
+            "--file2file_quantization is deprecated and will be removed in a future release. "
+            "Use --quant_flow file2file instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        quant_flow = QuantFlow.file2file
+    else:
+        quant_flow = QuantFlow[args.quant_flow]
+
     # File-to-file quantization mode: bypass model loading, calibration and quantization,
     # directly quantize safetensors files shard-by-shard and export.
-    if args.file2file_quantization:
+    if quant_flow is QuantFlow.file2file:
         print("\n[INFO]: File-to-file quantization mode enabled.")
         hf_model_config = _get_hf_model_config(args.model_dir)
         architectures = hf_model_config.get("architectures", [])
@@ -159,6 +177,11 @@ def main(args: argparse.Namespace) -> None:
         if weight_converters:
             logger.info(f"Applying {len(weight_converters)} weight converter(s) for model type '{model_config_type}'")
 
+        # file-to-file runs single-GPU by default; --multi_gpu opts into using all visible GPUs.
+        file2file_device: str | list[str] | None = None
+        if args.multi_gpu:
+            file2file_device = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+
         with profiler.scope(ProfileStep.FILE_TO_FILE_QUANTIZATION):
             quantizer = ModelQuantizer(quant_config)
             quantizer.direct_quantize_checkpoint(
@@ -166,6 +189,7 @@ def main(args: argparse.Namespace) -> None:
                 save_path=args.output_dir,
                 weight_converters=weight_converters,
                 keep_excluded_layers_as_original_model_state=args.keep_excluded_layers_as_original_model_state,
+                device=file2file_device,
             )
 
         print(f"[INFO]: File-to-file quantization output saved to {args.output_dir}")
@@ -182,10 +206,26 @@ def main(args: argparse.Namespace) -> None:
         # TODO:
         # The current method results in high CPU memory consumption due to multiple copies of the same model.
         # We plan to address this in the future by implementing a more efficient way to dispatch the model to devices.
-        if args.use_tp:
+        if quant_flow is QuantFlow.per_block:
+            # Per-block lazy loading mirrors the manual flow: CPU load / CPU weight calibration,
+            # then activation calibration on `--device` after the lazy loader is installed.
+            if args.multi_gpu or args.multi_device:
+                logger.info(
+                    "--multi_gpu / --multi_device are ignored with --quant_flow per_block: blocks are "
+                    "streamed one at a time onto the single device given by --device (%s).",
+                    args.device,
+                )
             device = "cpu"
+            model_multi_gpu = None
+            model_multi_device = False
+        elif args.use_tp:
+            device = "cpu"
+            model_multi_gpu = args.multi_gpu
+            model_multi_device = args.multi_device
         else:
             device = args.device
+            model_multi_gpu = args.multi_gpu
+            model_multi_device = args.multi_device
 
         try:
             with profiler.scope(ProfileStep.MODEL_LOADING):
@@ -193,8 +233,8 @@ def main(args: argparse.Namespace) -> None:
                     args.model_dir,
                     args.data_type,
                     device,
-                    args.multi_gpu,
-                    args.multi_device,
+                    model_multi_gpu,
+                    model_multi_device,
                     args.model_attn_implementation,
                     trust_remote_code=args.trust_remote_code,
                 )
@@ -278,7 +318,27 @@ def main(args: argparse.Namespace) -> None:
     print("\n[INFO]: Loading dataset ...")
 
     # When the model is small, accelerate will place it on the last device
-    main_device = model.device if args.multi_gpu or args.multi_device else args.device
+    use_model_device = (args.multi_gpu or args.multi_device) and quant_flow is not QuantFlow.per_block
+    main_device = model.device if use_model_device else args.device
+    # Per-block streams every decoder block CPU->GPU around each forward, so a larger batch means
+    # fewer transfers but more activation memory. Cap the batch by what the device has left once one
+    # decoder layer is resident. Min/max observers are unaffected by the split; the binning ones
+    # (percentile, MSE, histogram) are batch-sensitive.
+    if quant_flow is QuantFlow.per_block:
+        calib_batch_size = get_per_block_calib_batch_size(
+            args.num_calib_data,
+            args.seq_len,
+            device=main_device,
+            model=model,
+            n_gpu_resident_blocks=args.gpu_resident_blocks,
+        )
+        if calib_batch_size != args.batch_size:
+            logger.info(
+                f"quant_flow=per_block: setting --batch_size from {args.batch_size} to {calib_batch_size} "
+                f"(num_calib_data={args.num_calib_data}, seq_len={args.seq_len}) to cut how often each "
+                f"decoder block is streamed onto {main_device} while keeping activations within budget."
+            )
+            args.batch_size = calib_batch_size
 
     with profiler.scope(ProfileStep.DATASET_LOADING):
         calib_dataloader = get_calib_dataloader(
@@ -288,6 +348,10 @@ def main(args: argparse.Namespace) -> None:
             num_calib_data=args.num_calib_data,
             seqlen=args.seq_len,
             device=main_device,
+            # Per-block derives --batch_size from an activation budget rather than num_calib_data, so
+            # it rarely divides evenly; keep every requested sample instead of silently dropping the
+            # remainder batch.
+            drop_last=quant_flow is not QuantFlow.per_block,
         )
 
     # 4. Quantization
@@ -302,6 +366,9 @@ def main(args: argparse.Namespace) -> None:
         )
 
         quant_config = _build_quant_config(args, model_config_type)
+        quant_config.quant_flow = quant_flow
+        if quant_flow is QuantFlow.per_block:
+            quant_config.gpu_resident_blocks = args.gpu_resident_blocks
 
         if getattr(args, "kv_cache_post_rope", False):
             if hasattr(quant_config, "kv_cache_post_rope"):
@@ -385,15 +452,31 @@ def main(args: argparse.Namespace) -> None:
         print("\n[INFO]: Evaluating ...")
 
         with profiler.scope(ProfileStep.MODEL_EVALUATION):
-            args.use_ppl_eval_model = True
-            eval_model(
-                args,
-                model,
-                main_device,
-                save_metrics_to_csv=args.save_metrics_to_csv,
-                output_dir=args.metrics_output_dir,
-                multimodal=multimodal,
-            )
+            if quant_flow is QuantFlow.per_block:
+                # Per-block quantization finalizes the model back to CPU after calibration, so move
+                # it back onto the runtime device for evaluation.
+                model = move_model_to_device_if_it_fits(model, torch.device(main_device))
+
+            model_device = getattr(model, "device", None)
+            if model_device is not None and model_device.type != torch.device(main_device).type:
+                # The model didn't fit on the runtime device and stayed on CPU, where kernels that
+                # require accelerator-resident tensors (e.g. Qwen3.5's Triton linear-attn) have no
+                # fallback -- and where evaluating a model this size would take days anyway.
+                where = f" in {args.output_dir}" if args.model_export else ""
+                logger.warning(
+                    f"Skipping evaluation: the model is on {model_device}, not {main_device} -- it "
+                    f"doesn't fit. Evaluate the exported checkpoint{where} separately instead."
+                )
+            else:
+                args.use_ppl_eval_model = True
+                eval_model(
+                    args,
+                    model,
+                    main_device,
+                    save_metrics_to_csv=args.save_metrics_to_csv,
+                    output_dir=args.metrics_output_dir,
+                    multimodal=multimodal,
+                )
 
     if args.use_tp:
         TPDeviceManager.tp_cleanup()
@@ -461,10 +544,31 @@ if __name__ == "__main__":
     # Argument for quantization
     parser.add_argument("--skip_quantization", action="store_true")
     parser.add_argument(
+        "--quant_flow",
+        choices=["standard", "file2file", "per_block"],
+        default="standard",
+        help="Quantization execution flow. 'standard' (default): load the full model into memory. "
+        "'file2file': quantize safetensors shards directly without loading the full model; requires "
+        "--model_export hf_format, and add --multi_gpu to parallelize across all visible GPUs. "
+        "'per_block': load decoder blocks lazily between weight and activation calibration; see "
+        "--gpu_resident_blocks. Supersedes --file2file_quantization; ignored if "
+        "--file2file_quantization is also set.",
+    )
+    parser.add_argument(
         "--file2file_quantization",
         action="store_true",
-        help="Enable file-to-file quantization mode. Quantizes safetensors shards directly without loading the full model into memory. "
-        "Bypasses model loading, calibration, and standard quantization flow. Requires --model_export hf_format.",
+        help="Deprecated, use `--quant_flow file2file` instead. Takes precedence over --quant_flow when set. "
+        "Enable file-to-file quantization mode. Quantizes safetensors shards directly without loading the "
+        "full model into memory. Bypasses model loading, calibration, and standard quantization flow. "
+        "Requires --model_export hf_format. Add --multi_gpu to parallelize across all visible GPUs.",
+    )
+    parser.add_argument(
+        "--gpu_resident_blocks",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Only used with --quant_flow per_block. Number of leading decoder blocks kept GPU-resident; "
+        "the rest are lazy-loaded. Default is 0.",
     )
 
     parser.add_argument(

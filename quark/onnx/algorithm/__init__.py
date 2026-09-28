@@ -4,7 +4,7 @@
 #
 
 from .bc.bias_correction import bias_correction
-from .cle.equalization import cle_transforms
+from .cle.equalization import cle_transforms, stem_equalize_transforms
 from .finetuning.fast_finetune import fast_finetune
 from .gptq.gptq import GptqProcessor
 from .interface import (
@@ -24,6 +24,7 @@ from .sq.smooth_quant import smooth_transforms
 
 __all__ = [
     "cle_transforms",
+    "stem_equalize_transforms",
     "smooth_transforms",
     "rotation_transforms",
     "bias_correction",

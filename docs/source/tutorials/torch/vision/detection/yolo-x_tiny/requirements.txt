@@ -1,3 +1,0 @@
-opencv-python
-pycocotools
-torchao<0.16.0

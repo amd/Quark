@@ -57,18 +57,101 @@ else:
     PYTORCH_DYNAMO_RECOMPILE_EXCEPTION = DummyException
 
 
+CACHE_LIMIT_CONFIG_NAMES: tuple[str, ...]
 if Version(torch.__version__) >= Version("2.7"):
-    cache_limit_config_name = "recompile_limit"
-elif Version(torch.__version__) >= Version("2.5"):
-    cache_limit_config_name = "cache_size_limit"
-else:
-    cache_limit_config_name = None  # type: ignore
+    CACHE_LIMIT_CONFIG_NAMES = ("recompile_limit", "accumulated_recompile_limit")
+elif Version(torch.__version__) >= Version("2.5"):  # pragma: no cover
+    CACHE_LIMIT_CONFIG_NAMES = ("cache_size_limit", "accumulated_cache_size_limit")
+else:  # pragma: no cover
+    CACHE_LIMIT_CONFIG_NAMES = ()
 
-# TODO: remove once it is clear we require `torch>=2.5`.
-if Version(torch.__version__) >= Version("2.5"):
-    PYTORCH_DYNAMO_RECOMPILE_MESSAGE = f"The call to `scaled_fake_quantize` that is by default compiled with `torch.compile(..., fullgraph=True)` failed with the exception `{PYTORCH_DYNAMO_RECOMPILE_EXCEPTION.__name__}`. This should normally not happen, please report the issue with a reproduction. To bypass this issue, please use the environment variable `QUARK_DISABLE_COMPILE=1` to disable torch.compile usage in `scaled_fake_quantize`. In case you are using several different quantization schemes, consider increasing `torch._dynamo.config.{cache_limit_config_name}` (current torch._dynamo.config.{cache_limit_config_name}={getattr(torch._dynamo.config, cache_limit_config_name)})."
-else:
-    PYTORCH_DYNAMO_RECOMPILE_MESSAGE = None  # type: ignore[assignment]
+# Set once (process-wide) as soon as `scaled_fake_quantize_compiled` hits Dynamo's recompilation
+# limit. All quantizers share that single `torch.compile` object, hence a single Dynamo cache: once
+# it is exhausted every later call raises, so the compiled path is abandoned for the whole process
+# rather than raising (and catching) an exception on every single call.
+_compiled_fake_quantize_disabled = False
+
+
+def _recompile_limit_message() -> str:
+    # Built per call rather than kept as a constant: the limits are read from `torch._dynamo.config`
+    # at call time, so a user who raised them after importing Quark -- which this message advises --
+    # or who is inside a `torch._dynamo.config.patch(...)` is shown the values actually in effect.
+    limits = ", ".join(f"{name}={getattr(torch._dynamo.config, name)}" for name in CACHE_LIMIT_CONFIG_NAMES)
+    return (
+        f"The call to `scaled_fake_quantize` that is by default compiled with `torch.compile(..., fullgraph=True)` "
+        f"failed with the exception `{PYTORCH_DYNAMO_RECOMPILE_EXCEPTION.__name__}` (current torch._dynamo.config "
+        f"{limits}). Falling back to the non-compiled `scaled_fake_quantize` for the remainder of this process, "
+        f"which may be significantly slower. This happens when a single process uses many different quantization "
+        f"schemes, tensor ranks or devices. Consider increasing the limits above, or set the environment variable "
+        f"`QUARK_DISABLE_COMPILE=1` to skip torch.compile altogether."
+    )
+
+
+def dispatch_scaled_fake_quantize(
+    quant_dtype: str,
+    inputs: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor | None,
+    axis: int | None,
+    group_size: int | None,
+    quant_min: int | float,
+    quant_max: int | float,
+    round_mode: int | None,
+    qscheme: str | None,
+    mx_element_dtype: str | None,
+) -> torch.Tensor:
+    """Run ``scaled_fake_quantize``, using its compiled variant whenever that is applicable.
+
+    Falls back to the non-compiled variant, permanently, if Dynamo's recompilation limit is hit.
+    """
+    global _compiled_fake_quantize_disabled
+
+    # torch.onnx.export uses jit.trace by default to get a ScriptModule model, which currently does not supported tracing a dynamo-optimized model.
+    # Reference: https://github.com/pytorch/pytorch/blob/v2.7.1/torch/_dynamo/eval_frame.py#L634.
+    # In case we compile at a level above, we will obey the high level `torch.compile` parameters and thus does not use the compiled `scaled_fake_quantize` here.
+    # In case the input `inputs` is not contiguous, `torch.compile` has some overhead from `copy_misaligned_inputs` that may make the compiled function
+    # slower than eager in some cases. We disable torch.compile by default in this case until further investigation is done.
+    use_compiled = not (
+        _compiled_fake_quantize_disabled
+        or QUARK_DISABLE_COMPILE
+        or not TORCH_HIGHER_OR_EQUAL_2_5
+        or torch.jit.is_tracing()
+        or torch.compiler.is_compiling()  # type: ignore[attr-defined]
+        or not inputs.is_contiguous()
+    )
+
+    # Bypass a PyTorch bug where an identically shaped `Parameter` and `Tensor` guard differently, which
+    # doubles the number of Dynamo cache entries: https://github.com/pytorch/pytorch/issues/165051
+    # `view_as` yields a plain `Tensor` while keeping the autograd graph intact, unlike `.data`, which
+    # detaches and would both break QAT weight updates and keep the entries distinct anyway (the
+    # `requires_grad` guard then differs instead of the type guard).
+    if use_compiled and isinstance(inputs, torch.nn.Parameter):
+        inputs = inputs.view_as(inputs)
+
+    args = (
+        quant_dtype,
+        inputs,
+        scale,
+        zero_point,
+        axis,
+        group_size,
+        quant_min,
+        quant_max,
+        round_mode,
+        qscheme,
+        mx_element_dtype,
+    )
+
+    if not use_compiled:
+        return quark.torch.kernel.scaled_fake_quantize(*args)  # type: ignore[attr-defined,no-any-return]
+
+    try:
+        return quark.torch.kernel.scaled_fake_quantize_compiled(*args)  # type: ignore[attr-defined,no-any-return]
+    except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION:
+        _compiled_fake_quantize_disabled = True
+        _logger.warning(_recompile_limit_message(), allow_duplicate=False)
+
+        return quark.torch.kernel.scaled_fake_quantize(*args)  # type: ignore[attr-defined,no-any-return]
 
 
 class BufferReusePool:
@@ -428,22 +511,6 @@ class ScaledFakeQuantize(FakeQuantizeBase):
         else:
             mx_element_dtype_value = "None" if self.mx_element_dtype is None else self.mx_element_dtype.value
 
-            if (
-                QUARK_DISABLE_COMPILE
-                or not TORCH_HIGHER_OR_EQUAL_2_5
-                or torch.jit.is_tracing()
-                or torch.compiler.is_compiling()  # type: ignore[attr-defined]
-                or not X.is_contiguous()
-            ):
-                # torch.onnx.export uses jit.trace by default to get a ScriptModule model, which currently does not supported tracing a dynamo-optimized model.
-                # Reference: https://github.com/pytorch/pytorch/blob/v2.7.1/torch/_dynamo/eval_frame.py#L634.
-                # In case we compile at a level above, we will obey the high level `torch.compile` parameters and thus does not use the compiled `scaled_fake_quantize` here.
-                # In case the input `X` is not contiguous, `torch.compile` has some overhead from `copy_misaligned_inputs` that may make the compiled function
-                # slower than eager in some cases. We disable torch.compile by default in this case until further investigation is done.
-                fake_quantize = quark.torch.kernel.scaled_fake_quantize  # type: ignore[attr-defined]
-            else:
-                fake_quantize = quark.torch.kernel.scaled_fake_quantize_compiled  # type: ignore[attr-defined]
-
             if self.zero_point_type == ZeroPointType.float32:
                 zero_point_dtype = torch.float32
             else:
@@ -451,22 +518,19 @@ class ScaledFakeQuantize(FakeQuantizeBase):
 
             zero_point = zero_point.to(zero_point_dtype) if zero_point is not None else None
 
-            try:
-                X = fake_quantize(
-                    self.dtype.value,
-                    X,
-                    scale,
-                    zero_point,
-                    self.ch_axis,
-                    self.group_size,
-                    self.quant_min,
-                    self.quant_max,
-                    self.round_method,
-                    self.qscheme_str_name,
-                    mx_element_dtype_value,
-                )
-            except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
-                raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
+            X = dispatch_scaled_fake_quantize(
+                self.dtype.value,
+                X,
+                scale,
+                zero_point,
+                self.ch_axis,
+                self.group_size,
+                self.quant_min,
+                self.quant_max,
+                self.round_method,
+                self.qscheme_str_name,
+                mx_element_dtype_value,
+            )
 
         return X
 
@@ -747,48 +811,24 @@ class FrozenScaledFakeQuantize(nn.Module):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         mx_element_dtype_value = "None" if self.mx_element_dtype is None else self.mx_element_dtype.value
 
-        if (
-            QUARK_DISABLE_COMPILE
-            or not TORCH_HIGHER_OR_EQUAL_2_5
-            or torch.jit.is_tracing()
-            or torch.compiler.is_compiling()  # type: ignore[attr-defined]
-            or not X.is_contiguous()
-        ):
-            # torch.onnx.export uses jit.trace by default to get a ScriptModule model, which currently does not supported tracing a dynamo-optimized model.
-            # Reference: https://github.com/pytorch/pytorch/blob/v2.7.1/torch/_dynamo/eval_frame.py#L634.
-            # In case we compile at a level above, we will obey the high level `torch.compile` parameters and thus does not use the compiled `scaled_fake_quantize` here.
-            # In case the input `X` is not contiguous, `torch.compile` has some overhead from `copy_misaligned_inputs` that may make the compiled function
-            # slower than eager in some cases. We disable torch.compile by default in this case until further investigation is done.
-            fake_quantize = quark.torch.kernel.scaled_fake_quantize  # type: ignore[attr-defined]
-        else:
-            fake_quantize = quark.torch.kernel.scaled_fake_quantize_compiled  # type: ignore[attr-defined]
-
-            # Bypass a PyTorch bug: https://github.com/pytorch/pytorch/issues/165051
-            # This is fine to do as ScaledFakeQuantize backward is a straight-through estimator.
-            if isinstance(X, torch.nn.Parameter):
-                X = X.data
-
         if self.zero_point_type == ZeroPointType.float32:
             zero_point_dtype = torch.float32
         else:
             zero_point_dtype = torch.int32
 
-        try:
-            X = fake_quantize(
-                self.dtype.value,
-                X,
-                self.scale,
-                self.zero_point.to(zero_point_dtype),
-                self.ch_axis,
-                self.group_size,
-                self.quant_min,
-                self.quant_max,
-                self.round_method,
-                self.qscheme_str_name,
-                mx_element_dtype_value,
-            )
-        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
-            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
+        X = dispatch_scaled_fake_quantize(
+            self.dtype.value,
+            X,
+            self.scale,
+            self.zero_point.to(zero_point_dtype),
+            self.ch_axis,
+            self.group_size,
+            self.quant_min,
+            self.quant_max,
+            self.round_method,
+            self.qscheme_str_name,
+            mx_element_dtype_value,
+        )
 
         assert isinstance(X, torch.Tensor)
 
@@ -1044,39 +1084,19 @@ class SequentialQuantize(nn.Sequential):
     def _apply_scale_quantization(self, source_module: Any, scale_module: Any) -> torch.Tensor:
         """Apply scale quantization between modules."""
 
-        if (
-            QUARK_DISABLE_COMPILE
-            or not TORCH_HIGHER_OR_EQUAL_2_5
-            or torch.jit.is_tracing()
-            or torch.compiler.is_compiling(  # type: ignore[attr-defined]
-            )
-            or not source_module.scale.is_contiguous()
-        ):
-            # torch.onnx.export uses jit.trace by default to get a ScriptModule model, which currently does not supported tracing a dynamo-optimized model.
-            # Reference: https://github.com/pytorch/pytorch/blob/v2.7.1/torch/_dynamo/eval_frame.py#L634.
-            # In case we compile at a level above, we will obey the high level `torch.compile` parameters and thus does not use the compiled `scaled_fake_quantize` here.
-            # In case the input `X` is not contiguous, `torch.compile` has some overhead from `copy_misaligned_inputs` that may make the compiled function
-            # slower than eager in some cases. We disable torch.compile by default in this case until further investigation is done.
-            fake_quantize = quark.torch.kernel.scaled_fake_quantize  # type: ignore[attr-defined]
-        else:
-            fake_quantize = quark.torch.kernel.scaled_fake_quantize_compiled  # type: ignore[attr-defined]
-
-        try:
-            result = fake_quantize(
-                scale_module.dtype.value,
-                source_module.scale,
-                scale_module.scale,
-                scale_module.zero_point.to(torch.int) if scale_module.zero_point is not None else None,
-                scale_module.ch_axis,
-                scale_module.group_size,
-                scale_module.quant_min,
-                scale_module.quant_max,
-                scale_module.round_method,
-                scale_module.qscheme_str_name,
-                None,
-            )
-        except PYTORCH_DYNAMO_RECOMPILE_EXCEPTION as e:  # pragma: no cover
-            raise PYTORCH_DYNAMO_RECOMPILE_EXCEPTION(PYTORCH_DYNAMO_RECOMPILE_MESSAGE) from e
+        result = dispatch_scaled_fake_quantize(
+            scale_module.dtype.value,
+            source_module.scale,
+            scale_module.scale,
+            scale_module.zero_point.to(torch.int) if scale_module.zero_point is not None else None,
+            scale_module.ch_axis,
+            scale_module.group_size,
+            scale_module.quant_min,
+            scale_module.quant_max,
+            scale_module.round_method,
+            scale_module.qscheme_str_name,
+            None,
+        )
 
         assert isinstance(result, torch.Tensor)  # Runtime check to ensure correct type
         return result

@@ -16,14 +16,19 @@ if TYPE_CHECKING:
     from quark.torch.algorithm.config import BlockwiseJointTuningConfig
 
 from quark.common.utils.log import ScreenLogger
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.learnable_linear import (
+from quark.experimental.torch.blockwise_joint_tuning.quantize.learnable_linear import (
     ExperimentalLearnableQuantizedLinear,
 )
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.utils import set_op_by_name, set_quant_state
+from quark.experimental.torch.blockwise_joint_tuning.quantize.utils import set_op_by_name, set_quant_state
 from quark.torch.algorithm.blockwise_joint_tuning.utils import block_forward, blockwise_joint_training
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, get_dtype, move_to_device
-from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.prepare import (
+    get_model_layers,
+    init_blockwise_algo,
+    init_device_map,
+    reset_model_kv_cache,
+)
 from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
@@ -97,6 +102,8 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
 
         self.fp_model = fp_model
         self.model = model
+        # If accelerate is used, the model will have the attribute _hf_hook
+        self.using_accelerate = hasattr(self.model, "_hf_hook")
         self.epochs = algo_config.epochs
         self.weight_lr = algo_config.weight_lr
         # Backward compatible with possible `quant_lr` naming in other branches.
@@ -125,12 +132,13 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
             self.fp_model, self.model_decoder_layers, self.valdata_loader
         )
 
-        # Tuning on GPU, keep inactive blocks on CPU.
-        for i in range(len(self.modules)):
-            self.modules[i] = self.modules[i].to("cpu")
-        for i in range(len(self.modules_fp)):
-            self.modules_fp[i] = self.modules_fp[i].to("cpu")
-            self.modules_fp_val[i] = self.modules_fp_val[i].to("cpu")
+        # Tuning on GPU, keep inactive blocks on CPU (skipped when accelerate places the model).
+        if not self.using_accelerate:
+            for i in range(len(self.modules)):
+                self.modules[i] = self.modules[i].to("cpu")
+            for i in range(len(self.modules_fp)):
+                self.modules_fp[i] = self.modules_fp[i].to("cpu")
+                self.modules_fp_val[i] = self.modules_fp_val[i].to("cpu")
         clear_memory()
 
     def apply(self) -> None:
@@ -148,9 +156,8 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
         fp_layer_val_inputs = list(layer_val_inputs)
         fp_layer_val_outputs: list[torch.Tensor] = []
 
-        forward_pass_use_cache = self.model.config.use_cache
-        self.model.config.use_cache = False
-        self.fp_model.config.use_cache = False
+        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
+        fp_forward_pass_use_cache = reset_model_kv_cache(self.fp_model, use_cache=False)
 
         for i in tqdm(range(len(self.modules)), desc="BlockWise_Joint_Tuning"):
             logger.info(f"Start joint tuning layer {i + 1}/{len(self.modules)}")
@@ -186,6 +193,8 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
                 cache_examples_on_gpu,
             )
 
+            # accelerate-exempt: both belong to the fp model, whose placement self.using_accelerate
+            # does not describe. Needs its own hook probe; out of scope for this fix.
             fp_layer = move_to_device(fp_layer, CPU if force_layer_back_to_cpu else cur_layer_device)
             fp_layer_val = move_to_device(fp_layer_val, CPU if force_layer_back_to_cpu else cur_layer_device)
 
@@ -228,6 +237,10 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
             # for downstream eval (e.g. lm_head matmul expects fp16 inputs).
             with torch.no_grad():
                 layer.to(dtype=layer_dtype)
+            # accelerate-todo: force_layer_back_to_cpu is only set when this layer started on
+            # CPU, which under accelerate means the device map placed it there -- so returning it
+            # by hand is the same desync the bulk offload above avoids. Not fixed here: covering
+            # it needs the full per-layer body, so it belongs in its own change.
             layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
 
             del layer
@@ -240,8 +253,8 @@ class BlockwiseJointTuningProcessor(BaseAlgoProcessor):
             fp_layer_val_inputs, fp_layer_val_outputs = fp_layer_val_outputs, []
             clear_memory()
 
-        self.model.config.use_cache = forward_pass_use_cache
-        self.fp_model.config.use_cache = forward_pass_use_cache
+        reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)
+        reset_model_kv_cache(self.fp_model, use_cache=fp_forward_pass_use_cache)
 
         del self.fp_model
         clear_memory()

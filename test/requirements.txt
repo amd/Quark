@@ -1,10 +1,24 @@
 accelerate<1.12
-brevitas
-compressed-tensors>=0.15.0
+# Pin: compressed-tensors 0.19.0 removed `actorder='group'` -- QuantizationArgs.validate_actorder now
+# raises on it, so already-published checkpoints become unloadable. RedHatAI/Qwen2.5-0.5B-quantized.w4a16
+# (used by test_inverse_quantizer.py and test_hf_export_import.py) carries `"actorder": "group"` in its
+# config.json. 0.19.0 also trips `torch.is_same_size(offloaded, None)` in its offload cache on the
+# FP8-dynamic checkpoint. Relax this upper bound once upstream offers a migration path, or once the
+# tests move to checkpoints that do not use activation reordering.
+compressed-tensors>=0.15.0,<0.19
 diffusers>=0.37.0
 gguf>=0.10.0
 huggingface_hub
 importlib-metadata
+# `kernels` is deliberately NOT listed here: it is transformers-version dependent. transformers >= 5.5
+# deleted the in-tree `w8a8_block_fp8_matmul` Triton path and runs block-wise FP8 checkpoints (e.g.
+# Qwen/Qwen3-4B-FP8) through the `kernels-community/finegrained-fp8` hub kernel, but transformers 4.x
+# needs neither and pins `huggingface_hub<1.0` while kernels >= 0.16 needs >= 1.10. Pinning it here
+# installed it on every matrix leg, so the 4.x legs ended up with kernels 0.16 on huggingface_hub 0.36,
+# where `import kernels` raises -- and because kernels registers an `egg_info.writers` entry point,
+# that breaks every `setup.py egg_info` (i.e. building Quark itself), not just the tests.
+# CI installs it as `transformers[kernels]==<matrix version>` instead, so the bounds always come from
+# the transformers version under test (a no-op on 4.x, which does not declare that extra).
 matplotlib
 numpy>=2.1.3
 onnx>=1.21.0,<=1.22.0
@@ -13,14 +27,14 @@ onnxruntime_extensions>=0.4.2
 opencv-python-headless
 optuna
 plotly
+pulp>=3.3,<4
+python-dotenv>=1,<2
+PyYAML>=6.0.3,<7
 pytest>=9.0
 pytest-cov>=6.0.0
-# Pin: safetensors 0.8.0rc0 has a regression in the load_file -> modify dict
-# -> save_file (same path) flow that produces a zero-filled output file.
-# Repros test/test_for_torch/test_hf_export_import.py::test_checkpoint_conversion_mapping
-# in CI on any torch-touching PR. See PR description for the full investigation.
-# Relax this upper bound once an upstream safetensors release lands the fix.
-safetensors>=0.5,<0.8
+requests>=2.31,<3
+# Keep aligned with the quant_perf extra in pyproject.toml.
+safetensors>=0.6.2,<0.9
 torchao
 torchsummary
 trl>=0.28.0,<=1.6.0
@@ -28,3 +42,15 @@ trl>=0.28.0,<=1.6.0
 # Policy: Test 2 versions - chosen stable version and latest version for future compatibility
 # See .github/workflows/ci_unittest_main_{torch,onnx}.yml for tested versions (currently 4.55.4 and 4.57.0)
 # Installation happens in tools/ci/install_quark.sh:set_conda() using the transformers-version parameter
+
+# brevitas is installed separately with --no-deps (see tools/ci install scripts) because its
+# setuptools<70.0 pin conflicts with newer torch's setuptools>=77.0.3, forcing pip to downgrade
+# torch. The lines below are brevitas's other runtime deps from
+# https://github.com/Xilinx/brevitas/blob/v0.13.0/requirements/requirements.txt
+# TODO: Remove this and add back `brevitas` once https://github.com/Xilinx/brevitas/pull/1563
+# is released.
+dependencies==2.0.1
+packaging
+sympy
+typing-extensions>=3.7.4
+unfoldNd

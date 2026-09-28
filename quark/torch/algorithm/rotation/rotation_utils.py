@@ -18,7 +18,7 @@
 #
 import math
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -32,6 +32,7 @@ from quark.torch.algorithm.rotation.hadamard import (
     random_hadamard_matrix,
 )
 from quark.torch.algorithm.rotation.monkeypatch import add_wrapper_after_function_call_in_method
+from quark.torch.algorithm.utils.utils import get_model_type_norm_constant
 
 logger = ScreenLogger(__name__)
 
@@ -108,21 +109,199 @@ def rotate_with_size(
     return x
 
 
+def rotate_in_channels(weight: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
+    """Return ``weight`` with its input channels (last dim) rotated.
+
+    Non-mutating counterpart of :func:`rotate_in_channels_`, so the graph flow and the
+    file-to-file flow share one definition of R2 weight orientation and block rotation.
+    ``rotate_with_size`` reshapes when the rotation is narrower than the dimension, and
+    restores the input dtype.
+    """
+    return rotate_with_size(weight, rotation_matrix=rotation)
+
+
+def rotate_out_channels(weight: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
+    """Return ``weight`` with its output channels (dim 0) rotated.
+
+    Non-mutating counterpart of :func:`rotate_out_channels_`. Transposes so the output
+    channels land on the last dim, rotates, and transposes back. Bias is deliberately not
+    handled here — this operates on a bare tensor; callers holding a module (and therefore
+    its ``.bias``) should use :func:`rotate_out_channels_`, which rotates both.
+    """
+    return rotate_with_size(weight.T.contiguous(), rotation_matrix=rotation).T.contiguous()
+
+
 def rotate_in_channels_(module: nn.Module, rotation: torch.Tensor) -> None:
     """Rotate the input channels of a linear layer.
     If weight and rotation's sizes don't match, it reshapes weight in order to multiply them."""
-    module.weight.data = rotate_with_size(module.weight.data, rotation_matrix=rotation)
+    module.weight.data = rotate_in_channels(module.weight.data, rotation)
 
 
 def rotate_out_channels_(module: nn.Module, rotation: torch.Tensor) -> None:
     """Rotate the output channels of a linear layer.
     If weight/bias and rotation's sizes don't match
     it reshapes weight/bias in order to multiply them."""
-    module.weight.data = rotate_with_size(module.weight.data.T, rotation_matrix=rotation)
-    module.weight.data = module.weight.data.T.contiguous()
+    module.weight.data = rotate_out_channels(module.weight.data, rotation)
 
+    # The bias lives in the output basis too, so it rotates on its own last dim.
     if module.bias is not None:
         module.bias.data = rotate_with_size(module.bias.data, rotation_matrix=rotation)
+
+
+def build_input_rotation_int8(
+    rotation_matrix: torch.Tensor,
+    rotation_size: int,
+    K: int | None,
+    hadamard_K_fn: Callable[[int], tuple[torch.Tensor, int]] = _get_hadamard_K,
+) -> torch.Tensor:
+    """Build the persisted ``input_rotation`` buffer for an online Hadamard rotation.
+
+    Returns a ``±1`` ``int8`` matrix of shape ``(rotation_size, rotation_size)``,
+    kron-expanded from ``rotation_matrix`` when the base Hadamard is smaller than
+    ``rotation_size``.
+
+    This buffer is what inference reads back to reconstruct the activation-side transform,
+    so every producer must emit byte-identical values. Shared by
+    :class:`InputRotationWrapperHadamard` (graph flow) and the file-to-file rotation path;
+    do not reimplement it.
+
+    :param torch.Tensor rotation_matrix: Base Hadamard matrix.
+    :param int rotation_size: Target buffer size (per-block rotation width).
+    :param int | None K: Hadamard block factor from :func:`_get_hadamard_K`.
+    :param hadamard_K_fn: Override for the base-matrix lookup. Defaults to
+        :func:`_get_hadamard_K`; callers with a cache may pass their own memoized version.
+
+    :return: ``int8`` ``±1`` matrix of shape ``(rotation_size, rotation_size)``.
+    :rtype: torch.Tensor
+    """
+    input_rotation = rotation_matrix.clone()
+
+    if input_rotation.shape[0] != rotation_size:
+        assert K is not None
+        hadamard_1, _ = hadamard_K_fn(rotation_size // K)
+        hadamard_1 = hadamard_1.to(input_rotation.device)
+
+        input_rotation = input_rotation.to(dtype=torch.float64)
+        input_rotation = torch.kron(input_rotation, hadamard_1)
+
+    assert input_rotation.shape[0] == rotation_size, (
+        f"input_rotation size {input_rotation.shape[0]} != rotation_size {rotation_size}"
+    )
+    assert (
+        input_rotation[input_rotation == 1].numel() + input_rotation[input_rotation == -1].numel()
+        == input_rotation.numel()
+    ), "input_rotation must contain only +1/-1 entries"
+
+    return input_rotation.to(torch.int8)
+
+
+def substitute_layer_id(name: str, layer_index: int) -> str:
+    """Substitute the decoder-layer placeholders in a ``scaling_layers`` template name.
+
+    ``pre_layer_id`` -> ``layer_index - 1``, then ``layer_id`` -> ``layer_index``. The order
+    matters: substituting ``layer_id`` first would corrupt ``pre_layer_id`` into ``pre_<N>``.
+    """
+    return name.replace("pre_layer_id", str(layer_index - 1)).replace("layer_id", str(layer_index))
+
+
+def scaling_layer_target_templates(layers_pattern: dict[str, Any]) -> list[str]:
+    """The raw (un-substituted) target templates one ``scaling_layers`` entry designates.
+
+    ``target_modules`` names the targets; when that key is absent the entry falls back to
+    ``next_modules``. That fallback is the part of the ``scaling_layers`` contract both flows
+    must agree on: ``RotationProcessor.get_online_rotation_layers`` uses it to decide which
+    layers get an inference-time wrapper, and the file-to-file flow uses it to decide which
+    get an ``input_rotation`` buffer. If the two disagree, the checkpoint's buffers and
+    wrappers do not line up and the reloaded model is silently wrong.
+
+    The fallback keys on ``None``, not falsiness: an empty ``target_modules`` deliberately opts
+    the entry out of online rotation.
+
+    :param dict[str, Any] layers_pattern: One entry from ``scaling_layers``'s
+        ``first_layer`` / ``middle_layers`` / ``last_layer`` list.
+
+    :return: Target module name templates, with ``layer_id`` / ``pre_layer_id`` still in place.
+    :rtype: list[str]
+    """
+    templates = layers_pattern.get("target_modules")
+    if templates is None:
+        templates = layers_pattern.get("next_modules", [])
+    return cast(list[str], templates)
+
+
+def expand_scaling_layer_targets(layers_pattern: dict[str, Any], layer_index: int) -> list[str]:
+    """The target module names one ``scaling_layers`` entry designates for one decoder layer.
+
+    Substitutes the decoder-layer placeholders in :func:`scaling_layer_target_templates`'s result;
+    see there for the ``target_modules`` -> ``next_modules`` fallback both flows share.
+
+    Placeholders are substituted but wildcards are left intact — each flow resolves those its
+    own way: the graph flow against a live module tree (``resolve_star``), the file-to-file
+    flow against checkpoint tensor names (``match_modules``).
+
+    :param dict[str, Any] layers_pattern: One entry from ``scaling_layers``'s
+        ``first_layer`` / ``middle_layers`` / ``last_layer`` list.
+    :param int layer_index: Index of the decoder layer being expanded.
+
+    :return: Target module names with ``layer_id`` / ``pre_layer_id`` substituted.
+    :rtype: list[str]
+    """
+    return [substitute_layer_id(name, layer_index) for name in scaling_layer_target_templates(layers_pattern)]
+
+
+def rotate_input_channels_hadamard(
+    weight: torch.Tensor,
+    rotation_size: int,
+    hadamard_K_fn: Callable[[int], tuple[torch.Tensor, int]] = _get_hadamard_K,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Rotate ``weight``'s input channels by a fixed Hadamard (online R1 / R4).
+
+    The weight-side half of an online rotation: inference re-applies the matching activation
+    transform, rebuilt from the ``input_rotation`` buffer :func:`build_input_rotation_int8`
+    emits. The two must stay in step, so this is shared by
+    ``RotationProcessor.apply_online_r1`` (graph flow) and the file-to-file rotation path;
+    do not reimplement it.
+
+    :param torch.Tensor weight: ``(out_features, in_features)`` weight to rotate.
+    :param int rotation_size: Per-block rotation width; must divide ``in_features``.
+    :param hadamard_K_fn: Override for the base-matrix lookup. Defaults to
+        :func:`_get_hadamard_K`; callers with a cache may pass their own memoized version.
+
+    :return: ``(rotated_weight, hadamard_K, K)``. ``hadamard_K`` and ``K`` describe the matrix
+        actually applied — kron-expanded when the base is narrower than ``rotation_size`` —
+        which the graph flow hands to :class:`InputRotationWrapperHadamard`.
+    :rtype: tuple[torch.Tensor, torch.Tensor, int]
+    """
+    dtype = weight.dtype
+    in_features = weight.shape[1]
+    if in_features % rotation_size != 0:
+        raise ValueError(
+            f"rotation_size={rotation_size} does not divide in_features={in_features} for a weight of shape "
+            f"{tuple(weight.shape)}. Choose a rotation_size that divides the input dimension."
+        )
+
+    hadamard_K, K = hadamard_K_fn(rotation_size)
+    # Move a copy to the weight's device: matmul_hadU / rotate_with_size otherwise emit a
+    # device-mismatch warning and pay a host<->device copy per tensor. `.to` returns a new
+    # tensor when the device differs, so a cached base matrix is never mutated in place.
+    hadamard_K = hadamard_K.to(weight.device)
+
+    weight = weight.contiguous()
+    if rotation_size == in_features:
+        # `inverse=True` is not required here as nn.Linear already transposes the weight.
+        return matmul_hadU(weight, hadamard_K=hadamard_K, K=K).to(dtype), hadamard_K, K
+
+    # Block-diagonal Hadamard: kron-expand the base up to rotation_size, then rotate each
+    # contiguous block of `rotation_size` input channels.
+    if hadamard_K.shape[0] != rotation_size:
+        hadamard_1, _ = hadamard_K_fn(rotation_size // K)
+        hadamard_1 = hadamard_1.to(weight.device)
+        hadamard_K = torch.kron(hadamard_K.to(torch.float64), hadamard_1.to(torch.float64))
+        K = rotation_size
+
+    assert hadamard_K.shape[0] == rotation_size
+    rotation_matrix = hadamard_K.to(torch.float64) / math.sqrt(rotation_size)
+    return rotate_with_size(weight, rotation_matrix=rotation_matrix).to(dtype), hadamard_K, K
 
 
 def get_rotation_matrix(num_channels: int, device: torch.device | str, random: bool = True) -> torch.Tensor:
@@ -159,7 +338,11 @@ def transform_norm_and_linear(
 def transform_rms_norm_and_linear(norm: nn.Module, next_modules: Iterable[nn.Module]) -> None:
     next_modules_linear = [mod for mod in next_modules if isinstance(mod, nn.Linear)]
     ln_w = norm.weight.data.to(dtype=torch.float64)
-    norm.weight.data = torch.ones_like(norm.weight.data)
+    # The norm applies `weight + c`, so that is what must be folded into the next layers, and the
+    # identity it is reset to is `1 - c`: zeros for the centered norms (`c == 1`), ones otherwise.
+    c = get_model_type_norm_constant(norm)
+    ln_w = ln_w + c
+    norm.weight.data = torch.full_like(norm.weight.data, 1.0 - c)
     if hasattr(norm, "bias") and norm.bias is not None:
         ln_b = norm.bias.data.to(dtype=torch.float64)
         norm.bias = None  # type: ignore
@@ -327,25 +510,7 @@ class InputRotationWrapperHadamard(InputRotationWrapper):
         rotation_matrix = rotation_matrix.to(self.original_module.weight.dtype)
         rotation_matrix = rotation_matrix.to(self.original_module.weight.device)
 
-        input_rotation = rotation_matrix.clone()
-
-        if input_rotation.shape[0] != self.rotation_size:
-            assert self.K is not None
-            hadamard_1, _ = _get_hadamard_K(self.rotation_size // self.K)
-
-            hadamard_1 = hadamard_1.to(input_rotation.device)
-
-            input_rotation = input_rotation.to(dtype=torch.float64)
-            input_rotation = torch.kron(input_rotation, hadamard_1)
-
-        assert input_rotation.shape[0] == self.rotation_size
-
-        assert (
-            input_rotation[input_rotation == 1].numel() + input_rotation[input_rotation == -1].numel()
-            == input_rotation.numel()
-        )
-
-        input_rotation = input_rotation.to(torch.int8)
+        input_rotation = build_input_rotation_int8(rotation_matrix, self.rotation_size, self.K)
 
         self.register_buffer("input_rotation", input_rotation)
 
@@ -370,7 +535,13 @@ class InputRotationWrapperOrthogonal(InputRotationWrapper):
         self.original_module = original_module
 
         assert rotation_matrix is not None
-        assert rotation_matrix.dtype == torch.float64
+        # Accept float64 (trained rotations) as well as fp16/bf16/fp32 stored
+        # rotations. `rotate_with_size` upcasts to float64 at apply time, so a
+        # lower-precision stored matrix does not change compute accuracy while
+        # cutting the on-disk `input_rotation` size (4x vs float64).
+        assert rotation_matrix.dtype in (torch.float64, torch.float32, torch.bfloat16, torch.float16), (
+            f"unsupported input_rotation dtype {rotation_matrix.dtype}"
+        )
 
         rotation_matrix = rotation_matrix.to(self.original_module.weight.device)
 
@@ -389,7 +560,10 @@ class OrthogonalTransform(nn.Module):
 
         assert rotation_matrix is not None
 
-        self.rotation_matrix = rotation_matrix
+        # Registered as a non-persistent buffer so it follows `module.to(device)`
+        # (avoids a per-forward host->device copy of the rotation matrix). Non-
+        # persistent => not added to state_dict, so serialization is unchanged.
+        self.register_buffer("rotation_matrix", rotation_matrix, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = rotate_with_size(x, rotation_matrix=self.rotation_matrix)

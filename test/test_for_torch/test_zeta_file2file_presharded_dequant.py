@@ -139,13 +139,13 @@ def _make_pure_python_dequant(
     fp8, scale = _quantize_per_chunk_block_fp8(real, block_size, chunk_rows, n_chunks)
     # Reference: per-chunk dequant manually here (independent of the unit
     # under test) so we don't compare the function against itself.
-    correct = torch.empty(rows, cols, dtype=torch.bfloat16)
+    correct = torch.empty(rows, cols, dtype=torch.float32)
     chunk_scale_rows = (chunk_rows + block_size - 1) // block_size
     for ci in range(n_chunks):
         cw = fp8[ci * chunk_rows : (ci + 1) * chunk_rows]
         cs = scale[ci * chunk_scale_rows : (ci + 1) * chunk_scale_rows]
         cs_full = cs.repeat_interleave(block_size, dim=0)[: cw.shape[0]].repeat_interleave(block_size, dim=1)[:, :cols]
-        correct[ci * chunk_rows : (ci + 1) * chunk_rows] = (cw.float() * cs_full.float()).to(torch.bfloat16)
+        correct[ci * chunk_rows : (ci + 1) * chunk_rows] = cw.float() * cs_full.float()
     return fp8, scale, correct
 
 
@@ -207,14 +207,14 @@ def test_weight_dequant_fp8_default_path_unchanged(monkeypatch: pytest.MonkeyPat
         s = torch.full((2, 2), 0.1, dtype=torch.float32)
         # Reference = naive full-tensor dequant
         s_full = s.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
-        expected = (x.float() * s_full.float()).to(torch.bfloat16)
-        # Default call (no chunk_rows): must equal the naive dequant.
+        expected = x.float() * s_full.float()
+        # Default call (no chunk_rows): must equal the naive dequant in fp32.
         actual = file2file_quantization._weight_dequant_fp8(
             x.contiguous(),
             s.contiguous(),
             block_size=2,
-            model_dtype=torch.bfloat16,
         )
+        assert actual.dtype == torch.float32
         assert torch.equal(actual, expected)
     finally:
         importlib.reload(file2file_quantization)
@@ -239,7 +239,6 @@ def test_weight_dequant_fp8_chunk_rows_corrects_presharded_layout(
             fp8.contiguous(),
             scale.contiguous(),
             block_size=block_size,
-            model_dtype=torch.bfloat16,
         )
         assert not torch.equal(buggy, correct), (
             "Pre-fix path silently equals the per-chunk reference on this "
@@ -251,7 +250,6 @@ def test_weight_dequant_fp8_chunk_rows_corrects_presharded_layout(
             fp8.contiguous(),
             scale.contiguous(),
             block_size=block_size,
-            model_dtype=torch.bfloat16,
             chunk_rows=chunk_rows,
         )
         assert torch.equal(fixed, correct)
@@ -272,7 +270,6 @@ def test_weight_dequant_fp8_chunk_rows_validates_shapes(
                 x,
                 s,
                 block_size=2,
-                model_dtype=torch.bfloat16,
                 chunk_rows=3,
             )
         with pytest.raises(AssertionError, match="scale rows"):
@@ -280,7 +277,6 @@ def test_weight_dequant_fp8_chunk_rows_validates_shapes(
                 x[:6],
                 torch.zeros(5, 1, dtype=torch.float32).contiguous(),
                 block_size=2,
-                model_dtype=torch.bfloat16,
                 chunk_rows=3,
             )
     finally:
@@ -313,7 +309,6 @@ def test_recover_fp8_weights_threads_chunk_rows_from_kwarg(
         scale_inv: torch.Tensor,
         block_size: int = 128,
         *,
-        model_dtype: torch.dtype,
         chunk_rows: int | None = None,
     ) -> torch.Tensor:
         # The recoverer iterates an unordered set; we match on identity by
@@ -322,7 +317,7 @@ def test_recover_fp8_weights_threads_chunk_rows_from_kwarg(
             if v is weight:
                 seen.append((k, chunk_rows))
                 break
-        return torch.zeros(weight.shape, dtype=model_dtype)
+        return torch.zeros(weight.shape, dtype=torch.float32)
 
     monkeypatch.setattr("quark.torch.quantization.file2file_quantization.safe_open", fake_safe_open)
     monkeypatch.setattr(
@@ -369,11 +364,10 @@ def test_recover_fp8_weights_picks_up_presharded_from_hf_quant_config(
         scale_inv: torch.Tensor,
         block_size: int = 128,
         *,
-        model_dtype: torch.dtype,
         chunk_rows: int | None = None,
     ) -> torch.Tensor:
         seen.append(chunk_rows)
-        return torch.zeros(weight.shape, dtype=model_dtype)
+        return torch.zeros(weight.shape, dtype=torch.float32)
 
     monkeypatch.setattr("quark.torch.quantization.file2file_quantization.safe_open", fake_safe_open)
     monkeypatch.setattr(
@@ -420,12 +414,10 @@ def test_recover_fp8_weights_does_not_pass_chunk_rows_when_unset(
         weight: torch.Tensor,
         scale_inv: torch.Tensor,
         block_size: int = 128,
-        *,
-        model_dtype: torch.dtype,
         **kwargs: Any,
     ) -> torch.Tensor:
         received_kwargs.append(set(kwargs.keys()))
-        return torch.zeros(weight.shape, dtype=model_dtype)
+        return torch.zeros(weight.shape, dtype=torch.float32)
 
     monkeypatch.setattr("quark.torch.quantization.file2file_quantization.safe_open", fake_safe_open)
     monkeypatch.setattr(
@@ -597,3 +589,23 @@ def test_direct_quantize_checkpoint_threads_presharded_weights(
         presharded_weights=presharded,
     )
     assert captured.get("presharded_weights") == presharded
+
+
+# ---------- fp32 intermediate buffer regression ----------
+
+
+def test_weight_dequant_fp8_always_returns_fp32(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_weight_dequant_fp8`` must always return fp32 so that downstream quantizers
+    receive full-precision input regardless of the model's storage dtype."""
+    file2file_quantization = _import_with_fake_triton(monkeypatch)
+    try:
+        x = torch.ones(4, 4, dtype=torch.float8_e4m3fn).contiguous()
+        s = torch.ones(2, 2, dtype=torch.float32).contiguous()
+
+        result = file2file_quantization._weight_dequant_fp8(x, s, block_size=2)
+        assert result.dtype == torch.float32
+
+        result_chunked = file2file_quantization._weight_dequant_fp8(x, s, block_size=2, chunk_rows=2)
+        assert result_chunked.dtype == torch.float32
+    finally:
+        importlib.reload(file2file_quantization)

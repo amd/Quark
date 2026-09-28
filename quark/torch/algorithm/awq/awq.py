@@ -23,7 +23,12 @@ from tqdm import tqdm
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.scale import apply_clip, apply_scale
 from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import append_str_prefix, get_moe_layers, get_named_quant_linears
+from quark.torch.algorithm.utils.module import (
+    append_str_prefix,
+    get_moe_layers,
+    get_named_quant_linears,
+    resolve_per_layer_kwargs,
+)
 from quark.torch.algorithm.utils.prepare import (
     cache_model_inps,
     get_layers_for_scaling,
@@ -81,8 +86,11 @@ class AwqProcessor(BaseAlgoProcessor):
             # Move module and inputs to correct device
             common_device = next(self.modules[i].parameters()).device
             if common_device is None or str(common_device) == "cpu":
+                # Resolve the compute device either way -- it is used below -- but only
+                # relocate the module when accelerate is not the one placing it.
                 common_device = self.device_map[f"{self.model_decoder_layers}.{i}"]
-                self.modules[i] = self.modules[i].to(common_device)
+                if not self.using_accelerate:
+                    self.modules[i] = self.modules[i].to(common_device)
 
             # [STEP 1]: Get layer, extract linear modules, extract input features
             named_linears = get_named_quant_linears(self.modules[i])
@@ -126,7 +134,8 @@ class AwqProcessor(BaseAlgoProcessor):
 
             # [STEP 4]: Quantize weights
             self._apply_quant(named_linears)
-            self.modules[i] = self.modules[i].to("cpu")
+            if not self.using_accelerate:
+                self.modules[i] = self.modules[i].to("cpu")
             clear_memory()
 
         # recover model attention config
@@ -186,7 +195,9 @@ class AwqProcessor(BaseAlgoProcessor):
             if is_attention_module(module2inspect):
                 with self._capture_layer_output(module2inspect) as hook_outputs:
                     tmp_inp = torch.cat(self.inps, dim=0)
-                    tmp_kwargs = align_attention_mask_with_input(module, self.module_kwargs, tmp_inp)
+                    tmp_kwargs = align_attention_mask_with_input(
+                        module, resolve_per_layer_kwargs(module, self.module_kwargs), tmp_inp
+                    )
                     _ = module(tmp_inp, **tmp_kwargs)
                 fp16_output = hook_outputs["output"]
             else:
@@ -196,6 +207,26 @@ class AwqProcessor(BaseAlgoProcessor):
             assert fp16_output is not None
             if isinstance(fp16_output, tuple):
                 fp16_output = fp16_output[0]
+
+        # The reference output is computed once and reused as the target for every grid-search
+        # step. If it already contains NaN/Inf, the per-step loss can never be finite, so the search
+        # is guaranteed to fail. Fail fast here with an actionable message instead of exhausting the
+        # grid and raising the opaque "best_ratio was not updated" error (see amd/Quark#5).
+        if torch.isnan(fp16_output).any() or torch.isinf(fp16_output).any():
+            ref_dtype = fp16_output.dtype
+            if ref_dtype == torch.float16:
+                # float16 has a narrow dynamic range and overflows on some models (e.g. Qwen2.5).
+                remediation = "This is commonly caused by float16 overflow on some models (e.g. Qwen2.5); retry with --data_type bfloat16."
+            else:
+                remediation = (
+                    f"The overflow already happens in {ref_dtype}, so switching precision is unlikely to help; "
+                    "inspect the model weights/activations for pre-existing NaN or Inf values."
+                )
+            raise LossError(
+                f"The reference output of layers {tuple(get_op_name(module, m) for m in layers)} "
+                f"contains NaN or Inf (shape={tuple(fp16_output.shape)}, dtype={ref_dtype}). "
+                f"The unquantized model forward already overflows, so AWQ scale search cannot proceed. {remediation}"
+            )
 
         # [STEP 4]: Compute loss
         best_scales, best_ratio = self._compute_best_scale(
@@ -291,7 +322,9 @@ class AwqProcessor(BaseAlgoProcessor):
             if is_attention_module(module2inspect):
                 with self._capture_layer_output(module2inspect) as hook_outputs:
                     tmp_inp = torch.cat(self.inps, dim=0)
-                    tmp_kwargs = align_attention_mask_with_input(module, self.module_kwargs, tmp_inp)
+                    tmp_kwargs = align_attention_mask_with_input(
+                        module, resolve_per_layer_kwargs(module, self.module_kwargs), tmp_inp
+                    )
                     _ = module(tmp_inp, **tmp_kwargs)
                 int_w_output = hook_outputs["output"]
             else:
@@ -432,9 +465,10 @@ class AwqProcessor(BaseAlgoProcessor):
 
         if "kwargs" in self.module_kwargs and self.module_kwargs["kwargs"] is None:
             self.module_kwargs.pop("kwargs")
+        layer_kwargs = resolve_per_layer_kwargs(layer, self.module_kwargs)
         outputs = []
         for in_data in self.inps:
-            outputs.append(layer(in_data, **self.module_kwargs))
+            outputs.append(layer(in_data, **layer_kwargs))
         self.inps = [output[0] if isinstance(output, tuple) else output for output in outputs]
 
         for h in handles:

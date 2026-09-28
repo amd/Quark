@@ -19,7 +19,12 @@ from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward, blockwise_training
 from quark.torch.algorithm.processor import BaseAlgoProcessor
 from quark.torch.algorithm.utils.module import get_device, move_to_device
-from quark.torch.algorithm.utils.prepare import get_model_layers, init_blockwise_algo, init_device_map
+from quark.torch.algorithm.utils.prepare import (
+    get_model_layers,
+    init_blockwise_algo,
+    init_device_map,
+    reset_model_kv_cache,
+)
 from quark.torch.algorithm.utils.utils import clear_memory
 
 logger = ScreenLogger(__name__)
@@ -43,6 +48,8 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
 
         self.fp_model = fp_model
         self.model = model
+        # If accelerate is used, the model will have the attribute _hf_hook
+        self.using_accelerate = hasattr(self.model, "_hf_hook")
         self.epochs = algo_config.epochs
         self.weight_lr = algo_config.weight_lr
         self.min_lr_factor = algo_config.min_lr_factor
@@ -69,13 +76,13 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
         fp_layer_inputs = list(layer_inputs)  # pragma: no cover
         fp_layer_outputs: list[torch.Tensor] = []
 
-        forward_pass_use_cache = self.model.config.use_cache
-        self.model.config.use_cache = False
-        self.fp_model.config.use_cache = False
+        forward_pass_use_cache = reset_model_kv_cache(self.model, use_cache=False)
+        fp_forward_pass_use_cache = reset_model_kv_cache(self.fp_model, use_cache=False)
 
-        # tuning on gpu, other blocks in cpu
-        for i in range(len(self.modules)):
-            self.modules[i] = self.modules[i].to("cpu")
+        # tuning on gpu, other blocks in cpu (skipped when accelerate places the model)
+        if not self.using_accelerate:
+            for i in range(len(self.modules)):
+                self.modules[i] = self.modules[i].to("cpu")
         clear_memory()
 
         for i in tqdm(range(len(self.modules)), desc="BlockWise_Tuning"):
@@ -100,6 +107,8 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
                 cache_examples_on_gpu,
             )
 
+            # accelerate-exempt: layer_fp belongs to fp_model, whose placement self.using_accelerate
+            # does not describe. Needs its own hook probe; out of scope for this fix.
             layer_fp = move_to_device(layer_fp, CPU if force_layer_back_to_cpu else cur_layer_device)
 
             # train
@@ -129,6 +138,10 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
                 cache_examples_on_gpu,
             )
 
+            # accelerate-todo: force_layer_back_to_cpu is only set when this layer started on
+            # CPU, which under accelerate means the device map placed it there -- so returning it
+            # by hand is the same desync the bulk offload above avoids. Not fixed here: covering
+            # it needs the full per-layer body, so it belongs in its own change.
             layer = move_to_device(layer, CPU if force_layer_back_to_cpu else cur_layer_device)
 
             del layer
@@ -138,8 +151,8 @@ class BlockwiseTuningProcessor(BaseAlgoProcessor):
             layer_inputs, layer_outputs = layer_outputs, []  # noqa
             fp_layer_inputs, fp_layer_outputs = fp_layer_outputs, []  # noqa
             clear_memory()
-        self.model.config.use_cache = forward_pass_use_cache
-        self.fp_model.config.use_cache = forward_pass_use_cache
+        reset_model_kv_cache(self.model, use_cache=forward_pass_use_cache)
+        reset_model_kv_cache(self.fp_model, use_cache=fp_forward_pass_use_cache)
 
         del self.fp_model
         clear_memory()

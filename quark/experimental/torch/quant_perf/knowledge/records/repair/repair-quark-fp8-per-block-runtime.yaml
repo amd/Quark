@@ -1,0 +1,56 @@
+schema_version: 1
+id: repair.vllm.quark.fp8-per-block-runtime.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run]
+  error_contains: [No quark compatible scheme was found]
+  keywords: [quark, fp8_e4m3, per_block, block_size, dynamic, per_group]
+summary: Load source-preserved block-wise FP8 linear weights through a matching Quark vLLM runtime scheme.
+guidance:
+  - Confirm the exported layer uses static FP8 per-block weights and dynamic FP8 per-group activations before changing runtime dispatch.
+  - Preserve the checkpoint block size and two-dimensional weight scales instead of rewriting the metadata as per-tensor FP8.
+  - Reuse vLLM's existing block-FP8 quantization keys, shape validation, scale parameter, and linear kernel path.
+  - Preserve exponent-only float8_e8m0fnu scale storage when declared by the checkpoint; let the existing block kernel perform platform-specific scale and FP8 normalization.
+  - Keep direct weight dequantization aware of two-dimensional block scales for fused projection fallback paths.
+  - Reject unrelated FP8 combinations rather than treating every dynamic activation configuration as block-wise FP8.
+  - Re-run eager and default load-inference probes, then the original real quantized accuracy gate with the requested MoE backend.
+required_checks: [scheme_selection, block_shape, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: eager_and_default_load_inference_plus_real_quantized_accuracy
+  validated_case:
+    model_arch: glm_moe_dsa
+    framework_version: 0.24.0+rocm723
+    accelerator: gfx950
+    tensor_parallel_size: 8
+    failure: quark_fp8_per_block_scheme_not_found
+    result: source_preserved_fp8_block_weights_loaded_and_generated
+  additional_validated_cases:
+    - model_arch: deepseek_v4
+      framework_version: 0.25.0+rocm723
+      accelerator: gfx950
+      tensor_parallel_size: 2
+      weight_block_size: [128, 128]
+      activation_group_size: 128
+      weight_scale_dtype: float8_e8m0fnu
+      result: block_fp8_scheme_selected_and_combined_repaired_runtime_passed_full_offline_gsm8k
+      verification_scope: The final runtime included the subsequent V4 mapping, compressor and grouped-output repairs.
+      session_artifacts:
+        - repair/RuntimeRepair-1790056833118000648/round-1/agent.prompt.txt
+        - repair/RuntimeRepair-1790056833118000648/round-1/agent.stdout.log
+        - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: validated_session
+  source: glm53_quant_perf_recovery
+  managed_commit: daf3f2a3dd4d853fc796f44158b936052f791d8f
+  validated_at: "2026-09-09"
+  additional_sources:
+    - source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+      source_session_name: qwen35-accuracy-performance
+      managed_commit: abf19db634553f3eb0f11d6887ba0b7e833b15f2
+      validated_runtime_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+      validated_at: "2026-09-22"

@@ -310,7 +310,7 @@ class ModelOptimizer:
         """
         module_instance: torch.nn.Module | torch.nn.DataParallel = quant_module  # type: ignore
 
-        if device_ids is not None:
+        if device_ids is not None:  # pragma: no cover - requires real GPU (CUDA/DataParallel)
             module_instance = quant_module.cuda()  # Upload the model to the default device
 
             if len(device_ids) > 1:  # Training on multiple devices, just use the simple torch.nn.DataParallel
@@ -495,7 +495,7 @@ class ModelOptimizer:
 
     @classmethod
     @log_errors
-    def _optimize_kernel_with_dataset(
+    def _optimize_kernel_with_dataset(  # pragma: no cover - full training loop; integration-level
         self,
         module_instance: torch.nn.Module,
         dataset: Dataset[Any],

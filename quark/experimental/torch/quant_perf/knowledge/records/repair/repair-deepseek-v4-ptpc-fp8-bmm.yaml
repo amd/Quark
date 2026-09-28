@@ -1,0 +1,68 @@
+schema_version: 1
+id: repair.vllm.quark.deepseek-v4-ptpc-fp8-bmm.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run, accuracy_gap]
+  error_contains:
+    - wo_a
+    - rocm_inv_rope_einsum
+    - repeated token 64847
+  keywords: [quark, PTPC-FP8, weight_scale, weight_scale_inv, apply_bmm, grouped]
+summary: Apply Quark PTPC-FP8 scales and preserve grouped weight layout in the DeepSeek V4 ROCm output projection.
+guidance:
+  - When decoding repeats tokens despite finite activations, compare native and exported intermediate tensors to find the first numerical divergence before blaming CUDA Graphs or the quantization recipe.
+  - In the validated case, embeddings and Q/KV projections agreed, but the input to wo_b had RMS 2817.2529 versus native 0.58049; divergence began at the wo_a grouped projection.
+  - The specialized native path recognizes weight_scale_inv, while Quark PTPC-FP8 stores weight_scale. Ordinary linear postprocessing also transposes or shuffles weights, which a direct grouped reshape cannot interpret correctly.
+  - For the supported ROCm PTPC-FP8 BMM path, retain checkpoint-order weights with shape [G*N, K], apply compatible FP8 weight/scale normalization, and quantize activations dynamically per token.
+  - Invoke a BMM accepting FP8 operands with shapes [G, T, K] and [G, N, K], per-token activation scales and per-output-channel weight scales; restore output order [T, G, N].
+  - Route the specialized output projection through the Quark BMM method rather than the native cached-BF16 helper. Guard the supported scheme explicitly and preserve other output-projection paths.
+  - Verify the chosen kernel's dtype contract. The attempted AITER CK batched interface rejected FP8 because it required INT8; the existing AITER Triton batched_gemm_a8w8 accepted FP8 without changing precision or AITER source.
+  - Inspect scale access bounds for partial tiles. The selected Triton interface required padded scale storage for unmasked loads; retain the logical tensor dimensions and validate boundary token counts.
+  - Use an independent scaled-matmul reference, cover token counts 1, 19 and 257 in eager and CUDA Graph replay, check full-model text output, then rerun the original full offline accuracy gate.
+  - A search label such as attention_mode=native does not establish each exported projection's precision; resolve wo_a, wo_b and compressor rules from the actual exported configuration.
+  - Treat this as a numerical-correctness repair. The combined runtime completed full accuracy, but this does not independently identify the earlier asynchronous memory-access fault or establish a throughput improvement.
+required_checks: [weight_layout, scale_application, projection_numerics, partial_tile_bounds, cuda_graph_replay, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: eager_graph_projection_regression_and_combined_runtime_full_offline_gsm8k
+  validated_case:
+    model_arch: deepseek_v4
+    model: DeepSeek-V4-Flash-0731
+    framework_version: 0.25.0+rocm723
+    accelerator: gfx950
+    gpu_type: mi350x
+    tensor_parallel_size: 2
+    failure: finite_but_misscaled_grouped_output_and_repeated_tokens
+    result: six_projection_cases_passed_and_full_exported_accuracy_gate_passed
+    verification_scope: Six projection regressions and thirteen combined focused checks passed; full accuracy used the complete repaired runtime.
+    offline_gsm8k:
+      samples: 1319
+      baseline_correct: 1245
+      quantized_correct: 1232
+      relative_accuracy_loss: 0.010441767068273057
+      maximum_relative_loss: 0.06
+  framework_files:
+    - vllm/model_executor/layers/quantization/quark/schemes/quark_w8a8_fp8.py
+    - vllm/v1/attention/ops/rocm_aiter_mla_sparse.py
+  regression_files:
+    - tests/quantization/test_quark_deepseek_v4_output_projection.py
+  session_artifacts:
+    - repairs/activation-comparison-before.json
+    - repairs/vllm-output-projection-before.log
+    - repairs/vllm-output-projection-after-02.log
+    - repairs/vllm-output-projection-after-03.log
+    - repairs/vllm-full-decode-02-woa.log
+    - repairs/vllm-focused-tests-with-output-projection.log
+    - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: validated_session
+  source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+  source_session_name: qwen35-accuracy-performance
+  stage: exported_model_accuracy_gate
+  repository: vllm
+  managed_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+  validated_at: "2026-09-22"

@@ -30,7 +30,11 @@ logger = ScreenLogger(__name__)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_name", default="yolo-nas", choices=["yolo-nas"], help="Model to use.")
-parser.add_argument("--data_dir", default="{DATA_PATH}/COCO_dataset", help="Data set directory.")
+parser.add_argument(
+    "--data_dir",
+    default="{DATA_PATH}/COCO_dataset",
+    help="Root directory of the COCO dataset that contains the 'annotations/' and 'images/' subdirectories.",
+)
 parser.add_argument("--pretrained", default=None, help="Pre trained model weights")
 parser.add_argument("--qat", action="store_true", help="Perform QAT to further improve accuracy.")
 parser.add_argument("--train_batch_size", default=8, type=int, help="Batch size for training.")

@@ -20,7 +20,12 @@ from tqdm import tqdm
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.awq.scale import apply_scale
 from quark.torch.algorithm.processor import BaseAlgoProcessor
-from quark.torch.algorithm.utils.module import get_device, get_named_linears, move_to_device
+from quark.torch.algorithm.utils.module import (
+    get_device,
+    get_named_linears,
+    move_to_device,
+    resolve_per_layer_kwargs,
+)
 from quark.torch.algorithm.utils.prepare import (
     cache_model_inps,
     get_layers_for_scaling,
@@ -165,9 +170,10 @@ class SmoothQuantProcessor(BaseAlgoProcessor):
                 )
             )
 
+        layer_kwargs = resolve_per_layer_kwargs(layer, self.module_kwargs)
         for j in range(num_batches):
             layer_input = move_to_device(layer_inputs[j], cur_layer_device)
-            output = layer(layer_input, **self.module_kwargs)
+            output = layer(layer_input, **layer_kwargs)
             if isinstance(output, tuple):
                 layer_output = output[0]
             elif isinstance(output, torch.Tensor):

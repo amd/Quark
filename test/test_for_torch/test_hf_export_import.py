@@ -3,13 +3,17 @@
 # SPDX-License-Identifier: MIT
 #
 
+import copy
 import gc
+import json
 import os
 import re
 import tempfile
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import huggingface_hub
 import pytest
@@ -18,7 +22,7 @@ from accelerate import init_empty_weights
 from safetensors import safe_open
 from safetensors.torch import save_file
 from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, Mxfp4Config
 
 from quark.common.utils.import_utils import (
     is_transformers_available,
@@ -37,11 +41,11 @@ from quark.common.utils.testing_utils import (
     torch_device,
     use_temporary_directory,
 )
-from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
+from quark.torch import LLMTemplate, ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.export.main_export.quant_config_parser import QuantConfigParser
 from quark.torch.export.main_import.pretrained_config import PretrainedConfig
-from quark.torch.export.safetensors import _load_weights_from_safetensors, export_hf_model, patch_missing_weights
-from quark.torch.export.utils import _build_quantized_model, _fix_loaded_weights_key_mismatch
+from quark.torch.export.safetensors import _load_weights_from_safetensors, export_hf_model
+from quark.torch.export.utils import _build_quantized_model, _fix_loaded_weights_key_mismatch, preprocess_import_info
 from quark.torch.quantization import (
     FP4PerGroupSpec,
     FP6E2M3PerGroupSpec,
@@ -56,6 +60,7 @@ from quark.torch.quantization.cache_integration import QuarkQuantizedCache
 from quark.torch.quantization.config.config import AWQConfig, GPTQConfig, QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.inverse_quantizer import is_prequantized_linear
+from quark.torch.quantization.nn.modules.mixin import QuantMixin
 from quark.torch.quantization.observer.observer import (
     PerChannelMinMaxObserver,
     PerGroupMinMaxObserver,
@@ -147,6 +152,18 @@ def quantize_model(
     return quant_model
 
 
+def assert_direct_gates_are_excluded(quant_model: torch.nn.Module) -> None:
+    """Verify direct MoE gates remain float linears with upstream state-dict names."""
+    gates = [(name, module) for name, module in quant_model.named_modules() if name.endswith(".gate")]
+    if not gates:
+        assert getattr(quant_model.config, "model_type", None) != "qwen3_moe"
+        return
+
+    assert all(not isinstance(module, QuantMixin) for _, module in gates)
+    state_dict_keys = quant_model.state_dict().keys()
+    assert not any("gate.linear" in key for key in state_dict_keys)
+
+
 @require_accelerate
 @require_torch_multi_gpu
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
@@ -172,11 +189,12 @@ def test_load_multi_device(weight_format: str, model_id: str):
     )
     quant_config = QConfig(global_quant_config=INT8_PER_TENSOR_CONFIG)
 
-    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
     with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False)
+        assert_direct_gates_are_excluded(quant_model)
         export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
         quant_model(INPUT_IDS).to_tuple()
@@ -448,13 +466,20 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str, model_id: 
 
     quant_config = QConfig(global_quant_config=QLayerConfig(weight=quant_spec))
 
-    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
     with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False)
+        assert_direct_gates_are_excluded(quant_model)
 
         export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+
+        # `quant_flow`/`gpu_resident_blocks` are a runtime execution strategy read off
+        # `QConfig` in-memory; they must not leak into the exported `config.json`.
+        exported_config = AutoConfig.from_pretrained(tmpdir)
+        assert "quant_flow" not in exported_config.quantization_config
+        assert "gpu_resident_blocks" not in exported_config.quantization_config
 
         quant_model(INPUT_IDS).to_tuple()
 
@@ -493,6 +518,28 @@ def test_int8_import_export(qscheme: QSchemeType, weight_format: str, model_id: 
                     assert torch.allclose(output, ref_output, atol=1e-4)  # This one appears not to be flaky.
 
 
+@pytest.mark.parametrize("affected_version", [True, False], ids=["transformers>=5.6", "transformers<5.6"])
+def test_awq_export_warns_about_corrupted_keys_only_on_affected_transformers(monkeypatch, affected_version: bool):
+    """The AWQ export path must announce the known key-name corruption on transformers>=5.6 only.
+
+    ``test_awq_import`` below is the only test that reaches this branch through a real export, but
+    it is slow-gated and xfailed on the affected versions, so drive the helper directly.
+    """
+    from quark.torch.export import api as export_api
+
+    emitted: list[str] = []
+    monkeypatch.setattr(export_api.logger, "warning", lambda message, *args, **kwargs: emitted.append(message))
+    monkeypatch.setattr(export_api, "is_transformers_version_higher_or_equal", lambda version: affected_version)
+
+    export_api._warn_if_awq_export_keys_are_corrupted()
+
+    if affected_version:
+        assert len(emitted) == 1
+        assert "qscales" in emitted[0] and "qqzeros" in emitted[0]
+    else:
+        assert emitted == []
+
+
 @slow_test
 @pytest.mark.parametrize(
     "weight_format",
@@ -507,6 +554,27 @@ def test_awq_import(weight_format: str, custom_mode: str):
     """
     # TODO: test MOE here.
     model_id = "facebook/opt-125m"
+
+    # KNOWN REGRESSION (tracked), NOT a compatibility no-op: from transformers 5.6.0 the AWQ
+    # real_quantized export produces a corrupted checkpoint. quark's anchored AWQ_SAVE_MAP save path
+    # (apply_export_state_dict_mappings) is gated by QPARAMSLINEAR_OVERRIDES_STATE_DICT, which is False
+    # for transformers>=4.57, so AWQ falls back to `_weight_conversions = QUARK_AWQ_WEIGHT_CONVERSIONS`.
+    # transformers reverse-applies those unanchored renamings cumulatively, and 5.6.0 added
+    # `weight_conversions[::-1]` in core_model_loading.revert_weight_conversion, which flips their order
+    # so `weight`->`qweight` runs first; `qweight_quantizer.scale` then still matches the later
+    # `weight_quantizer.scale` entry, yielding `qscales` (and `qqzeros`) instead of `scales`/`qzeros`.
+    # Bisected against the released wheels: 5.5.0 is clean, 5.6.0 onwards is not.
+    # The export path emits a runtime warning (see _warn_if_awq_export_keys_are_corrupted). This xfail
+    # exists ONLY to keep the regression visible/tracked while the real fix (moving the AWQ save off the
+    # reverse rename) is developed and validated on a GPU env; it must be removed once that fix lands.
+    # Tracking: huggingface/transformers#46650 + quark AWQ-save follow-up.
+    if custom_mode == "awq" and is_transformers_version_higher_or_equal("5.6.0"):
+        pytest.xfail(
+            "KNOWN REGRESSION (tracked): AWQ real_quantized export is corrupted on transformers>=5.6 "
+            "(weight_quantizer scales/zero_points serialize as qscales/qqzeros). Remove this xfail once "
+            "the AWQ save path is moved off the transformers reverse WeightRenaming. "
+            "See huggingface/transformers#46650."
+        )
 
     AWQ_CONFIG = AWQConfig(
         scaling_layers=[
@@ -765,6 +833,50 @@ def test_fp8_kv_cache_import(
                                     )  # This one appears not to be flaky.
 
 
+@pytest.mark.parametrize(
+    "kv_layers_name",
+    [
+        pytest.param(["*k_proj", "*v_proj"], id="single-segment"),
+        pytest.param(["*self_attn.k_proj", "*self_attn.v_proj"], id="multi-segment-qwen3_5"),
+        pytest.param(["*language_model.*.k_proj", "*language_model.*.v_proj"], id="multi-segment-llama4"),
+    ],
+)
+def test_preprocess_import_info_restores_kv_scale_for_multi_segment_kv_layers_name(kv_layers_name: list[str]):
+    """
+    Verify that ``preprocess_import_info`` reconstructs ``output_quantizer.scale`` keys correctly
+    regardless of how many path segments the model's ``kv_layers_name`` pattern contains.
+
+    Regression test for a bug where multi-segment patterns (e.g. ``*self_attn.k_proj`` used by
+    qwen3_5, or ``*language_model.*.k_proj`` used by llama4) caused the reconstructed key to
+    duplicate part of the checkpoint prefix (e.g. ``...self_attn.self_attn.k_proj.output_scale``
+    instead of ``...self_attn.k_proj.output_scale``), so the real ``output_quantizer.scale``
+    tensors were never populated and reload failed with missing keys.
+
+    :param list[str] kv_layers_name: The k_proj/v_proj layer name patterns to test, taken from
+        real model templates registered in ``quark.torch.quantization.config.template``.
+    """
+    prefix = "model.language_model.layers.3.self_attn."
+    # k_scale and v_scale are exported as a single shared kv_scale (vLLM/HF FP8 convention), so
+    # `preprocess_import_info` only reads the k_scale entry and copies it onto both k_proj and
+    # v_proj output_scale keys, then drops the now-redundant v_scale entry.
+    kv_scale = torch.tensor([1.0])
+    model_state_dict = {
+        prefix + "k_scale": kv_scale,
+        prefix + "v_scale": torch.tensor([2.0]),
+    }
+
+    updated_state_dict, is_kv_cache, returned_kv_layers_name = preprocess_import_info(
+        model_state_dict, is_kv_cache=False, kv_layers_name=kv_layers_name, custom_mode="fp8"
+    )
+
+    assert is_kv_cache
+    assert returned_kv_layers_name == kv_layers_name
+    assert prefix + "k_scale" not in updated_state_dict
+    assert prefix + "v_scale" not in updated_state_dict
+    assert torch.equal(updated_state_dict[prefix + "k_proj.output_scale"], kv_scale)
+    assert torch.equal(updated_state_dict[prefix + "v_proj.output_scale"], kv_scale)
+
+
 # For torch requirement, refer to /pull/2529#issuecomment-235620
 @require_torch_higher_or_equal("2.6")
 @pytest.mark.parametrize("weight_format", ["real_quantized", "fake_quantized"])
@@ -952,11 +1064,12 @@ def test_gptq_import(weight_format: str, model_id: str):
     W_UINT4_PER_GROUP_CONFIG = QLayerConfig(weight=UINT4_PER_GROUP_ASYM_SPEC)
     quant_config = QConfig(global_quant_config=W_UINT4_PER_GROUP_CONFIG, algo_config=[gptq_config])
 
-    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.shared_expert_gate"]
     quant_config = replace(quant_config, exclude=EXCLUDE_LAYERS)
 
     with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False)
+        assert_direct_gates_are_excluded(quant_model)
 
         export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
@@ -1354,8 +1467,6 @@ def test_amdfp4_export_import(weight_format: str, model_id: str):
         Import Format:            Json-safetensors
         Quantization Method:      amdfp4
     """
-    from quark.torch import LLMTemplate
-
     # Load model to get config
     model = AutoModelForCausalLM.from_pretrained(model_id)
 
@@ -1722,12 +1833,13 @@ def test_wfp8_int4perchannel_afp8_import(weight_format: str, torch_dtype: torch.
     FP8_INT4_PER_CHANNEL_SPEC = [FP8_PER_TENSOR_SPEC, INT4_PER_CHANNEL_SPEC]
 
     # NOTE: qwen3_moe tiny's gate is too small to be quantized here.
-    EXCLUDE_LAYERS = ["lm_head", "*mlp.gate", "*mlp.gate.linear"]
+    EXCLUDE_LAYERS = ["lm_head", "*mlp.gate"]
     W_FP8_A_INT4_PER_CHANNEL = QLayerConfig(weight=FP8_INT4_PER_CHANNEL_SPEC, input_tensors=FP8_PER_TENSOR_SPEC)
 
     quant_config = QConfig(global_quant_config=W_FP8_A_INT4_PER_CHANNEL, exclude=EXCLUDE_LAYERS)
     with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
         quant_model = quantize_model(quant_config, model_name=model_id, multi_gpu=False, torch_dtype=torch_dtype)
+        assert_direct_gates_are_excluded(quant_model)
 
         export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
 
@@ -2031,10 +2143,27 @@ def test_moe_reload_with_prepare_for_moe_quant(model_id: str, auto_cls_name: str
     """
     import transformers
 
+    # The shared `optimum-intel-internal-testing/tiny-random-llama4` checkpoint predates transformers
+    # switching `attn_temperature_tuning` from int to bool: its config.json stores `4`, which fails
+    # huggingface_hub `@strict` bool validation at load time, before any quark code runs. Configs became
+    # `@strict` dataclasses in 5.4 (5.3 has none), so gate on that rather than on 5.0, which would skip
+    # needlessly on 5.2/5.3. Skip until the shared checkpoint is refreshed.
+    if "llama4" in model_id.lower() and is_transformers_version_higher_or_equal("5.4.0"):
+        pytest.skip(
+            "tiny-random-llama4 config stores legacy int `attn_temperature_tuning=4`, which fails "
+            "transformers>=5.4 @strict bool validation; needs an updated checkpoint."
+        )
+
     auto_cls = getattr(transformers, auto_cls_name)
 
+    # `kernels` in the test env disables transformers' mxfp4 auto-dequantize, and the native triton
+    # path's save reshape hardcodes GPT-OSS-20B's hidden_size. Load dequantized, like `get_model` does.
+    load_kwargs: dict[str, Any] = {"trust_remote_code": True, "attn_implementation": "eager"}
+    if "gpt-oss" in model_id:
+        load_kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
+
     # 1. Verify prepare_for_moe_quant does not change model outputs
-    original_model = auto_cls.from_pretrained(model_id, trust_remote_code=True, attn_implementation="eager")
+    original_model = auto_cls.from_pretrained(model_id, **load_kwargs)
     original_model.eval()
     original_model = original_model.to(torch_device)
 
@@ -2063,13 +2192,32 @@ def test_moe_reload_with_prepare_for_moe_quant(model_id: str, auto_cls_name: str
         is_dynamic=False,
     )
 
-    EXCLUDE_LAYERS = ["lm_head"]
+    EXCLUDE_LAYERS = ["lm_head", "*.gate", "*.router"]
     quant_config = QConfig(global_quant_config=QLayerConfig(weight=INT8_SPEC), exclude=EXCLUDE_LAYERS)
 
     with tempfile.TemporaryDirectory() as tmpdir, torch.inference_mode():
-        model = auto_cls.from_pretrained(model_id, trust_remote_code=True, attn_implementation="eager")
+        model = auto_cls.from_pretrained(model_id, **load_kwargs)
         model.eval()
         model = model.to(torch_device)
+
+        # NOTE: This model has a wrong modules_to_not_convert not in line with
+        # openai/gpt-oss-20b. TODO: use an other model and avoid this patching.
+        if model_id == "optimum-intel-internal-testing/tiny-random-gpt-oss-mxfp4":
+            model.config.quantization_config = {
+                "quant_method": "mxfp4",
+                "modules_to_not_convert": [
+                    "model.layers.*.self_attn",
+                    "model.layers.*.mlp.router",
+                    "model.embed_tokens",
+                    "lm_head",
+                ],
+            }
+
+        original_router_dtypes = {
+            name: module.weight.dtype
+            for name, module in model.named_modules()
+            if name.endswith((".gate", ".router")) and hasattr(module, "weight")
+        }
         preprocess_for_quantization(model)
 
         try:
@@ -2084,6 +2232,32 @@ def test_moe_reload_with_prepare_for_moe_quant(model_id: str, auto_cls_name: str
         quant_model = quantizer.freeze(quant_model)
 
         export_safetensors(model=quant_model, output_dir=tmpdir, weight_format=weight_format, pack_method="reorder")
+
+        if model_id == "amd-quark/tiny-random-qwen3_moe":
+            excluded_names = ("model.layers.0.mlp.gate", "model.layers.1.mlp.gate")
+        elif model_id == "optimum-intel-internal-testing/tiny-random-gpt-oss-mxfp4":
+            excluded_names = tuple(name for name in original_router_dtypes if name.endswith(".router"))
+            assert excluded_names
+        else:
+            excluded_names = ()
+
+        if excluded_names:
+            assert set(excluded_names).issubset(original_router_dtypes)
+            with open(Path(tmpdir, "config.json")) as config_file:
+                exported_exclude = json.load(config_file)["quantization_config"]["exclude"]
+
+            assert set(exported_exclude) == {*excluded_names, "lm_head"}
+            if model_id == "amd-quark/tiny-random-qwen3_moe":
+                assert exported_exclude == [*excluded_names, "lm_head"]
+
+            with safe_open(Path(tmpdir, "model.safetensors"), framework="pt") as safetensors_file:
+                checkpoint_keys = set(safetensors_file.keys())
+                for excluded_name in excluded_names:
+                    assert f"{excluded_name}.weight" in checkpoint_keys
+                    assert f"{excluded_name}.weight_scale" not in checkpoint_keys
+                    assert f"{excluded_name}.weight_zero_point" not in checkpoint_keys
+                    exported_weight = safetensors_file.get_tensor(f"{excluded_name}.weight")
+                    assert exported_weight.dtype is original_router_dtypes[excluded_name]
 
         with torch.no_grad():
             ref_outputs = quant_model(INPUT_IDS).to_tuple()
@@ -2163,7 +2337,8 @@ def test_patch_missing_weights_restores_mtp(tmp_path):
     Regression test for the bug where Qwen3.5 mtp.* weights were silently absent from the
     exported safetensors because Qwen3_5ForConditionalGeneration does not instantiate them
     in __init__ and lists `^mtp.*` in _keys_to_ignore_on_load_unexpected. This test fails on
-    `main` (mtp weights missing from export) and passes with the patch_missing_weights fix.
+    `main` (mtp weights missing from export) and passes once the missing weights are merged
+    into the state_dict passed to `model.save_pretrained`.
     """
     model_id = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype="auto", attn_implementation="eager")
@@ -2195,8 +2370,8 @@ def test_patch_missing_weights_restores_mtp(tmp_path):
 @slow_test
 @require_torch_higher_or_equal("2.6")
 def test_patch_missing_weights_does_not_leak_compressed_tensors_artifacts(tmp_path):
-    """End-to-end guard with a real compressed-tensors checkpoint: patch_missing_weights must
-    only copy back weights matching the model's _keys_to_ignore_on_load_unexpected patterns,
+    """End-to-end guard with a real compressed-tensors checkpoint: the missing-weights merge must
+    only restore weights matching the model's _keys_to_ignore_on_load_unexpected patterns,
     and must never transfer compressed-tensors artifacts (weight_scale_inv, etc.) into the export.
 
     Uses Qwen/Qwen3-0.6B-FP8 truncated to 2 layers. The full source checkpoint on disk holds all
@@ -2216,9 +2391,12 @@ def test_patch_missing_weights_does_not_leak_compressed_tensors_artifacts(tmp_pa
     )
     model.eval()
 
-    # Qwen3ForCausalLM does not declare an ignore list, so it stays at the base-class default (None),
-    # which patch_missing_weights maps to the built-in mtp.* pattern -- never to scale_inv artifacts.
-    assert model._keys_to_ignore_on_load_unexpected is None
+    # Qwen3ForCausalLM declares no ignore list. Older releases leave the instance attribute at None; by
+    # 5.15 PreTrainedModel.__init__ normalizes it to an (empty) set() -- modeling_utils.py:1396, absent
+    # in 5.2 --
+    # `self._keys_to_ignore_on_load_unexpected = set(self._keys_to_ignore_on_load_unexpected or [])`. Either
+    # way it is falsy, so the missing-weights merge restores nothing here -- never scale_inv artifacts.
+    assert not model._keys_to_ignore_on_load_unexpected
 
     export_dir = tmp_path / "export"
     export_dir.mkdir()
@@ -2241,86 +2419,323 @@ def test_patch_missing_weights_respects_explicit_empty_ignore_list(tmp_path):
     """
     import types
 
-    # Source checkpoint contains an mtp weight; export does not.
+    # Source checkpoint contains an mtp weight; the model's own state_dict does not.
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     save_file({"mtp.fc.weight": torch.ones(2, 2)}, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
-
-    def _make_export_dir(name):
-        d = tmp_path / name
-        d.mkdir()
-        save_file({"model.embed.weight": torch.zeros(2, 2)}, str(d / "model.safetensors"), metadata={"format": "pt"})
-        return d
 
     def _make_model(ignore_attr):
         model = types.SimpleNamespace()
         model.config = types.SimpleNamespace(_name_or_path=str(source_dir))
         model._keys_to_ignore_on_load_unexpected = ignore_attr
+        model.state_dict = lambda: {"model.embed.weight": torch.zeros(2, 2)}
+        model.save_pretrained = lambda export_dir, state_dict: save_file(
+            state_dict, str(Path(export_dir) / "model.safetensors"), metadata={"format": "pt"}
+        )
+        model.generation_config = None
         return model
 
     # Case 1: explicit empty list -> no-op, mtp must NOT be restored.
-    export_empty = _make_export_dir("export_empty")
-    patch_missing_weights(export_empty, _make_model([]))
+    export_empty = tmp_path / "export_empty"
+    export_empty.mkdir()
+    export_hf_model(_make_model([]), export_empty)
     assert "mtp.fc.weight" not in _load_weights_from_safetensors(str(export_empty))
 
     # Case 2: absent / None -> default pattern applies, mtp IS restored.
-    export_none = _make_export_dir("export_none")
-    patch_missing_weights(export_none, _make_model(None))
+    export_none = tmp_path / "export_none"
+    export_none.mkdir()
+    export_hf_model(_make_model(None), export_none)
     assert "mtp.fc.weight" in _load_weights_from_safetensors(str(export_none))
 
 
-def test_patch_missing_weights_appends_to_last_shard_for_sharded_export(tmp_path):
-    """For a sharded export, missing weights must be appended into the last existing shard,
-    keeping standard shard naming intact (no extra/out-of-range shard like 00016-of-00015,
-    which some downstream loaders reject). The index weight_map and total_size are updated.
+def test_restore_fp32_params_from_source(tmp_path):
     """
-    import json
-    import types
+    _restore_fp32_params_from_source must upgrade parameters that are float32 in the
+    source safetensors checkpoint but were downcast (e.g. to bfloat16) during loading.
 
-    # Source checkpoint contains an mtp weight.
+    Regression test for issue #5141: Kimi-K2.5 e_score_correction_bias is float32 in the
+    source checkpoint but gets cast to bfloat16 when loaded with torch_dtype="auto" because
+    the model class is missing _keep_in_fp32_modules = ["MoEGate"].
+    """
+    from quark.torch.utils.llm.model_preparation import _restore_fp32_params_from_source
+
+    fp32_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    bf16_val = torch.tensor([0.5, 1.5], dtype=torch.bfloat16)
+
     source_dir = tmp_path / "source"
     source_dir.mkdir()
-    save_file({"mtp.fc.weight": torch.ones(2, 2)}, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
-
-    # Sharded export: two shards + index, no mtp.
-    export_dir = tmp_path / "export"
-    export_dir.mkdir()
     save_file(
-        {"model.a.weight": torch.zeros(2, 2)},
-        str(export_dir / "model-00001-of-00002.safetensors"),
+        {"e_score_correction_bias": fp32_val, "weight": bf16_val},
+        str(source_dir / "model.safetensors"),
         metadata={"format": "pt"},
     )
+
+    # Simulate the downcast: model has e_score_correction_bias as bfloat16
+    # (as would happen when loading Kimi-K2.5 with torch_dtype="auto").
+    model = torch.nn.Module()
+    model.e_score_correction_bias = torch.nn.Parameter(fp32_val.to(torch.bfloat16))
+    model.weight = torch.nn.Parameter(bf16_val.clone())
+
+    assert model.e_score_correction_bias.dtype == torch.bfloat16
+    assert model.weight.dtype == torch.bfloat16
+
+    _restore_fp32_params_from_source(model, str(source_dir))
+
+    assert model.e_score_correction_bias.dtype == torch.float32, "e_score_correction_bias must be restored to float32"
+    assert torch.equal(model.e_score_correction_bias.data, fp32_val), "restored values must match source"
+    assert model.weight.dtype == torch.bfloat16, "bfloat16 params must remain bfloat16"
+
+
+def test_restore_fp32_params_from_source_sharded(tmp_path):
+    """
+    _restore_fp32_params_from_source must work for sharded safetensors checkpoints
+    (model.safetensors.index.json + multiple shard files), as used by large models like Kimi-K2.5.
+    """
+    import json
+
+    from quark.torch.utils.llm.model_preparation import _restore_fp32_params_from_source
+
+    fp32_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    bf16_val = torch.tensor([0.5, 1.5], dtype=torch.bfloat16)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+
+    # Shard 1: contains the float32 param (e.g. gate bias in shard N of a large model).
     save_file(
-        {"model.b.weight": torch.zeros(2, 2)},
-        str(export_dir / "model-00002-of-00002.safetensors"),
+        {"e_score_correction_bias": fp32_val},
+        str(source_dir / "model-00001-of-00002.safetensors"),
+        metadata={"format": "pt"},
+    )
+    # Shard 2: contains the bfloat16 weight.
+    save_file(
+        {"weight": bf16_val},
+        str(source_dir / "model-00002-of-00002.safetensors"),
         metadata={"format": "pt"},
     )
     index = {
-        "metadata": {"total_size": 32},
+        "metadata": {"total_size": 20},
         "weight_map": {
-            "model.a.weight": "model-00001-of-00002.safetensors",
-            "model.b.weight": "model-00002-of-00002.safetensors",
+            "e_score_correction_bias": "model-00001-of-00002.safetensors",
+            "weight": "model-00002-of-00002.safetensors",
         },
     }
-    with open(export_dir / "model.safetensors.index.json", "w") as f:
+    with open(source_dir / "model.safetensors.index.json", "w") as f:
         json.dump(index, f)
 
-    model = types.SimpleNamespace()
-    model.config = types.SimpleNamespace(_name_or_path=str(source_dir))
-    model._keys_to_ignore_on_load_unexpected = None
+    model = torch.nn.Module()
+    model.e_score_correction_bias = torch.nn.Parameter(fp32_val.to(torch.bfloat16))
+    model.weight = torch.nn.Parameter(bf16_val.clone())
 
-    patch_missing_weights(export_dir, model)
+    _restore_fp32_params_from_source(model, str(source_dir))
 
-    # No extra/renamed shard file is created.
-    shard_files = sorted(p.name for p in export_dir.glob("*.safetensors"))
-    assert shard_files == ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    assert model.e_score_correction_bias.dtype == torch.float32
+    assert torch.equal(model.e_score_correction_bias.data, fp32_val)
+    assert model.weight.dtype == torch.bfloat16
 
-    # mtp weight landed in the last shard and the index points to it.
-    from safetensors.torch import load_file as _load_file
 
-    last_shard = _load_file(str(export_dir / "model-00002-of-00002.safetensors"))
-    assert "mtp.fc.weight" in last_shard
-    with open(export_dir / "model.safetensors.index.json") as f:
-        updated_index = json.load(f)
-    assert updated_index["weight_map"]["mtp.fc.weight"] == "model-00002-of-00002.safetensors"
-    assert updated_index["metadata"]["total_size"] > 32
+def test_restore_fp32_params_from_source_buffer(tmp_path):
+    """
+    _restore_fp32_params_from_source must also restore downcast float32 buffers, not just
+    parameters, since some model classes register correction biases as buffers.
+    """
+    from quark.torch.utils.llm.model_preparation import _restore_fp32_params_from_source
+
+    fp32_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    save_file(
+        {"e_score_correction_bias": fp32_val},
+        str(source_dir / "model.safetensors"),
+        metadata={"format": "pt"},
+    )
+
+    model = torch.nn.Module()
+    model.register_buffer("e_score_correction_bias", fp32_val.to(torch.bfloat16))
+
+    assert model.e_score_correction_bias.dtype == torch.bfloat16
+
+    _restore_fp32_params_from_source(model, str(source_dir))
+
+    assert model.e_score_correction_bias.dtype == torch.float32
+    assert torch.equal(model.e_score_correction_bias.data, fp32_val)
+
+
+def test_restore_fp32_params_from_source_no_safetensors_available(tmp_path):
+    """_restore_fp32_params_from_source must no-op when safetensors is not installed."""
+    from quark.torch.utils.llm import model_preparation
+
+    model = torch.nn.Module()
+    model.weight = torch.nn.Parameter(torch.tensor([0.5], dtype=torch.bfloat16))
+
+    with patch.object(model_preparation, "is_safetensors_available", return_value=False):
+        model_preparation._restore_fp32_params_from_source(model, str(tmp_path))
+
+    assert model.weight.dtype == torch.bfloat16
+
+
+@pytest.mark.parametrize(
+    "no_transformers",
+    [
+        pytest.param(True, id="transformers_unavailable"),
+        pytest.param(False, id="cached_file_lookup_raises"),
+    ],
+)
+def test_restore_fp32_params_from_source_unresolvable_ckpt_path_is_noop(tmp_path, no_transformers):
+    """
+    When ckpt_path doesn't exist locally and can't be resolved to a source checkpoint dir
+    (either because transformers is unavailable, or because the HF cache lookup raises for
+    a ckpt_path that isn't a cached HF repo id), it must be treated as best-effort and no-op.
+    """
+    from quark.torch.utils.llm import model_preparation
+
+    model = torch.nn.Module()
+    model.weight = torch.nn.Parameter(torch.tensor([0.5], dtype=torch.bfloat16))
+
+    with ExitStack() as stack:
+        if no_transformers:
+            stack.enter_context(patch.object(model_preparation, "is_transformers_available", return_value=False))
+        model_preparation._restore_fp32_params_from_source(model, "not-a-local-dir/and-not-a-hf-repo")
+
+    assert model.weight.dtype == torch.bfloat16
+
+
+def test_restore_fp32_params_from_source_no_safetensors_files(tmp_path):
+    """When the checkpoint dir has no safetensors files (e.g. pytorch_model.bin only), it must no-op."""
+    from quark.torch.utils.llm.model_preparation import _restore_fp32_params_from_source
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "pytorch_model.bin").write_bytes(b"not-a-real-checkpoint")
+
+    model = torch.nn.Module()
+    model.weight = torch.nn.Parameter(torch.tensor([0.5], dtype=torch.bfloat16))
+
+    _restore_fp32_params_from_source(model, str(source_dir))
+
+    assert model.weight.dtype == torch.bfloat16
+
+
+def test_restore_fp32_params_from_source_unreadable_shard_is_skipped(tmp_path):
+    """A shard that fails to open (corrupt/unreadable) must be skipped rather than raising."""
+    import json
+
+    from quark.torch.utils.llm.model_preparation import _restore_fp32_params_from_source
+
+    fp32_val = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    save_file(
+        {"e_score_correction_bias": fp32_val},
+        str(source_dir / "model-00001-of-00002.safetensors"),
+        metadata={"format": "pt"},
+    )
+    # Corrupt shard: not a valid safetensors file, so safe_open raises SafetensorError.
+    (source_dir / "model-00002-of-00002.safetensors").write_bytes(b"not-a-real-safetensors-file")
+    index = {
+        "metadata": {"total_size": 20},
+        "weight_map": {
+            "e_score_correction_bias": "model-00001-of-00002.safetensors",
+            "weight": "model-00002-of-00002.safetensors",
+        },
+    }
+    with open(source_dir / "model.safetensors.index.json", "w") as f:
+        json.dump(index, f)
+
+    model = torch.nn.Module()
+    model.e_score_correction_bias = torch.nn.Parameter(fp32_val.to(torch.bfloat16))
+
+    _restore_fp32_params_from_source(model, str(source_dir))
+
+    # The good shard is still processed despite the corrupt one being skipped.
+    assert model.e_score_correction_bias.dtype == torch.float32
+    assert torch.equal(model.e_score_correction_bias.data, fp32_val)
+
+
+# TODO: Extend this test with all supported architectures.
+@pytest.mark.parametrize(
+    "model_spec",
+    [
+        ("qwen3_5", "optimum-intel-internal-testing/tiny-random-qwen3.5"),
+        ("gemma4", "amd/tiny-random-gemma4-moe"),
+        ("gemma4_unified", "optimum-intel-internal-testing/tiny-random-gemma4-unified"),
+    ],
+)
+def test_quantization_and_export_validity(model_spec: tuple[str, str]):
+    """
+    Test Features:
+        Import Format:            Json-safetensors
+        Quantization Method:      mxfp4, via `LLMTemplate`
+
+    Verifies that quantizing and exporting a model with an `LLMTemplate`-provided
+    configuration preserves the original `config.json` `model_type`, and that layers
+    matched by the template's `exclude_layers_name` are not quantized.
+    """
+    model_id = model_spec[1]
+
+    original_checkpoint_dir = huggingface_hub.snapshot_download(repo_id=model_id, repo_type="model")
+    original_checkpoint_weights = _load_weights_from_safetensors(original_checkpoint_dir)
+
+    model, _ = get_model(model_id, device=torch_device)
+    original_model_type = model.config.model_type
+
+    assert original_model_type == model_spec[0]
+
+    # Source keys that are not materialized as parameters/buffers in the loaded `nn.Module` (e.g.
+    # weights dropped through `_keys_to_ignore_on_load_unexpected`) must still be carried over into
+    # the exported checkpoint untouched. They are matched by value rather than by name: transformers
+    # renames some submodules on load (gemma4_unified loads the vision block `vision_embedder` as
+    # `embed_vision.multimodal_embedder`), and export emits the loaded name, so the source key string
+    # is not expected to survive verbatim -- only the tensor value must.
+    loaded_state_dict_keys = set(model.state_dict().keys())
+    keys_missing_from_model = set(original_checkpoint_weights.keys()) - loaded_state_dict_keys
+
+    template = LLMTemplate.get(model.config.model_type)
+    quant_config = template.get_config("mxfp4")
+
+    model.eval()
+
+    preprocess_for_quantization(model)
+
+    quantizer = ModelQuantizer(copy.deepcopy(quant_config))
+    quant_model = quantizer.quantize_model(model, dataloader=None)
+    quant_model = quantizer.freeze(quant_model)
+
+    with tempfile.TemporaryDirectory() as export_dir:
+        with torch.no_grad():
+            export_safetensors(
+                model=quant_model,
+                output_dir=export_dir,
+                weight_format="real_quantized",
+                pack_method="reorder",
+            )
+
+        exported_config = AutoConfig.from_pretrained(export_dir, trust_remote_code=True)
+        assert exported_config.model_type == original_model_type
+
+        # Match carried-over weights by value, consuming each exported tensor at most once so that N
+        # identical (e.g. all-zero bias) source weights require N surviving copies in the export.
+        exported_values = list(_load_weights_from_safetensors(export_dir).values())
+        for key in keys_missing_from_model:
+            source_value = original_checkpoint_weights[key]
+            match_index = next(
+                (
+                    index
+                    for index, exported_value in enumerate(exported_values)
+                    if exported_value.shape == source_value.shape and torch.equal(exported_value, source_value)
+                ),
+                None,
+            )
+            assert match_index is not None, f"carried-over weight for {key} missing from exported checkpoint"
+            exported_values.pop(match_index)
+
+        with safe_open(Path(export_dir, "model.safetensors"), framework="pt") as f:
+            checkpoint_keys = list(f.keys())
+
+        for excluded_layer_name in template.exclude_layers_name:
+            excluded_pattern = excluded_layer_name.strip("*")
+            assert not any(excluded_pattern in key and key.endswith("weight_scale") for key in checkpoint_keys)
+
+        assert any(key.endswith("weight_scale") for key in checkpoint_keys)

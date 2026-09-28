@@ -22,8 +22,8 @@ def get_named_quant_linears(module: nn.Module) -> dict[str, nn.Linear]:
     return {name: m for name, m in module.named_modules() if isinstance(m, QuantLinear)}
 
 
-def get_moe_layers(module: nn.Module) -> dict[str, nn.Linear]:
-    return {name: m for name, m in module.named_modules() if "MoeBlock" in m.__class__.__name__}
+def get_moe_layers(module: nn.Module) -> dict[str, nn.Module]:
+    return {name: m for name, m in module.named_modules() if hasattr(m, "experts")}
 
 
 NestedStrListTuple = (
@@ -60,6 +60,34 @@ def get_dtype(obj: torch.Tensor | nn.Module) -> torch.dtype:
         return next(obj.parameters()).dtype
     else:
         raise TypeError("obj must be a torch.Tensor or nn.Module")
+
+
+def get_layer_idx(layer: nn.Module) -> int:
+    """Return a decoder layer's index in the stack.
+
+    Some model families (e.g. Gemma2) keep ``layer_idx`` on the attention submodule rather than the
+    decoder layer itself, so fall back to scanning submodules when the layer lacks it directly.
+    """
+    layer_idx = getattr(layer, "layer_idx", None)
+    if layer_idx is not None:
+        return layer_idx
+    for submodule in layer.modules():
+        layer_idx = getattr(submodule, "layer_idx", None)
+        if layer_idx is not None:
+            return layer_idx
+    raise AttributeError(f"Could not find layer_idx on {type(layer).__name__} or its submodules.")
+
+
+def resolve_per_layer_kwargs(layer: nn.Module, module_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Return ``layer``'s own captured forward kwargs, or ``module_kwargs`` unchanged.
+
+    Mixed-attention models (e.g. Gemma2/Gemma3) capture each layer's full kwargs under the private
+    ``_per_layer_kwargs`` key, keyed by layer index. Single-shared-kwargs models have no such key.
+    """
+    per_layer = module_kwargs.get("_per_layer_kwargs")
+    if per_layer is None:
+        return module_kwargs
+    return dict(per_layer[get_layer_idx(layer)])
 
 
 T = TypeVar("T", torch.Tensor, torch.nn.Module)

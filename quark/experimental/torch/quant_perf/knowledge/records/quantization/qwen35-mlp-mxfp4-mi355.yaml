@@ -1,0 +1,32 @@
+schema_version: 1
+id: quantization.qwen35.mlp-mxfp4-mi355.v2
+domain: quantization
+kind: quantization_rule
+status: verified
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+  gpu_type: [mi355x]
+match:
+  keywords: [mlp, moe, mxfp4, aiter, ck, split-k, cudagraph]
+summary: Qwen3.5 routed-expert MXFP4 is compatible with AITER CK and CUDAGraph when unsafe untuned split-K dispatch is avoided.
+guidance:
+  - Do not attribute low-token garbage output to CUDAGraph without comparing the same shape across graph modes and split-K values.
+  - On affected untuned AITER W4A4 MoE paths, use a validated non-split path such as AITER_KSPLIT=1 while keeping CUDAGraph enabled.
+  - Use eager execution only as a diagnostic rung, not as the preferred deployment workaround.
+  - Re-run real accuracy and throughput on any backend or revision change.
+required_checks: [kernel_reference, post_export_accuracy, throughput, cudagraph_replay]
+evidence:
+  level: E3
+  verdict: works_with_non_split_guard
+  validated_case:
+    accelerator: gfx950
+    tensor_parallel_size: 4
+    backend: aiter_ck
+    quantization: w4a4
+    unsafe_result: split_k_greater_than_one_produced_incorrect_output
+    safe_result: split_k_one_matched_reference_and_passed_cudagraph_accuracy
+provenance:
+  kind: validated_session
+  source: qwen35_aiter_splitk_recovery
+  validated_at: "2026-09-13"

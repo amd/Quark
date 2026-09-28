@@ -1,0 +1,24 @@
+schema_version: 1
+id: repair.vllm.systematic-debugging.v1
+domain: repair
+kind: policy
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms: []
+  keywords: [repair]
+summary: Trace backward to the first invalid state, verify assumptions, and change one confirmed cause at a time.
+guidance:
+  - Reproduce and capture a comparable baseline before profiling or editing.
+  - Mark each load-bearing assumption as verified or assumed.
+  - Stop after several grounded hypotheses if the causal chain remains incomplete.
+  - Never declare success without rerunning the original repro and a golden-path request.
+required_checks: [original_repro, golden_path]
+evidence:
+  level: E3
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/vllm-sglang-bug-fix/SKILL.md
+  sha256: c08c16106d927e404f6c059963d9a0cfa59ad70b33e844675aab1c44933e92ce

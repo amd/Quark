@@ -1,0 +1,22 @@
+schema_version: 1
+id: quantization.qwen35.self-attn-fp8.v1
+domain: quantization
+kind: quantization_rule
+status: validated
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+match:
+  keywords: [self_attn, fp8]
+summary: FP8 full-attention projections preserved accuracy on the validated Qwen3.5 MoE stack.
+guidance:
+  - Use this as a candidate-ordering prior only.
+  - Require real post-export accuracy after stack or checkpoint changes.
+required_checks: [post_export_accuracy]
+evidence:
+  level: E2
+  verdict: ok
+provenance:
+  kind: curated_migration
+  source: legacy_quant_rules
+  migrated_at: "2026-08-14"

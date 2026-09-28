@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import fnmatch
 from types import TracebackType
-from typing import Any
+from typing import Any, final
 
 import torch
 import torch.nn as nn
@@ -183,6 +183,23 @@ class BaseHessianAlgorithm:
 class BaseHessianProcessor(BaseAlgoProcessor):
     """Base processor for Hessian-based algorithms."""
 
+    # An override would silently win over the base and bypass its _weight_quantizer guard.
+    # Checked at runtime because @final is inert here: pyproject disables mypy's "misc" code
+    # for quark.*, which is what "Cannot override final attribute" is reported under.
+    _LOCKED_SNAPSHOT_HELPERS = ("register_original_weights", "delete_original_weight_buffer")
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for name in BaseHessianProcessor._LOCKED_SNAPSHOT_HELPERS:
+            if name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} overrides BaseHessianProcessor.{name}, which is final. "
+                    "These two must stay in lockstep: register_original_weights only snapshots "
+                    "modules that have a weight quantizer, and delete_original_weight_buffer clears "
+                    "exactly what it wrote. An override of either desynchronises them -- "
+                    "reintroducing the redundant weight_orig clones, or leaking the ones taken."
+                )
+
     def __init__(self, model: nn.Module, quant_algo_config: Any, data_loader: DataLoader[torch.Tensor]) -> None:
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.flags(enabled=True, allow_tf32=False)
@@ -322,12 +339,14 @@ class BaseHessianProcessor(BaseAlgoProcessor):
         """Collect Hessian statistics. Override for algorithm-specific collection."""
         raise NotImplementedError
 
+    @final
     @staticmethod
     def register_original_weights(layer: nn.Module) -> None:
         for submodule in layer.modules():
-            if hasattr(submodule, "weight"):
+            if hasattr(submodule, "weight") and getattr(submodule, "_weight_quantizer", None) is not None:
                 submodule.register_buffer("weight_orig", submodule.weight.detach().clone())
 
+    @final
     @staticmethod
     def delete_original_weight_buffer(layer: nn.Module) -> None:
         for submodule in layer.modules():

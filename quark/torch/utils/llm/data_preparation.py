@@ -97,6 +97,7 @@ def get_calib_dataloader_for_benchmark(
     num_calib_data: int = 128,
     seqlen: int = 2048,
     device: str = "cpu",
+    drop_last: bool = True,
 ) -> DataLoader[torch.Tensor]:
     if dataset_name == "pileval_for_awq_benchmark":
         samples = get_pileval(tokenizer, num_calib_data, seqlen, device, seed=42)
@@ -111,7 +112,7 @@ def get_calib_dataloader_for_benchmark(
         raise NotImplementedError
 
     calib_dataloader: DataLoader[list[dict[str, torch.Tensor]]] = DataLoader(
-        samples, batch_size=batch_size, shuffle=False, drop_last=True
+        samples, batch_size=batch_size, shuffle=False, drop_last=drop_last
     )  # type: ignore
 
     return calib_dataloader
@@ -125,6 +126,7 @@ def get_calib_dataloader_to_tensor(
     seqlen: int = 512,
     shuffle: bool = False,
     device: str | None = None,
+    drop_last: bool = True,
 ) -> DataLoader[torch.Tensor]:
     if dataset_name == "pileval":
         dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
@@ -143,7 +145,7 @@ def get_calib_dataloader_to_tensor(
         batch_encoded = batch_encoded.to(device)
     batch_encoded = batch_encoded["input_ids"]
 
-    calib_dataloader = DataLoader(batch_encoded, batch_size=batch_size, shuffle=shuffle, drop_last=True)
+    calib_dataloader = DataLoader(batch_encoded, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
 
     return calib_dataloader
 
@@ -212,6 +214,9 @@ def get_ultrachat(
     num_calib_data: int = 512,
     seqlen: int = 512,
     device: str | None = None,
+    # Accepted for a uniform get_calib_dataloader(**kwargs) signature; unused because the DataLoader
+    # below is built with batch_size=None (no auto-batching), so there is no remainder batch to drop.
+    drop_last: bool = True,
 ) -> DataLoader[list[dict[str, torch.Tensor]]]:
     MAX_SEQUENCE_LENGTH = seqlen
 
@@ -297,7 +302,9 @@ def get_trainer_dataset(
         elif path in ["shibing624/AdvertiseGen"]:
             input_text = sample["content"] + sample["summary"]
 
-        input_ids = tokenizer.encode(tokenizer.bos_token + input_text + tokenizer.eos_token, add_special_tokens=False)
+        bos_token = tokenizer.bos_token or ""
+        eos_token = tokenizer.eos_token or ""
+        input_ids = tokenizer.encode(bos_token + input_text + eos_token, add_special_tokens=False)
 
         sample = {
             "input_ids": input_ids,
@@ -397,3 +404,61 @@ def load_images(image_files: list[str]) -> list[Image.Image]:
         image = load_image(image_file)  # type: ignore[no-untyped-call]
         out.append(image)
     return out
+
+
+def _collate_blockwise_input_ids(batch: list[torch.Tensor]) -> torch.Tensor:
+    """Squeeze ``[1, seqlen]`` -> ``[seqlen]`` and stack into ``[bs, seqlen]``."""
+    squeezed: list[torch.Tensor] = []
+    for t in batch:
+        if not isinstance(t, torch.Tensor):
+            raise TypeError(f"Expected torch.Tensor in blockwise calibration dataloader, got {type(t)}")
+        if t.ndim == 2 and t.shape[0] == 1:
+            t = t.squeeze(0)
+        squeezed.append(t)
+    return torch.stack(squeezed, dim=0)
+
+
+def get_pile10k_dataloader(
+    tokenizer: Any,
+    train_size: int = 512,
+    seqlen: int = 2048,
+    seed: int = 0,
+    batch_size: int = 8,
+) -> tuple[DataLoader[torch.Tensor], None]:
+    """Blockwise-tuning calibration dataloader over ``NeelNanda/pile-10k``.
+
+    Matches the SignRound/AutoRound paper (arXiv 2309.05516, §4.1), which calibrates on
+    ``NeelNanda/pile-10k`` (the first 10k samples of The Pile) with 512 samples of sequence
+    length 2048. Samples ``train_size`` random ``seqlen`` windows from documents long enough,
+    with a fixed ``seed``. Returns ``(train_loader, None)``; the ``train_loader`` yields
+    ``[bs, seqlen]`` ``input_ids`` batches, the shape ``init_blockwise_algo`` consumes (same as
+    the EfficientQAT blockwise dataloader). NB: distinct from :func:`get_pileval`, which uses
+    ``mit-han-lab/pile-val-backup``.
+
+    Callers feeding this into ``optimize_wrappers_signed_sgd`` (``autoround.py``) should pass
+    ``batch_size=1`` -- that loop already re-batches cached loader items via its own
+    ``AutoRoundConfig.batch_size``, so a ``batch_size`` here greater than 1 compounds the two
+    levels (e.g. both left at their default of 8 would yield 64 sequences per optimization step,
+    not 8).
+    """
+    import random
+
+    logger.info("Getting pile-10k dataset...")
+    traindata = load_dataset("NeelNanda/pile-10k", split="train")
+
+    random.seed(seed)
+    train_samples: list[torch.Tensor] = []
+    for _ in range(train_size):
+        while True:
+            i = random.randint(0, len(traindata) - 1)
+            trainenc = tokenizer(traindata[i]["text"], return_tensors="pt")
+            if trainenc.input_ids.shape[1] >= seqlen + 1:
+                break
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        train_samples.append(trainenc.input_ids[:, i : i + seqlen])
+
+    train_loader: DataLoader[torch.Tensor] = DataLoader(
+        train_samples, batch_size=batch_size, shuffle=False, drop_last=True, collate_fn=_collate_blockwise_input_ids
+    )
+    logger.info("Getting pile-10k dataset finished")
+    return train_loader, None

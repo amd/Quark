@@ -1,0 +1,77 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Validated Qwen3-8B EAGLE-3 recipe.  The CLI defaults to the multi-GPU
+# TorchSpec backend because that is the path with a measured serving speedup.
+# Set execution.backend=native to use the single-GPU reference trainer.
+
+method: eagle3
+
+execution:
+  backend: torchspec
+  profile: full
+  cache_dir: ~/.cache/amd-quark/eagle3
+  image: quark-specdec-rocm:latest
+
+model:
+  target_model_path: Qwen/Qwen3-8B         # override on the CLI
+  trust_remote_code: true
+
+eagle:
+  eagle_architecture_config:
+    num_hidden_layers: 1
+    fc_norm: true
+    norm_output: true
+    # draft_vocab_size omitted -> share the full target vocab (no compression)
+  aux_hidden_layers: [2, -3, -1]           # low / mid / high target layers
+  ttt_length: 7
+
+data:
+  auto_generate: true
+  prompt_dataset: allenai/tulu-3-sft-mixture
+  num_prompts: 150000
+  eval_size: 256
+  generation_max_tokens: 4096
+  quick_num_prompts: 2000
+  quick_eval_size: 64
+  max_seq_length: 8192
+  # chat_template omitted -> use the tokenizer's built-in template
+
+training:
+  extraction: streaming                     # TorchSpec: 4 extraction + 4 FSDP GPUs
+  cold_start: true
+  learning_rate: 1.0e-4
+  lr_schedule: cosine
+  warmup_ratio: 0.015
+  num_epochs: 2
+  quick_num_epochs: 1
+  micro_batch_size: 1
+  draft_accumulation_steps: 8
+  train_backend: torchspec
+  num_gpus_per_node: 8
+  save_interval: 500
+  serve_eval_interval: 500
+  select_best_by: serve_al
+  watchdog: true
+  output_dir: ckpts/eagle3
+
+benchmark:
+  enabled: true
+  num_prompts: 40
+  rounds: 3
+  quick_num_prompts: 16
+  quick_rounds: 1
+  min_speedup: 1.25
+  min_served_al: 2.35
+  num_speculative_tokens: 3
+
+quant:
+  target: none                               # none | mxfp4 | fp8 (Quark-quantized verifier)
+
+# Keys below have no consumer in run.py yet, so they are left commented out
+# rather than shipped as settings that silently do nothing. Draft quantization
+# runs through quark.torch directly; evaluation runs through qsd.eval.*, whose
+# thresholds depend on your own hardware and serving stack.
+#
+# quant:
+#   draft: none                              # none | fp8 | mxfp4

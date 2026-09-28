@@ -95,6 +95,7 @@ _safetensors_available, _ = _is_package_available("safetensors")  # pragma: no c
 _triton_available, _ = _is_package_available("triton")  # pragma: no cover
 _gguf_available, _gguf_version = _is_package_available("gguf")  # pragma: no cover
 _aiter_available, _aiter_version = _is_package_available("aiter")  # pragma: no cover
+_flydsl_available, _flydsl_version = _is_package_available("flydsl")  # pragma: no cover
 
 
 _pil_available, _pil_version = _is_package_available("PIL")  # pragma: no cover
@@ -109,6 +110,7 @@ _compressed_tensors_available, _compressed_tensors_version = _is_package_availab
 _optimum_available, _ = _is_package_available("optimum")  # pragma: no cover
 _diffusers_available, _diffusers_version = _is_package_available("diffusers")  # pragma: no cover
 _torchao_available, _torchao_version = _is_package_available("torchao")  # pragma: no cover
+_onnxruntime_genai_available, _ = _is_package_available("onnxruntime_genai")  # pragma: no cover
 
 
 def is_torch_available() -> bool:  # pragma: no cover
@@ -121,6 +123,26 @@ def is_torchao_available() -> bool:  # pragma: no cover
 
 def is_vllm_available() -> bool:  # pragma: no cover
     return _is_vllm_available
+
+
+# Minimum flydsl the A8W4 / SVDQuant kernels are validated against. Keep in sync with
+# the ``flydsl`` extra in pyproject.toml and tools/ci/setup_flydsl.sh.
+FLYDSL_MIN_VERSION = "0.2.4"
+
+
+def is_flydsl_available() -> bool:  # pragma: no cover
+    """True if the flydsl compiler/runtime package is installed, whatever its version."""
+    return _flydsl_available
+
+
+def is_flydsl_version_supported(minimum_version: str = FLYDSL_MIN_VERSION) -> bool:  # pragma: no cover
+    """True if the installed flydsl is at least ``minimum_version``.
+
+    Reports the version requirement only; it is False when flydsl is absent as well as
+    when it is too old, so callers that need a usable runtime check this together with
+    :func:`is_flydsl_available` to tell the two apart.
+    """
+    return _version_meets_min(_flydsl_version, minimum_version)
 
 
 def is_torch_greater_or_equal_2_5() -> bool:
@@ -195,6 +217,10 @@ def is_optimum_available() -> bool:  # pragma: no cover
 
 def is_diffusers_available() -> bool:  # pragma: no cover
     return _diffusers_available
+
+
+def is_onnxruntime_genai_available() -> bool:  # pragma: no cover
+    return _onnxruntime_genai_available
 
 
 def is_package_lower_or_equal(package_name: str, target_version: str) -> bool:

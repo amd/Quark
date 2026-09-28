@@ -10,7 +10,9 @@ from torch import ops
 from quark.torch.quantization.config.type import Dtype, ScaleType, RoundType, QSchemeType
 from quark.torch.quantization.config.config import QTensorConfig
 from quark.torch.quantization.observer.observer import PerTensorMinMaxObserver, PerChannelMinMaxObserver
+from quark.torch.quantization import tensor_quantize as tensor_quantize_module
 from quark.torch.quantization.tensor_quantize import BufferReusePool, FakeQuantizeBase, SequentialQuantize
+from quark.torch.kernel.hw_emulation import hw_emulation_interface
 from quark.torch.kernel import quant_fp8_e4m3, dequant_fp8_e4m3, quant_fp8_e5m2, dequant_fp8_e5m2
 from quark.common.utils.testing_utils import PatchEverywhere, torch_device
 from quark.torch.quantization.config.config import FP4PerGroupSpec, FP8E4M3PerTensorSpec, ScaleQuantSpec
@@ -712,6 +714,178 @@ def test_constants_log_when_buffer_reuse_enabled(monkeypatch):
         # Restore the env-var-free state so we don't leak the flag into later tests.
         monkeypatch.delenv("QUARK_ENABLE_BUFFER_REUSE", raising=False)
         importlib.reload(constants_module)
+
+
+# -- Dynamo recompilation limits and the non-compiled fallback (CPU-only) --------
+
+
+def int8_per_tensor_dispatch_args(inputs):
+    """Argument tuple for ``dispatch_scaled_fake_quantize`` describing a plain int8
+    per-tensor quantization of ``inputs``."""
+    return (
+        Dtype.int8.value,
+        inputs,
+        torch.tensor([0.05], device=inputs.device),
+        torch.tensor([0], dtype=torch.int32, device=inputs.device),
+        None,  # ch_axis
+        None,  # group_size
+        -128,  # quant_min
+        127,  # quant_max
+        RoundType.half_even.value,
+        QSchemeType.per_tensor.value,
+        "None",  # mx_element_dtype
+    )
+
+
+def test_recompile_limit_message_quotes_the_limits_currently_in_effect():
+    """The message is built per call rather than stored as a constant, so it reports the
+    limits actually in effect -- including ones raised after Quark was imported, which is
+    what the message itself advises doing."""
+    patched = dict.fromkeys(tensor_quantize_module.CACHE_LIMIT_CONFIG_NAMES, 4242)
+    with torch._dynamo.config.patch(**patched):
+        message = tensor_quantize_module._recompile_limit_message()
+
+    for name in tensor_quantize_module.CACHE_LIMIT_CONFIG_NAMES:
+        assert f"{name}=4242" in message
+    assert tensor_quantize_module.PYTORCH_DYNAMO_RECOMPILE_EXCEPTION.__name__ in message
+    assert "QUARK_DISABLE_COMPILE=1" in message
+
+
+def test_dispatch_falls_back_to_the_eager_kernel_once_the_recompile_limit_is_hit(monkeypatch):
+    """Hitting Dynamo's recompilation limit must degrade to the non-compiled kernel with an
+    unchanged result, and must do so permanently: all quantizers share a single
+    ``torch.compile`` object, so once its cache is exhausted every later call would raise."""
+    inputs = torch.rand(4, 8)
+    args = int8_per_tensor_dispatch_args(inputs)
+    expected = quark.torch.kernel.scaled_fake_quantize(*args)
+
+    compiled_calls = []
+
+    def raise_recompile_limit(*call_args):
+        compiled_calls.append(call_args)
+        raise tensor_quantize_module.PYTORCH_DYNAMO_RECOMPILE_EXCEPTION("recompile_limit reached")
+
+    # monkeypatch restores the module-level flag afterwards, so the fallback does not leak
+    # into the rest of the session and silently drop everyone else off the compiled path.
+    monkeypatch.setattr(tensor_quantize_module, "_compiled_fake_quantize_disabled", False)
+    monkeypatch.setattr(tensor_quantize_module, "QUARK_DISABLE_COMPILE", False)
+    monkeypatch.setattr(quark.torch.kernel, "scaled_fake_quantize_compiled", raise_recompile_limit)
+
+    assert torch.equal(tensor_quantize_module.dispatch_scaled_fake_quantize(*args), expected)
+    assert tensor_quantize_module._compiled_fake_quantize_disabled is True
+    assert len(compiled_calls) == 1
+
+    assert torch.equal(tensor_quantize_module.dispatch_scaled_fake_quantize(*args), expected)
+    assert len(compiled_calls) == 1, "the compiled kernel must not be retried after the fallback"
+
+
+def test_dispatch_uses_the_eager_kernel_when_compilation_is_disabled(monkeypatch):
+    """``QUARK_DISABLE_COMPILE`` must bypass the compiled kernel entirely."""
+    inputs = torch.rand(4, 8)
+    args = int8_per_tensor_dispatch_args(inputs)
+    expected = quark.torch.kernel.scaled_fake_quantize(*args)
+
+    def unreachable(*_call_args):
+        pytest.fail("the compiled kernel must not be called when QUARK_DISABLE_COMPILE is set")
+
+    monkeypatch.setattr(tensor_quantize_module, "_compiled_fake_quantize_disabled", False)
+    monkeypatch.setattr(tensor_quantize_module, "QUARK_DISABLE_COMPILE", True)
+    monkeypatch.setattr(quark.torch.kernel, "scaled_fake_quantize_compiled", unreachable)
+
+    assert torch.equal(tensor_quantize_module.dispatch_scaled_fake_quantize(*args), expected)
+
+
+def test_dispatch_passes_parameters_on_as_plain_tensors(monkeypatch):
+    """An identically shaped ``Parameter`` and ``Tensor`` guard differently in Dynamo
+    (pytorch#165051), doubling the cache entries. Weights must therefore reach the compiled
+    kernel as plain tensors -- but still as differentiable views, so QAT keeps working."""
+    weight = torch.nn.Parameter(torch.rand(4, 8))
+    args = int8_per_tensor_dispatch_args(weight)
+
+    forwarded = []
+
+    def record(*call_args):
+        forwarded.append(call_args[1])
+        return quark.torch.kernel.scaled_fake_quantize(*call_args)
+
+    monkeypatch.setattr(tensor_quantize_module, "_compiled_fake_quantize_disabled", False)
+    monkeypatch.setattr(tensor_quantize_module, "QUARK_DISABLE_COMPILE", False)
+    monkeypatch.setattr(quark.torch.kernel, "scaled_fake_quantize_compiled", record)
+
+    tensor_quantize_module.dispatch_scaled_fake_quantize(*args)
+
+    assert len(forwarded) == 1
+    assert type(forwarded[0]) is torch.Tensor
+    assert torch.equal(forwarded[0], weight)
+    assert forwarded[0].requires_grad, "`view_as` must keep the autograd graph, unlike `.data`"
+
+
+def test_raise_dynamo_recompilation_limits_lifts_pytorch_defaults():
+    """Every limit still sitting at its PyTorch default is raised to the target."""
+    defaults = hw_emulation_interface.TORCH_DEFAULT_LIMITS
+    assert defaults, "expected torch>=2.5 to expose Dynamo recompilation limits"
+
+    with torch._dynamo.config.patch(**defaults):
+        hw_emulation_interface.raise_dynamo_recompilation_limits(target_limit=4096)
+
+        for name in defaults:
+            assert getattr(torch._dynamo.config, name) == 4096
+
+
+def test_raise_dynamo_recompilation_limits_reports_but_keeps_a_too_small_user_limit(monkeypatch):
+    """A limit the user chose is never overridden, only reported when it is below what
+    `scaled_fake_quantize` needs."""
+    defaults = hw_emulation_interface.TORCH_DEFAULT_LIMITS
+    warnings = []
+    monkeypatch.setattr(hw_emulation_interface.logger, "warning", lambda message, *a, **kw: warnings.append(message))
+
+    with torch._dynamo.config.patch(**dict.fromkeys(defaults, 3)):
+        hw_emulation_interface.raise_dynamo_recompilation_limits(target_limit=4096)
+
+        for name in defaults:
+            assert getattr(torch._dynamo.config, name) == 3
+
+    assert len(warnings) == len(defaults)
+    for name in defaults:
+        assert any(f"{name}=3" in warning for warning in warnings)
+
+
+def test_raise_dynamo_recompilation_limits_leaves_a_generous_user_limit_alone(monkeypatch):
+    """A user limit already above the target is neither lowered nor warned about."""
+    defaults = hw_emulation_interface.TORCH_DEFAULT_LIMITS
+    warnings = []
+    monkeypatch.setattr(hw_emulation_interface.logger, "warning", lambda message, *a, **kw: warnings.append(message))
+
+    with torch._dynamo.config.patch(**dict.fromkeys(defaults, 9999)):
+        hw_emulation_interface.raise_dynamo_recompilation_limits(target_limit=4096)
+
+        for name in defaults:
+            assert getattr(torch._dynamo.config, name) == 9999
+
+    assert warnings == []
+
+
+def test_frozen_scaled_fake_quantize_forward_matches_its_source_module():
+    """``to_frozen_module`` drops the observer but must keep quantizing identically."""
+    spec = QTensorConfig(
+        dtype=Dtype.int8,
+        qscheme=QSchemeType.per_tensor,
+        observer_cls=PerTensorMinMaxObserver,
+        symmetric=False,
+        scale_type=ScaleType.float,
+        round_method=RoundType.half_even,
+        is_dynamic=False,
+    )
+    fake_quantize = FakeQuantizeBase.get_fake_quantize(spec)
+    fake_quantize.observer_enabled = torch.tensor([0], dtype=torch.uint8)
+    fake_quantize.scale = torch.tensor([0.05])
+    fake_quantize.zero_point = torch.tensor([0])
+
+    inputs = torch.rand(4, 8)
+    expected = fake_quantize(inputs)
+
+    frozen = fake_quantize.to_frozen_module(frozen_params=True)
+    assert torch.equal(frozen(inputs), expected)
 
 
 if __name__ == "__main__":

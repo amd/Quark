@@ -145,3 +145,47 @@ The `torch-llm-ptq` subcommand performs the following steps:
 
 5. **Evaluation**:
     * If `--skip_evaluation` is not specified, evaluates the quantized model using the specified `--evaluation_dataset`.
+
+## 5. Custom LLM Templates (`--template_file`)
+
+`torch-llm-ptq --template_file` lets you quantize models whose `model_type` is not covered by the built-in templates, by loading a custom LLM template definition from a JSON file.
+
+### 5.1 Template JSON Format
+
+Only `model_type` is required; all other keys are optional.
+
+```json
+{
+    "model_type": "my_custom_model",
+    "kv_layers_name": ["*k_proj", "*v_proj"],
+    "q_layer_name": "*q_proj",
+    "gate_up_layers_name": ["gate_proj", "up_proj"],
+    "exclude_layers_name": ["lm_head"],
+    "algorithm_configs": {
+        "awq": {"name": "awq", "model_decoder_layers": "model.layers"},
+        "gptq": {"name": "gptq", "block_size": 128, "damp_percent": 0.01}
+    }
+}
+```
+
+| Key | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model_type` | string | Yes | The HuggingFace `model_type` of the model this template applies to. |
+| `kv_layers_name` | list of strings | No | Name patterns of the K/V projection layers. |
+| `q_layer_name` | string or list of strings | No | Name pattern(s) of the Q projection layer. |
+| `gate_up_layers_name` | list of strings | No | Gate/up projection layer names for shared scale groups. Defaults to `["gate_proj", "up_proj"]`. |
+| `exclude_layers_name` | list of strings | No | Layer name patterns excluded from quantization. Defaults to `[]`. |
+| `algorithm_configs` | object | No | Quantization algorithm configurations registered with the template, keyed by algorithm name (e.g. `awq`, `gptq`, `smoothquant`, `rotation`). Each value is a JSON object in the same format as `quark.torch.quantization.load_quant_algo_config_from_file` (with a `name` field plus algorithm-specific fields). This allows `--quant_algo` to be used with models that have no built-in algorithm configuration. |
+
+### 5.2 Example Usage
+
+```bash
+quark-cli torch-llm-ptq --model_dir $MODEL_DIR --output_dir $OUTPUT_DIR \
+    --template_file my_template.json --quant_scheme fp8 --quant_algo awq
+```
+
+### 5.3 `torch-llm-ptq` Template Parameter
+
+* `--template_file <PATH>`: Path to a JSON file defining a custom LLM template (see 5.1 for the format). The template is registered before quantization, which allows quantizing models whose `model_type` is not covered by the built-in templates. The `model_type` in the file must match the `model_type` of the loaded model.
+
+Note: if the `model_type` in the file matches an existing (built-in) template, the file's template overwrites it for the duration of the CLI run (a warning is logged by Quark).

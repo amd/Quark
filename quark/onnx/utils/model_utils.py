@@ -571,6 +571,48 @@ class ONNXQuantizedModel:
 
         return node_struct
 
+    def get_target_node_struct(self, target_node: NodeProto) -> dict[str, Any]:
+        """
+        Get the qdqs on all inputs and outputs of the target node.
+
+        :param NodeProto target_node: The target node.
+
+        :return: The extracted structure containing input and output quantization nodes.
+        """
+        node_struct: dict[str, Any] = {
+            "node": None,
+            "input_qdqs": [],
+            "output_qdqs": [],
+        }
+
+        for node in self.model.graph.node:
+            if node is target_node:
+                node_struct["node"] = node
+
+                input_qdqs = []
+                for tensor_name in node.input:
+                    fn = self._find_node_input_fn(node, tensor_name)
+                    if fn is not None:
+                        input_qdqs.append((fn,))
+                    else:
+                        dq, q = self._find_node_input_qdq(node, tensor_name)
+                        input_qdqs.append((dq, q))
+                node_struct["input_qdqs"] = input_qdqs
+
+                output_qdqs = []
+                for tensor_name in node.output:
+                    fn = self._find_node_output_fn(node, tensor_name)
+                    if fn is not None:
+                        output_qdqs.append((fn,))
+                    else:
+                        q, dq = self._find_node_output_qdq(node, tensor_name)
+                        output_qdqs.append((dq, q))
+                node_struct["output_qdqs"] = output_qdqs
+
+                break
+
+        return node_struct
+
 
 @log_errors
 def save_model(model: ModelProto, path: str, as_text: bool = False) -> None:
@@ -596,7 +638,7 @@ def run_onnx_model(model_input: str | Path | onnx.ModelProto, use_external_data_
         output = sess.run(None, inputs)
         if output:
             logger.info("The input ONNX model can run inference successfully")
-        else:
+        else:  # pragma: no cover - requires ORT session returning empty output
             logger.warning("Fail to run inference, please check the input model and the 'calibration_data_reader'.")
     except Exception as e:
         raise ValueError(
@@ -758,7 +800,7 @@ def save_onnx_model_with_external_data(
     :param path: the path for the saving
     :param save_as_external_data: this option is for >2GB ModelProto
     """
-    if save_as_external_data:
+    if save_as_external_data:  # pragma: no cover - >2GB external-data path
         directory = Path(path).parent  # This is the directory to save the model
         location = Path(path).name + ".data"  # Must be a relative path (to the model path)
 
@@ -822,7 +864,9 @@ def create_infer_session_for_onnx_model(
         except Exception as e:
             raise RuntimeError(f"Failed to create inference session, due to an unexpected error: {e}") from e
 
-    if isinstance(model_input, onnx.ModelProto) and use_external_data_format:
+    if (
+        isinstance(model_input, onnx.ModelProto) and use_external_data_format
+    ):  # pragma: no cover - >2GB external-data path
         with create_tmp_dir(prefix="quark_onnx.utils.") as temp_dir:
             temp_path = Path(temp_dir).joinpath("infer_model.onnx").as_posix()
             save_onnx_model_with_external_data(copy.deepcopy(model_input), temp_path, True)
@@ -1034,7 +1078,7 @@ def register_custom_ops_library(session_options: onnxruntime.SessionOptions, dev
     # ``_initialize_kernels`` runs at module import; a silent build failure surfaces here.
     try:
         session_options.register_custom_ops_library(get_library_path(device))
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - only on custom-op build failure
         logger.warning(
             f"Failed to register custom op library {get_library_path(device)} to ORT with {e},"
             "please check if the library has been compiled successfully."

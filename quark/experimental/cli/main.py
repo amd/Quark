@@ -72,6 +72,7 @@ from quark.experimental.cli.quark_onnx.onnx_prepare_data import ONNXPrepareData_
 from quark.experimental.cli.quark_onnx.onnx_ptq import OnnxPTQ_CLI
 from quark.experimental.cli.quark_onnx.onnx_ptq_autosearch import OnnxAutoSearch_CLI
 from quark.experimental.cli.quark_onnx.onnx_validate import ONNXValidate_CLI
+from quark.experimental.torch.mixed_precision_planner.cli import MixedPrecisionPlannerCLI
 
 
 def get_cli_parser() -> argparse.ArgumentParser:
@@ -119,6 +120,13 @@ def get_cli_parser() -> argparse.ArgumentParser:
     torch_llm_ptq_parser = subparsers.add_parser("torch-llm-ptq", help="PyTorch LLM Post-Training Quantization")
     torch_llm_ptq.TorchLLM_PTQ_CLI.register_subcommand(torch_llm_ptq_parser)
     torch_llm_ptq_parser.set_defaults(func=torch_llm_ptq.TorchLLM_PTQ_CLI)
+
+    torch_mixed_precision_parser = subparsers.add_parser(
+        "torch-mixed-precision",
+        help="Experimental PyTorch mixed-precision planning",
+    )
+    MixedPrecisionPlannerCLI.register_subcommand(torch_mixed_precision_parser)
+    torch_mixed_precision_parser.set_defaults(func=MixedPrecisionPlannerCLI)
 
     shapeshifter_parser = subparsers.add_parser("shapeshifter", help="Shapeshifter workflows")
     shapeshifter.Shapeshifter_CLI.register_subcommand(shapeshifter_parser)

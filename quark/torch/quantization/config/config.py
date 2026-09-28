@@ -24,6 +24,7 @@ from quark.torch.quantization.config.type import (
     DeviceType,
     Dtype,
     QSchemeType,
+    QuantFlow,
     QuantizationMode,
     RoundType,
     ScaleType,
@@ -31,7 +32,12 @@ from quark.torch.quantization.config.type import (
     ZeroPointType,
 )
 from quark.torch.quantization.config.utils import dataclass_pretty_string
-from quark.torch.quantization.constants import ONLY_DTYPE_CHANGE, QUARK_LAYER_TYPES, USING_NON_SCALED_QUANT
+from quark.torch.quantization.constants import (
+    MICROEXPONENT_DTYPES,
+    ONLY_DTYPE_CHANGE,
+    QUARK_LAYER_TYPES,
+    USING_NON_SCALED_QUANT,
+)
 from quark.torch.quantization.observer import (
     OBSERVER_CLASSES,
     OBSERVER_MAP,
@@ -142,7 +148,11 @@ class QConfig(BaseConfigImpl, BaseQConfig):
     :param Dict[str, QLayerConfig] layer_quant_config: A dictionary mapping from layer names to their quantization configurations, allowing for per-layer customization. Default is ``{}``.
     :param Dict[str, QLayerConfig] kv_cache_quant_config: A dictionary mapping from layer names to kv_cache quantization configurations. Default is ``{}``.
     :param Optional[QTensorConfig] softmax_quant_spec: A quantization specifications of nn.functional.softmax output. Default is ``None``.
-    :param List[str] exclude: A list of layer names to be excluded from quantization, enabling selective quantization of the model. Default is ``[]``.
+    :param List[str] exclude: A list of layer names to be excluded from quantization, enabling selective
+        quantization of the model. Entries are matched verbatim with ``fnmatch.fnmatch`` against the
+        full module name and are never expanded implicitly, so a parent-module pattern such as ``"*.mlp.gate"``
+        excludes only ``model.layers.0.mlp.gate`` itself, not its descendants. To exclude a whole subtree,
+        list the descendant pattern as well: ``["*.mlp.gate", "*.mlp.gate.*"]``. Default is ``[]``.
     :param Optional[AlgoConfig] algo_config: Optional configuration for the quantization algorithm, such as GPTQ, AWQ and Qronos. After this process, the datatype/fake_datatype of weights will be changed with quantization scales. Default is ``None``.
     :param QuantizationMode quant_mode: The quantization mode to be used (``eager_mode`` or ``fx_graph_mode``). Default is ``QuantizationMode.eager_mode``.
     :param bool sync_moe_expert_input_amax: Whether to synchronize the post-calibration
@@ -157,6 +167,14 @@ class QConfig(BaseConfigImpl, BaseQConfig):
         dequantized bf16 ``nn.Linear``. Also gates pre-quantized routing at the start
         of quantization. The ``False`` path retains the legacy dequantize-on-export
         behavior and can be removed if it proves unnecessary.
+    :param QuantFlow quant_flow: Which quantization execution flow ``ModelQuantizer``
+        should run: ``standard`` (default, full model resident in memory), ``file2file``
+        (see ``ModelQuantizer.direct_quantize_checkpoint``), or ``per_block`` (per-block lazy
+        loading during calibration). Default is ``QuantFlow.standard``. Runtime-only: never
+        serialized.
+    :param int gpu_resident_blocks: Only used when ``quant_flow`` is ``per_block``. Number
+        of leading decoder blocks to keep GPU-resident; the rest are lazy-loaded. Default is
+        ``0``. Runtime-only, like ``quant_flow``.
     """
 
     # Note: `global_quant_config`, `exclude`, `algo_config`, `log_severity_level`, `version` are inherited from `BaseQConfig`
@@ -192,6 +210,14 @@ class QConfig(BaseConfigImpl, BaseQConfig):
 
     # The quantization mode to be used (eager_mode or fx_graph_mode)
     quant_mode: QuantizationMode = QuantizationMode.eager_mode
+
+    # Which quantization execution flow to run. See `QuantFlow`. Runtime-only: not serialized
+    # by `to_dict()` and ignored by `from_dict()`, so it never reaches the exported config.json.
+    quant_flow: QuantFlow = QuantFlow.standard
+
+    # For `quant_flow == QuantFlow.per_block`: number of leading decoder blocks
+    # to keep GPU-resident; the rest are lazy-loaded. Ignored for other flows.
+    gpu_resident_blocks: int = 0
 
     # Synchronize post-calibration input amax across MoE experts that share the
     # same projection name inside a single MoE layer. This is configured
@@ -229,6 +255,9 @@ class QConfig(BaseConfigImpl, BaseQConfig):
         config_dict["kv_cache_post_rope"] = self.kv_cache_post_rope
 
         config_dict["quant_mode"] = self.quant_mode.name
+
+        # `quant_flow`/`gpu_resident_blocks` are intentionally omitted: they are runtime-only
+        # and every caller of `to_dict()` writes the result to disk.
 
         config_dict["version"] = self.version
 
@@ -311,6 +340,9 @@ class QConfig(BaseConfigImpl, BaseQConfig):
 
         kv_cache_post_rope = config_dict.get("kv_cache_post_rope", False)
 
+        # `quant_flow`/`gpu_resident_blocks` are runtime-only: a config loaded from disk always
+        # gets the defaults. Set them on the returned `QConfig` to select a non-default flow.
+
         return cls(
             global_quant_config=global_quant_config,
             layer_type_quant_config=layer_type_quant_config,
@@ -348,15 +380,6 @@ class QConfig(BaseConfigImpl, BaseQConfig):
         )
 
     def __post_init__(self) -> None:
-        # When uses want to exclude *.gate, they actually want to all the sublayers of the gate layer.
-        # So exlude = ["*.gate"] can be expanded as ["*.gate", "*.gate.*"]
-        new_exclude = []
-        for item in self.exclude:
-            if not item.endswith(".*"):
-                logger.warning(f"Expanding exclude pattern {[item]} to {[item, item + '.*']}")
-                new_exclude.append(item + ".*")
-            new_exclude.append(item)
-        self.exclude = new_exclude
         if self.algo_config is not None:
             for algo_config in self.algo_config:
                 if algo_config.name == "rotation":
@@ -1859,6 +1882,13 @@ class QTensorConfig(BaseQTensorConfig):
                     f"When using dtype={self.dtype}, quantization_spec.mx_element_dtype must be specified. Got `mx_element_dtype=None`."
                 )
 
+            # MicroeXponent formats fix the first-level block granularity at k1.
+            # Other values still run, but the result is not the standard format and cannot be exported -- the packed layout assumes k1.
+            if self.dtype in MICROEXPONENT_DTYPES and self.group_size != MICROEXPONENT_DTYPES[self.dtype]:
+                logger.warning(
+                    f"dtype={self.dtype} specifies a block size of k1={MICROEXPONENT_DTYPES[self.dtype]}, but group_size={self.group_size} was given. Quantization will run, but the result is not the standard {self.dtype.value} format and cannot be exported."
+                )
+
             for each_field in fields(self):
                 if each_field.name not in required_fields + oprional_fields:
                     value = getattr(self, each_field.name)
@@ -1968,6 +1998,7 @@ class QTensorConfig(BaseQTensorConfig):
             "symmetric": self.symmetric,
             "round_method": self.round_method.name if self.round_method is not None else None,
             "scale_type": self.scale_type.name if self.scale_type is not None else None,
+            "zero_point_type": self.zero_point_type.name if self.zero_point_type is not None else None,
             "scale_format": self.scale_format,
             "scale_calculation_mode": self.scale_calculation_mode,
             "mx_element_dtype": self.mx_element_dtype.name if self.mx_element_dtype is not None else None,
@@ -2000,6 +2031,11 @@ class QTensorConfig(BaseQTensorConfig):
             scale_type = ScaleType[config_dict["scale_type"]]
         else:
             scale_type = None
+
+        if config_dict.get("zero_point_type") is not None:
+            zero_point_type = get_zero_point_type(config_dict["zero_point_type"])
+        else:
+            zero_point_type = ZeroPointType.int32
 
         if config_dict.get("scale_format") is not None:
             scale_format = config_dict["scale_format"]
@@ -2046,6 +2082,7 @@ class QTensorConfig(BaseQTensorConfig):
             symmetric=symmetric,
             round_method=round_method,
             scale_type=scale_type,
+            zero_point_type=zero_point_type,
             scale_format=scale_format,
             scale_calculation_mode=scale_calculation_mode,
             mx_element_dtype=mx_element_dtype,
@@ -2113,10 +2150,18 @@ def load_quant_algo_config_from_file(file_path: str) -> AlgoConfig:
 def _migrate_deprecated_rotation_fields(config_dict: dict[str, Any]) -> None:
     """Migrate deprecated rotation config fields for backward compatibility.
 
-    Handles two deprecated patterns:
+    Handles three deprecated patterns:
     1. ``random`` field -> ``random_r1`` and ``random_r2``
     2. ``quarot`` name -> ``rotation`` with r1-r4 all True
+    3. ``online_config.shared_input_rotation`` -> dropped
     """
+    # Removed field. The shared-rotation import is detected from the
+    # `shared_input_rotation_<size>` checkpoint tensor names, so this flag never had
+    # an effect; drop it so checkpoints exported while it existed still load.
+    online_config = config_dict.get("online_config")
+    if isinstance(online_config, dict):
+        online_config.pop("shared_input_rotation", None)
+
     if "random" in config_dict:
         logger.warning(
             "Config field 'random' is removed. Use 'random_r1' and 'random_r2' instead. "
@@ -2137,6 +2182,22 @@ def _migrate_deprecated_rotation_fields(config_dict: dict[str, Any]) -> None:
         config_dict["name"] = "rotation"
 
 
+def _build_config_from_registered_algorithm(config_dict: dict[str, Any]) -> BaseAlgoConfig | None:
+    """Deserialize ``config_dict`` with a registered ``QuarkAlgorithm``, if one claims its name.
+
+    Imported lazily: algorithm modules import this module, so a module-level import here would be
+    a cycle. Returns ``None`` when no registered algorithm claims the name, leaving core's own
+    branches to try.
+    """
+    from quark.torch.algorithm.registry import ALGORITHM_REGISTRY
+
+    algorithm = ALGORITHM_REGISTRY.get(config_dict["name"])
+    if algorithm is None:
+        return None
+
+    return algorithm.build_config(config_dict)
+
+
 def _load_pre_optimization_config_from_dict(pre_optimization_config_dict: dict[str, Any]) -> PreQuantOptConfig:
     """
     Load pre-optimization configuration from a dictionary.
@@ -2150,6 +2211,16 @@ def _load_pre_optimization_config_from_dict(pre_optimization_config_dict: dict[s
     # Deprecate old settings for GQA
     pre_optimization_config_dict.pop("num_attention_heads", None)
     pre_optimization_config_dict.pop("num_key_value_heads", None)
+
+    # The registry is consulted first, so that a `QuarkAlgorithm`'s `build_config` sees the config
+    # exactly as it was written before core rewrites any deprecated field in it.
+    registered_algo_config = _build_config_from_registered_algorithm(pre_optimization_config_dict)
+    if registered_algo_config is not None:
+        # `build_config` is typed on `BaseAlgoConfig`, `PreQuantOptConfig`'s base. Not narrowed at
+        # runtime, for the reason given at the same suppression in `get_algo_config`: an algorithm
+        # may deliberately derive the base instead, as `TwoBitScalarConfig` does below to break an
+        # import cycle, and core already carries such a config in an `AlgoConfig`-typed map.
+        return registered_algo_config  # type: ignore[return-value]
 
     # Handle deprecated rotation fields (random, quarot)
     _migrate_deprecated_rotation_fields(pre_optimization_config_dict)
@@ -2176,6 +2247,14 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
     algo_config_dict.pop("num_attention_heads", None)
     algo_config_dict.pop("num_key_value_heads", None)
 
+    # The registry is consulted first, so that a `QuarkAlgorithm`'s `build_config` sees the config
+    # exactly as it was written before core rewrites any deprecated field in it.
+    registered_algo_config = _build_config_from_registered_algorithm(algo_config_dict)
+    if registered_algo_config is not None:
+        # Same as in `_load_pre_optimization_config_from_dict` above: `build_config` is typed on
+        # `AlgoConfig`'s base, and a registered algorithm is allowed to derive that base directly.
+        return registered_algo_config  # type: ignore[return-value]
+
     # Handle deprecated rotation fields (random, quarot)
     _migrate_deprecated_rotation_fields(algo_config_dict)
 
@@ -2195,6 +2274,12 @@ def _load_quant_algo_config_from_dict(algo_config_dict: dict[str, Any]) -> AlgoC
         return cast(AlgoConfig, QronosConfig.from_dict(algo_config_dict))
     elif algo_config_dict["name"] == "svdquant":
         return cast(AlgoConfig, SVDQuantConfig.from_dict(algo_config_dict))
+    elif algo_config_dict["name"] == "twobitscalar":
+        from quark.experimental.torch.twobitscalar.config import TwoBitScalarConfig
+
+        # TwoBitScalarConfig inherits BaseAlgoConfig (not the torch AlgoConfig, to avoid a
+        # circular import); from_dict is the strict cls(**data) that raises on unknown keys.
+        return cast(AlgoConfig, TwoBitScalarConfig.from_dict(algo_config_dict))
     else:
         raise ValueError(f"Unknown algorithm name {algo_config_dict['name']}")
 
@@ -2459,6 +2544,43 @@ class RotationConfig(AlgoConfig):
                 "RotationConfig.smooth_positions needs to be set in case RotationConfig.train_smooth=True, got None."
             )
 
+    def validate_file_to_file(self) -> None:
+        """Reject rotation settings the file-to-file quantization flow cannot honour.
+
+        This is the file-to-file support contract in one place. These are limitations of
+        that flow, **not** of rotation in general: every setting rejected here is fully
+        supported by the standard ``ModelQuantizer.quantize_model`` (graph) flow, which
+        walks a live ``nn.Module``. Called from ``build_rotation_plan``; do not call it from
+        the graph path.
+
+        :raises NotImplementedError: For a setting the file-to-file flow cannot express as a
+            per-tensor weight transform plus a persisted ``input_rotation`` buffer.
+        """
+        name = self.__class__.__name__
+        if self.trainable:
+            raise NotImplementedError(
+                f"{name}.trainable=True (learned/SpinQuant rotation) is not supported in the file-to-file flow. "
+                "File-to-file applies fixed Hadamard rotations only, which require no training. "
+                "Set trainable=False, or use the standard `ModelQuantizer.quantize_model` flow for learned rotations."
+            )
+        if self.r3:
+            raise NotImplementedError(
+                f"{name}.r3=True is not supported in the file-to-file flow. R3 is applied by patching the model "
+                "forward (post-RoPE) and cannot be reconstructed from a serialized checkpoint. Set r3=False."
+            )
+        if self.r1 and not self.online_r1_rotation:
+            raise NotImplementedError(
+                f"Offline R1 ({name}.r1=True, online_r1_rotation=False) is not supported in the file-to-file flow. "
+                "Offline R1 fuses normalization weights and shares a residual-basis rotation across layers, which "
+                "requires the full model graph. Use online_r1_rotation=True for a per-tensor Hadamard rotation."
+            )
+        if self.random_r1 or self.random_r2:
+            raise NotImplementedError(
+                f"{name}.random_r1/random_r2=True is not supported in the file-to-file flow. A random rotation basis "
+                "cannot be deterministically reconstructed at inference; only fixed Hadamard rotations persist. "
+                "Set random_r1=False and random_r2=False."
+            )
+
     @classmethod
     def from_dict(cls, rotation_dict: dict[str, Any]) -> RotationConfig:
         if "online_config" in rotation_dict and isinstance(rotation_dict["online_config"], dict):
@@ -2472,6 +2594,11 @@ class RotationConfig(AlgoConfig):
 class OnlineRotationConfig(BaseConfigImpl):
     shared_parallel: bool
     online_rotation_layers: list[str] | None = None
+    # Optional per-channel input pre-scale (e.g. AWQ 1/s_vec) applied before the
+    # online rotation. When True, each online-rotation layer registers an
+    # `input_prescale` buffer that is loaded from the checkpoint. Default False
+    # keeps standard rotation behavior unchanged.
+    use_input_prescale: bool = False
 
 
 @dataclass
@@ -2670,6 +2797,33 @@ class GPTAQConfig(AlgoConfig):
 
 
 @dataclass
+class AutoRoundConfig(AlgoConfig):
+    """AutoRound (arXiv 2309.05516): optimize weight rounding via signed gradient descent.
+
+    Weight bit-width / group size / symmetry come from the layer QConfig quant spec;
+    this config holds only the optimization hyperparameters.
+
+    :param str name: Configuration name. Default ``"autoround"``.
+    :param int iters: Optimization steps per block. Default ``200``.
+    :param float lr: Learning rate for the rounding offset V. Default ``1/iters``.
+    :param bool enable_minmax_tuning: Also learn weight clip (min/max scale). Default ``True``.
+    :param float minmax_lr: Learning rate for the clip params. Default ``1/iters``.
+    :param int batch_size: Calibration microbatch size for the block loop. Default ``8``.
+    :param list[str] inside_layer_modules: Linear submodule names to quantize per block.
+    :param str model_decoder_layers: Dotted path to the decoder layer list (e.g. "model.layers").
+    """
+
+    name: str = "autoround"
+    iters: int = 200
+    lr: float = 1.0 / 200
+    enable_minmax_tuning: bool = True
+    minmax_lr: float = 1.0 / 200
+    batch_size: int = 8
+    inside_layer_modules: list[str] = field(default_factory=list)
+    model_decoder_layers: str = field(default_factory=str)
+
+
+@dataclass
 class QronosConfig(AlgoConfig):
     """
     Configuration for Qronos, an advanced post-training quantization algorithm. Implemented as proposed in https://arxiv.org/pdf/2505.11695
@@ -2758,3 +2912,10 @@ class SVDQuantConfig(AlgoConfig):
     gptq_blocksize: int = 128
     gptq_percdamp: float = 0.01
     gptq_actorder: bool = False
+
+
+# Backward-compat alias: transformers' Quark HF integration
+# (transformers/utils/quantization_config.py) imports `Config` from this module,
+# but it was renamed to `QConfig`. Keep `Config` as an alias so HF loading of
+# models with `quantization_config.quant_method == "quark"` works.
+Config = QConfig

@@ -1,0 +1,171 @@
+{
+  "skill_name": "quark-onnx-shapeshifter-run",
+  "skill_path": "skills/_legacy_impl/l1-atomic/onnx/quark-onnx-shapeshifter-run",
+  "evals": [
+    {
+      "id": 1,
+      "category": "routing",
+      "name": "run-cli-generic",
+      "prompt": "Run the ShapeShifter CLI on my model.onnx to transform the graph.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run first",
+        "The plan writes a ShapeShifter YAML and runs `quark-cli shapeshifter`"
+      ]
+    },
+    {
+      "id": 2,
+      "category": "routing",
+      "name": "fold-batch-norm",
+      "prompt": "Fold the BatchNorm nodes in resnet50.onnx into the preceding Convs.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses the onnx_fold_batch_norm pass with fold_batch_norm: true"
+      ]
+    },
+    {
+      "id": 3,
+      "category": "routing",
+      "name": "simplify-graph",
+      "prompt": "Constant-fold and simplify my mobilenet.onnx graph.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_simplify with simplify: true"
+      ]
+    },
+    {
+      "id": 4,
+      "category": "routing",
+      "name": "convert-opset",
+      "prompt": "Upgrade my model.onnx opset to 21 using ShapeShifter.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_convert_opset_version with target_opset_version: 21"
+      ]
+    },
+    {
+      "id": 5,
+      "category": "routing",
+      "name": "fuse-layernorm",
+      "prompt": "Fuse the LayerNorm subgraphs in my transformer.onnx into single LayerNormalization ops.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_fuse_layer_norm"
+      ]
+    },
+    {
+      "id": 6,
+      "category": "routing",
+      "name": "nchw-to-nhwc",
+      "prompt": "Convert my model.onnx from NCHW to NHWC layout.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_convert_nchw_to_nhwc"
+      ]
+    },
+    {
+      "id": 7,
+      "category": "routing",
+      "name": "cross-layer-equalization",
+      "prompt": "Run cross-layer equalization on resnet.onnx before I quantize it.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_cross_layer_equalization with cross_layer_equalization: true"
+      ]
+    },
+    {
+      "id": 8,
+      "category": "routing",
+      "name": "preprocess-before-quant",
+      "prompt": "Preprocess my float model.onnx with ShapeShifter passes before quantization.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "Passes are treated as preprocessing on the float model"
+      ]
+    },
+    {
+      "id": 9,
+      "category": "routing",
+      "name": "postprocess-xint8",
+      "prompt": "Postprocess my quantized model_quant.onnx for XINT8/NPU with ShapeShifter.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_xint8_adjust and/or onnx_xint8_simulate on the quantized Q/DQ model"
+      ]
+    },
+    {
+      "id": 10,
+      "category": "routing",
+      "name": "align-scale-quantized",
+      "prompt": "Align the Q/DQ scales across Concat and MaxPool in my quantized graph.",
+      "expected_skill": "quark-onnx-shapeshifter-run",
+      "expectations": [
+        "Claude invokes quark-onnx-shapeshifter-run",
+        "The config uses onnx_align_scale with align_scale including Concat and MaxPool"
+      ]
+    },
+    {
+      "id": 11,
+      "category": "routing",
+      "name": "negative-create-pass",
+      "prompt": "Help me write a new onnx_ ShapeShifter pass that drops Identity nodes.",
+      "expected_skill": "quark-create-shapeshifter-pass",
+      "expectations": [
+        "Claude does NOT invoke quark-onnx-shapeshifter-run",
+        "Claude routes to quark-create-shapeshifter-pass (authoring, not running)"
+      ]
+    },
+    {
+      "id": 12,
+      "category": "routing",
+      "name": "negative-full-quantization",
+      "prompt": "Quantize my resnet50.onnx to XINT8 end to end.",
+      "expected_skill": "quark-onnx-ptq",
+      "expectations": [
+        "Claude does NOT invoke quark-onnx-shapeshifter-run as the primary skill",
+        "Claude routes to quark-onnx-ptq for the full PTQ pipeline"
+      ]
+    },
+    {
+      "id": 13,
+      "category": "routing",
+      "name": "negative-pytorch-model",
+      "prompt": "Remove dropout from my model.pt with a ShapeShifter pass.",
+      "expected_skill": "quark-create-shapeshifter-pass",
+      "expectations": [
+        "Claude does NOT invoke quark-onnx-shapeshifter-run (input is PyTorch .pt, not .onnx)",
+        "Claude does not feed a .pt file into an ONNX-only skill"
+      ]
+    },
+    {
+      "id": 14,
+      "category": "routing",
+      "name": "negative-error-traceback",
+      "prompt": "quark-cli shapeshifter crashed with an onnxruntime CUDAExecutionProvider error.",
+      "expected_skill": "quark-onnx-debug",
+      "expectations": [
+        "Claude does NOT invoke quark-onnx-shapeshifter-run",
+        "Claude routes to quark-onnx-debug for the traceback"
+      ]
+    },
+    {
+      "id": 15,
+      "category": "recovery",
+      "name": "silent-no-op-missing-flag",
+      "prompt": "I added onnx_convert_clip_to_relu to my config but the Clip nodes are still in the output .onnx.",
+      "expectations": [
+        "Diagnosis names the missing/false enable flag (convert_clip_to_relu) as the cause",
+        "Fix sets convert_clip_to_relu: true in the pass config",
+        "Explanation notes the Engine passes the raw config through without applying pass defaults"
+      ]
+    }
+  ]
+}

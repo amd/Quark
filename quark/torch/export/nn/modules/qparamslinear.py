@@ -357,6 +357,16 @@ class QParamsLinearWithRotation(QParamsLinear):
         self.rotation_size = rotation_size
         self.trainable = trainable
 
+        # Optional per-channel input pre-scale (e.g. AWQ 1/s_vec), applied before the
+        # rotation in forward(). Registered only when the online config opts in, so
+        # existing rotation exports (no such buffer) are unaffected.
+        online_cfg = getattr(rotation_config, "online_config", None)
+        if online_cfg is not None and getattr(online_cfg, "use_input_prescale", False):
+            self.register_buffer(
+                "input_prescale",
+                torch.ones(linear.in_features, device=linear.weight.device, dtype=linear.weight.dtype),
+            )
+
     def post_process_after_loading(self) -> None:
         # TODO: make sure this function gets called as well in AutoModelForCausalLM.from_pretrained(quantized_model_id).
 
@@ -397,6 +407,12 @@ class QParamsLinearWithRotation(QParamsLinear):
         """
         assert len(args) == 1
         inp = args[0]
+
+        # Optional per-channel input pre-scale (e.g. AWQ 1/s_vec), applied before
+        # the rotation. Absent by default so standard rotation behavior is intact.
+        input_prescale = getattr(self, "input_prescale", None)
+        if input_prescale is not None:
+            inp = inp * input_prescale.to(inp.dtype)
 
         inp = self.transform(inp)
 

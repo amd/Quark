@@ -349,7 +349,9 @@ def test_annotation_without_grad_skip_quant():
     quantizer = ModelQuantizer(quant_config)
     quantized_model = quantizer.quantize_model(graph_model, [example_inputs[0]])
     quantized_model(example_inputs[0])
-    assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 23
+    # HardSigmoid inputs are now quantized (the two Sigmoids become HardSigmoid via
+    # ConvertSigmoid2HardSigmoidQOPass), adding two ScaledFakeQuantize modules: 23 -> 25.
+    assert fx_contain_module_num(quantized_model, ScaledFakeQuantize) == 25
     print("Finish test: test_annotation_without_grad_skip_quant")
     torch.cuda.empty_cache()
 

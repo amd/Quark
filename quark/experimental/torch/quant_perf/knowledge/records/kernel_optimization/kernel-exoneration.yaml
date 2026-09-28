@@ -1,0 +1,23 @@
+schema_version: 1
+id: kernel.debug.exoneration.v1
+domain: kernel_optimization
+kind: validated_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms: []
+  keywords: [kernel, wrong output, crash, unit test]
+summary: Prove whether the kernel is faulty before changing it; passing standalone and replay checks redirects work to integration.
+guidance:
+  - Compare against the established reference at the reported shape.
+  - Check input mutation, degenerate-input behavior, and repeated graph replay.
+  - If all checks pass, preserve the kernel and debug the caller or capture lifecycle.
+required_checks: [standalone_correctness, input_immutability, replay]
+evidence:
+  level: E3
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/vllm-kernel-debug/SKILL.md
+  sha256: 97a8893de162e2abd570ae67f1e779e8a1d383f846a9f29eca94857fdccb835c

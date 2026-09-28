@@ -1,0 +1,22 @@
+schema_version: 1
+id: kernel.performance.profiling.v1
+domain: kernel_optimization
+kind: reference
+status: advisory
+applicability: {}
+match:
+  symptoms: []
+  keywords: [profile, memory, cold-l2, rocprof, perfetto]
+summary: Use trace evidence and memory snapshots to separate kernel time, allocation spikes, and integration overhead.
+guidance:
+  - Annotate the measured region and record shapes.
+  - Use ROCm-aware kernel tracing for hardware counters.
+  - Measure kernels with cold-L2 conditions before transferring conclusions to serving.
+required_checks: [trace_evidence, e2e]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: knowledge/concepts/performance-analysis-tools.md
+  sha256: 3453f6108735f290172f98999c10e92390c7d0d008342a3ba39fc163fa5a610b

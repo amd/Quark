@@ -1,6 +1,5 @@
 accelerate
 addict
-ai2-olmo
 compressed-tensors>=0.15.0
 datasets
 easydict
@@ -13,6 +12,6 @@ nltk
 pillow
 psutil
 tiktoken
-transformers<5.3
+transformers<5.16
 transformers_stream_generator
 zstandard

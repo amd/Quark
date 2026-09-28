@@ -11,7 +11,7 @@ try:
 
     import torch
     from datasets import load_dataset
-    from transformers import AutoProcessor  # type: ignore[attr-defined]
+    from transformers import AutoConfig, AutoProcessor  # type: ignore[attr-defined]
     from transformers.processing_utils import ProcessorMixin
 
 except ImportError as e:  # pragma: no cover
@@ -25,6 +25,7 @@ try:
     from quark.common.utils.log import ScreenLogger
     from quark.contrib.llm_eval import ppl_eval, ppl_eval_with_synthetic_dataset
     from quark.experimental.cli import base_cli
+    from quark.experimental.cli.register_template import parse_template_from_json_file
     from quark.torch import (
         LLMTemplate,
         ModelQuantizer,
@@ -95,6 +96,15 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         parser.add_argument("--num_calib_data", help="Number of samples for calibration.", type=int, default=512)
 
         # Argument for quantization
+        parser.add_argument(
+            "--template_file",
+            default=None,
+            type=str,
+            help="Path to a JSON file defining a custom LLM template. The template is registered before "
+            "quantization, so models whose model_type is not covered by the built-in templates can be "
+            "quantized. See `quark-cli register-template -h` for the expected JSON format. "
+            "Default: not set (only built-in templates are available).",
+        )
         parser.add_argument(
             "--quant_scheme",
             help="Supported quantization scheme name. Must be the built-in quantization scheme supported by LLMTemplate for the model type. "
@@ -176,6 +186,32 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         """
         args = self.args
 
+        # Convert no_trust_remote_code to trust_remote_code
+        trust_remote_code = not args.no_trust_remote_code
+
+        # 0. Parse a custom template from a JSON file, if provided (QUARK-1075).
+        # Done up-front so that an invalid template file fails fast, before any model loading.
+        # Only registered once the model's real model_type is confirmed to match (below), so an
+        # invalid --template_file never overwrites the built-in template for that model_type.
+        custom_template: LLMTemplate | None = None
+        template_file = getattr(args, "template_file", None)
+        if template_file is not None:
+            custom_template = parse_template_from_json_file(template_file)
+
+            # Read the model_type from the lightweight config first, so a mismatched template
+            # fails fast without loading the full model (which can be slow and memory-heavy).
+            config = AutoConfig.from_pretrained(args.model_dir, trust_remote_code=trust_remote_code)
+            config_model_type = config.model_type if hasattr(config, "model_type") else config.architectures[0]
+            if custom_template.model_type != config_model_type:
+                raise ValueError(
+                    f"--template_file defines model_type '{custom_template.model_type}', "
+                    f"but the model at {args.model_dir} is '{config_model_type}'. "
+                    "Set the 'model_type' key in the template JSON file to match the model."
+                )
+
+            LLMTemplate.register_template(custom_template)
+            logger.info(f"Registered custom template '{custom_template.model_type}' from {template_file}")
+
         # Set CWD - Current Working Directory (some of the files here depend on relative paths).
         abspath = os.path.abspath(__file__)
         dname = os.path.dirname(abspath)
@@ -193,9 +229,6 @@ class TorchLLM_PTQ_CLI(base_cli.BaseQuarkCLICommand):
         # The current method results in high CPU memory consumption due to multiple copies of the same model.
         # We plan to address this in the future by implementing a more efficient way to dispatch the model to devices.
         device = args.device
-
-        # Convert no_trust_remote_code to trust_remote_code
-        trust_remote_code = not args.no_trust_remote_code
 
         model, model_dtype = get_model(
             args.model_dir, "auto", device, True, args.multi_device, trust_remote_code=trust_remote_code

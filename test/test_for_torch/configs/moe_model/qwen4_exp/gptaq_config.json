@@ -1,0 +1,9 @@
+{
+  "name": "gptaq",
+  "inside_layer_modules": [
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ],
+  "model_decoder_layers": "model.layers"
+}

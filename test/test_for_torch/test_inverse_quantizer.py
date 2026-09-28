@@ -37,7 +37,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
 from quark.common.utils.testing_utils import TEST_WITH_EXTENSIVE, require_torch_cuda, torch_device
 from quark.torch import LLMTemplate, ModelQuantizer, export_safetensors
-from quark.torch.export.safetensors import _load_weights_from_safetensors, patch_missing_weights
+from quark.torch.export.safetensors import _find_missing_weights_from_source
 from quark.torch.quantization import OCP_MXFP4Spec
 from quark.torch.quantization.config.config import QConfig, QLayerConfig
 from quark.torch.quantization.inverse_quantizer import (
@@ -477,8 +477,8 @@ def test_decompress_weight_calls_compressor_decompress() -> None:
     assert torch.equal(result, sentinel)
 
 
-def test_patch_missing_weights_does_not_restore_compressed_tensors_artifacts(tmp_path):
-    """patch_missing_weights only copies back keys matching the model's ignore patterns. The
+def test_find_missing_weights_does_not_restore_compressed_tensors_artifacts(tmp_path):
+    """_find_missing_weights_from_source only returns keys matching the model's ignore patterns. The
     compressed-tensors intermediate tensors (weight_scale_inv / weight_packed / weight_shape /
     weight_zero_point) do not match those patterns and must NOT be restored into the export — only
     genuine mtp.* weights should be. Regression guard for the earlier bug where weight_scale_inv
@@ -496,26 +496,19 @@ def test_patch_missing_weights_does_not_restore_compressed_tensors_artifacts(tmp
     }
     save_file(source_sd, str(source_dir / "model.safetensors"), metadata={"format": "pt"})
 
-    export_dir = tmp_path / "export"
-    export_dir.mkdir()
-    save_file(
-        {"model.embed.weight": torch.zeros(2, 2)}, str(export_dir / "model.safetensors"), metadata={"format": "pt"}
-    )
-
-    # None -> patch_missing_weights falls back to the default mtp.* pattern; artifacts never match it.
+    # None -> _find_missing_weights_from_source falls back to the default mtp.* pattern; artifacts never match it.
     model = types.SimpleNamespace()
     model.config = types.SimpleNamespace(_name_or_path=str(source_dir))
     model._keys_to_ignore_on_load_unexpected = None
 
-    patch_missing_weights(export_dir, model)
+    missing = _find_missing_weights_from_source(model, existing_keys={"model.embed.weight"})
 
-    exported = _load_weights_from_safetensors(str(export_dir))
     # Only the genuine mtp weight is restored; compressed-tensors artifacts are not.
-    assert "mtp.fc.weight" in exported
+    assert set(missing.keys()) == {"mtp.fc.weight"}
     for artifact in (
         "model.layers.0.self_attn.q_proj.weight_scale_inv",
         "model.layers.0.self_attn.q_proj.weight_packed",
         "model.layers.0.self_attn.q_proj.weight_shape",
         "model.layers.0.mlp.down_proj.weight_zero_point",
     ):
-        assert artifact not in exported, f"{artifact} must not be restored into the export"
+        assert artifact not in missing, f"{artifact} must not be restored into the export"

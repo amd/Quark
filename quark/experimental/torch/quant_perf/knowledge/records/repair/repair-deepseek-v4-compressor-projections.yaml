@@ -1,0 +1,64 @@
+schema_version: 1
+id: repair.vllm.quark.deepseek-v4-compressor-projections.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [load_run, accuracy_gap]
+  error_contains:
+    - compressor.fused_wkv_wgate.weight_scale
+    - compressor.fused_wkv_wgate.input_scale
+  keywords: [quark, compressor, wkv, wgate, PTPC-FP8]
+summary: Preserve separately quantized DeepSeek V4 compressor projections instead of forcing them into an unquantized fused projection.
+guidance:
+  - Inspect the exported configuration and tensor headers for compressor wkv and wgate before changing the loader; the validated case keeps wkv native and quantizes wgate with PTPC-FP8.
+  - The original compressor constructs fused_wkv_wgate with quant_config=None and calls torch.mm directly, so it cannot consume the separate Quark weight scales or dynamic activation quantization.
+  - For the Quark path, construct checkpoint-named wkv and wgate projections with their own resolved quantization schemes; dispatch quantized projections through their quantization method.
+  - Preserve the native projection's FP32 computation and concatenate KV and gate outputs in the original order for the FP32 compressor state.
+  - Update both attention and indexer compressor call sites to use the projection helper. In the model loader, keep separate checkpoint names when the fused destination parameter does not exist.
+  - Keep the established fused path for non-Quark models. Do not invent a fused checkpoint scale or drop activation quantization by merely dequantizing weights into the old fused buffer.
+  - This differs from a fused-indexer loading repair whose destination intentionally consumes dequantized weights; here the two projections retain different quantization behavior at inference.
+  - Compare the quantized projection against an independent scaled FP32 calculation and verify native output preservation, then run eager/default TP load-inference and the original offline accuracy gate.
+required_checks: [parameter_mapping, projection_numerics, native_output_preservation, load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: projection_regression_and_combined_runtime_full_offline_gsm8k
+  validated_case:
+    model_arch: deepseek_v4
+    model: DeepSeek-V4-Flash-0731
+    framework_version: 0.25.0+rocm723
+    accelerator: gfx950
+    gpu_type: mi350x
+    tensor_parallel_size: 2
+    failure: compressor_fused_weight_scale_keyerror
+    result: separate_quantized_and_native_projections_loaded_and_computed_correctly
+    verification_scope: Full accuracy was measured with all required V4 repairs together, not with this change in isolation.
+    offline_gsm8k:
+      samples: 1319
+      baseline_correct: 1245
+      quantized_correct: 1232
+      relative_accuracy_loss: 0.010441767068273057
+      maximum_relative_loss: 0.06
+  framework_files:
+    - vllm/models/deepseek_v4/compressor.py
+    - vllm/models/deepseek_v4/attention.py
+    - vllm/models/deepseek_v4/amd/model.py
+  regression_files:
+    - tests/quantization/test_quark_deepseek_v4_compressor.py
+  session_artifacts:
+    - repairs/compressor-test-after-02.log
+    - repairs/vllm-small-probe-04.log
+    - repairs/vllm-small-probe-05-default.log
+    - repairs/vllm-focused-tests-with-output-projection.log
+    - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: validated_session
+  source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+  source_session_name: qwen35-accuracy-performance
+  stage: exported_model_accuracy_gate
+  repository: vllm
+  managed_commit: abf19db634553f3eb0f11d6887ba0b7e833b15f2
+  validated_runtime_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+  validated_at: "2026-09-22"

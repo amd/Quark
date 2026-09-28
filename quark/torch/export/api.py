@@ -57,6 +57,7 @@ from quark.torch.quantization.model_transformation import (
     export_cache_state_dict_from_model,
     import_model_with_cache_from_safetensors,
 )
+from quark.torch.quantization.nn.modules.mixin import QuantMixin
 from quark.torch.quantization.tensor_quantize import NonScaledFakeQuantize, ScaledFakeQuantize
 from quark.torch.utils import getattr_recursive, setattr_recursive
 
@@ -102,6 +103,25 @@ def _get_submodule_or_none(model: nn.Module, module_path: str) -> nn.Module | No
             return None
         cur = modules[part]
     return cur
+
+
+def _warn_if_awq_export_keys_are_corrupted() -> None:
+    """Warn that AWQ ``real_quantized`` export writes corrupted quantizer key names.
+
+    transformers 5.6.0 reversed the rename order in ``core_model_loading.revert_weight_conversion``,
+    so the broad ``weight`` -> ``qweight`` entry now runs before the specific ``weight_quantizer.*``
+    ones and rewrites their output a second time. Tracked in huggingface/transformers#46650; the
+    quark-side fix is to move the AWQ save path off the reverse rename.
+    """
+    if not is_transformers_version_higher_or_equal("5.6.0"):
+        return
+    logger.warning(
+        "AWQ real_quantized export on transformers>=5.6 has a known key-name corruption: "
+        "quantizer scales/zero_points are written as 'qscales'/'qqzeros' instead of "
+        "'scales'/'qzeros', producing a checkpoint that downstream loaders may not read "
+        "correctly. This is a tracked regression (huggingface/transformers#46650); if you "
+        "need a correct AWQ checkpoint, export on transformers<5.6 for now."
+    )
 
 
 class BaseExporter(ABC):
@@ -263,6 +283,7 @@ class SafetensorsExporter(BaseExporter):
                 # like weight_quantizer.0.scale, weight_quantizer.1.scale
 
                 if self.custom_mode == "awq":
+                    _warn_if_awq_export_keys_are_corrupted()
                     processed_model._weight_conversions = QUARK_AWQ_WEIGHT_CONVERSIONS
                 else:
                     processed_model._weight_conversions = QUARK_WEIGHT_CONVERSIONS
@@ -352,27 +373,112 @@ class CustomSafetensorsExporter(SafetensorsExporter):
 
 
 class DiffusersSafetensorsExporter(BaseExporter):
-    """Exporter for diffusers ModelMixin models to safetensors format."""
+    """Exporter for diffusers ModelMixin models to safetensors format.
 
-    def __init__(self, model: ModelMixin, output_dir: Path) -> None:
+    For ``weight_format="real_quantized"`` the quantized ``QuantLinear``
+    modules are first converted to packed :class:`QParamsLinear` (low-precision weights,
+    e.g. ``float4_e2m1fn_x2`` for MXFP4) via :class:`ModelPostProcessor` -- the same
+    real-quantization the LLM ``QuarkSafetensorsExporter`` uses -- before the diffusers
+    ``save_pretrained`` writes the state dict. This makes the on-disk checkpoint carry
+    packed low-precision weights (~1/4 the bf16 size) instead of high-precision masters,
+    and records ``weight_format``/``pack_method`` in ``config.json`` so the reload path
+    (:class:`QuarkDiffusersQuantizer`) can rebuild the matching packed modules.
+
+    Packed output is opt-in here: unlike the LLM exporters, the default is
+    ``"fake_quantized"``, because a packed diffusers checkpoint can only be read by a
+    Quark that has the packed reload path.
+    """
+
+    def __init__(
+        self,
+        model: ModelMixin,
+        output_dir: Path,
+        custom_mode: str = "quark",
+        weight_format: str = "fake_quantized",
+        pack_method: str = "reorder",
+    ) -> None:
         super().__init__()
         self.model = model
         self.output_dir = output_dir
+        self.custom_mode = custom_mode
+        self.weight_format = weight_format
+        self.pack_method = pack_method
 
     def _validate(self) -> None:
         if not is_diffusers_available() or not isinstance(self.model, ModelMixin):
             raise NotImplementedError("DiffusersSafetensorsExporter only supports diffusers ModelMixin models.")
+        if self.weight_format not in ["real_quantized", "fake_quantized"]:
+            raise ValueError(
+                f"weight_format must be one of `real_quantized`, `fake_quantized`, got {self.weight_format}."
+            )
+        if self.pack_method not in ["reorder", "order"]:
+            raise ValueError(f"pack_method must be one of `reorder`, `order`, got {self.pack_method}.")
 
     def _export_impl(self) -> None:
-        self.model.save_pretrained(self.output_dir)  # type: ignore[operator]
+        quant_config = getattr(self.model, "quant_config", None)
+
+        quantization_config_dict: dict[str, Any] | None = None
+        if quant_config is not None:
+            temp_json_config = JsonExporterConfig(
+                weight_format=self.weight_format,
+                pack_method=self.pack_method,
+                kv_cache_group=[],
+                min_kv_scale=getattr(quant_config, "min_kv_scale", 0.0),
+            )
+            # Only real_quantized needs a conversion here. fake_quantized is already what
+            # the in-memory QuantLinear/QuantConv2d modules serialize -- master weight plus
+            # "<layer>._weight_quantizer.*" scales -- so save_pretrained writes it directly
+            # and the reload rebuilds the same fake-quant modules.
+            if self.weight_format == "real_quantized":
+                # _map_to_quark (the reload counterpart) rebuilds packed QParamsLinear for
+                # nn.Linear ONLY. Any other quantized module type -- QuantConv2d in UNet
+                # diffusers models -- has no packed equivalent and is serialized in the
+                # fake-quant layout instead: the master weight plus
+                # "<layer>._weight_quantizer.*" scales. The reload rebuilds those
+                # quantizers, so such a layer stays quantized, but its weights are not
+                # packed and the checkpoint keeps them at full precision.
+                unsupported: dict[str, int] = {}
+                for _m in self.model.modules():  # type: ignore[union-attr, attr-defined]
+                    if isinstance(_m, QuantMixin) and not isinstance(_m, torch.nn.Linear):
+                        unsupported[type(_m).__name__] = unsupported.get(type(_m).__name__, 0) + 1
+                if unsupported:
+                    logger.warning(
+                        f"weight_format='real_quantized' packs nn.Linear only; "
+                        f"{dict(sorted(unsupported.items()))} are serialized fake-quantized "
+                        f"instead (full-precision weights plus scales). They still reload as "
+                        f"quantized modules, but the checkpoint is larger than a fully packed "
+                        f"one and those layers dequantize on every forward."
+                    )
+                # Pack QuantLinear -> QParamsLinear as the LLM QuarkSafetensorsExporter
+                # does, so save_pretrained writes packed low-precision weights. The packed
+                # module exposes a public quantizer, moving the Linear scales to
+                # "<layer>.weight_quantizer.scale"; the reload rebuilds that same layout.
+                processor = ModelPostProcessor(
+                    self.model,
+                    temp_json_config,
+                    custom_mode=self.custom_mode,
+                    output_quant=getattr(getattr(quant_config, "global_quant_config", None), "output_tensors", None)
+                    is not None,
+                    quantization_config=quant_config,
+                )
+                processor.merge_scale()
+                # get_processed_model mutates self.model in place (setattr_recursive) and
+                # returns it, so self.model is now the packed model save_pretrained sees.
+                self.model = processor.get_processed_model()  # type: ignore[assignment]
+            # Serialize the export block (weight_format/pack_method) into the config so
+            # the reload path knows which module layout to rebuild.
+            quark_quant_config = quant_config.to_dict()
+            quark_quant_config["export"] = dataclasses.asdict(temp_json_config)
+            quantization_config_dict = quark_quant_config
+
+        self.model.save_pretrained(self.output_dir)  # type: ignore[operator,attr-defined]
         logger.info(f"Successfully exported diffusers model to {self.output_dir}")
 
-        quant_config = getattr(self.model, "quant_config", None)
-        if quant_config is not None:
+        if quantization_config_dict is not None:
             config_path = self.output_dir / "config.json"
             with open(config_path) as f:
                 config = json.load(f)
-            config["quantization_config"] = quant_config.to_dict()
+            config["quantization_config"] = quantization_config_dict
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=2)
 
@@ -555,7 +661,7 @@ def export_safetensors(
     model: torch.nn.Module,
     output_dir: str | Path,
     custom_mode: str = "quark",
-    weight_format: str = "real_quantized",
+    weight_format: str | None = None,
     pack_method: str = "reorder",
 ) -> None:
     """
@@ -570,7 +676,7 @@ def export_safetensors(
         * ``"quark"``: standard quark format. This is the default and recommended format that should be favored.
         * ``"awq"``: targets AutoAWQ library.
         * ``"fp8"``: targets vLLM-compatible fp8 models.
-    :param str weight_format: How to handle quantized parameters. Defaults to ``"real_quantized"``. Possible values are:
+    :param str weight_format: How to handle quantized parameters. One format applies to the entire export; ``"real_quantized"`` and ``"fake_quantized"`` are never mixed within a checkpoint. Leaving it unset selects ``"real_quantized"``, except for diffusers models, where the default is ``"fake_quantized"`` and packed output must be requested explicitly -- a packed diffusers checkpoint is only readable by a Quark that has the packed reload path. Possible values are:
 
         * ``"real_quantized"``: actual quantized parameters.
         * ``"fake_quantized"``: QDQ (Quantize-Dequantize) representation of quantized parameters.
@@ -590,8 +696,20 @@ def export_safetensors(
             export_safetensors(model, export_path, custom_mode="quark", weight_format="real_quantized", pack_method="reorder")
     """
     # Diffusers models use a dedicated exporter that calls ModelMixin.save_pretrained directly.
-    if is_diffusers_available() and isinstance(model, ModelMixin):
-        exporter: BaseExporter = DiffusersSafetensorsExporter(model=model, output_dir=Path(output_dir))
+    is_diffusers_model = is_diffusers_available() and isinstance(model, ModelMixin)
+    if weight_format is None:
+        # Packed output is opt-in for diffusers: such a checkpoint is only readable by a
+        # Quark that has the packed reload path, so the default stays fake_quantized.
+        weight_format = "fake_quantized" if is_diffusers_model else "real_quantized"
+
+    if is_diffusers_model:
+        exporter: BaseExporter = DiffusersSafetensorsExporter(
+            model=model,
+            output_dir=Path(output_dir),
+            custom_mode=custom_mode,
+            weight_format=weight_format,
+            pack_method=pack_method,
+        )
         exporter._export()
         return
 
@@ -828,6 +946,30 @@ class SafetensorsImporter(BaseImporter):
 
         # Build model with quantization support
         model = _build_quantized_model(self.model, model_config, checkpoint_weights)
+
+        # Shared-rotation native import: if the checkpoint stores one rotation per
+        # unique in_features (`shared_input_rotation_<size>`) rather than a per-layer
+        # `input_rotation`, expand it into each online-rotation layer's buffer so the
+        # standard per-layer load path fills them. Keeps the on-disk export compact
+        # (one matrix per size) while reusing the normal rotation runtime.
+        shared_rot = {
+            k: v for k, v in checkpoint_weights.items() if k.split(".")[-1].startswith("shared_input_rotation_")
+        }
+        if shared_rot:
+            size_to_rot = {int(k.split("shared_input_rotation_")[-1]): v for k, v in shared_rot.items()}
+            for name, submodule in model.named_modules():
+                if isinstance(submodule, QParamsLinearWithRotation):
+                    size = submodule.rotation_size
+                    rot_key = f"{name}.input_rotation"
+                    if rot_key not in checkpoint_weights and size in size_to_rot:
+                        # No copy: every layer of a given size references the same
+                        # matrix, so the checkpoint stays as compact in memory as it is
+                        # on disk (one matrix per size, not per layer). Nothing mutates
+                        # it in place, and `.to(device)` below re-copies only when layers
+                        # land on different devices.
+                        checkpoint_weights[rot_key] = size_to_rot[size]
+            for k in shared_rot:
+                del checkpoint_weights[k]
 
         # Save cache-related keys BEFORE any filtering or state_dict operations
         # (needed for real_quantized mode where these keys are not in model's state_dict)
@@ -1085,7 +1227,18 @@ def _map_to_quark(model: nn.Module, quantization_config: QConfig, pack_method: s
     layers_online_rotation = []
     rotation_config = quantization_config.get_rotation_config()
     if rotation_config is not None:
-        layers_online_rotation = RotationProcessor.get_online_rotation_layers(rotation_config, model)
+        # Generic targeting: if an explicit `online_rotation_layers` list is provided
+        # on the online config, use it directly instead of deriving targets from the
+        # per-architecture `scaling_layers` template. This lets a hand-crafted native
+        # export (any model) declare its rotated layers without a model-type template.
+        # Backward-compatible: only taken when the explicit list is set.
+        explicit_online_layers = None
+        if rotation_config.online_config is not None:
+            explicit_online_layers = getattr(rotation_config.online_config, "online_rotation_layers", None)
+        if explicit_online_layers:
+            layers_online_rotation = list(explicit_online_layers)
+        else:
+            layers_online_rotation = RotationProcessor.get_online_rotation_layers(rotation_config, model)
 
         if rotation_config.r3:
             raise NotImplementedError(

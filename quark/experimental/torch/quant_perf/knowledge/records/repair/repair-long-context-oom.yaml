@@ -1,0 +1,26 @@
+schema_version: 1
+id: repair.vllm.long-context-oom.v1
+domain: repair
+kind: diagnostic_playbook
+status: validated
+applicability:
+  framework: [vllm]
+match:
+  symptoms:
+    - torch.outofmemoryerror
+    - enginedeaderror
+    - long-context oom
+  keywords: [float, contiguous, torch.cat, workspace, memory snapshot]
+summary: Find the context-length boundary and remove transient widening, copies, and per-layer scratch amplification.
+guidance:
+  - Bisect the failing context length before editing.
+  - Capture peak-memory evidence and audit float casts, contiguous copies, cat, and matmul allocations.
+  - Prefer preallocated output buffers and shared workspaces, then re-bisect the boundary.
+required_checks: [memory_boundary, load, inference]
+evidence:
+  level: E2
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: skills/vllm-kernel-debug/references/oom-debug.md
+  sha256: 4cd7a9c32d40fdb502327331a53ba9362f135a78a3ae12b2e235bc2e6c70aaa9

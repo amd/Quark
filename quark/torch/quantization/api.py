@@ -6,7 +6,7 @@
 
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import torch
@@ -24,10 +24,9 @@ from quark.torch.algorithm.utils.utils import clear_memory
 from quark.torch.export.prequantized_layer_handler import apply_prequantized_routing
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.config_verification import ConfigVerifier
-from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode
+from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantFlow, QuantizationMode
 from quark.torch.quantization.constants import LOG_EVERY_SECONDS
 from quark.torch.quantization.file2file_quantization import (
-    _resolve_legacy_positional_device_arg,
     quantize_model_per_safetensor,
 )
 from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
@@ -75,6 +74,7 @@ from quark.torch.utils import (
     getattr_recursive,
     setattr_recursive,
 )
+from quark.torch.utils.per_block_runner.lazy_loader import PerBlockLazyLoader
 
 if is_transformers_available():
     from transformers.feature_extraction_utils import BatchFeature
@@ -103,6 +103,58 @@ QUARK_QUANT_OPS: dict[
 }
 
 
+def _first_tensor(batch: Any) -> torch.Tensor | None:
+    """Return the first tensor found in a calibration batch, or None.
+
+    Matches on `Mapping` rather than `dict`: transformers' `BatchFeature` is a `UserDict`,
+    so a `dict` check would miss every multimodal batch.
+    """
+    if isinstance(batch, torch.Tensor):
+        return batch
+    values = batch.values() if isinstance(batch, Mapping) else batch if isinstance(batch, list | tuple) else ()
+    for value in values:
+        tensor = _first_tensor(value)
+        if tensor is not None:
+            return tensor
+    return None
+
+
+def _infer_calibration_device(dataloader: Any) -> torch.device:
+    """Return the accelerator the calibration batches live on.
+
+    Blocks are streamed onto the device the activations are already on, so reading it off the
+    data keeps the two from disagreeing and honours the caller's device choice without
+    threading another argument through the config.
+    """
+    tensor = _first_tensor(next(iter(dataloader), None))
+    if tensor is None:
+        raise ValueError(
+            "quant_flow=QuantFlow.per_block takes its target device from the calibration "
+            "batches, but the first batch holds no tensor."
+        )
+    if tensor.device.type == "cpu":
+        raise ValueError(
+            "quant_flow=QuantFlow.per_block streams blocks onto an accelerator, but the "
+            "calibration data is on CPU, which is the offload target. Place the calibration "
+            "data on the device the blocks should run on."
+        )
+    return tensor.device
+
+
+def _reject_multi_device_placement(model: nn.Module) -> None:
+    """Refuse an accelerate-sharded model, which per-block streaming cannot drive.
+
+    Without this the forward fails with a bare "Expected all tensors to be on the same device".
+    """
+    devices = {str(device) for device in (getattr(model, "hf_device_map", None) or {}).values()}
+    if len(devices) > 1:
+        raise ValueError(
+            f"quant_flow=QuantFlow.per_block needs a single-device model, but this one is sharded "
+            f"over {sorted(devices)}. Load it without `device_map`, or use --multi_gpu with the "
+            "standard flow."
+        )
+
+
 class ModelQuantizer:
     """
     Provides an API for quantizing deep learning models using PyTorch.
@@ -119,6 +171,9 @@ class ModelQuantizer:
         self.config_verifier = ConfigVerifier(config)
         # Cached mapping for shared-scale groups (built lazily after model is available).
         self._shared_layer_mapping: dict[str, str] = {}
+        # Set by `_do_calibration` when `quant_flow` is `per_block`; owns the block streaming
+        # state until `quantize_model` finalizes it.
+        self._per_block_loader: PerBlockLazyLoader | None = None
 
         if self.config_verifier.is_weight_only:
             config_parsing_result = "weight only quantization"
@@ -149,6 +204,8 @@ class ModelQuantizer:
         :param torch.nn.Module model: The PyTorch model to be quantized. This model should be already trained and ready for quantization.
 
         :param Optional[Union[DataLoader[torch.Tensor], DataLoader[List[Dict[str, torch.Tensor]]], DataLoader[Dict[str, torch.Tensor]], DataLoader[List[BatchFeature]]]] dataloader: The ``torch.utils.data.DataLoader`` providing data that the quantization process will use for calibration. This can be a simple ``DataLoader`` returning tensors, or a more complex structure returning either a list of dictionaries or a dictionary of tensors.
+
+        The execution flow (standard / file2file / per-block) is controlled via ``self.config.quant_flow`` and ``self.config.gpu_resident_blocks`` (see :py:class:`QConfig`), not via a parameter of this method. This method operates on an in-memory model, so it raises if ``self.config.quant_flow`` is ``QuantFlow.file2file``; use :py:meth:`direct_quantize_checkpoint` for that flow instead.
 
         :return: The quantized version of the input model. This model is now optimized for inference with reduced size and potentially improved performance on targeted devices.
         :rtype: torch.nn.Module
@@ -191,6 +248,27 @@ class ModelQuantizer:
             quantizer = ModelQuantizer(quant_config)
             quant_model = quantizer.quantize(model, calib_dataloader)
         """
+        if self.config.quant_flow is QuantFlow.file2file:
+            raise ValueError(
+                "self.config.quant_flow is QuantFlow.file2file, but quantize_model() operates on an "
+                "in-memory model. Use ModelQuantizer.direct_quantize_checkpoint() instead."
+            )
+
+        if self.config.quant_flow is QuantFlow.per_block and (
+            self.config_verifier.is_all_dynamic
+            or self.config_verifier.is_weight_only
+            or (self.config_verifier.is_act_dynamic and not self.config_verifier.is_act_contain_scale_per_tensor)
+            or self.config.quant_mode is QuantizationMode.fx_graph_mode
+        ):
+            raise ValueError(
+                "self.config.quant_flow is QuantFlow.per_block, but the per-block lazy loader is driven by "
+                "the activation calibration forward pass, and this QConfig runs none: it is weight-only, "
+                "fully dynamic with no calibrated per-tensor activation scale, or fx_graph_mode. The loader "
+                "would silently never fire and the full model would be loaded into memory instead. Note that "
+                "dynamic activations are supported when they carry a per-tensor scale to calibrate (nvfp4); "
+                "it is having nothing to calibrate that is unsupported."
+            )
+
         # Auto-route pre-quantized layers (FP8Linear / compressed-tensors / HF-dequantized MXFP4)
         # around Quark based on ``self.config.keep_prequantized_layers``. No-op when the model
         # has no pre-quantized state.
@@ -238,6 +316,13 @@ class ModelQuantizer:
         if QUARK_CHECK_SCALE:
             check_scale_stats(model, self.config)
 
+        if self._per_block_loader is not None:
+            logger.info("Finalizing per-block lazy loader to CPU before returning quantized model.")
+            self._per_block_loader.finalize(torch.device("cpu"))
+            self._per_block_loader = None
+            model.to("cpu")
+            clear_memory()
+
         # Add quant_config to attribute of the quantized model, so that it can be used for export
         model.quant_config = self.config
         # Add a flag to indicate that the model is quantized
@@ -252,7 +337,7 @@ class ModelQuantizer:
         keep_excluded_layers_as_original_model_state: bool = False,
         *legacy_device_args: str | torch.device,
         weight_converters: list[Any] | None = None,
-        device: str | torch.device | None = None,
+        device: str | torch.device | list[str | torch.device] | None = None,
         presharded_weights: dict[str, int] | None = None,
     ) -> None:
         """
@@ -265,6 +350,12 @@ class ModelQuantizer:
         The quantized shards and all configuration files (``config.json``,
         ``model.safetensors.index.json``, tokenizer files, etc.) are written to ``save_path``.
 
+        This method sets ``self.config.quant_flow = QuantFlow.file2file`` on entry, regardless
+        of the value it was passed in with, so it always reflects which flow actually ran.
+
+        When ``device`` is a list of more than one device, shards are distributed round-robin
+        across the devices and processed in parallel using one worker process per device.
+
         :param str pretrained_model_path: Path to the pretrained model directory
             containing safetensors files.
         :param str save_path: Directory path to save the quantized safetensors files.
@@ -275,9 +366,13 @@ class ModelQuantizer:
             to transform tensors after precision recovery and before quantization. For example,
             splitting fused ``gate_up_proj`` into separate ``gate_proj`` and ``up_proj``.
             Defaults to ``None``.
-        :param str | torch.device device: Device for tensor operations (e.g., ``"cuda"``,
-            ``"cuda:0"``, ``"cpu"``). Defaults to ``"cuda"``. Legacy positional callers may
-            still pass ``device`` after ``keep_excluded_layers_as_original_model_state``.
+        :param str | torch.device | list | None device: Device(s) for tensor operations.
+            Pass a single device (e.g., ``"cuda"``, ``"cuda:0"``, ``"cpu"``) for single-device
+            mode (the default, ``"cuda"`` when ``None``). Pass a list (e.g.,
+            ``["cuda:0", "cuda:1"]``) to distribute shards across those devices and quantize
+            them in parallel, one worker process per device.
+            Legacy positional callers may still pass ``device`` after
+            ``keep_excluded_layers_as_original_model_state``.
 
         Example:
 
@@ -304,23 +399,36 @@ class ModelQuantizer:
                 pretrained_model_path="/path/to/model",
                 save_path="/path/to/output",
                 weight_converters=weight_converters,
+                device=["cuda:0", "cuda:1", "cuda:2", "cuda:3"],
             )
         """
-        device = _resolve_legacy_positional_device_arg(
-            legacy_device_args,
-            device,
-            "ModelQuantizer.direct_quantize_checkpoint",
-        )
+        # Stamp the flow this call actually performs, so `self.config.quant_flow` reflects
+        # reality regardless of what the caller set before calling this method.
+        self.config.quant_flow = QuantFlow.file2file
         logger.info(f"File-to-file quantization with the configuration:\n{self.config}")
-        quantize_model_per_safetensor(
-            pretrained_model_path=pretrained_model_path,
-            quant_config=self.config,
-            save_path=save_path,
-            keep_excluded_layers_as_original_model_state=keep_excluded_layers_as_original_model_state,
-            weight_converters=weight_converters,
-            device=device,
-            presharded_weights=presharded_weights,
-        )
+        if legacy_device_args:
+            # Legacy positional device(s) must be forwarded positionally, which forces the
+            # leading arguments to be positional as well.
+            quantize_model_per_safetensor(
+                pretrained_model_path,
+                self.config,
+                save_path,
+                keep_excluded_layers_as_original_model_state,
+                *legacy_device_args,
+                weight_converters=weight_converters,
+                device=device,
+                presharded_weights=presharded_weights,
+            )
+        else:
+            quantize_model_per_safetensor(
+                pretrained_model_path=pretrained_model_path,
+                quant_config=self.config,
+                save_path=save_path,
+                keep_excluded_layers_as_original_model_state=keep_excluded_layers_as_original_model_state,
+                weight_converters=weight_converters,
+                device=device,
+                presharded_weights=presharded_weights,
+            )
         logger.info(f"File-to-file quantization completed. Output saved to {save_path}")
 
     def _check_model_device(self, model: nn.Module) -> None:
@@ -462,6 +570,12 @@ class ModelQuantizer:
                             frozen_quantized_module = submodule.to_frozen_module(frozen_params=quantize)
 
                             setattr_recursive(model, full_name, frozen_quantized_module)
+
+            # TODO: Remove once ROCm 7.2 support is dropped.
+            if torch.version.hip is not None and torch.version.hip.startswith("7.2") and counter % 500 == 0:
+                # Workaround for segfaults: https://github.com/ROCm/rocm-systems/issues/5071
+                # The patch https://github.com/ROCm/rocm-systems/pull/4066 is part of ROCm 7.14.
+                torch.cuda.synchronize()
 
         # ----if model is quantized in fx.graph mode--------------
         if isinstance(model, torch.fx.GraphModule):
@@ -651,6 +765,31 @@ class ModelQuantizer:
                             for q in quantizers:
                                 if isinstance(q, ScaledFakeQuantize):
                                     q.disable_observer()
+                if self.config.quant_flow is QuantFlow.per_block:
+                    model_dir = getattr(getattr(model, "config", None), "_name_or_path", None)
+                    if model_dir is None:
+                        raise ValueError(
+                            "quant_flow=QuantFlow.per_block requires model.config._name_or_path from from_pretrained()."
+                        )
+
+                    _reject_multi_device_placement(model)
+                    target_device = _infer_calibration_device(dataloader)
+                    logger.info("Installing per-block lazy loader on %s before activation calibration.", target_device)
+                    loader = PerBlockLazyLoader(
+                        model,
+                        model_dir,
+                        target_device=target_device,
+                        n_gpu_blocks=self.config.gpu_resident_blocks,
+                        # Advanced algorithms edit weights in place before calibration, so the
+                        # model no longer matches the checkpoint that disk streaming reads from.
+                        weights_modified_in_memory=bool(self.config.algo_config),
+                        # Lets the per-block progress line say which batch it belongs to.
+                        n_batches=len(dataloader) if hasattr(dataloader, "__len__") else 0,
+                    )
+                    clear_memory()
+                    if not loader.patched:
+                        raise RuntimeError("Failed to initialize per-block lazy loader.")
+                    self._per_block_loader = loader
                 logger.info("Running forward pass calibration for activations...")
             elif self.config.quant_mode is QuantizationMode.fx_graph_mode:
                 logger.info("Calibrating for fx graph model...")

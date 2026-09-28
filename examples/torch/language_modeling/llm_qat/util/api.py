@@ -21,7 +21,7 @@ from .utils import AverageMeter
 
 def weight_only_quantize(model, loader, quant_scheme, group_size):
     if quant_scheme in ["w_uint4_asym", "w_int4_sym"]:
-        dtype = Dtype.uint4 if "unint4" in quant_scheme else Dtype.int4
+        dtype = Dtype.uint4 if "uint4" in quant_scheme else Dtype.int4
         symmetric = "asym" not in quant_scheme
         WEIGHT_SPEC = QTensorConfig(
             dtype=dtype,

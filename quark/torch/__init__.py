@@ -13,6 +13,7 @@ from quark.torch.export.api import (
 from quark.torch.pruning.api import ModelPruner
 from quark.torch.quantization.api import ModelQuantizer, load_params
 from quark.torch.quantization.config.template import LLMTemplate
+from quark.torch.quantization.config.type import QuantFlow
 from quark.torch.quantization.utils import RuntimeOptions, disable_native_inference, enable_native_inference
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "RuntimeOptions",
     # LLM Template for quantization config
     "LLMTemplate",
+    "QuantFlow",
 ]

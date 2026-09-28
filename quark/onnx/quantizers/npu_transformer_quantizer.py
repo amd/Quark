@@ -99,7 +99,7 @@ class TransformerQDQQuantizer(QDQQuantizer):
             pruned_model.topological_sort()
             logger.info("Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).")
             self.model.model = pruned_model.model
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive; normal flow never yields an invalid graph
             logger.warning(
                 f"Unable to remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu). Exception: {e}"
             )

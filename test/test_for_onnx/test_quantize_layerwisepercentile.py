@@ -106,18 +106,10 @@ def prepare_model(output_dir):
     return onnx_model_path, onnx_quantized_model_path
 
 
-def prepare_config():
+def prepare_config(extra_options=None):
     config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
     config_copy.calibrate_method = LayerWiseMethod.LayerWisePercentile
-    quant_config = Config(global_quant_config=config_copy)
-    return quant_config
-
-
-def prepare_config_mse():
-    config_copy = copy.deepcopy(U8S8_AAWS_CONFIG)
-    config_copy.calibrate_method = LayerWiseMethod.LayerWisePercentile
-    config_copy.extra_options["LWPMetric"] = "mse"
-    config_copy.extra_options["PercentileCandidates"] = [99.99, 99.9999]
+    config_copy.extra_options.update(extra_options or {})
     quant_config = Config(global_quant_config=config_copy)
     return quant_config
 
@@ -148,20 +140,10 @@ def infer_quantized_model(quantized_model_path):
     return output
 
 
-def tensor_quantize(output_dir):
+def tensor_quantize(output_dir, extra_options=None):
     input_model_path, output_model_path = prepare_model(output_dir)
     data_reader = prepare_data()
-    quant_config = prepare_config()
-    quantizer = prepare_quantizer(quant_config)
-    quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
-    output = infer_quantized_model(quantized_model_path)
-    return output
-
-
-def tensor_quantize_mse(output_dir):
-    input_model_path, output_model_path = prepare_model(output_dir)
-    data_reader = prepare_data()
-    quant_config = prepare_config_mse()
+    quant_config = prepare_config(extra_options)
     quantizer = prepare_quantizer(quant_config)
     quantized_model_path = quantize_static(quantizer, input_model_path, output_model_path, data_reader)
     output = infer_quantized_model(quantized_model_path)
@@ -176,8 +158,20 @@ class TestTensorQuantize(unittest.TestCase):
         self.assertEqual(comp_equal, True)
 
     @use_temporary_directory
+    def test_quantize_in_memory(self, tmpdir: str):
+        output = tensor_quantize(tmpdir, {"CalibOptimizeMem": False})
+        comp_equal = np.allclose(output, output_golden, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
+    def test_quantize_from_raw(self, tmpdir: str):
+        output = tensor_quantize(tmpdir, {"LWPUseHistogram": False})
+        comp_equal = np.allclose(output, output_golden, atol=1e-1)
+        self.assertEqual(comp_equal, True)
+
+    @use_temporary_directory
     def test_quantize_mse(self, tmpdir: str):
-        output = tensor_quantize_mse(tmpdir)
+        output = tensor_quantize(tmpdir, {"LWPMetric": "mse", "PercentileCandidates": [99.99, 99.9999]})
         comp_equal = np.allclose(output, output_golden, atol=1e-1)
         self.assertEqual(comp_equal, True)
 

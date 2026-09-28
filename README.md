@@ -116,14 +116,11 @@ The examples folder also contain integrations of other quantizers under [example
 
 ## Agent Skills
 
-This repo ships a [Claude Code](https://claude.com/claude-code) skill system for Quark quantization workflows (PTQ planning, environment preflight, install, debug, export, and more).
+This repo ships Agent Skills for Quark quantization workflows, with discovery support for Claude Code, Cursor, and Codex.
 
-* Skill overview, layering rules, and full skill list: [`.claude/skills-impl/README.md`](.claude/skills-impl/README.md)
-* How to add or modify a skill: [`.claude/skills-impl/CONTRIBUTING.md`](.claude/skills-impl/CONTRIBUTING.md)
-* Architecture, contracts, and governance docs: [`docs/agent_skills/`](docs/agent_skills/README.md)
-* Example prompts: [`examples/agent_skills/prompts/`](examples/agent_skills/prompts/)
+* Canonical user-facing entries and migration status: [`skills/`](skills/)
 
-User-facing skills are auto-discovered by Claude Code from `.claude/skills/` — launch `claude` from the repo root and ask things like "quantize Qwen3-8B to FP8" or "check my environment".
+Launch an agent from the repository root to discover the skills through `.claude/skills/` or `.agents/skills/`.
 
 ## Contributing
 

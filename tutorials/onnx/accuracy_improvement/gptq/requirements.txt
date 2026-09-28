@@ -8,7 +8,7 @@ netron
 notebook
 onnx>=1.21.0,<=1.22.0
 onnxconverter-common==1.15.0
-onnxruntime~=1.25.1
+onnxruntime~=1.28.0
 onnxruntime-genai
 onnxscript
 optimum[onnxruntime]

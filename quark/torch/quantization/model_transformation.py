@@ -297,7 +297,7 @@ def setup_config_per_layer(
         if type(module) in [nn.Embedding, nn.EmbeddingBag]:
             strict = True
 
-        if _is_quantizable_layer(module):
+        if _is_quantizable_layer(module) or isinstance(module, nn.Linear):
             excluded = False
             if name in _exclude_exact:
                 exclude_fullname.append(name)
@@ -313,6 +313,7 @@ def setup_config_per_layer(
             if excluded:
                 continue
 
+        if _is_quantizable_layer(module):
             # Determine the quantization config of the layer according to priority. Specifically, layer_quant_config>layer_type_quant_config>global_quant_config
             reset = False
             # Fast path: exact-name hit short-circuits the fnmatch loop in O(1).

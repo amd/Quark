@@ -1,52 +1,50 @@
-# Unified Interaction Contract
+# Interaction And Safety Contract
 
-All user-facing Quark skills must follow this five-stage skeleton.
+## Authority
 
-## 1. Intake
+- The selected public entry and the user's concrete scope govern the run.
+- For a self-contained entry, its top-level `SKILL.md` is authoritative for flow, checkpoints, execution, and recovery.
+- For a transitional entry, the public stub is authoritative for routing and its delegated `_legacy_impl` body is authoritative for implementation, checkpoints, artifacts, and recovery.
+- Skill-specific checkpoints control sequencing, but never waive the baseline safety gates.
 
-- identify the user goal in plain language
-- collect only the missing information required to continue
-- detect whether the user wants planning only or plan plus execution
+## Baseline safety gates
 
-## 2. Route
+1. Establish the goal, inputs, constraints, target environment, and whether the user wants planning, execution, or both.
+2. Before cost or mutation, show material assumptions, risks, exact commands, affected paths or environments, and expected outputs.
+3. Obtain explicit approval before package or environment changes, destructive or overwriting writes, heavy PTQ or evaluation, unapproved script or source generation, and process-control actions.
+4. Treat approval as scoped to the displayed commands, parameters, paths, and workflow; reconfirm any deviation, added mutation, destructive cleanup, or changed retry.
+5. Read-only inspection within the requested scope does not need confirmation. Never infer success from an exit code alone; report observed outputs and remaining risks.
 
-- decide whether the request belongs to an atomic skill or a workflow
-- explain the selected path in one short sentence
-- if the request spans multiple concerns, prefer an L2 workflow
+## Current exceptions and checkpoints
 
-## 3. Plan
+### `quark-torch-ptq`
 
-- present the proposed approach before any high-cost action
-- show defaults, assumptions, risks, and meaningful options
-- reference the artifacts that will be produced next
+The workflow always stops at four checkpoints, in order:
 
-## 4. Confirm
+1. Accept the model analysis.
+2. Accept the quantization plan.
+3. Approve the exact `quark-cli torch-llm-ptq` command.
+4. Accept the verified result.
 
-User confirmation is mandatory before:
+Plan approval is not execution approval, and direct invocation may not skip any checkpoint.
 
-- installing or upgrading packages
-- overwriting files or directories
-- running heavy PTQ or evaluation jobs
-- generating or modifying execution scripts
-- applying fixes that change user code or command lines
+### `quark-install`
 
-The confirm step must include:
+The first gate confirms compute mode: GPU remains the default, while CPU mode requires an explicit
+choice after hardware and PyTorch evidence is shown. The second gate shows and approves the exact
+environment-changing commands, interpreter, package source, dependency changes, and relevant
+compilation risk. Neither CPU acceptance nor a prior install discussion authorizes execution.
 
-- what will happen next
-- what paths or environments are affected
-- what defaults were chosen
-- what the user can change before execution
+### `quark-torch-quant-perf`
 
-## 5. Execute Or Summarize
+An explicit request to execute or resume a concrete Quant-Perf workflow, together with a visible
+exact command, is the outer launch authorization for that command and scope. Fixed direct PTQ may
+use internal non-interactive delegation under that authorization. This does not bypass the four
+checkpoints for direct `quark-torch-ptq` calls. Process control still requires approval unless
+immediate safety or data loss is at risk.
 
-- execute only after confirmation when execution was requested
-- otherwise produce a runbook, commands, and next steps
-- always summarize produced artifacts, key decisions, and known risks
+## Recovery
 
-## Recovery Rule
-
-If a skill cannot continue, it must return:
-
-- the blocking reason
-- the artifact or precondition that is missing
-- the smallest next action that can unblock the user
+When execution cannot continue, return the blocking reason and preserved evidence, identify the
+missing artifact or precondition, propose the smallest safe unblock action, and name the checkpoint
+or step from which to resume.

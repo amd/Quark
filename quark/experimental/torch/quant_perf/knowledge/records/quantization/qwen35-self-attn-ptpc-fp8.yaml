@@ -1,0 +1,22 @@
+schema_version: 1
+id: quantization.qwen35.self-attn-ptpc-fp8.v1
+domain: quantization
+kind: quantization_rule
+status: validated
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+match:
+  keywords: [self_attn, ptpc_fp8]
+summary: PTPC-FP8 attention degraded real accuracy on the validated Qwen3.5 MoE stack.
+guidance:
+  - Deprioritize PTPC-FP8 for self attention while retaining it as a searchable candidate.
+  - Do not transfer the result to MLP partitions without independent evidence.
+required_checks: [post_export_accuracy]
+evidence:
+  level: E2
+  verdict: hurts
+provenance:
+  kind: curated_migration
+  source: legacy_quant_rules
+  migrated_at: "2026-08-14"

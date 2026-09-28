@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, TypeVar
 import torch
 from torch import Tensor
 
-from quark.torch.quantization.config.type import Dtype, QSchemeType
+from quark.torch.quantization.config.type import Dtype, QSchemeType, ZeroPointType
 from quark.torch.quantization.constants import PER_GROUP_INT_TRANSPOSE_DTYPES
 from quark.torch.quantization.utils import get_dtype_params
 from quark.torch.utils.numerics import safe_log2
@@ -99,7 +99,12 @@ class PackMethod:
                     # PR #1070 added a transpose for the scale for uint4/int4 data types, whenever using per-group quantization.
                     # Before quark==1.0, only custom AWQ models used to transpose the scale.
                     scale_shape = (shape_list[0], shape_list[-1] // group_size)
-                zero_point_shape = (shape_list[-1] // group_size, shape_list[0] // self.qparams_per_item)
+                # Float zero-point is stored unpacked (same shape as scale); integer
+                # zero-point is packed qparams_per_item along the output dimension.
+                if getattr(quantization_spec, "zero_point_type", None) == ZeroPointType.float32:
+                    zero_point_shape = scale_shape
+                else:
+                    zero_point_shape = (shape_list[-1] // group_size, shape_list[0] // self.qparams_per_item)
             else:
                 raise NotImplementedError(
                     f"Packed shape inference for per group quantization with `ch_axis={quantization_spec.ch_axis}` is not implemented in Quark. Please open an issue."
@@ -169,6 +174,65 @@ class Pack_2_bits(PackMethod):
             shape = (out_features, in_features)
 
         return shape
+
+
+class Pack_uint2(PackMethod):
+    """Packs 4 UINT2 values (range 0..3) into one uint8 byte (4 x 2-bit, MSB-first).
+
+    Uses the shared ``_pack``/``_unpack`` helpers, same byte layout as the other
+    sub-byte packers: a contiguous group ``[v0,v1,v2,v3]`` -> ``v0<<6|v1<<4|v2<<2|v3``.
+    Unsigned, so no sign-extension on unpack. Per-group quantization transposes the
+    weight first (like the int4 packer).
+    """
+
+    def __init__(self, qscheme: str | None, dtype: str) -> None:
+        super().__init__(qscheme, dtype)
+        self.qparams_per_item = 4
+
+    def pack(self, to_pack: torch.Tensor, reorder: bool = True) -> torch.Tensor:
+        if to_pack.ndim > 2:
+            raise ValueError("Pack: Only supports tensors with dimensions not greater than 2.")
+        to_pack = self.transpose(to_pack)
+        if to_pack.shape[-1] % 4 != 0:
+            raise NotImplementedError(
+                f"UINT2 packing requires the packed axis to be a multiple of 4. Got {to_pack.shape[-1]}."
+            )
+        if to_pack.numel() > 0 and (int(to_pack.min()) < 0 or int(to_pack.max()) > 3):
+            raise ValueError(
+                f"UINT2 packing expects values in [0, 3]; got range "
+                f"[{int(to_pack.min())}, {int(to_pack.max())}]. Signed/out-of-range input would be "
+                "silently wrapped by the 0x03 mask, producing incorrect packed data."
+            )
+        masked = (to_pack.to(torch.int32) & 0x03).to(torch.uint8)
+        return _pack(masked, 2).contiguous()
+
+    def unpack(
+        self, to_unpack: torch.Tensor, reorder: bool = True, origin_packed_axis_size: int | None = None
+    ) -> torch.Tensor:
+        if to_unpack.ndim > 2:
+            raise ValueError("Unpack: Only supports tensors with dimensions not greater than 2.")
+        unpacked = _unpack(to_unpack, 2).to(torch.int32)  # values 0..3, unsigned
+        unpacked = self.transpose(unpacked)
+        if origin_packed_axis_size is not None and origin_packed_axis_size != unpacked.shape[0]:
+            if unpacked.dim() == 2:
+                unpacked = unpacked[:origin_packed_axis_size, :]
+            elif unpacked.dim() == 1:
+                unpacked = unpacked[:origin_packed_axis_size]
+        return unpacked
+
+    def transpose(self, tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.ndim > 2:
+            raise ValueError("Only supports tensors with dimensions not greater than 2.")
+        if self.qscheme == "per_group":
+            tensor = tensor.t().contiguous()
+        return tensor
+
+    def _infer_tensor_shape(self, unpacked_shape: tuple[int, ...]) -> tuple[int, ...]:
+        shape_list = list(unpacked_shape)
+        if self.qscheme == "per_group":
+            shape_list[0], shape_list[-1] = shape_list[-1], shape_list[0]
+        shape_list[-1] = shape_list[-1] // self.qparams_per_item
+        return tuple(shape_list)
 
 
 class Pack_3_bits(PackMethod):
@@ -699,6 +763,7 @@ def create_pack_method(qscheme: str | None, dtype: str, mx_element_dtype: str | 
 
     pack_methods = {
         "int2": Pack_2_bits,
+        "uint2": Pack_uint2,
         "int3": Pack_3_bits,
         "int4": Pack_4_bits,
         "uint4": Pack_4_bits,

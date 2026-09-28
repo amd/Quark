@@ -48,6 +48,7 @@ QCONFIG_ALL_PARAMS = {
     "algo_config",
     "use_external_data_format",
     "extra_options",
+    "ShapeShifterYaml",
     "PreprocessYAML",
     "OpTypesToQuantize",
     "ExtraOpTypesToQuantize",
@@ -84,7 +85,7 @@ QCONFIG_ALL_PARAMS = {
     "Percentile",
     "LWPMetric",
     "PercentileCandidates",
-    "CalibOptimizeDisk",
+    "LWPUseHistogram",
     "UseRandomData",
     "RandomDataReaderInputShape",
     "RandomDataReaderInputDataRange",
@@ -123,6 +124,7 @@ QCONFIG_ALL_PARAMS = {
     "AlignTranspose",
     "AlignReshape",
     "AdjustBiasScale",
+    "AdjustWeightScaleForInt32Bias",
     "SaveAndRestore",
     "TensorsRangeFile",
     "ReplaceClip6Relu",
@@ -165,6 +167,7 @@ QCONFIG_ALL_PARAMS = {
     "BFPAttributes",
     "MXAttributes",
     "EnableDualQuantNodePairs",
+    "QuantizationPreference",
 }
 
 
@@ -445,6 +448,7 @@ def _map_layer_type_config(
 def _get_mixed_precision_nodes(
     specific_layer_config: dict[QLayerConfig, list[str]] | None,
     layer_type_config: dict[QLayerConfig | None, list[str]] | None,
+    tensor_quant_overrides: dict[str, list[Any]] | None,
     model_input: str | onnx.ModelProto,
 ) -> list[str]:
     """
@@ -453,15 +457,18 @@ def _get_mixed_precision_nodes(
 
     :param specific_layer_config: Per-layer name patterns to quantization configs, or ``None``.
     :param layer_type_config: Per operator-type overrides; ``None`` keys are ignored here.
+    :param tensor_quant_overrides: Tensor quantization overrides from extra options.
     :param model_input: Path to the ONNX model file or ONNX model object.
     :return: Sorted list of unique node names.
     """
     layer_configs = specific_layer_config or {}
     type_configs = layer_type_config or {}
-    if not layer_configs and not type_configs:
+    quant_overrides = tensor_quant_overrides or {}
+    if not layer_configs and not type_configs and not quant_overrides:
         return []
 
     model = onnx.load(model_input) if isinstance(model_input, str) else model_input
+    initializer_names = [init.name for init in model.graph.initializer]
 
     node_names: set[str] = set()
 
@@ -475,6 +482,13 @@ def _get_mixed_precision_nodes(
             if node.op_type in op_types:
                 node_name = node.name or node.op_type
                 node_names.add(node_name)
+
+    for tensor_name, _ in quant_overrides.items():
+        if tensor_name in initializer_names:
+            continue
+        for node in model.graph.node:
+            if tensor_name in node.input:
+                node_names.add(node.name)
 
     return sorted(node_names)
 
@@ -675,7 +689,10 @@ def _map_q_config(q_config: QConfig, model_input: str) -> dict[str, Any]:
         mapping["extra_options"]["NodesWithMixedPrecision"] = q_config.extra_options["NodesWithMixedPrecision"]
     else:
         mapping["extra_options"]["NodesWithMixedPrecision"] = _get_mixed_precision_nodes(
-            q_config.specific_layer_config, q_config.layer_type_config, model_input
+            q_config.specific_layer_config,
+            q_config.layer_type_config,
+            q_config.extra_options.get("TensorQuantOverrides", None),
+            model_input,
         )
     mapping["nodes_to_exclude"] += _map_layer_type_config(q_config.layer_type_config, model_input)[1]  # type: ignore
     if "InputNodes" in q_config.extra_options:

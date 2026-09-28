@@ -3,7 +3,26 @@ recursive-include quark/common/csrc *
 recursive-include quark/torch/include *
 recursive-include quark/torch/kernel/hw_emulation/csrc *
 recursive-include quark/onnx/operators/custom_ops *
+recursive-include quark/experimental/torch/quant_perf *.md *.json *.yaml
 
 # Include pre-compiled extension libraries
 recursive-include quark/torch/kernel/hw_emulation/lib *.so *.dll *.dylib
 recursive-include quark/onnx/operators/custom_ops/lib *.so *.dll *.dylib
+
+# Canonical assets copied into wheels by setup.py::BuildCommand. They must also
+# be present when a wheel is built from the source distribution.
+recursive-include examples/experimental/speculative_decoding *.sh *.py *.yaml *.json *.jsonl *.rocm *.rst
+graft skills
+
+# Runner outputs default outside this tree (see EX_DIR and CACHE_DIR in
+# eagle3/common/scripts/_common.sh), so nothing below is expected to match. It
+# stays as a net for a checkout that ran an older build, whose leftovers share
+# extensions with real assets. Written per output name and matched at any
+# depth, so a new profile needs no new line here.
+#
+# Do not write this as `recursive-exclude <dir> __pycache__ *`: that reads as
+# two patterns, `*` matches every filename, and the include above then ships
+# nothing at all.
+recursive-exclude examples/experimental/speculative_decoding data/* runtime/* training/* release/* logs/*
+recursive-exclude examples/experimental/speculative_decoding cache/* outputs/* ckpts/* models/* TorchSpec/*
+global-exclude *.pyc report.json

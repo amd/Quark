@@ -1,0 +1,23 @@
+schema_version: 1
+id: quantization.qwen35.linear-attn-fp8.v1
+domain: quantization
+kind: quantization_rule
+status: validated
+applicability:
+  model_arch: [qwen3_5_moe]
+  framework: [vllm]
+match:
+  keywords: [linear_attn, fp8]
+summary: FP8 linear attention can preserve accuracy when fused QKV scales are loaded into every covered shard.
+guidance:
+  - Treat fake-quant search accuracy as advisory for fused linear-attention projections.
+  - Verify that one per-tensor scale is broadcast to every tuple shard before trusting the result.
+  - Require real post-export accuracy.
+required_checks: [post_export_accuracy]
+evidence:
+  level: E2
+  verdict: ok
+provenance:
+  kind: curated_migration
+  source: legacy_quant_rules
+  migrated_at: "2026-08-14"

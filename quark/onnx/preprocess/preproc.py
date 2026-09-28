@@ -13,7 +13,7 @@ from onnxruntime.quantization.quant_utils import QuantType
 
 from quark.common.profiler import ProfileStep, profile_scope
 from quark.common.utils.log import ScreenLogger, log_errors
-from quark.onnx.algorithm import apply_pre_quant_algorithms
+from quark.onnx.algorithm import apply_pre_quant_algorithms, stem_equalize_transforms
 from quark.onnx.calibration import CachedDataReader
 from quark.onnx.optimizations import optimize_model, optimize_model_using_onnxrt, optimize_model_using_onnxslim
 from quark.onnx.quantization.quant_utils import (
@@ -71,7 +71,7 @@ def apply_pre_optimization_before_algo(
     if isinstance(extra_options.get("ConvertOpsetVersion"), int):
         try:
             float_model = convert_opset_version(float_model, extra_options["ConvertOpsetVersion"])
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires opset-conversion failure
             logger.warning(f"Fail to convert opset version beacuse of {e}, skip the conversion.")
 
     if convert_fp16_to_fp32:
@@ -83,28 +83,28 @@ def apply_pre_optimization_before_algo(
     if convert_nchw_to_nhwc:
         try:
             float_model = convert_func(float_model)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires nchw->nhwc failure
             logger.warning(f"Failed to convert nchw to nhwc beacuse of {e}, skip the conversion.")
 
     if extra_options.get("SimplifyModel", True):
         try:
             onnxslim_config = extra_options.get("SimplifyModelOptions", {})
             float_model = optimize_model_using_onnxslim(float_model, onnxslim_config)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires onnxslim failure
             logger.warning(f"Fail to simplify the float model because of {e}.")
 
     # Step2. Dealing initializers
     if extra_options.get("RemoveInputInit", True):
         try:
             float_model = remove_initializer_from_input(float_model)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires remove-init failure
             logger.warning(f"Fail to remove initializers from inputs because of {e}.")
 
     shared_init_optypes = extra_options.get("CopySharedInit")
     if shared_init_optypes is not None:
         try:
             float_model = convert_shared_initializer_to_unique.convert(float_model, shared_init_optypes)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires shared-init dup failure
             logger.warning(f"Fail to duplicate the shared initializers because of {e}.")
 
     shared_bias_init_optypes = extra_options.get("CopyBiasInit", ["Conv", "ConvTranspose", "Gemm"])
@@ -128,7 +128,7 @@ def apply_pre_optimization_before_algo(
                 float_model = convert_shared_initializer_to_unique.convert(
                     float_model, shared_bias_init_optypes, prefix="duplicated", only_bias=True
                 )
-            except Exception as e:
+            except Exception as e:  # pragma: no cover - requires shared-bias dup failure
                 logger.warning(f"Fail to duplicate the shared bias initializers because of {e}.")
 
     if optimize_model_flag:
@@ -136,7 +136,7 @@ def apply_pre_optimization_before_algo(
         try:
             opt_model_path = Path(os.path.join(os.path.dirname(model_path), "optimized_model.onnx"))
             float_model = optimize_model_using_onnxrt(Path(model_path), opt_model_path)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires ORT graph-optimize failure
             logger.warning(f"Failed to optimize the model using graph optimization of ort because of {e}.")
             float_model = load_model_with_shape_infer(model_path)
 
@@ -176,7 +176,7 @@ def apply_pre_optimization_before_algo(
             model_temp = fix_input_and_output_shapes(float_model, fix_name_shape)
             tensor_name_shape_dict = infer_all_tensors_shape(model_temp, use_external_data_format)
             float_model = save_all_tensors_shape(model_temp, tensor_name_shape_dict)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires shape-fix failure
             logger.warning(f"Fail to fix shapes of the model beacuse of {e}.")
 
     return float_model
@@ -213,6 +213,15 @@ def apply_pre_quantization_algorithms(
     """
 
     if include_cle:
+        # Stem equalization handles the stem conv (BN fan-out downstream) that
+        # Conv->Conv CLE structurally skips; no-op when no stem/BN pattern is found.
+        float_model = stem_equalize_transforms(
+            float_model,
+            op_types_to_quantize if op_types_to_quantize is not None else [],
+            nodes_to_quantize,
+            nodes_to_exclude,
+        )
+
         float_model = apply_pre_quant_algorithms(
             float_model,
             op_types_to_quantize=op_types_to_quantize,

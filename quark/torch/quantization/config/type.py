@@ -31,6 +31,7 @@ from quark.common.data_type import (
     BaseQSchemeType,
     BaseRoundType,
     BaseScaleType,
+    BaseUInt2,
     BaseUInt4,
     BaseUInt8,
     BaseUInt16,
@@ -146,6 +147,12 @@ class Int2(BaseInt2):
     torch_packed_dtype = torch.int32
 
 
+class UInt2(BaseUInt2):
+    """Unsigned 2-bit integer quantization data type (4 values packed per uint8)."""
+
+    torch_packed_dtype = torch.uint8
+
+
 class Int3(BaseInt3):
     """Signed 3-bit integer quantization data type."""
 
@@ -211,6 +218,7 @@ SUPPORT_DATA_TYPE = [
     UInt4,
     Int3,
     Int2,
+    UInt2,
     BFloat16,
     Float16,
     FP8_E5M2,
@@ -239,6 +247,7 @@ class Dtype(BaseDtype):
     - `uint4`: Unsigned 4-bit integer, range from 0 to 15.
     - `int3`: Signed 3-bit integer, range from -4 to 3.
     - `int2`: Signed 2-bit integer, range from -2 to 1.
+    - `uint2`: Unsigned 2-bit integer, range from 0 to 3 (4 values packed per uint8).
     - `bfloat16`: Bfloat16 format.
     - `float16`: Standard 16-bit floating point format.
     - `fp8_e4m3`: FP8 format with 4 exponent bits and 3 bits of mantissa.
@@ -260,6 +269,7 @@ class Dtype(BaseDtype):
     uint4 = UInt4.__name__.lower()
     int3 = Int3.__name__.lower()
     int2 = Int2.__name__.lower()
+    uint2 = UInt2.__name__.lower()
     bfloat16 = BFloat16.__name__.lower()
     float16 = Float16.__name__.lower()
     fp8_e5m2 = FP8_E5M2.__name__.lower()
@@ -411,6 +421,21 @@ class QuantizationMode(Enum):
 
     eager_mode = auto()
     fx_graph_mode = auto()
+
+
+class QuantFlow(Enum):
+    """
+    Which quantization execution flow `ModelQuantizer` should run.
+
+    - `standard`: full model resident in memory (the default).
+    - `file2file`: quantize safetensors shards directly via `direct_quantize_checkpoint`,
+      without loading the full model.
+    - `per_block`: load decoder blocks lazily between weight and activation calibration.
+    """
+
+    standard = auto()
+    file2file = auto()
+    per_block = auto()
 
 
 class TQTThresholdInitMeth(Enum):

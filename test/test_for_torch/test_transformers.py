@@ -93,4 +93,4 @@ def test_transformers_load(model_id: str):
     logits_ref = torch.load(file_path, weights_only=True)
 
     # TODO: generate reference logits (after quantization, before export) on the fly and test with smaller rtol/atol.
-    assert torch.allclose(logits_reloaded, logits_ref, rtol=1e-2, atol=1e-2)
+    assert torch.allclose(logits_reloaded.float(), logits_ref.float(), rtol=1e-2, atol=1e-2)

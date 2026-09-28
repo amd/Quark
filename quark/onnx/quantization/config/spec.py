@@ -20,6 +20,7 @@ from .data_type import (
     MXFP8E4M3,
     MXFP8E5M2,
     BFloat16,
+    Float16,
     Int8,
     Int16,
     Int32,
@@ -277,6 +278,22 @@ class UInt32Spec(QTensorConfig):
         calibration_method: CalibMethod = CalibMethod.Percentile,
         quant_granularity: QuantGranularity = QuantGranularity.Tensor,
         data_type: type[BaseDataType] = UInt32,
+    ):
+        super().__init__(symmetric, scale_type, calibration_method, quant_granularity, data_type)
+
+
+class Float16Spec(QTensorConfig):
+    """
+    Specification for float16 tensors.
+    """
+
+    def __init__(
+        self,
+        symmetric: bool = True,
+        scale_type: ScaleType = ScaleType.Float32,
+        calibration_method: CalibMethod = CalibMethod.MinMax,
+        quant_granularity: QuantGranularity = QuantGranularity.Tensor,
+        data_type: type[BaseDataType] = Float16,
     ):
         super().__init__(symmetric, scale_type, calibration_method, quant_granularity, data_type)
 

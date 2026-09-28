@@ -11,6 +11,7 @@ import copy
 import math
 import time
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -20,7 +21,7 @@ from tqdm import tqdm
 from quark.common.utils.log import ScreenLogger
 from quark.torch.algorithm.blockwise_tuning.blockwise_utils import block_forward
 from quark.torch.algorithm.common import BaseHessianAlgorithm, BaseHessianProcessor, RestoreOriginalWeights
-from quark.torch.algorithm.utils.module import get_device
+from quark.torch.algorithm.utils.module import get_device, get_moe_layers
 from quark.torch.algorithm.utils.utils import clear_memory
 from quark.torch.quantization.config.config import GPTAQConfig
 from quark.torch.quantization.tensor_quantize import ScaledFakeQuantize
@@ -295,9 +296,24 @@ class GptaqProcessor(BaseHessianProcessor):
         num_batches: int,
         current_layer_device: torch.device,
     ) -> None:
+        # Add router replay hooks to remove MoE token routing drift between quantized and non-quantized model
+        gates = [getattr(m, "gate", None) or getattr(m, "router", None) for m in get_moe_layers(layer).values()]
+        gates = [g for g in gates if g is not None]
+        gate_cache: dict[int, Any] = {}
+        replay = [False]
+
+        def gate_hook(module: nn.Module, inp: tuple[torch.Tensor, ...], out: Any) -> Any:
+            if replay[0]:
+                return gate_cache.get(id(module))
+            gate_cache[id(module)] = out
+            return None
+
+        gate_handles = [g.register_forward_hook(gate_hook) for g in gates]
+
         # Process one sample at a time to ensure the quantized input from each sample's
         # quantized forward pass is available for the corresponding G calculation
         for batch_idx in tqdm(range(num_batches), desc="Collecting GPTAQ statistics"):
+            replay[0] = False
             # block_forward expectes List[torch.Tensor] as input.
             # tensor shape: [1, seq_length, dim]
             batch_input = [layer_inputs[batch_idx]]
@@ -339,6 +355,8 @@ class GptaqProcessor(BaseHessianProcessor):
             for hook in hook_handles_H:
                 hook.remove()
 
+            replay[0] = True
+
             hook_handles_G = []
             for name in grouped_inner_layers:
                 hook_handles_G.append(
@@ -359,3 +377,6 @@ class GptaqProcessor(BaseHessianProcessor):
 
             for hook in hook_handles_G:
                 hook.remove()
+
+        for hook in gate_handles:
+            hook.remove()

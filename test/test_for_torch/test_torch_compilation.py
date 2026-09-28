@@ -24,7 +24,7 @@ from quark.torch.quantization.config.config import (
     QLayerConfig,
     QTensorConfig,
 )
-from quark.torch.quantization.config.type import Dtype, QSchemeType, RoundType, ScaleType
+from quark.torch.quantization.config.type import MX6, Dtype, QSchemeType, RoundType, ScaleType
 from quark.torch.quantization.observer.observer import (
     PerBlockMXObserver,
     PerChannelMinMaxObserver,
@@ -222,6 +222,29 @@ def test_mx_for_torch_compile(dtype, element_dtype, device):
     activation_spec.is_dynamic = True
 
     quantize_and_compile_model(device, weight_spec=weight_spec, activation_spec=activation_spec)
+
+
+@pytest.mark.parametrize("dtype", [Dtype.mx6, Dtype.mx9])
+@pytest.mark.parametrize("device", [pytest.param(val, id=f"device:{val}") for val in TEST_DEVICES])
+def test_mx6_mx9_real_quantize_for_torch_compile(dtype, device):
+    """The real-quantize path carries the same `torch.compile` hazards as the fake one.
+
+    In particular the range assertion inside the kernel reads tensor values, which is a
+    data-dependent branch that would break `fullgraph=True` if it were not guarded.
+    """
+    torch.compiler.reset()
+    torch._dynamo.reset()
+
+    def real_quantize(x):
+        return torch.ops.quark.non_scaled_real_quantize(x, dtype.value, "", -1, MX6.k1)
+
+    x = torch.randn(32, 64, device=device)
+
+    eager = real_quantize(x)
+    compiled = torch.compile(real_quantize, fullgraph=True)(x)
+
+    assert eager.shape == (32, 64 // MX6.k1 * (MX6.k1 + 2))
+    assert torch.equal(eager, compiled)
 
 
 def test_recompilations():

@@ -43,7 +43,7 @@ class SmoothQuant:
         self.providers = providers
 
         self.base_dir = create_tmp_dir(prefix="quark_onnx.sq.").name
-        if self.use_external_data_format:
+        if self.use_external_data_format:  # pragma: no cover - >2GB external-data path
             for prop in input_model.metadata_props:
                 if prop.key == "cache_path":
                     self.base_dir = prop.value

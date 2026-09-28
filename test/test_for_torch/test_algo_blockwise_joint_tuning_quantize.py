@@ -14,10 +14,10 @@ import pytest
 import torch
 import torch.nn as nn
 
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.learnable_linear import (
+from quark.experimental.torch.blockwise_joint_tuning.quantize.learnable_linear import (
     ExperimentalLearnableQuantizedLinear,
 )
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.quantizer import (
+from quark.experimental.torch.blockwise_joint_tuning.quantize.quantizer import (
     WeightGroupQuantizer,
     _ste_clamp,
     _ste_round,

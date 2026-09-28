@@ -41,10 +41,12 @@ class PytorchModelConfig(ModelConfig):
     model_type: Literal["pytorch"] = Field(default="pytorch", description="Model type discriminator for Pydantic.")
 
     weights_only: bool = Field(
-        default=False,
-        description="If True, only load state_dict (more secure but restrictive). "
-        "If False, load full model object using pickle (required for nn.Module objects). "
-        "Note: PyTorch 2.6+ defaults to True for security, but loading nn.Module requires False.",
+        default=True,
+        description="If True (default), only load tensors/state_dict, matching PyTorch 2.6+'s "
+        "secure default that refuses to unpickle arbitrary objects. If False, load the full "
+        "model object using pickle (required to load nn.Module objects, but executes arbitrary "
+        "code on load -- only use it for files you trust). Loading a full nn.Module fails under "
+        "the safe default; set this to False explicitly to opt in.",
     )
 
     map_location: str = Field(

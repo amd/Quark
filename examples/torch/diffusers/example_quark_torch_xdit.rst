@@ -178,7 +178,7 @@ Dynamic vs Static Quantization
 Notes
 -----
 
-1. **Model Support**: The script automatically detects whether the model uses a transformer or UNet architecture and applies quantization accordingly.
+1. **Model Support**: The script automatically detects whether the model uses a transformer or UNet architecture and applies quantization accordingly. This includes text-to-video transformer pipelines such as **Wan2.2** (TI2V-5B, T2V-A14B), whose ``pipe.transformer`` is quantized through the same ``--use_quark_quantize --quark_quantization_mode {fp8,mxfp4}`` path.
 
 2. **Distributed Execution**: When using torchrun with multiple GPUs, the script automatically handles distributed initialization and synchronization.
 

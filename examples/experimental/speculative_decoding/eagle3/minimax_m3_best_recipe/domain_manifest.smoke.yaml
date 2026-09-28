@@ -1,0 +1,39 @@
+# Small repository-authored plumbing manifest. Responses are regenerated
+# on-policy by the selected target before training.
+version: 1
+seed: 0
+max_samples_per_domain: 3
+splits:
+  train: 0.8
+  eval: 0.2
+domains:
+  general_instruction:
+    sources:
+      - type: jsonl
+        name: smoke-general-instruction
+        path: smoke_data/general_instruction.jsonl
+        license: MIT
+  code:
+    sources:
+      - type: jsonl
+        name: smoke-code
+        path: smoke_data/code.jsonl
+        license: MIT
+  math_reasoning:
+    sources:
+      - type: jsonl
+        name: smoke-math-reasoning
+        path: smoke_data/math_reasoning.jsonl
+        license: MIT
+  question_answering:
+    sources:
+      - type: jsonl
+        name: smoke-question-answering
+        path: smoke_data/question_answering.jsonl
+        license: MIT
+  multilingual:
+    sources:
+      - type: jsonl
+        name: smoke-multilingual
+        path: smoke_data/multilingual.jsonl
+        license: MIT

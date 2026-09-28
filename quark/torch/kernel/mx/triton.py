@@ -714,8 +714,20 @@ def downcast_to_mxfp_torch(
     ds_int = dequant_scale.view(torch.int32)
     if DEQUANT_SCALE_ROUNDING_MODE == DequantScaleRoundingMode.ROUND_UP:
         ds_int_rounded = (ds_int + 0x007FFFFF) & 0x7F800000
-    else:
+    elif DEQUANT_SCALE_ROUNDING_MODE == DequantScaleRoundingMode.ROUND_DOWN:
         ds_int_rounded = ds_int & 0x7F800000
+    else:
+        # EVEN: only supported for mxfp4 (uint8), mirroring the Triton kernel which
+        # static_asserts against fp8 in _get_max_quant_exp. Delegates to even_round so
+        # all dtype-specific constants (rounding bias, emax) live in one place.
+        if out_quant_type != torch.uint8:
+            raise NotImplementedError(
+                f"EVEN rounding mode is only implemented for mxfp4 (torch.uint8); "
+                f"got {out_quant_type}. Use ROUND_UP or ROUND_DOWN for fp8."
+            )
+        from quark.torch.quantization.utils import even_round
+
+        ds_int_rounded = even_round(max_val, "fp4").view(torch.int32)
     # Reinterpret back as float32.
     dequant_scale_rounded = ds_int_rounded.view(torch.float32)
 

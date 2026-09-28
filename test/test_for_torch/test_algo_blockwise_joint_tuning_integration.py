@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from quark.common.utils.testing_utils import require_torch_cuda, torch_device
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.learnable_linear import (
+from quark.experimental.torch.blockwise_joint_tuning.quantize.learnable_linear import (
     ExperimentalLearnableQuantizedLinear,
 )
 from quark.torch.algorithm.api import blockwise_tuning_algo

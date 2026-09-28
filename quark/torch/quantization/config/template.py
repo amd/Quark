@@ -23,6 +23,7 @@ from quark.torch.quantization.config.config import (
     Int4PerGroupSpec,
     Int8PerTensorSpec,
     MX6Spec,
+    MX9Spec,
     OCP_MXFP4Spec,
     OCP_MXFP6E2M3Spec,
     OCP_MXFP6E3M2Spec,
@@ -33,6 +34,7 @@ from quark.torch.quantization.config.config import (
     Uint4PerChannelSpec,
     Uint4PerGroupSpec,
 )
+from quark.torch.quantization.config.type import MX6, MX9
 from quark.torch.quantization.weight_convert import SplitFusedExperts, WeightConverter
 
 logger = ScreenLogger(__name__)
@@ -226,14 +228,34 @@ class AmdFP4Scheme(QuantizationScheme):
 
 
 class MX6Scheme(QuantizationScheme):
-    """Scheme for MX6 quantization."""
+    """
+    Scheme for MX6 MicroeXponent quantization.
 
-    def __init__(self) -> None:
-        pass
+    ``block_size`` is the first-level block size ``k1``.
+    """
+
+    def __init__(self, block_size: int = MX6.k1) -> None:
+        self.block_size = block_size
 
     @property
     def config(self) -> QLayerConfig:
-        spec = MX6Spec(ch_axis=-1, block_size=32).to_quantization_spec()
+        spec = MX6Spec(ch_axis=-1, block_size=self.block_size).to_quantization_spec()
+        return QLayerConfig(weight=spec, input_tensors=spec)
+
+
+class MX9Scheme(QuantizationScheme):
+    """
+    Scheme for MX9 MicroeXponent quantization.
+
+    ``block_size`` is the first-level block size ``k1``.
+    """
+
+    def __init__(self, block_size: int = MX9.k1) -> None:
+        self.block_size = block_size
+
+    @property
+    def config(self) -> QLayerConfig:
+        spec = MX9Spec(ch_axis=-1, block_size=self.block_size).to_quantization_spec()
         return QLayerConfig(weight=spec, input_tensors=spec)
 
 
@@ -413,8 +435,9 @@ class QuantizationSchemeCollection:
         # INT4 weight (progressive FP8 E4M3 -> INT4 per-channel) + FP8 E4M3 dynamic activation ("W4A8")
         self._schemes["int4_fp8"] = INT4_FP8Scheme()
 
-        # MX6 quantization schemes
+        # MicroeXponent quantization schemes
         self._schemes["mx6"] = MX6Scheme()
+        self._schemes["mx9"] = MX9Scheme()
 
         # BFP16 quantization schemes
         self._schemes["bfp16"] = BFP16Scheme()
@@ -528,6 +551,7 @@ class LLMTemplate:
             - mxfp6_e3m2
             - mxfp6_e2m3
             - mx6
+            - mx9
             - bfp16
             - int4_fp8
         - The quantization algorithms supported by the template are:
@@ -567,7 +591,12 @@ class LLMTemplate:
     _templates: dict[str, LLMTemplate] = {}
     _SCHEME_COLLECTION = QuantizationSchemeCollection()
     _SUPPORTED_SCHEMES = _SCHEME_COLLECTION.get_supported_schemes()
-    _SUPPORTED_ALGORITHMS = get_supported_algorithm_types()
+    # No `_SUPPORTED_ALGORITHMS` alongside these: the supported algorithms are not fixed the way
+    # the scheme lists are. `ALGORITHM_REGISTRY` contributes to them, and a registration can only
+    # ever happen *after* this module is imported — importing `quark.torch` imports this module,
+    # and the registry lives under `quark.torch.algorithm`, so there is no import order in which a
+    # contributed algorithm is registered first. A class attribute here would be a snapshot taken
+    # before any of them exist. Call `get_supported_algorithm_types()` at the point of use instead.
     _SUPPORTED_KV_CACHE_SCHEMES = ["fp8"]
     _SUPPORTED_ATTENTION_SCHEMES = ["fp8"]
 
@@ -597,13 +626,15 @@ class LLMTemplate:
         # Algorithm-specific configuration fields. New code should use
         # `algorithm_configs`; `legacy_algorithm_parameters` is kept only
         # for backward compatibility and emits a deprecation warning.
+        supported_algorithms = get_supported_algorithm_types()
+
         self.algo_config: dict[str, AlgoConfig | None] = {}
-        for supported_algorithm_name in self._SUPPORTED_ALGORITHMS:
+        for supported_algorithm_name in supported_algorithms:
             self.algo_config[supported_algorithm_name] = None
 
         supported_legacy_parameter_to_algorithm_name = {
             f"{supported_algorithm_name}_config": supported_algorithm_name
-            for supported_algorithm_name in self._SUPPORTED_ALGORITHMS
+            for supported_algorithm_name in supported_algorithms
         }
 
         legacy_algorithm_parameter_names: list[str] = []
@@ -634,10 +665,10 @@ class LLMTemplate:
         if algorithm_configs is not None:
             for algorithm_name, algorithm_config in algorithm_configs.items():
                 normalized_algorithm_name = algorithm_name.lower()
-                if normalized_algorithm_name not in self._SUPPORTED_ALGORITHMS:
+                if normalized_algorithm_name not in supported_algorithms:
                     raise ValueError(
                         f"Unsupported algorithm '{algorithm_name}' in `algorithm_configs`. "
-                        f"Supported algorithms: {self._SUPPORTED_ALGORITHMS}."
+                        f"Supported algorithms: {supported_algorithms}."
                     )
                 self.algo_config[normalized_algorithm_name] = algorithm_config
 
@@ -710,16 +741,21 @@ class LLMTemplate:
             - gemma2
             - gemma3
             - gemma3_text
+            - gemma4_unified
             - glm4_moe
             - glm4_moe_lite
             - glm_moe_dsa
+            - glm5_next
             - gptj
             - gpt_oss
             - granitemoehybrid
             - grok-1
+            - hunyuan_v1_dense
             - instella
             - kimi_k2
             - kimi_k25
+            - kimi_k3
+            - lfm2
             - llama
             - llama4
             - minimax_m2
@@ -727,6 +763,7 @@ class LLMTemplate:
             - mistral
             - mixtral
             - mllama
+            - muse_glimmer
             - olmo
             - opt
             - phi
@@ -739,6 +776,9 @@ class LLMTemplate:
             - qwen3_next
             - qwen3_vl_moe
             - qwen3_5_moe
+            - qwen3_5
+            - qwen4_exp
+            - qwen4_exp_text
 
         :return: The template object.
         :rtype: LLMTemplate
@@ -854,9 +894,10 @@ class LLMTemplate:
         if algorithm:
             if isinstance(algorithm, str):
                 algorithm = [algorithm]
+            supported_algorithms = get_supported_algorithm_types()
             for algo in algorithm:
                 normalized_algorithm_name = algo.lower()
-                if normalized_algorithm_name not in self._SUPPORTED_ALGORITHMS:
+                if normalized_algorithm_name not in supported_algorithms:
                     raise ValueError(f"Unsupported algorithm: {algo}")
         # Check if the KV cache scheme is supported
         if kv_cache_scheme and kv_cache_scheme not in self._SUPPORTED_KV_CACHE_SCHEMES:
@@ -932,15 +973,25 @@ class LLMTemplate:
             for algo_name, algo_cfg in algo_configs.items():
                 effective_algo_config[algo_name.lower()] = algo_cfg
 
+        supported_algorithms = get_supported_algorithm_types()
+
         for algo in algorithm:
             if config.algo_config is None:
                 config.algo_config = []
             algorithm_name = algo.lower()
 
-            if algorithm_name not in self._SUPPORTED_ALGORITHMS:
+            if algorithm_name not in supported_algorithms:
                 raise ValueError(
-                    f"The algorithm {algorithm_name} is not supported in Quark. Are you sure it is one of {self._SUPPORTED_ALGORITHMS}?"
+                    f"The algorithm {algorithm_name} is not supported in Quark. Are you sure it is one of {supported_algorithms}?"
                 )
+
+            if algorithm_name not in effective_algo_config:
+                # Registered with `ALGORITHM_REGISTRY` after this template was built — every
+                # built-in template is built when this module is imported, which is necessarily
+                # before any contributed algorithm can register. Resolve its per-model default
+                # now. Only for a *missing* key: an entry that is present and `None` means the
+                # algorithm has no default for this architecture, which is the error below.
+                effective_algo_config[algorithm_name] = get_algo_config(algorithm_name, self.model_type)
 
             if effective_algo_config[algorithm_name] is None:
                 raise NotImplementedError(
@@ -1047,22 +1098,22 @@ DEFAULT_TEMPLATES = {
     "deepseek": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*.gate"],
     },
     "deepseek_v2": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate", "*mlp.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate"],
     },
     "deepseek_v3": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate", "*mlp.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*self_attn*", "*mlp.gate"],
     },
     "deepseek_v32": {
         "kv_layers_name": ["*kv_b_proj"],
         "q_layer_name": ["*q_a_proj", "*q_b_proj"],
-        "exclude_layers_name": ["lm_head", "*mlp.gate", "*mlp.gate.linear", "model.layers.61.*", "*self_attn*"],
+        "exclude_layers_name": ["lm_head", "*mlp.gate", "model.layers.61.*", "*self_attn*"],
     },
     "deepseek_v4": {
         "kv_layers_name": ["*wkv"],
@@ -1096,13 +1147,67 @@ DEFAULT_TEMPLATES = {
         "q_layer_name": "*q_proj",
         "exclude_layers_name": ["*lm_head"],
     },
+    "gemma4": {
+        "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
+        "q_layer_name": "*language_model.*q_proj",
+        "exclude_layers_name": [
+            "*vision_tower*",
+            "*embed_vision*",
+            # Audio-capable variants (e.g. E2B/E4B) carry an audio encoder (`audio_tower`) and an
+            # audio->text projection (`embed_audio`); neither is part of the text decoder.
+            "*audio_tower*",
+            "*embed_audio*",
+            "*multi_modal_projector*",
+            "*lm_head",
+            "*router.proj",
+        ],
+        # gemma4 (MoE) stores experts as fused tensors:
+        #   gate_up_proj: (num_experts, 2*intermediate, hidden)
+        #   down_proj:    (num_experts, hidden, intermediate)
+        # The file-to-file path unfuses them into per-expert tensors so the
+        # resulting shards match the per-expert nn.Linear forward layout.
+        "f2f_weight_converters": [
+            WeightConverter(
+                "gate_up_proj",
+                ["gate_proj.weight", "up_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+            WeightConverter(
+                "down_proj",
+                ["down_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+        ],
+    },
+    "gemma4_unified": {
+        "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
+        "q_layer_name": "*language_model.*q_proj",
+        # Exclude the non-text-decoder linears. The vision block is named differently in the two
+        # flows, so we list both spellings to exclude it intentionally in each:
+        #   - In-memory quant matches globs against runtime `named_modules()`. Transformers renames
+        #     the block to `embed_vision` (`embed_vision.patch_dense` and
+        #     `embed_vision.multimodal_embedder.embedding_projection`), so `*embed_vision*` matches.
+        #   - The file2file flow matches against raw safetensors keys, which keep the on-disk name
+        #     `model.vision_embedder.*` (e.g. `vision_embedder.patch_dense`, a [3840, 6912] Linear).
+        #     `*embed_vision*` does NOT match that name; `*vision_embedder*` does. (Today file2file
+        #     also happens to drop it earlier because `_is_linear_weight_tensor` skips any name
+        #     containing "embed", but that is incidental -- this explicit glob is the intent-
+        #     revealing guard and survives changes to that heuristic.)
+        # `*embed_audio*` covers the audio->text projection on audio-capable variants (e.g. E2B/E4B);
+        # the on-disk key is `embed_audio` too, so one spelling suffices there.
+        "exclude_layers_name": [
+            "*embed_vision*",
+            "*vision_embedder*",
+            "*embed_audio*",
+            "*lm_head",
+        ],
+    },
     "glm4_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
         "exclude_layers_name": [
             "lm_head",
             "*mlp.gate",
-            "*mlp.gate.linear",
             "*self_attn*",
             "*shared_experts.*",
             "*mlp.down_proj",
@@ -1131,6 +1236,20 @@ DEFAULT_TEMPLATES = {
             "*mlp.down_proj",
         ],
     },
+    "glm5_next": {
+        "kv_layers_name": ["*self_attn.kv_b_proj"],
+        "q_layer_name": "*self_attn.q_b_proj",
+        "exclude_layers_name": [
+            "*self_attn*",
+            "*mlp.gate",
+            "*mlp.gate_proj",
+            "*mlp.up_proj",
+            "*mlp.down_proj",
+            "*visual*",
+            "*lm_head*",
+            "model.language_model.layers.45.*",  # MTP block
+        ],
+    },
     "gptj": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
@@ -1149,8 +1268,13 @@ DEFAULT_TEMPLATES = {
     "grok-1": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*.gate"],
         "gate_up_layers_name": ["linear", "linear_v"],
+    },
+    "hunyuan_v1_dense": {
+        "kv_layers_name": ["*k_proj", "*v_proj"],
+        "q_layer_name": "*q_proj",
+        "exclude_layers_name": ["lm_head"],
     },
     "instella": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1176,7 +1300,6 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "*self_attn*",
             "*mlp.gate",
-            "*mlp.gate.linear",
             "*lm_head",
             "*mlp.gate_proj",
             "*mlp.up_proj",
@@ -1185,6 +1308,42 @@ DEFAULT_TEMPLATES = {
             "*mm_projector*",
             "*vision_tower*",
         ],
+    },
+    # Kimi-K3 patterns from https://huggingface.co/amd/Kimi-K3-Quark-MXFP4-AttnFP8.
+    # Attention PTPC-FP8 is applied at get_config time via layer_config={"*self_attn*": "ptpc_fp8"}
+    # (or --layer_quant_scheme '*self_attn*' ptpc_fp8), matching the model-card script.
+    "kimi_k3": {
+        "kv_layers_name": [
+            "*self_attn.k_proj",
+            "*self_attn.v_proj",
+            "*self_attn.kv_a_proj_with_mqa",
+        ],
+        "q_layer_name": [
+            "*self_attn.q_proj",
+            "*self_attn.q_a_proj",
+            "*self_attn.q_b_proj",
+        ],
+        "exclude_layers_name": [
+            "*block_sparse_moe.gate*",
+            "*block_sparse_moe.routed_expert_down_proj*",
+            "*block_sparse_moe.routed_expert_up_proj*",
+            "*lm_head*",
+            "*vision_tower*",
+            "*mm_projector*",
+            "*self_attention_res_proj*",
+            "*mlp_res_proj*",
+            "*output_attn_res_proj*",
+            "*self_attn.*_conv1d*",
+        ],
+    },
+    "lfm2": {
+        # Hybrid conv+attention decoder. conv.in_proj/conv.out_proj (inside the ShortConv
+        # blocks) are excluded because vLLM's native Lfm2 implementation doesn't pass
+        # quant_config into ShortConv, so it can't load a quantized conv block; self_attn uses
+        # out_proj, not o_proj.
+        "kv_layers_name": ["*self_attn.k_proj", "*self_attn.v_proj"],
+        "q_layer_name": "*self_attn.q_proj",
+        "exclude_layers_name": ["lm_head", "*conv.in_proj", "*conv.out_proj"],
     },
     "llama": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1227,12 +1386,17 @@ DEFAULT_TEMPLATES = {
     "mixtral": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*.gate"],
     },
     "mllama": {
         "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
         "q_layer_name": "*self_attn.q_proj",
         "exclude_layers_name": ["*lm_head", "*patch_embedding", "multi_modal_projector"],
+    },
+    "muse_glimmer": {
+        "kv_layers_name": ["*language_model.*k_proj", "*language_model.*v_proj"],
+        "q_layer_name": "*language_model.*q_proj",
+        "exclude_layers_name": ["*vision_tower*", "*vision_adapter*", "*vision_projection*", "lm_head"],
     },
     "olmo": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1267,7 +1431,7 @@ DEFAULT_TEMPLATES = {
     "qwen2_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear", "*.shared_expert_gate"],
+        "exclude_layers_name": ["lm_head", "*.gate", "*.shared_expert_gate"],
     },
     "qwen3": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1277,7 +1441,7 @@ DEFAULT_TEMPLATES = {
     "qwen3_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*.gate", "*.gate.linear"],
+        "exclude_layers_name": ["lm_head", "*.gate"],
     },
     "qwen3_next": {
         "kv_layers_name": ["*qkvz"],
@@ -1288,7 +1452,6 @@ DEFAULT_TEMPLATES = {
             "*linear_attn.in_proj_ba",
             "*linear_attn.in_proj_qkvz",
             "*mlp.gate",
-            "*mlp.gate.linear",
             "*mlp.shared_expert_gate",
             "*self_attn.k_proj",
             "*self_attn.q_proj",
@@ -1298,7 +1461,7 @@ DEFAULT_TEMPLATES = {
     "qwen3_vl_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
         "q_layer_name": "*q_proj",
-        "exclude_layers_name": ["lm_head", "*mlp.gate", "*mlp.gate.linear", "*.visual.*"],
+        "exclude_layers_name": ["lm_head", "*mlp.gate", "*.visual.*"],
     },
     "qwen3_5_moe": {
         "kv_layers_name": ["*k_proj", "*v_proj"],
@@ -1308,7 +1471,6 @@ DEFAULT_TEMPLATES = {
             "model.visual.*",
             "mtp.*",
             "*mlp.gate",
-            "*mlp.gate.linear",
             "*shared_expert_gate*",
             "*.linear_attn.*",
             "*.self_attn.*",
@@ -1332,13 +1494,88 @@ DEFAULT_TEMPLATES = {
             ),
         ],
     },
+    "qwen3_5": {
+        "kv_layers_name": ["*self_attn.k_proj", "*self_attn.v_proj"],
+        "q_layer_name": ["*self_attn.q_proj"],
+        "exclude_layers_name": ["lm_head", "model.visual.*", "*mtp*"],
+    },
+    # qwen4_exp: MoE like qwen3_5_moe, plus novel hyper-connections/QSA indexer/PLE n-gram
+    # embedding (~28% of params, a lookup table not a calibratable weight) -- all excluded
+    # pending real justification otherwise.
+    "qwen4_exp": {
+        # Only full-attention layers own a KV cache; the gated-delta linear-attention layers keep
+        # conv/recurrent state instead. find_patterns_groups seeds each group from pattern[0] and
+        # derives siblings by string substitution, so a linear_attn seed can never reach
+        # self_attn.k_proj -- listing it here silently breaks k_scale/v_scale export. Mirrors the
+        # qwen3_5 entry above.
+        "kv_layers_name": ["*self_attn.k_proj", "*self_attn.v_proj"],
+        "q_layer_name": ["*self_attn.q_proj"],
+        "exclude_layers_name": [
+            "lm_head",
+            "model.visual.*",
+            "mtp.*",
+            "*mlp.gate",
+            "*shared_expert_gate*",
+            "*.linear_attn.*",
+            "*.self_attn.*",
+            "*hyper_connection*",
+            "*.ple.*",
+        ],
+        # Same fused-expert layout as qwen3_5_moe — mirror its f2f unfuse logic verbatim.
+        "f2f_weight_converters": [
+            WeightConverter(
+                "gate_up_proj",
+                ["gate_proj.weight", "up_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+            WeightConverter(
+                "down_proj",
+                ["down_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+        ],
+    },
+    "qwen4_exp_text": {
+        # Only full-attention layers own a KV cache; the gated-delta linear-attention layers keep
+        # conv/recurrent state instead. find_patterns_groups seeds each group from pattern[0] and
+        # derives siblings by string substitution, so a linear_attn seed can never reach
+        # self_attn.k_proj -- listing it here silently breaks k_scale/v_scale export. Mirrors the
+        # qwen3_5 entry above.
+        "kv_layers_name": ["*self_attn.k_proj", "*self_attn.v_proj"],
+        "q_layer_name": ["*self_attn.q_proj"],
+        # Same as qwen4_exp -- live loading resolves model_type to qwen4_exp_text (verified via
+        # a real GPTQ run); keep identical so scope doesn't silently diverge between the two.
+        "exclude_layers_name": [
+            "lm_head",
+            "model.visual.*",
+            "mtp.*",
+            "*mlp.gate",
+            "*shared_expert_gate*",
+            "*.linear_attn.*",
+            "*.self_attn.*",
+            "*hyper_connection*",
+            "*.ple.*",
+        ],
+        "f2f_weight_converters": [
+            WeightConverter(
+                "gate_up_proj",
+                ["gate_proj.weight", "up_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+            WeightConverter(
+                "down_proj",
+                ["down_proj.weight"],
+                operations=[SplitFusedExperts(split_axis=0)],
+            ),
+        ],
+    },
 }
 
 
 def _create_template_from_config(model_type: str, config: dict[str, Any]) -> LLMTemplate:
     """create a template from configuration dictionary."""
     algorithm_configs: dict[str, AlgoConfig | None] = {}
-    for supported_algorithm_name in LLMTemplate._SUPPORTED_ALGORITHMS:
+    for supported_algorithm_name in get_supported_algorithm_types():
         algorithm_configs[supported_algorithm_name] = get_algo_config(supported_algorithm_name, model_type)
 
     return LLMTemplate(

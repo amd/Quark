@@ -65,7 +65,8 @@ def shapeshifter(
         >>>
         >>> model_config = PytorchModelConfig(
         ...     input_model_path=Path("model.pt"),
-        ...     map_location="cuda:0"
+        ...     map_location="cuda:0",
+        ...     weights_only=False,  # required to load a full nn.Module; only for trusted files
         ... )
         >>> config = RunConfig(
         ...     input_model_config=model_config,

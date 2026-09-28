@@ -1,0 +1,5 @@
+accelerate
+datasets
+lm-eval>=0.4
+peft
+transformers<5.16

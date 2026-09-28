@@ -80,14 +80,31 @@ class QuarkCacheLayer(CacheLayerMixin):
         """Return maximum cache length; -1 denotes dynamic (no fixed max)."""
         return -1
 
-    def get_mask_sizes(self, cache_position: Any) -> tuple[int, int]:
-        """Return the KV length and offset expected by HF mask builders."""
+    def get_max_length(self) -> int:
+        """Return maximum sequence length; -1 denotes dynamic (no fixed max).
+
+        transformers 5.x moved the ``CacheLayerMixin`` abstract contract from ``get_max_cache_shape``
+        to ``get_max_length``, which did not exist in 5.2, so without this the class cannot be
+        instantiated. ``get_max_cache_shape`` above stays for older releases; upstream demoted it to
+        a deprecated shim that delegates here and is slated for removal in 5.16.
+        """
+        return -1
+
+    def get_mask_sizes(self, query_length: Any) -> tuple[int, int]:
+        """Return the KV length and offset expected by HF mask builders.
+
+        transformers 5.x passes the new-token count as a plain ``query_length`` int, where releases
+        up to 5.2 passed a ``cache_position`` tensor. Both are accepted: sizing off ``len()`` alone
+        silently counts zero new tokens on 5.x and understates ``kv_length`` by the whole query.
+        """
         past_seq_len = self.cumulative_length
-        new_tokens = 0
-        if cache_position is not None and hasattr(cache_position, "__len__"):
-            new_tokens = len(cache_position)
-        total_seq_len = past_seq_len + new_tokens
-        return total_seq_len, past_seq_len  # (kv_length, kv_offset)
+        if query_length is None:
+            new_tokens = 0
+        elif hasattr(query_length, "__len__"):
+            new_tokens = len(query_length)
+        else:
+            new_tokens = int(query_length)
+        return past_seq_len + new_tokens, past_seq_len  # (kv_length, kv_offset)
 
     def update_lengths(self, new_len: int) -> None:
         self.cumulative_length += new_len
@@ -170,7 +187,7 @@ class QuarkQuantizedCache(Cache):
             cache_kwargs["offloading"] = False
         if "offload_only_non_sliding" in cache_init_params:
             cache_kwargs["offload_only_non_sliding"] = True
-        super().__init__(**cache_kwargs)  # type: ignore[no-untyped-call]
+        super().__init__(**cache_kwargs)
 
         # Store our Quark-specific configuration
         self.cache_config = cache_config

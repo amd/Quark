@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 
 from quark.torch.export import prequantized_layer_handler as handler
+from quark.torch.export import utils as export_utils_module
 from quark.torch.export.prequantized_layer_handler import (
     _collapse_names_to_patterns,
     _collect_lost_mxfp4_layers,
@@ -186,21 +187,37 @@ def test_on_disk_config_returns_parsed_block(tmp_path):
     assert _on_disk_quantization_config(model) == {"quant_method": "mxfp4"}
 
 
-def test_on_disk_config_consults_hf_cache_for_repo_id():
-    """Non-dir name_or_path is treated as an HF repo id."""
+def test_on_disk_config_consults_hf_cache_for_repo_id(tmp_path):
+    """Non-dir name_or_path is treated as an HF repo id and looked up in the cache."""
+    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": {"quant_method": "fp8"}}))
     model = _model_with_qconfig(None, name_or_path="org/repo-name")
-    # try_to_load_from_cache returns None for missing → returns {}
-    with (
-        patch.object(handler, "_on_disk_quantization_config", wraps=_on_disk_quantization_config),
-        patch.object(handler, "try_to_load_from_cache", return_value=None),
-    ):
+
+    with patch("transformers.utils.cached_file", return_value=str(tmp_path / "config.json")):
+        assert _on_disk_quantization_config(model) == {"quant_method": "fp8"}
+
+
+def test_on_disk_config_returns_empty_for_uncached_repo_id():
+    """Repo id that was never downloaded → returns {} (no crash, no network)."""
+    model = _model_with_qconfig(None, name_or_path="org/repo-name")
+    assert _on_disk_quantization_config(model) == {}
+
+
+def test_on_disk_config_returns_empty_without_transformers():
+    """Repo-id path but transformers not installed → returns {} (no crash)."""
+    model = _model_with_qconfig(None, name_or_path="org/repo-name")
+    with patch.object(export_utils_module, "is_transformers_available", return_value=False):
         assert _on_disk_quantization_config(model) == {}
 
 
-def test_on_disk_config_returns_empty_when_hub_unavailable():
-    """Repo-id path but huggingface_hub not installed → returns {} (no crash)."""
+def test_on_disk_config_returns_empty_when_the_lookup_fails_unexpectedly():
+    """A cache lookup failing in an unforeseen way still returns {} rather than killing the run.
+
+    This is a best-effort fallback called at the start of ``quantize_model``, so no failure of
+    it may reach the caller. Transformers normalizes bad repo ids to ``OSError`` today; the
+    guarantee must not depend on that staying true.
+    """
     model = _model_with_qconfig(None, name_or_path="org/repo-name")
-    with patch.object(handler, "is_huggingface_hub_available", return_value=False):
+    with patch("transformers.utils.cached_file", side_effect=ValueError("Repo id must be alphanumeric")):
         assert _on_disk_quantization_config(model) == {}
 
 

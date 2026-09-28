@@ -170,7 +170,7 @@ def bias_correction(
 
     float_model = fmodel_input if isinstance(fmodel_input, onnx.ModelProto) else onnx.load(fmodel_input)
     if isinstance(qmodel_input, onnx.ModelProto):
-        if use_external_data_format:
+        if use_external_data_format:  # pragma: no cover - >2GB external-data path
             quant_model = save_and_reload_model_with_shape_infer(qmodel_input)
         else:
             quant_model = onnx.shape_inference.infer_shapes(qmodel_input)

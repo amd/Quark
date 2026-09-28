@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 import copy
+import importlib.util
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -25,7 +27,6 @@ from transformers import (
 )
 from transformers.loss.loss_utils import fixed_cross_entropy
 
-from quark.common.utils.import_utils import is_transformers_version_higher_or_equal
 from quark.common.utils.testing_utils import (
     FROM_PRETRAINED_KWARGS,
     local_test_only,
@@ -37,9 +38,15 @@ from quark.common.utils.testing_utils import (
 from quark.torch import ModelQuantizer, export_safetensors, import_model_from_safetensors
 from quark.torch.algorithm.rotation.cayley import SGDG
 from quark.torch.algorithm.rotation.hadamard import KNOWN_HADAMARD_MATRICES, matmul_hadU
-from quark.torch.algorithm.rotation.rotation import RotationLinear, RotationProcessor
-from quark.torch.algorithm.rotation.rotation_utils import get_rotation_matrix, rotate_in_channels_, rotate_out_channels_
+from quark.torch.algorithm.rotation.rotation import RotationLinear, RotationProcessor, TrainableRMSNorm
+from quark.torch.algorithm.rotation.rotation_utils import (
+    get_rotation_matrix,
+    rotate_in_channels_,
+    rotate_out_channels_,
+    transform_rms_norm_and_linear,
+)
 from quark.torch.algorithm.rotation.training import AdamAndSGDGOptimizer
+from quark.torch.algorithm.utils.utils import get_model_type_norm_constant
 from quark.torch.quantization import (
     GPTQConfig,
     Int4PerChannelSpec,
@@ -50,6 +57,7 @@ from quark.torch.quantization import (
     QConfig,
     QLayerConfig,
     RotationConfig,
+    load_quant_algo_config_from_file,
 )
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 from quark.torch.utils import getattr_recursive
@@ -144,9 +152,7 @@ SCALING_LAYERS_QWEN_MOE = {
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.up_proj",
                 "model.layers.layer_id.mlp.experts.*.gate_proj",
-                "model.layers.layer_id.mlp.gate.linear"
-                if is_transformers_version_higher_or_equal("5.0.0")
-                else "model.layers.layer_id.mlp.gate",
+                "model.layers.layer_id.mlp.gate",
             ],
         },
     ],
@@ -170,9 +176,7 @@ SCALING_LAYERS_QWEN_MOE = {
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.up_proj",
                 "model.layers.layer_id.mlp.experts.*.gate_proj",
-                "model.layers.layer_id.mlp.gate.linear"
-                if is_transformers_version_higher_or_equal("5.0.0")
-                else "model.layers.layer_id.mlp.gate",
+                "model.layers.layer_id.mlp.gate",
             ],
         },
     ],
@@ -204,9 +208,7 @@ SCALING_LAYERS_GPT_OSS_MOE = {
             "target_modules": ["model.layers.layer_id.mlp.experts.*.gate_up_proj"],
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.gate_up_proj",
-                "model.layers.layer_id.mlp.router.linear"
-                if is_transformers_version_higher_or_equal("5.0.0")
-                else "model.layers.layer_id.mlp.router",
+                "model.layers.layer_id.mlp.router",
             ],
         },
     ],
@@ -226,9 +228,7 @@ SCALING_LAYERS_GPT_OSS_MOE = {
             "target_modules": ["model.layers.layer_id.mlp.experts.*.gate_up_proj"],
             "next_modules": [
                 "model.layers.layer_id.mlp.experts.*.gate_up_proj",
-                "model.layers.layer_id.mlp.router.linear"
-                if is_transformers_version_higher_or_equal("5.0.0")
-                else "model.layers.layer_id.mlp.router",
+                "model.layers.layer_id.mlp.router",
             ],
         },
     ],
@@ -376,7 +376,6 @@ def run_rotation_training(
             log_on_each_node=False,
             logging_steps=1.0,
             learning_rate=learning_rate,
-            logging_dir=tmpdir,
             do_eval=False,
             do_train=True,
             gradient_checkpointing=True,
@@ -513,6 +512,165 @@ def test_rotate_out_channels():
     assert torch.allclose(module.bias.data, expected_bias.to(dtype=module.bias.dtype), atol=1e-6), (
         "Bias was not rotated correctly."
     )
+
+
+# ---------------------------------------------------------------------------------------------------
+# Unit-offset normalization layers
+#
+# Gemma (pre-gemma4) and Qwen3.5 parameterize RMSNorm as `(1.0 + weight) * normalize(x)` rather than
+# `weight * normalize(x)`, so every transform that rewrites a norm weight or folds it into a following
+# linear must operate on the effective multiplier `weight + c` (see `get_model_type_norm_constant`).
+# The convention is detected from the class name, so these toy norms exercise both branches without
+# downloading a checkpoint.
+# ---------------------------------------------------------------------------------------------------
+
+NORM_HIDDEN_SIZE = 64
+
+
+class LlamaRMSNorm(nn.Module):
+    """Plain RMSNorm, applying ``weight``."""
+
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.rand(hidden_size) + 0.5)
+        self.variance_epsilon = eps
+
+    def scaling(self) -> torch.Tensor:
+        return self.weight
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon)
+        return self.scaling() * x.to(input_dtype)
+
+
+class Gemma3RMSNorm(LlamaRMSNorm):
+    """Unit-offset RMSNorm, applying ``1.0 + weight``. Note Gemma names its epsilon ``eps``."""
+
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
+        super().__init__(hidden_size, eps=eps)
+        del self.variance_epsilon
+        self.eps = eps
+
+    def scaling(self) -> torch.Tensor:
+        return 1.0 + self.weight
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return self.scaling() * x.to(input_dtype)
+
+
+class Qwen3_5RMSNorm(Gemma3RMSNorm):
+    """Unit-offset RMSNorm using the Llama epsilon naming."""
+
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
+        super().__init__(hidden_size, eps=eps)
+        del self.eps
+        self.variance_epsilon = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon)
+        return self.scaling() * x.to(input_dtype)
+
+
+class MuseGlimmerTextCenteredRMSNorm(Gemma3RMSNorm):
+    """Muse-Glimmer's centered norm; same ``1.0 + weight`` convention as Gemma (pre-gemma4)."""
+
+
+NORM_CLASSES = [
+    pytest.param(LlamaRMSNorm, 0.0, id="LlamaRMSNorm"),
+    pytest.param(Gemma3RMSNorm, 1.0, id="Gemma3RMSNorm"),
+    pytest.param(Qwen3_5RMSNorm, 1.0, id="Qwen3_5RMSNorm"),
+    pytest.param(MuseGlimmerTextCenteredRMSNorm, 1.0, id="MuseGlimmerTextCenteredRMSNorm"),
+]
+
+
+def build_norm_and_linear(norm_class):
+    torch.manual_seed(0)
+    norm = norm_class(NORM_HIDDEN_SIZE).to(device=torch_device)
+    linear = nn.Linear(NORM_HIDDEN_SIZE, NORM_HIDDEN_SIZE, bias=False).to(device=torch_device)
+    inp = torch.randn(4, NORM_HIDDEN_SIZE, device=torch_device)
+    return norm, linear, inp
+
+
+@pytest.mark.parametrize(("norm_class", "norm_constant"), NORM_CLASSES)
+def test_get_model_type_norm_constant(norm_class, norm_constant):
+    norm = norm_class(NORM_HIDDEN_SIZE).to(device=torch_device)
+
+    assert get_model_type_norm_constant(norm) == norm_constant
+
+
+@pytest.mark.parametrize(("norm_class", "norm_constant"), NORM_CLASSES)
+def test_transform_rms_norm_and_linear(norm_class, norm_constant):
+    """Folding the norm weight into the following linear must leave the composition unchanged."""
+    norm, linear, inp = build_norm_and_linear(norm_class)
+
+    with torch.no_grad():
+        output_original = linear(norm(inp))
+
+    transform_rms_norm_and_linear(norm, [linear])
+
+    with torch.no_grad():
+        output_fused = linear(norm(inp))
+
+    assert float(torch.norm(output_original - output_fused)) < 1e-4
+
+    # The norm must be left as the identity, which is `1 - c`: zeros for the unit-offset norms.
+    expected_weight = torch.full_like(norm.weight.data, 1.0 - norm_constant)
+    assert torch.allclose(norm.weight.data, expected_weight)
+    assert torch.allclose(norm.scaling(), torch.ones_like(norm.weight.data))
+
+
+@pytest.mark.parametrize(("norm_class", "norm_constant"), NORM_CLASSES)
+def test_trainable_rms_norm_fuse_back(norm_class, norm_constant):
+    """`post_process_trained_rotation` must fuse `smooth_values` back exactly as the wrapper applied them."""
+    norm, _, inp = build_norm_and_linear(norm_class)
+
+    smooth_values = nn.Parameter(torch.rand(NORM_HIDDEN_SIZE, device=torch_device) + 0.5)
+
+    model = nn.Module()
+    model.norm = TrainableRMSNorm(norm, smooth_values, norm_layer_name="norm")
+
+    with torch.no_grad():
+        output_trainable = model.norm(inp)
+
+    RotationProcessor.post_process_trained_rotation(model, quantization_config=None)
+
+    assert not isinstance(model.norm, TrainableRMSNorm)
+
+    with torch.no_grad():
+        output_fused = model.norm(inp)
+
+    assert float(torch.norm(output_trainable - output_fused)) < 1e-4
+
+
+@pytest.mark.parametrize(("norm_class", "norm_constant"), NORM_CLASSES)
+def test_trainable_rms_norm_epsilon_naming(norm_class, norm_constant):
+    """The wrapper must handle both the `variance_epsilon` (Llama) and `eps` (Gemma) namings."""
+    norm = norm_class(NORM_HIDDEN_SIZE).to(device=torch_device)
+    smooth_values = nn.Parameter(torch.ones(NORM_HIDDEN_SIZE, device=torch_device))
+
+    trainable_norm = TrainableRMSNorm(norm, smooth_values, norm_layer_name="norm")
+
+    assert trainable_norm.variance_epsilon == pytest.approx(1e-6)
+
+
+def test_trainable_rms_norm_missing_epsilon():
+    class NoEpsilonRMSNorm(nn.Module):
+        def __init__(self, hidden_size: int) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    norm = NoEpsilonRMSNorm(NORM_HIDDEN_SIZE).to(device=torch_device)
+    smooth_values = nn.Parameter(torch.ones(NORM_HIDDEN_SIZE, device=torch_device))
+
+    with pytest.raises(ValueError, match="Could not find the epsilon"):
+        TrainableRMSNorm(norm, smooth_values, norm_layer_name="norm")
 
 
 @pytest.mark.parametrize("rotation_size", [pytest.param(val, id=f"rotation_size:{val}") for val in [None, 32]])
@@ -680,7 +838,7 @@ def func_test_trained_rotation_non_destructive(
     quant_config_rotation = QConfig(
         global_quant_config=layer_quant_config,
         algo_config=[algo_config],
-        exclude=["lm_head", "*.gate", "*.gate.linear"],
+        exclude=["lm_head", "*.gate"],
     )
 
     # NOTE: it is not certain bf16 is stable.
@@ -899,7 +1057,7 @@ def func_test_trained_rotation_correctness(
     else:
         layer_quant_config = QLayerConfig(weight=int4_per_channel_sym_spec, input_tensors=int8_per_token_sym_spec)
 
-    quant_config_base = QConfig(global_quant_config=layer_quant_config, exclude=["lm_head", "*.gate", "*.gate.linear"])
+    quant_config_base = QConfig(global_quant_config=layer_quant_config, exclude=["lm_head", "*.gate"])
 
     quant_config_rotation = copy.deepcopy(quant_config_base)
     quant_config_rotation.algo_config = [rotation_config]
@@ -1182,9 +1340,7 @@ def test_serialization_and_reload(
     algo_config = [rotation_config]
 
     global_config = QLayerConfig(weight=w_int8_spec, input_tensors=a_int8_spec)
-    quant_config = QConfig(
-        global_quant_config=global_config, algo_config=algo_config, exclude=["lm_head", "*.gate", "*.gate.linear"]
-    )
+    quant_config = QConfig(global_quant_config=global_config, algo_config=algo_config, exclude=["lm_head", "*.gate"])
 
     with sdpa_kernel(SDPBackend.MATH):
         model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
@@ -1306,6 +1462,471 @@ def test_scaling_layers():
     assert scaling_layers[-1]["next_modules"][1] == "model.layers.29.mlp.gate_proj"
 
 
+# ---------------------------------------------------------------------------------------------------
+# Hybrid (linear + full attention) MoE stack, using Qwen3.5-MoE as the case.
+#
+# Covers: every residual consumer (incl. the router) must be rotatable, and a hybrid stack needs one
+# templated group per attention shape, with per-layer dropping of the paths that layer does not have.
+# ---------------------------------------------------------------------------------------------------
+
+requires_qwen3_5_moe = pytest.mark.skipif(
+    importlib.util.find_spec("transformers.models.qwen3_5_moe") is None,
+    reason="transformers does not ship qwen3_5_moe",
+)
+
+HYBRID_HIDDEN_SIZE = 128
+HYBRID_NUM_LAYERS = 4  # 3x linear_attention + 1x full_attention, i.e. the real 4-periodic pattern
+HYBRID_NUM_EXPERTS = 2
+
+HYBRID_LAYER = "model.language_model.layers.layer_id"
+HYBRID_PRE_LAYER = "model.language_model.layers.pre_layer_id"
+
+# Both attention shapes in one group; each layer keeps whichever it actually has.
+HYBRID_ATTENTION_NEXT = [
+    f"{HYBRID_LAYER}.linear_attn.in_proj_qkv",
+    f"{HYBRID_LAYER}.linear_attn.in_proj_z",
+    f"{HYBRID_LAYER}.linear_attn.in_proj_a",
+    f"{HYBRID_LAYER}.linear_attn.in_proj_b",
+    f"{HYBRID_LAYER}.self_attn.q_proj",
+    f"{HYBRID_LAYER}.self_attn.k_proj",
+    f"{HYBRID_LAYER}.self_attn.v_proj",
+]
+HYBRID_ATTENTION_PREV = [f"{HYBRID_LAYER}.linear_attn.out_proj", f"{HYBRID_LAYER}.self_attn.o_proj"]
+
+
+def hybrid_mlp_next(include_router: bool) -> list[str]:
+    router = [f"{HYBRID_LAYER}.mlp.gate"] if include_router else []
+    return router + [
+        f"{HYBRID_LAYER}.mlp.experts.*.gate_proj",
+        f"{HYBRID_LAYER}.mlp.experts.*.up_proj",
+        f"{HYBRID_LAYER}.mlp.shared_expert.gate_proj",
+        f"{HYBRID_LAYER}.mlp.shared_expert.up_proj",
+        f"{HYBRID_LAYER}.mlp.shared_expert_gate",
+    ]
+
+
+def hybrid_rotation_config(include_router: bool) -> dict:
+    return {
+        "name": "rotation",
+        "backbone": "model.language_model",
+        "model_decoder_layers": "model.language_model.layers",
+        "rotation_size": HYBRID_HIDDEN_SIZE,
+        "r1": True,
+        "r2": False,
+        "r3": False,
+        "r4": False,
+        "online_r1_rotation": False,
+        "random_r1": False,
+        "scaling_layers": {
+            "first_layer": [
+                {
+                    "prev_modules": ["model.language_model.embed_tokens"],
+                    "norm_module": f"{HYBRID_LAYER}.input_layernorm",
+                    "next_modules": HYBRID_ATTENTION_NEXT,
+                },
+                {
+                    "prev_modules": HYBRID_ATTENTION_PREV,
+                    "norm_module": f"{HYBRID_LAYER}.post_attention_layernorm",
+                    "next_modules": hybrid_mlp_next(include_router),
+                },
+            ],
+            "middle_layers": [
+                {
+                    "prev_modules": [
+                        f"{HYBRID_PRE_LAYER}.mlp.experts.*.down_proj",
+                        f"{HYBRID_PRE_LAYER}.mlp.shared_expert.down_proj",
+                    ],
+                    "norm_module": f"{HYBRID_LAYER}.input_layernorm",
+                    "next_modules": HYBRID_ATTENTION_NEXT,
+                },
+                {
+                    "prev_modules": HYBRID_ATTENTION_PREV,
+                    "norm_module": f"{HYBRID_LAYER}.post_attention_layernorm",
+                    "next_modules": hybrid_mlp_next(include_router),
+                },
+            ],
+            "last_layer": [
+                {
+                    "prev_modules": [
+                        f"{HYBRID_LAYER}.mlp.experts.*.down_proj",
+                        f"{HYBRID_LAYER}.mlp.shared_expert.down_proj",
+                    ],
+                    "norm_module": "model.language_model.norm",
+                    "next_modules": ["lm_head"],
+                }
+            ],
+        },
+    }
+
+
+def build_tiny_hybrid_moe_model() -> nn.Module:
+    """A structurally faithful but tiny Qwen3.5-MoE, in float32 so R1 stays exact."""
+    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
+
+    config = AutoConfig.for_model(
+        "qwen3_5_moe",
+        text_config={
+            "hidden_size": HYBRID_HIDDEN_SIZE,
+            "num_hidden_layers": HYBRID_NUM_LAYERS,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+            "full_attention_interval": 4,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 32,
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4,
+            "linear_key_head_dim": 16,
+            "linear_value_head_dim": 16,
+            "linear_conv_kernel_dim": 4,
+            "attn_output_gate": True,
+            "num_experts": HYBRID_NUM_EXPERTS,
+            "num_experts_per_tok": 2,
+            "moe_intermediate_size": 32,
+            "shared_expert_intermediate_size": 32,
+            "vocab_size": 256,
+            "mtp_num_hidden_layers": 0,
+        },
+    )
+    torch.manual_seed(0)
+    model = modeling_qwen3_5_moe.Qwen3_5MoeForConditionalGeneration(config).to(torch.float32).eval()
+    # Random norm weights around 1.0, so normalization fusion is actually exercised.
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.normal_(0.0, 0.05) if parameter.dim() > 1 else parameter.normal_(1.0, 0.05)
+    return model
+
+
+def resolve_scaling_layers(model: nn.Module, scaling_modules: dict, model_decoder_layers: str) -> list[dict]:
+    return RotationProcessor.get_scaling_layers(
+        model,
+        scaling_modules,
+        model_decoder_layers=model_decoder_layers,
+        online_r1_rotation=False,
+        r1=True,
+        smooth_positions=None,
+    )
+
+
+def resolve_hybrid_scaling_layers(model: nn.Module, scaling_layers: dict) -> list[dict]:
+    return resolve_scaling_layers(model, scaling_layers, model_decoder_layers="model.language_model.layers")
+
+
+@requires_qwen3_5_moe
+def test_hybrid_moe_router_is_promoted_to_linear():
+    """Rotation only accepts `nn.Linear` in `next_modules`, so the router has to become one."""
+    model = build_tiny_hybrid_moe_model()
+    assert not isinstance(model.model.language_model.layers[0].mlp.gate, nn.Linear)
+
+    preprocess_for_quantization(model)
+
+    router = model.model.language_model.layers[0].mlp.gate
+    assert isinstance(router, nn.Linear)
+    assert type(router).__name__ == "QuarkQwen3_5MoeTopKRouter"
+    # The bare `weight` state-dict path must survive, or checkpoints stop round-tripping.
+    assert "model.language_model.layers.0.mlp.gate.weight" in model.state_dict()
+
+
+@requires_qwen3_5_moe
+def test_hybrid_moe_preprocess_preserves_logits():
+    """Unfusing the experts and swapping the router must not change the model's output."""
+    model = build_tiny_hybrid_moe_model()
+    input_ids = torch.randint(0, 200, (1, 16), generator=torch.Generator().manual_seed(7))
+
+    with torch.no_grad():
+        before = model(input_ids=input_ids).logits.clone()
+    preprocess_for_quantization(model)
+    with torch.no_grad():
+        after = model(input_ids=input_ids).logits
+
+    torch.testing.assert_close(after, before, rtol=1e-4, atol=1e-4)
+
+
+@requires_qwen3_5_moe
+@pytest.mark.parametrize(
+    ("include_router", "expect_identity"),
+    [
+        # R1 is a change of basis: with every residual consumer listed, logits must not move.
+        pytest.param(True, True, id="include_router:True"),
+        # Without `mlp.gate` in the config the model still runs and exports, just wrong.
+        pytest.param(False, False, id="include_router:False"),
+    ],
+)
+def test_hybrid_moe_r1_is_an_identity_only_when_the_router_is_rotated(
+    tmp_path, include_router: bool, expect_identity: bool
+):
+    model = build_tiny_hybrid_moe_model()
+    input_ids = torch.randint(0, 200, (1, 16), generator=torch.Generator().manual_seed(7))
+
+    with torch.no_grad():
+        reference = model(input_ids=input_ids).logits.clone()
+
+    preprocess_for_quantization(model)
+
+    config_path = tmp_path / "rotation.json"
+    config_path.write_text(json.dumps(hybrid_rotation_config(include_router)))
+    RotationProcessor(model, load_quant_algo_config_from_file(str(config_path)), None).apply()
+
+    with torch.no_grad():
+        rotated = model(input_ids=input_ids).logits
+
+    relative_error = ((rotated - reference).abs().max() / reference.abs().max()).item()
+
+    if expect_identity:
+        assert relative_error < 1e-3, f"R1 is not an identity: relative error {relative_error:.3e}"
+    else:
+        assert relative_error > 1e-1, (
+            "omitting the router from the rotation config was expected to corrupt the model, "
+            f"but the relative error was only {relative_error:.3e}"
+        )
+
+
+@requires_qwen3_5_moe
+def test_hybrid_moe_groups_drop_only_the_absent_paths(tmp_path):
+    """A templated group naming both attention shapes must resolve per layer, not raise."""
+    model = build_tiny_hybrid_moe_model()
+    preprocess_for_quantization(model)
+
+    config_path = tmp_path / "rotation.json"
+    config_path.write_text(json.dumps(hybrid_rotation_config(include_router=True)))
+    config = load_quant_algo_config_from_file(str(config_path))
+
+    scaling_layers = resolve_hybrid_scaling_layers(model, config.scaling_layers)
+
+    # Two groups per layer plus the final norm -> lm_head group; none is dropped wholesale,
+    # because each attention group always keeps at least one of the two shapes.
+    assert len(scaling_layers) == 2 * HYBRID_NUM_LAYERS + 1
+
+    resolved = {name for group in scaling_layers for name in group["next_modules"]}
+    # The full-attention layer is index 3; the linear-attention layers are 0-2.
+    assert "model.language_model.layers.3.self_attn.q_proj" in resolved
+    assert "model.language_model.layers.0.linear_attn.in_proj_qkv" in resolved
+    assert "model.language_model.layers.0.self_attn.q_proj" not in resolved
+    assert "model.language_model.layers.3.linear_attn.in_proj_qkv" not in resolved
+    # The router must survive filtering; it is the one non-obvious residual consumer.
+    for layer_index in range(HYBRID_NUM_LAYERS):
+        assert f"model.language_model.layers.{layer_index}.mlp.gate" in resolved
+
+
+def rename_hybrid_next_modules(scaling_layers: dict, old: str, new: str) -> None:
+    for groups in scaling_layers.values():
+        for group in groups:
+            group["next_modules"] = [name.replace(old, new) for name in group["next_modules"]]
+
+
+def clear_hybrid_next_modules(scaling_layers: dict) -> None:
+    for groups in scaling_layers.values():
+        for group in groups:
+            group["next_modules"] = [f"{HYBRID_LAYER}.typo_that_does_not_exist"]
+
+
+@requires_qwen3_5_moe
+@pytest.mark.parametrize(
+    "break_scaling_layers",
+    [
+        pytest.param(
+            lambda scaling_layers: rename_hybrid_next_modules(scaling_layers, "mlp.gate", "mlp.gate.linear"),
+            id="renamed_router",
+        ),
+        pytest.param(
+            lambda scaling_layers: rename_hybrid_next_modules(scaling_layers, "q_proj", "q_prj"),
+            id="typoed_q_proj",
+        ),
+        # A config that matches nothing at all must fail loudly rather than silently no-op.
+        pytest.param(clear_hybrid_next_modules, id="every_group_missing"),
+    ],
+)
+def test_hybrid_moe_wrong_module_names_raise(tmp_path, break_scaling_layers):
+    """A name absent from every layer must raise, even in a hybrid config."""
+    model = build_tiny_hybrid_moe_model()
+    preprocess_for_quantization(model)
+
+    broken = hybrid_rotation_config(include_router=True)
+    break_scaling_layers(broken["scaling_layers"])
+
+    config_path = tmp_path / "rotation.json"
+    config_path.write_text(json.dumps(broken))
+    config = load_quant_algo_config_from_file(str(config_path))
+
+    with pytest.raises(ValueError, match="not found in any layer"):
+        resolve_hybrid_scaling_layers(model, config.scaling_layers)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Synthetic heterogeneous stack: layer-by-layer resolution unit tests.
+# ---------------------------------------------------------------------------------------------------
+
+
+class SyntheticExpert(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate_proj = nn.Linear(8, 8, bias=False)
+        self.down_proj = nn.Linear(8, 8, bias=False)
+
+
+class SyntheticMoeMlp(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.experts = nn.ModuleList([SyntheticExpert() for _ in range(2)])
+
+
+class SyntheticDenseMlp(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.up_proj = nn.Linear(8, 8, bias=False)
+        self.down_proj = nn.Linear(8, 8, bias=False)
+
+
+class SyntheticAttention(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.q_proj = nn.Linear(8, 8, bias=False)
+        self.o_proj = nn.Linear(8, 8, bias=False)
+
+
+class SyntheticLayer(nn.Module):
+    def __init__(self, moe: bool) -> None:
+        super().__init__()
+        self.input_layernorm = nn.LayerNorm(8)
+        self.self_attn = SyntheticAttention()
+        self.mlp = SyntheticMoeMlp() if moe else SyntheticDenseMlp()
+
+
+class SyntheticBackbone(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList([SyntheticLayer(moe=True), SyntheticLayer(moe=False)])
+        self.norm = nn.LayerNorm(8)
+
+
+class SyntheticModel(nn.Module):
+    """Two decoder layers: index 0 is MoE, index 1 is dense."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.model = SyntheticBackbone()
+        self.lm_head = nn.Linear(8, 16, bias=False)
+
+
+SYNTHETIC_LAYER = "model.layers.layer_id"
+
+SYNTHETIC_LAST_LAYER_GROUP = {
+    "prev_modules": [f"{SYNTHETIC_LAYER}.mlp.down_proj"],
+    "norm_module": "model.norm",
+    "next_modules": ["lm_head"],
+}
+
+
+def resolve_synthetic_scaling_layers(group: dict) -> list[dict]:
+    """Resolve `group` on every layer of the synthetic 2-layer (MoE + dense) model."""
+    return resolve_scaling_layers(
+        SyntheticModel(),
+        {"first_layer": [group], "middle_layers": [group], "last_layer": [SYNTHETIC_LAST_LAYER_GROUP]},
+        model_decoder_layers="model.layers",
+    )
+
+
+def test_synthetic_starred_template_is_dropped_where_its_parent_is_absent():
+    """`mlp.experts.*` has no parent to expand on the dense layer; that layer keeps the rest."""
+    scaling_layers = resolve_synthetic_scaling_layers(
+        {
+            "prev_modules": [f"{SYNTHETIC_LAYER}.self_attn.o_proj"],
+            "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+            # The first name resolves only on the MoE layer, the second only on the dense one.
+            "next_modules": [f"{SYNTHETIC_LAYER}.mlp.experts.*.gate_proj", f"{SYNTHETIC_LAYER}.mlp.up_proj"],
+        }
+    )
+
+    # One group per layer, plus the final norm -> lm_head group. Neither layer is dropped:
+    # each keeps whichever of the two templates it actually has.
+    assert len(scaling_layers) == 3
+    assert scaling_layers[0]["next_modules"] == [
+        "model.layers.0.mlp.experts.0.gate_proj",
+        "model.layers.0.mlp.experts.1.gate_proj",
+    ]
+    assert scaling_layers[1]["next_modules"] == ["model.layers.1.mlp.up_proj"]
+
+
+def test_synthetic_group_is_dropped_where_prev_modules_resolves_to_nothing():
+    """No preceding layer to merge the rotation into means the group is skipped, not fused."""
+    scaling_layers = resolve_synthetic_scaling_layers(
+        {
+            # Resolves to the two experts' `down_proj` on the MoE layer, to nothing on the dense one.
+            "prev_modules": [f"{SYNTHETIC_LAYER}.mlp.experts.*.down_proj"],
+            "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+            "next_modules": [f"{SYNTHETIC_LAYER}.self_attn.q_proj"],
+        }
+    )
+
+    # The dense layer's group is gone; only the MoE layer's group and the lm_head group remain.
+    assert len(scaling_layers) == 2
+    assert scaling_layers[0]["prev_modules"] == [
+        "model.layers.0.mlp.experts.0.down_proj",
+        "model.layers.0.mlp.experts.1.down_proj",
+    ]
+    assert scaling_layers[0]["next_modules"] == ["model.layers.0.self_attn.q_proj"]
+    assert scaling_layers[1]["next_modules"] == ["lm_head"]
+
+
+@pytest.mark.parametrize(
+    "broken_group",
+    [
+        # Dropping absent paths per layer must not silently swallow a wrong name everywhere.
+        pytest.param(
+            {
+                "prev_modules": [f"{SYNTHETIC_LAYER}.self_attn.o_proj"],
+                "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+                "next_modules": [f"{SYNTHETIC_LAYER}.mlp.typo_experts.*.gate_proj"],
+            },
+            id="starred_next_modules",
+        ),
+        # `target_modules` is validated like `prev_modules`/`next_modules`: resolving to `[]` would
+        # silently skip the group's online rotation (and its file-to-file `input_rotation` buffer).
+        pytest.param(
+            {
+                "prev_modules": [f"{SYNTHETIC_LAYER}.self_attn.o_proj"],
+                "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+                "next_modules": [f"{SYNTHETIC_LAYER}.self_attn.q_proj"],
+                "target_modules": [f"{SYNTHETIC_LAYER}.self_attn.q_prj"],  # typo
+            },
+            id="target_modules",
+        ),
+    ],
+)
+def test_synthetic_names_absent_from_every_layer_raise(broken_group: dict):
+    with pytest.raises(ValueError, match="not found in any layer"):
+        resolve_synthetic_scaling_layers(broken_group)
+
+
+def test_synthetic_explicitly_empty_target_modules_is_allowed():
+    """`"target_modules": []` opts a group out of online rotation; it requests no name."""
+    scaling_layers = resolve_synthetic_scaling_layers(
+        {
+            "prev_modules": [f"{SYNTHETIC_LAYER}.self_attn.o_proj"],
+            "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+            "next_modules": [f"{SYNTHETIC_LAYER}.self_attn.q_proj"],
+            "target_modules": [],
+        }
+    )
+
+    assert [group["target_modules"] for group in scaling_layers[:2]] == [[], []]
+    # The empty override must not bleed into the group's other keys.
+    assert scaling_layers[0]["next_modules"] == ["model.layers.0.self_attn.q_proj"]
+
+
+def test_synthetic_target_modules_falls_back_to_next_modules():
+    """With no `target_modules` key, the targets are the (resolved) `next_modules`."""
+    scaling_layers = resolve_synthetic_scaling_layers(
+        {
+            "prev_modules": [f"{SYNTHETIC_LAYER}.self_attn.o_proj"],
+            "norm_module": f"{SYNTHETIC_LAYER}.input_layernorm",
+            "next_modules": [f"{SYNTHETIC_LAYER}.mlp.experts.*.gate_proj", f"{SYNTHETIC_LAYER}.mlp.up_proj"],
+        }
+    )
+
+    for resolved_group in scaling_layers:
+        assert resolved_group["target_modules"] == resolved_group["next_modules"]
+
+
 @pytest.mark.parametrize(
     "rotation_size", [pytest.param(val, id=f"rotation_size:{val}") for val in [None]]
 )  # TODO: test rotation_size once supported.
@@ -1375,7 +1996,7 @@ def test_get_trainable_parameters(
     quant_config = QConfig(
         global_quant_config=layer_quant_config,
         algo_config=[rotation_config],
-        exclude=["lm_head", "*.gate", "*.gate.linear"],
+        exclude=["lm_head", "*.gate"],
     )
 
     # 4-2. In-place replacement of model modules with quantized versions.
@@ -1538,7 +2159,7 @@ def test_load_vllm_hadamard():
     quant_config = QConfig(
         global_quant_config=layer_quant_config,
         algo_config=algo_config,
-        exclude=["lm_head", "*.gate", "*.gate.linear"],
+        exclude=["lm_head", "*.gate"],
     )
 
     model = AutoModelForCausalLM.from_pretrained(model_id, attn_implementation=ATTN_IMPLEMENTATION)
@@ -1611,7 +2232,7 @@ def test_load_vllm_tuned_orthogonal():
     quant_config_rotation = QConfig(
         global_quant_config=layer_quant_config,
         algo_config=algo_config,
-        exclude=["lm_head", "*.gate", "*.gate.linear"],
+        exclude=["lm_head", "*.gate"],
     )
 
     model, _, _, _, _, _, _ = run_rotation_training(

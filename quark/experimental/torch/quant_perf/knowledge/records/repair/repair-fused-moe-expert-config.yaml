@@ -1,0 +1,72 @@
+schema_version: 1
+id: repair.vllm.quark.fused-moe-expert-config.v1
+domain: repair
+kind: verified_repair_recipe
+status: verified
+applicability:
+  framework: [vllm]
+match:
+  failure_class: [accuracy_gap, load_run]
+  error_contains:
+    - quantized model accuracy gap
+    - "expand(torch.ByteTensor"
+    - "shape '[]' is invalid for input of size"
+    - "routed_experts.py|_load_w13|The size of tensor"
+  keywords:
+    - FusedMoE
+    - layer_quant_config
+    - gate_proj
+    - up_proj
+    - down_proj
+    - weight_scale
+    - mxfp4_fp8
+summary: A fused MoE parent module must inherit consistent expert projection overrides before falling back to the global quantization config.
+guidance:
+  - Resolve gate, up, and down expert projection overrides using their original layer names.
+  - When the runtime asks for a fused parent such as mlp.experts, match descendant expert patterns segment by segment.
+  - Require all three expert projection configurations to be equivalent.
+  - Use the agreed child configuration for the fused parent instead of the global per-tensor fallback.
+  - A block scale such as weight_scale with shape [num_groups, group_size] must not enter a scalar reshape path.
+  - For wrapper architectures, verify packed_modules_mapping on both the inner language model and the top-level conditional-generation class.
+  - Map fused experts to experts.*.gate_proj, experts.*.up_proj, and experts.*.down_proj.
+  - For DeepSeek V4 source names, resolve the corresponding experts.*.w1, experts.*.w2 and experts.*.w3 rules; the validated export uses a uniform experts.*.w* MXFP4 override.
+  - A routed scale-size mismatch can mean an MXFP4 block scale entered the global per-channel FP8 loader. Inspect the selected scheme and scale header before concluding that the weight shard or TP size is wrong.
+  - The V4 repair resolves representative expert-zero projection names; do not generalize that evidence to incomplete overrides or heterogeneous per-expert precision without validating every projection and expert.
+  - Reject inconsistent expert projection configurations explicitly.
+  - Preserve the existing global fallback when no complete expert override exists.
+  - Do not modify model weights, quantized checkpoint files, or kernel math for this mapping failure.
+required_checks: [load, inference, accuracy]
+evidence:
+  level: E3
+  verifier: load_inference_and_accuracy
+  validated_case:
+    model_arch: qwen3_5_moe
+    framework_version: 0.24.0+rocm723
+    accelerator: gfx950
+    tensor_parallel_size: 4
+    failure: "shape '[]' is invalid for input of size 32768"
+    result: eager_and_compiled_load_inference_passed
+  additional_validated_cases:
+    - model_arch: deepseek_v4
+      framework_version: 0.25.0+rocm723
+      accelerator: gfx950
+      tensor_parallel_size: 2
+      failure: routed_mxfp4_scale_loaded_through_global_per_channel_fp8_scheme
+      observed_sizes: [1024, 128]
+      result: fused_routed_parent_resolved_the_uniform_source_mxfp4_override
+      verification_scope: Focused config matching passed; full offline GSM8K passed with the combined V4 repairs.
+      session_artifacts:
+        - repair/verification-1790058107758802919/failure.log
+        - repairs/runtime-format-review-round3.log
+        - repairs/vllm-focused-tests-with-output-projection.log
+        - evaluation/quantized/attempt-4/stdout.log
+provenance:
+  kind: external_commit
+  repository: vllm
+  commit: 4873ee16a
+  additional_sources:
+    - source_session_id: 7aac512f-369c-4caf-9ae6-d93c1f51f4a1
+      source_session_name: qwen35-accuracy-performance
+      managed_commit: abf19db634553f3eb0f11d6887ba0b7e833b15f2
+      validated_runtime_commit: 104b4c2f21adab4e5f3d84da71c9e09a0b25d85a
+      validated_at: "2026-09-22"

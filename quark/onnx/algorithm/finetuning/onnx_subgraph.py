@@ -70,7 +70,7 @@ class Subgraph:
         self.providers, self.provider_options = self.onnx_execution_providers()
         self.device = self.providers[0][: -len("ExecutionProvider")]
         self.origin_launch_mode: str | None = None
-        if "CUDAExecutionProvider" in self.providers:
+        if "CUDAExecutionProvider" in self.providers:  # pragma: no cover - requires real GPU (CUDA EP)
             torch_devices = extra_options.get("FastFinetune", {}).get("OptimDevice", "cpu").lower()
             if torch_devices.startswith("cuda") and len(torch_devices) > 6:
                 # Multiple devices will be used for fine-tuning using data parallelism,
@@ -94,7 +94,7 @@ class Subgraph:
             self.fmodel = infer_custom_op_shape(self.float_model)
             self.qmodel = infer_custom_op_shape(self.quant_model)
 
-        if self.use_external_data_format:
+        if self.use_external_data_format:  # pragma: no cover - >2GB external-data path
             self.fmodel = save_and_reload_model_with_shape_infer(self.fmodel)
             self.qmodel = save_and_reload_model_with_shape_infer(self.qmodel)
 
@@ -481,7 +481,9 @@ class Subgraph:
 
     def get_q_input_data_in_parallel(self) -> dict[int, NDArray[Any] | list[NDArray[Any]]]:
         aug_model = copy.deepcopy(self.qmodel)
-        model_original_outputs = {output.name for output in aug_model.graph.output}  # pragma: no cover
+        model_original_outputs = {
+            output.name for output in aug_model.graph.output
+        }  # pragma: no cover  # TODO: add unit test to cover get_q_input_data_in_parallel
         for q_in in self.qsubgraph_input_tensor_list:
             if q_in not in model_original_outputs:
                 model_original_outputs.add(q_in)
@@ -747,7 +749,7 @@ class Subgraph:
         if self.temp_dir is not None:
             self.temp_dir.cleanup()
 
-        if self.origin_launch_mode is not None:
+        if self.origin_launch_mode is not None:  # pragma: no cover - requires real GPU (CUDA env)
             os.environ["CUDA_LAUNCH_BLOCKING"] = self.origin_launch_mode
         elif "CUDA_LAUNCH_BLOCKING" in os.environ:
             os.environ.pop("CUDA_LAUNCH_BLOCKING", None)

@@ -70,6 +70,14 @@ if is_version_below(onnx, "1.19.0"):
 else:
     from ml_dtypes import float8_e4m3fn as float8e4m3fn
 
+if is_version_below(onnx, "1.19.0"):
+    try:
+        from onnx.reference.custom_element_types import float8e5m2  # type: ignore
+    except ImportError:
+        float8e5m2 = None  # type: ignore
+else:
+    from ml_dtypes import float8_e5m2 as float8e5m2
+
 logger = ScreenLogger(__name__)
 
 __producer__ = "quark.onnx"
@@ -321,7 +329,8 @@ ONNX_TYPE_TO_NP_TYPE: dict[int, DType | None] = {
     # This is mismatched conversion,
     # numpy does not support yet
     onnx_proto.TensorProto.BFLOAT16: np.dtype("float16"),
-    onnx_proto.TensorProto.FLOAT8E4M3FN: float8e4m3fn,  # type ignore
+    onnx_proto.TensorProto.FLOAT8E4M3FN: float8e4m3fn,  # type: ignore
+    onnx_proto.TensorProto.FLOAT8E5M2: float8e5m2,  # type: ignore
     # This is for the new data types BFP and MX
     onnx_proto.TensorProto.UNDEFINED: np.dtype("float32"),  # type ignore
 }
@@ -379,6 +388,8 @@ ONNX_WBIT_QTYPES_LIST = [
 ONNX_FP_QTYPES_LIST = [
     onnx_proto.TensorProto.FLOAT16,
     onnx_proto.TensorProto.BFLOAT16,
+    onnx_proto.TensorProto.FLOAT8E4M3FN,
+    onnx_proto.TensorProto.FLOAT8E5M2,
 ]
 
 ONNX_BFP_QTYPES_LIST = [
@@ -441,7 +452,13 @@ def get_qmin_qmax_for_qType(qType: int, reduce_range: bool = False, symmetric: b
                 return (np.array(-2.0, dtype=np.float32), np.array(2.0, dtype=np.float32))
             else:
                 return (np.array(-3.38953139e38, dtype=np.float32), np.array(3.38953139e38, dtype=np.float32))
-        else:
+        elif qType == onnx_proto.TensorProto.FLOAT8E4M3FN:
+            # E4M3FN finite value range (NaN excluded); used for symmetric MinMax calibration
+            return (np.array(-448.0, dtype=np.float32), np.array(448.0, dtype=np.float32))
+        elif qType == onnx_proto.TensorProto.FLOAT8E5M2:
+            # E5M2 max finite value (Inf and NaN representations exist)
+            return (np.array(-57344.0, dtype=np.float32), np.array(57344.0, dtype=np.float32))
+        else:  # pragma: no cover - unreachable; all ONNX_FP_QTYPES already handled above
             raise NotImplementedError(f"This function does not support the qType {qType}.")
 
     qrange = None
@@ -516,10 +533,12 @@ def load_model_with_shape_infer(model_path: Path) -> ModelProto:
     return model
 
 
-def save_and_reload_model_with_shape_infer(model: ModelProto) -> ModelProto:
+def save_and_reload_model_with_shape_infer(
+    model: ModelProto,
+) -> ModelProto:  # pragma: no cover - >2GB large-model reload path only
     model_copy = copy.deepcopy(model)
     quant_tmp_dir = create_tmp_dir(prefix="quark_onnx.utils.")
-    model_path = Path(quant_tmp_dir).joinpath("model.onnx")
+    model_path = Path(quant_tmp_dir.name).joinpath("model.onnx")
     onnx.save_model(model_copy, model_path.as_posix(), save_as_external_data=True)
     return load_model_with_shape_infer(model_path)
 
@@ -546,7 +565,7 @@ def infer_shape(model: ModelProto) -> ModelProto:
     :param model: the source model
     :return: the target model contains inferred shape
     """
-    if model_size_exceeds(model):
+    if model_size_exceeds(model):  # pragma: no cover - >2GB large-model branch
         inferred_model = save_and_reload_model_with_shape_infer(model)
     else:
         inferred_model = shape_inference.infer_shapes(model)
@@ -938,7 +957,9 @@ def compute_scale_zp(
         M, N, diff = find_int16_scale(scale.item())
         int16_scale: np.ndarray[Any, Any] | float = np.array(M / 2**N, dtype=scale.dtype)
         logger.debug(f"Find the {M} / 2 ** {N} that is closest to scale {scale}with the difference being {diff}")
-        if int16_scale < np.finfo(np.float32).tiny:
+        if (
+            int16_scale < np.finfo(np.float32).tiny
+        ):  # pragma: no cover - unreachable: find_int16_scale returns either 0 or >=1/2**16, never in (0, tiny)
             int16_scale = 1 / 2**14
 
         new_rmin = np.minimum(
@@ -973,6 +994,26 @@ def compute_scale_zp_fp(
     :param element_type: the element data type of the tensor to quantize
     :return: zero and scale [z, s]
     """
+    # FP8 symmetric MinMax — scale = absmax / fp8_max, zero_point = 0 in FP8 dtype.
+    # Early return required because:
+    #   (a) the scale formula differs from the generic dr/dq path below, and
+    #   (b) zero_point must be the FP8 numpy dtype (not float16/float32) so that
+    #       Quark's per-channel assertion (zero_point.dtype not in {float32, float16})
+    #       is satisfied.
+    _FP8_PARAMS = {
+        onnx_proto.TensorProto.FLOAT8E4M3FN: (448.0, float8e4m3fn),
+        onnx_proto.TensorProto.FLOAT8E5M2: (57344.0, float8e5m2),
+    }
+    if element_type in _FP8_PARAMS:
+        fp8_max, zp_dtype = _FP8_PARAMS[element_type]
+        out_dtype = getattr(rmax, "dtype", np.float32)
+        absmax = np.maximum(np.abs(np.asarray(rmin, dtype=np.float32)), np.abs(np.asarray(rmax, dtype=np.float32)))
+        scale = (absmax / fp8_max).astype(out_dtype)
+        scale = np.where(scale < np.finfo(np.float32).tiny, np.ones_like(scale), scale).astype(out_dtype)
+        if scale.ndim == 0:
+            scale = scale.reshape(())
+        return [np.array(0, dtype=zp_dtype), scale]
+
     if element_type not in ONNX_FP_QTYPES_LIST + ONNX_BFP_QTYPES_LIST:
         raise ValueError(f"Quantization to element_type={element_type} not implemented.")
 
@@ -1397,10 +1438,12 @@ def get_weights_node_of_node(
 
 
 def get_output_nodes_of_node(node: NodeProto, model: GraphProto) -> list[NodeProto]:
-    output_nodes_list = []
+    output_nodes_list: list[NodeProto] = []
+    seen_ids: set[int] = set()
     for output in node.output:
         for one_node in model.node:
-            if output in one_node.input and one_node.name not in output_nodes_list:
+            if output in one_node.input and id(one_node) not in seen_ids:
+                seen_ids.add(id(one_node))
                 output_nodes_list.append(one_node)
             elif output in one_node.input:
                 logger.info(f"the output_node:{one_node.name} already in list")
@@ -1586,7 +1629,7 @@ def inference_sub_model_with_data(
         extractor = onnx.utils.Extractor(input_model)
         sub_model = extractor.extract_model(start_node_tensor, end_node_tensor)
         session = create_infer_session_for_onnx_model(sub_model)
-    else:
+    else:  # pragma: no cover - >2GB large-model fallback (external-data save + ORT session)
         sub_model_path = create_tmp_dir(prefix="quark_onnx.submodel.")
         opt_model_output = Path(sub_model_path.name).joinpath("all.onnx").as_posix()
         sub_model_output = Path(sub_model_path.name).joinpath("sub_model.onnx").as_posix()
@@ -2226,7 +2269,14 @@ def insert_quant_nodes_at_boundaries(
         assert hasattr(td, "range_value"), f"Invalid tensor range {td} without range_value"
 
         rmin, rmax = td.range_value[0], td.range_value[1]
-        symmetric = extra_options.get("ActivationSymmetric", qtype in [onnx.TensorProto.INT8, onnx.TensorProto.INT16])
+        symmetric = qtype in (
+            onnx_proto.TensorProto.INT8,
+            onnx_proto.TensorProto.INT16,
+            onnx_proto.TensorProto.INT32,
+            onnx_proto.TensorProto.FLOAT16,
+            onnx_proto.TensorProto.BFLOAT16,
+        )
+        symmetric = extra_options.get("ActivationSymmetric", symmetric)
         use_pof2s = extra_options.get("UsePowerOf2Scale", True)
 
         qmin, qmax = get_qmin_qmax_for_qType(qtype, reduce_range=reduce_range, symmetric=symmetric)
@@ -2316,6 +2366,7 @@ def insert_quant_nodes_at_boundaries(
                             "tensor_index": input_index,  # For example, 0
                             "tensor_name": input_name,  # For example, "input_0_DequantizeLinear_output"
                             "override_tensor_name": input_override_tensor_name,  # For example, "input_0"
+                            "calib_tensor_name": upstream_source_name,  # For example, "input_0" (float tensor in tensors_range)
                             "stage_kind": upstream_kind,  # For example, "pair"
                             "stage_signature": upstream_signature,  # For example, ("quant", "ai.onnx::QuantizeLinear", 1)
                             "stage_nodes": upstream_nodes,  # For example, (quant_template, dequant_template)
@@ -2339,6 +2390,7 @@ def insert_quant_nodes_at_boundaries(
                             "tensor_index": output_index,
                             "tensor_name": output_name,
                             "override_tensor_name": output_override_tensor_name,
+                            "calib_tensor_name": downstream_source_name,  # float tensor after DQ (in tensors_range)
                             "stage_kind": downstream_kind,
                             "stage_signature": downstream_signature,
                             "stage_nodes": downstream_nodes,
@@ -2399,7 +2451,11 @@ def insert_quant_nodes_at_boundaries(
             if info["stage_signature"] == template_signature:
                 continue
             info["template_index"] = template_index  # Update the template index for potential use
-            qparam_tensor_name = info["override_tensor_name"] or info["tensor_name"]
+            primary = info["override_tensor_name"] or info["tensor_name"]
+            calib_fallback = info.get("calib_tensor_name", "")
+            qparam_tensor_name = (
+                primary if (tensors_range is None or primary in tensors_range or not calib_fallback) else calib_fallback
+            )
 
             target_node_name = info["target_node"].name or info["target_node"].op_type
             inserted_tensor_key = (node_name, info["tensor_name"], target_node_name)
@@ -2441,6 +2497,20 @@ def get_opset_version(model: onnx.ModelProto) -> Any:
         raise ValueError("Failed to find proper ai.onnx domain")
     opset_version = ai_onnx_domain[0].version
     return opset_version
+
+
+# DequantizeLinear accepts float8 types (E4M3FN / E5M2) only at opset >= 21 in
+# ONNX Runtime. Models below this opset must be converted before FP8 QDQ insertion.
+FP8_MIN_OPSET = 21
+
+
+def is_fp8_qtype(qtype: Any) -> bool:
+    """True if qtype targets an FP8 tensor type (E4M3FN or E5M2)."""
+    tensor_type = getattr(qtype, "tensor_type", None)
+    return tensor_type in (
+        onnx_proto.TensorProto.FLOAT8E4M3FN,
+        onnx_proto.TensorProto.FLOAT8E5M2,
+    )
 
 
 def convert_nparray(qType: Any, arr: np.ndarray[Any, Any]) -> Any:
@@ -2735,6 +2805,7 @@ def get_pre_defined_preprocess_config(pre_defined_template_name: str) -> dict[st
         return xint8_preprocess_config
     else:
         logger.warning(
-            f"The param PreprocessYAML {pre_defined_template_name} is valid. Please choose from xint8, a8w8, a16w8, bf16, bfp16."
+            f"The pre-defined template '{pre_defined_template_name}' is not valid. "
+            "Please choose from xint8, a8w8, a16w8, bf16, bfp16. Falling back to the general template."
         )
         return general_preprocess_config

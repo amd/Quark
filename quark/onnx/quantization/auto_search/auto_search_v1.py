@@ -583,7 +583,9 @@ class SearchSpace:
                         self.level2_space_config[level2_keys[level2_idx]][temp_level2_space[level2_idx]]
                         for level2_idx in range(len(temp_level2_space))
                     ]
-                    temp_level2_config = dict(zip(level2_keys, temp_level2_vals, strict=False))  # pragma: no cover
+                    temp_level2_config = dict(
+                        zip(level2_keys, temp_level2_vals, strict=False)
+                    )  # pragma: no cover  # TODO: add unit test to cover SearchSpace.get_all_configs level-2-only branch
                     one_config["extra_options"] = temp_level2_config
                     if len(level3_keys) > 0:
                         level3_loc_idx = 1

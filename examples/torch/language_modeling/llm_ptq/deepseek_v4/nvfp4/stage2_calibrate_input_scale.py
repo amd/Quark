@@ -17,13 +17,22 @@ This script:
   2. Converts the collected per-tensor input_scale into the NVFP4 safetensors
      tensor layout:
         layers.<L>.ffn.experts.<E>.<wK>.input_scale          (routed, F32 scalar)
-        layers.<L>.ffn.shared_experts.<wK>.input_scale       (shared, F32 scalar)
      so it can be merged (Stage 3) into the NVFP4 weights from Stage 1.
+
+Only the routed experts are quantized to NVFP4; the shared experts keep their
+original FP8 format, so no input_scale is calibrated for them.
 
 Missing experts: with few calibration tokens some routed experts never fire.
 Each missing (layer, projection) is filled with the MAX input_scale over the
 calibrated experts in that same layer+projection (a larger per-tensor scale
-never clips a rare expert). Shared experts are always active (no fill).
+never clips a rare expert).
+
+Calibration data: mirrors the NVIDIA ModelOpt deepseek_v4 recipe — two sources,
+cnn_dailymail (news articles) and Nemotron-Post-Training-Dataset-v2 (multi-turn
+chat, message contents joined). ``--n-calib-samples`` is the number of rows taken
+from EACH source (= ModelOpt's ``num_samples=[calib_size]*len(datasets)``), so the
+default 64 yields 128 calibration rows total. If a source cannot be loaded the run
+falls back to wikitext-2.
 
 Architecture:
   NativeLinear wraps each native FP4/FP8 linear in the checkpoint.
@@ -63,10 +72,14 @@ from quark.torch.utils.per_block_runner.lazy_loader import prepare
 
 logger = ScreenLogger(__name__)
 
-# Put this example's src/ folder on sys.path so the support modules import.
+# Put this example's src/ folder and its own directory on sys.path so the support
+# modules and the sibling Stage 1 script (for the two default exclude lists) import.
+_HERE = str(Path(__file__).parent)
 _SRC_DIR = str(Path(__file__).parent / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 # dsv4_common imports `dsv4_kernels`, which registers the synthetic ``kernel`` /
 # ``fast_hadamard_transform`` modules so the checkpoint model.py picks up the
@@ -75,6 +88,10 @@ from dsv4_collect import build_input_scale_tensors, collect_input_minmax  # noqa
 from dsv4_common import load_model_module, load_tokenizer, reset_kv_cache  # noqa: E402
 from dsv4_native_linear import NativeLinear, load_all_weights_native, wrap_native_linears  # noqa: E402
 from dsv4_offload import install_disk_offload_hooks  # noqa: E402
+from stage1_quantize_weight import (  # noqa: E402
+    EXCLUDE_LAYERS_DEFAULT,
+    KEEP_ORIGINAL_FORMAT_LAYERS_DEFAULT,
+)
 
 # Input spec from Quark's built-in nvfp4 scheme (no model-specific template needed).
 _NVFP4_INPUT_SPEC = QuantizationSchemeCollection().get_scheme("nvfp4").config.input_tensors
@@ -120,14 +137,38 @@ def parse_args():
         "--n-calib-samples",
         type=int,
         default=64,
-        help="Number of calibration chunks (forward passes) fed to the activation observer (default: %(default)s).",
+        help="Calibration rows (seqlen-long chunks) taken from EACH calibration source "
+        "(cnn_dailymail + Nemotron-Post-Training-Dataset-v2), mirroring ModelOpt's "
+        "num_samples=[calib_size]*len(datasets); default %(default)s => 128 rows total.",
     )
     p.add_argument(
         "--n-experts-per-layer",
         type=int,
         default=384,
-        help="Routed experts per layer; MUST match the model (DeepSeek-V4-Pro = 384). "
-        "A wrong value makes Stage 3 report 'unmatched' keys (default: %(default)s).",
+        help="Expected routed experts per layer (DeepSeek-V4-Pro = 384). Used only as a "
+        "sanity cross-check on the emitted input_scale set; a mismatch logs a warning "
+        "but never changes the output (default: %(default)s).",
+    )
+    p.add_argument(
+        "--exclude_layers",
+        nargs="+",
+        default=EXCLUDE_LAYERS_DEFAULT,
+        metavar="PATTERN",
+        help="fnmatch patterns (matched against the module name) for modules that are "
+        "TRULY NOT quantized (16-bit / BF16 layers: embeddings, output head, norms, router "
+        "gate, MTP block). MUST mirror Stage 1's --exclude_layers so weight quantization and "
+        "input_scale calibration cover the same experts (default: %(default)s).",
+    )
+    p.add_argument(
+        "--keep_original_format_layers",
+        nargs="+",
+        default=KEEP_ORIGINAL_FORMAT_LAYERS_DEFAULT,
+        metavar="PATTERN",
+        help="fnmatch patterns (matched against the module name) for modules kept in the "
+        "model's ORIGINAL quantized format (passthrough, e.g. FP8 attention and shared "
+        "experts): not re-quantized to NVFP4 and not calibrated. MUST mirror Stage 1's "
+        "--keep_original_format_layers. Drop '*shared_experts*' to instead quantize + "
+        "calibrate the shared experts (default: %(default)s).",
     )
     p.add_argument(
         "--n-blocks",
@@ -215,8 +256,12 @@ def main():
     #     Each wrapper stores the native weight on CPU and exposes a BF16
     #     proxy nn.Linear for Quark to replace with QuantLinear.
     # ------------------------------------------------------------------
-    logger.info("[4] Wrapping native linears with NativeLinear …")
-    n_wrapped = wrap_native_linears(model)
+    # Both groups are skipped during calibration: truly-not-quantized (16-bit) and
+    # kept-original-format (FP8 passthrough). Combine into one exclude set so the same
+    # modules Stage 1 left un-NVFP4'd are also left uncalibrated here.
+    combined_exclude = args.exclude_layers + args.keep_original_format_layers
+    logger.info(f"[4] Wrapping native linears with NativeLinear (exclude_layers={combined_exclude}) …")
+    n_wrapped = wrap_native_linears(model, exclude_layers=combined_exclude)
     logger.info(f"Wrapped {n_wrapped} linear modules.")
 
     # ------------------------------------------------------------------
@@ -232,19 +277,16 @@ def main():
     # We quantize the INPUT only; weight=None (no weight quant → saves GPU mem).
     # After calibration we read the input observers' min/max AND the resulting
     # scale (both stages) and dump them to disk.
-    # Only routed experts (ffn.experts.*.w{1,2,3}) are wrapped with NativeLinear,
-    # so only their proxies are nn.Linear → QuantLinear. No exclude list needed:
-    # DS-V4's other linears inherit nn.Module, invisible to Quark.
-    # Sanity check (log only, not used by the quantization): count how many expert
-    # projections got wrapped as NativeLinear — i.e. how many will be calibrated.
-    # n_proxies is the total; n_shared is the subset whose module name contains
-    # "shared_experts", so routed = n_proxies - n_shared. Use this to confirm the
-    # wrap step matched the expected count (e.g. one layer = 384*3 routed + 3 shared).
+    # Only the non-excluded MoE experts are wrapped with NativeLinear, so only their
+    # proxies are nn.Linear → QuantLinear. DS-V4's other linears inherit nn.Module and
+    # stay invisible to Quark; the default --keep_original_format_layers also skips the
+    # shared experts so they keep their FP8 format.
+    # Sanity check (log only, not used by the quantization): count how many
+    # expert projections got wrapped as NativeLinear — i.e. how many will be
+    # calibrated. Use this to confirm the wrap step matched the expected count
+    # (e.g. one layer = 384*3 routed projections).
     n_proxies = sum(1 for _, m in model.named_modules() if isinstance(m, NativeLinear))
-    n_shared = sum(1 for n, m in model.named_modules() if isinstance(m, NativeLinear) and "shared_experts" in n)
-    logger.info(
-        f"MoE expert proxies to observe (NVFp4 input): {n_proxies} (routed {n_proxies - n_shared} + shared {n_shared})"
-    )
+    logger.info(f"MoE expert proxies to observe (NVFp4 input): {n_proxies}")
 
     quant_config = QConfig(
         global_quant_config=QLayerConfig(
@@ -361,23 +403,70 @@ def main():
                 stage.enable_fake_quant()
 
     # [7b] Load calibration data (tokenizer already loaded in [6c]).
-    try:
-        calib_data = load_dataset("cnn_dailymail", name="3.0.0", split="train")
-        calib_text = "\n\n".join(calib_data["article"][: args.n_calib_samples * 4])
-        calib_dataset_name = "cnn_dailymail"
-    except Exception:
-        calib_data = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
-        calib_text = "\n\n".join(calib_data["text"])
-        calib_dataset_name = "wikitext-2"
-    calib_enc = tokenizer(calib_text, return_tensors="pt", truncation=False)
-    calib_ids = calib_enc.input_ids
-    total_avail_tokens = calib_ids.shape[1]
-    n_calib = min(args.n_calib_samples, total_avail_tokens // args.calib_seqlen)
-    calib_chunks = calib_ids[0, : n_calib * args.calib_seqlen].view(n_calib, args.calib_seqlen).to(device)
-    used_tokens = n_calib * args.calib_seqlen
+    # Mirror the NVIDIA ModelOpt deepseek_v4 recipe: two sources, cnn_dailymail
+    # (article) + Nemotron-Post-Training-Dataset-v2 (messages joined), each
+    # contributing `n_calib_samples` rows (num_samples=[N]*len(datasets)).
+    per = args.n_calib_samples
+    seqlen = args.calib_seqlen
+
+    def _chunks_from_text(text: str) -> torch.Tensor:
+        ids = tokenizer(text, return_tensors="pt", truncation=False).input_ids
+        avail_rows = ids.shape[1] // seqlen
+        k = min(per, avail_rows)
+        return ids[0, : k * seqlen].view(k, seqlen) if k > 0 else ids.new_empty((0, seqlen))
+
+    def _load_cnn_text() -> str:
+        ds = load_dataset("cnn_dailymail", name="3.0.0", split="train")
+        return "\n\n".join(ds["article"][: per * 4])  # 4x oversample for chunking
+
+    def _load_nemotron_text() -> str:
+        # Stream the four post-training splits; join each conversation's message
+        # contents (ModelOpt's _join_messages_content). Stop once we have enough
+        # docs to fill `per` rows after chunking (4x oversample).
+        texts: list[str] = []
+        for split in ("stem", "chat", "math", "code"):
+            try:
+                ds = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split=split, streaming=True)
+            except Exception as e:  # split missing / load error: skip it
+                logger.warning(f"nemotron split '{split}' unavailable: {e}")
+                continue
+            for row in ds:
+                msgs = row.get("messages")
+                if msgs:
+                    texts.append("\n".join(t["content"] for t in msgs))
+                    if len(texts) >= per * 4:
+                        break
+            if len(texts) >= per * 4:
+                break
+        if not texts:
+            raise RuntimeError("no nemotron rows collected")
+        return "\n\n".join(texts)
+
+    sources = (("cnn_dailymail", _load_cnn_text), ("nemotron-post-training-dataset-v2", _load_nemotron_text))
+    chunk_list: list[torch.Tensor] = []
+    names: list[str] = []
+    for name, loader in sources:
+        try:
+            chunks = _chunks_from_text(loader())
+        except Exception as e:
+            logger.warning(f"calib source '{name}' failed, skipping: {e}")
+            continue
+        if chunks.shape[0] > 0:
+            chunk_list.append(chunks)
+            names.append(f"{name}({chunks.shape[0]})")
+
+    if not chunk_list:  # both sources failed -> fall back to wikitext-2
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
+        chunks = _chunks_from_text("\n\n".join(ds["text"]))
+        chunk_list.append(chunks)
+        names.append(f"wikitext-2({chunks.shape[0]})")
+
+    calib_chunks = torch.cat(chunk_list, dim=0).to(device)
+    n_calib = calib_chunks.shape[0]
+    used_tokens = n_calib * seqlen
+    calib_dataset_name = " + ".join(names)
     logger.info(f"Calib dataset   : {calib_dataset_name}")
-    logger.info(f"Tokens available: {total_avail_tokens:,}")
-    logger.info(f"Calib samples   : {n_calib} x seqlen {args.calib_seqlen} = {used_tokens:,} tokens used")
+    logger.info(f"Calib samples   : {n_calib} x seqlen {seqlen} = {used_tokens:,} tokens used")
     logger.info(f"Calib batches   : {-(-n_calib // args.batch_size)} (batch_size={args.batch_size})")
 
     # [7c] Run calibration forward passes.
@@ -405,24 +494,30 @@ def main():
     )
 
     scale_map = {name: s["scale"] for name, s in stats.items() if "scale" in s}
+    # Full set of calibrated proxy names (drives which input_scale keys are emitted);
+    # includes sparse experts that never fired and so are absent from scale_map.
+    wrapped_names = [name for name, m in model.named_modules() if isinstance(m, QuantMixin)]
 
     # ------------------------------------------------------------------
     # [9] Convert collected input_scale -> NVFp4 safetensors (HF layout).
     # ------------------------------------------------------------------
 
     logger.info("[9] Converting input_scale -> NVFp4 safetensors …")
-    tensors, report = build_input_scale_tensors(scale_map, args.n_experts_per_layer)
+    tensors, report = build_input_scale_tensors(scale_map, wrapped_names, args.n_experts_per_layer)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     save_file(tensors, str(out_path))
     logger.info(
-        f"layers : {report['n_layers']} x {report['n_experts_per_layer']} "
-        f"experts x 3 proj + {report['n_shared']} shared = "
-        f"{report['n_total']} tensors\n"
-        f"routed : {report['n_calibrated']} calibrated, {report['n_filled']} filled (never-routed)\n"
-        f"shared : {report['n_shared']} input_scale (always active)\n"
+        f"total  : {report['n_total']} input_scale tensors\n"
+        f"scales : {report['n_calibrated']} calibrated, {report['n_filled']} filled (never-fired)\n"
         f"wrote  : {out_path}"
     )
+    for tmpl, expected, actual in report.get("expert_count_mismatches", []):
+        logger.warning(
+            f"expert-count check: template '{tmpl}' emitted {actual} keys, "
+            f"expected {expected} (= n_layers x {args.n_experts_per_layer}); "
+            "output is unaffected."
+        )
 
     peak_gpu = torch.cuda.max_memory_allocated(device) / 1e9
     summary = [

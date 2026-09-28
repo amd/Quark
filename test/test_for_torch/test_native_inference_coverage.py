@@ -24,6 +24,9 @@ from quark.torch.quantization.nn.modules.aiter_fp8_inference_linear import (
     AiterFP8PerTensorNativeInferenceLinear,
     aiter_native_linear_from_module,
 )
+from quark.torch.quantization.nn.modules.flydsl_a8w4_inference_linear import (
+    FlyDSLA8W4NativeInferenceLinear,
+)
 from quark.torch.quantization.nn.modules.native_inference_linear_common import (
     NativeInferenceLinear,
     NativeInferenceMode,
@@ -224,6 +227,26 @@ class TestEnableNativeInferenceConversion:
         assert call_kwargs.kwargs["use_preshuffle"] is True
         assert call_kwargs.kwargs["forced_mode"] == NativeInferenceMode.FP8_PER_TENSOR
 
+    def test_enable_with_flydsl_a8w4_mode_passes_forced_mode(self):
+        qpl = _make_stub_qparams_linear(dtype=Dtype.fp4, qscheme=QSchemeType.per_group, group_size=32)
+        model = nn.Sequential()
+        model.add_module("linear", qpl)
+
+        fake_native = MagicMock(spec=NativeInferenceLinear)
+        options = RuntimeOptions(native_linear_mode="flydsl_a8w4")
+
+        with (
+            patch("quark.torch.kernel.aiter.is_aiter_available", return_value=True),
+            patch(
+                "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.aiter_native_linear_from_module",
+                return_value=fake_native,
+            ) as mock_factory,
+        ):
+            count = enable_native_inference(model, runtime_options=options)
+
+        assert count == 1
+        assert mock_factory.call_args.kwargs["forced_mode"] == NativeInferenceMode.FLYDSL_A8W4
+
 
 class TestDisableNativeInference:
     """Cover disable_native_inference with actual NativeInferenceLinear
@@ -278,7 +301,8 @@ class TestRequireAiter:
 
     def test_passes_when_aiter_available(self):
         with patch(
-            "quark.torch.quantization.nn.modules.native_inference_linear_common.is_aiter_available", return_value=True
+            "quark.torch.quantization.nn.modules.native_inference_linear_common.is_aiter_available",
+            return_value=True,
         ):
             _require_aiter()
 
@@ -635,7 +659,9 @@ class TestQParamsLinearBridge:
         Guards against typos / drift: every name in ``_FIELDS`` must be
         a readable attribute on a fresh QParamsLinear stub.
         """
-        from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+        from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+            _QParamsLinearBridge,
+        )
 
         qpl = _make_stub_qparams_linear()
         for field in _QParamsLinearBridge._FIELDS:
@@ -643,7 +669,9 @@ class TestQParamsLinearBridge:
 
     def test_fields_includes_expected_core_attrs(self):
         """Sanity check on the field set so accidental deletions are caught."""
-        from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+        from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+            _QParamsLinearBridge,
+        )
 
         expected = {
             "in_features",
@@ -663,7 +691,9 @@ class TestQParamsLinearBridge:
 
     def test_build_from_source_returns_qpl_unchanged(self):
         """If the source is already a QParamsLinear, no rebuild happens."""
-        from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+        from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+            _QParamsLinearBridge,
+        )
 
         qpl = _make_stub_qparams_linear()
         result = _QParamsLinearBridge.build_from_source(qpl)
@@ -699,7 +729,9 @@ class TestQParamsLinearBridge:
 
     def test_adopt_copies_every_field_by_reference(self):
         """``adopt`` must transfer every ``_FIELDS`` entry to the target by reference."""
-        from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+        from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+            _QParamsLinearBridge,
+        )
 
         qpl = _make_stub_qparams_linear()
         target = AiterFP8PerTensorNativeInferenceLinear.__new__(
@@ -724,7 +756,9 @@ class TestQParamsLinearBridge:
 
     def test_materialize_round_trips_a_freshly_adopted_module(self):
         """adopt → materialize round-trip must yield a QPL with identical fields."""
-        from quark.torch.quantization.nn.modules.qparamslinear_bridge import _QParamsLinearBridge
+        from quark.torch.quantization.nn.modules.qparamslinear_bridge import (
+            _QParamsLinearBridge,
+        )
 
         qpl = _make_stub_qparams_linear()
         target = AiterFP8PerTensorNativeInferenceLinear.__new__(
@@ -1143,7 +1177,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 64).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 64).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ),
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8",
@@ -1163,7 +1200,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 256).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 256).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ),
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8_bpreshuffle",
@@ -1187,7 +1227,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 64).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 64).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ),
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8",
@@ -1206,7 +1249,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 64).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 64).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ),
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8",
@@ -1229,7 +1275,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 64).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 64).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ) as mock_quant,
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8",
@@ -1251,7 +1300,10 @@ class TestAiterFP8PerTensorForwardMocked:
         with (
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.dynamic_per_tensor_quant_fp8",
-                return_value=(torch.randn(4, 64).to(torch.float8_e4m3fn), torch.tensor(1.0)),
+                return_value=(
+                    torch.randn(4, 64).to(torch.float8_e4m3fn),
+                    torch.tensor(1.0),
+                ),
             ) as mock_quant,
             patch(
                 "quark.torch.quantization.nn.modules.aiter_fp8_inference_linear.gemm_fp8",
@@ -1308,7 +1360,9 @@ def _make_mxfp4_qpl(
 
 class TestAiterMXFP4WeightRecovery:
     def test_returns_weight_when_no_quantizer(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         qpl = _make_mxfp4_qpl()
         qpl.weight_quantizer = None
@@ -1316,14 +1370,18 @@ class TestAiterMXFP4WeightRecovery:
         assert out.data_ptr() == qpl.weight.data_ptr()
 
     def test_returns_weight_when_dynamic_scale_missing(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         qpl = _make_mxfp4_qpl(scale=None)
         out = fp4._get_mxfp4_float_weight(qpl)
         assert out.data_ptr() == qpl.weight.data_ptr()
 
     def test_uint8_weight_and_uint8_scale_use_mxfp4_dequant(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         weight = torch.arange(32, dtype=torch.uint8).view(2, 16)
         scale = torch.full((2, 1), 127, dtype=torch.uint8)
@@ -1341,7 +1399,9 @@ class TestAiterMXFP4WeightRecovery:
         assert out is expected
 
     def test_float_fallback_applies_uint8_e8m0_scale(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         weight = torch.ones(2, 32, dtype=torch.bfloat16)
         scale = torch.tensor([[127], [128]], dtype=torch.uint8)
@@ -1360,7 +1420,9 @@ class TestAiterMXFP4WeightRecovery:
         float-dtype scale must take the trivial cast branch instead so the
         per-group multiplication uses the literal scale value.
         """
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         weight = torch.ones(2, 32, dtype=torch.bfloat16)
         scale = torch.tensor([[2.0], [4.0]], dtype=torch.float32)
@@ -1384,7 +1446,9 @@ class TestAiterMXFP4WeightRecovery:
         if not hasattr(torch, "float4_e2m1fn_x2"):
             pytest.skip("torch.float4_e2m1fn_x2 not available")
 
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         fake_bf16 = torch.full((2, 32), 3.0, dtype=torch.bfloat16)
 
@@ -1415,7 +1479,9 @@ class TestAiterMXFP4WeightRecovery:
 
 class TestAiterMXFP4Packers:
     def test_check_triton_fp4_available_raises_with_import_error(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with (
             patch.object(fp4, "_fp4_kernels_available", False),
@@ -1425,7 +1491,9 @@ class TestAiterMXFP4Packers:
             fp4._check_triton_fp4_available()
 
     def test_pack_weight_triton_converts_float32_and_calls_downcast(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         packed = torch.ones(2, 16, dtype=torch.uint8)
         scale = torch.ones(2, 1, dtype=torch.uint8)
@@ -1446,7 +1514,9 @@ class TestAiterMXFP4Packers:
         assert out_s is scale
 
     def test_pack_weight_asm_requires_quant_kernel(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with (
             patch.object(fp4, "_per_1x32_f4_quant_hip", None),
@@ -1455,7 +1525,9 @@ class TestAiterMXFP4Packers:
             fp4._pack_weight_asm(torch.randn(2, 32, dtype=torch.bfloat16))
 
     def test_pack_weight_asm_small_k_uses_unshuffled_quant(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         packed = torch.ones(2, 16, dtype=torch.uint8)
         scale = torch.ones(2, 1, dtype=torch.uint8)
@@ -1472,7 +1544,9 @@ class TestAiterMXFP4Packers:
         assert out_s is scale
 
     def test_pack_weight_asm_large_k_requires_shuffle_helpers(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with (
             patch.object(fp4, "_per_1x32_f4_quant_hip", lambda weight, shuffle: (weight, weight)),
@@ -1482,7 +1556,9 @@ class TestAiterMXFP4Packers:
             fp4._pack_weight_asm(torch.randn(2, 256, dtype=torch.bfloat16))
 
     def test_pack_weight_asm_large_k_quantizes_and_shuffles_weight(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         quantized = torch.ones(2, 128, dtype=torch.uint8)
         shuffled = torch.full((2, 128), 2, dtype=torch.uint8)
@@ -1513,7 +1589,9 @@ class TestAiterMXFP4Packers:
 
 class TestAiterMXFP4GemmWithDynamicQuant:
     def test_triton_path_preallocates_output_and_calls_gemm(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         x = torch.randn(3, 32, dtype=torch.bfloat16)
         weight = torch.ones(4, 16, dtype=torch.uint8)
@@ -1540,7 +1618,9 @@ class TestAiterMXFP4GemmWithDynamicQuant:
         assert torch.equal(out, torch.arange(12, dtype=torch.bfloat16).view(3, 4))
 
     def test_asm_path_requires_gemm_kernel(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with (
             patch.object(fp4, "_fp4_kernels_available", True),
@@ -1556,7 +1636,9 @@ class TestAiterMXFP4GemmWithDynamicQuant:
             )
 
     def test_asm_small_k_fallback_dequantizes_and_matmuls(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         x = torch.randn(2, 64, dtype=torch.bfloat16)
         weight = torch.ones(3, 32, dtype=torch.uint8)
@@ -1589,7 +1671,9 @@ class TestAiterMXFP4GemmWithDynamicQuant:
         assert torch.equal(out, x_dq @ w_dq.T)
 
     def test_asm_large_k_captures_returned_output_and_slices_m(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         x = torch.randn(3, 256, dtype=torch.bfloat16)
         weight = torch.ones(4, 128, dtype=torch.uint8)
@@ -1629,13 +1713,17 @@ class TestEnsureCompiledAsmOpsRegistered:
 
     def test_returns_true_when_already_registered(self):
         """Hits the early-return short-circuit (line 139)."""
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with patch.object(fp4, "_compiled_asm_ops_registered", True):
             assert fp4._ensure_compiled_asm_ops_registered() is True
 
     def test_returns_false_when_aiter_kernel_missing(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         with (
             patch.object(fp4, "_compiled_asm_ops_registered", False),
@@ -1678,7 +1766,9 @@ class TestMxfp4AsmOpaqueOpBodies:
     """
 
     def test_normal_k_op_body_dispatches_quant_and_gemm(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         _force_register_compiled_asm_ops()
 
@@ -1729,7 +1819,9 @@ class TestMxfp4AsmOpaqueOpBodies:
     def test_small_k_op_body_quants_dequants_and_matmuls(self):
         """Hits the small-K op body (lines 176, 178-179, 182, 185)."""
         from quark.torch.kernel.mx import hip as hip_mod
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         _force_register_compiled_asm_ops()
 
@@ -1779,7 +1871,9 @@ class TestMxfp4AsmOpaqueOpBodies:
     def test_gemm_with_dynamic_quant_small_k_dispatches_to_opaque_op(self):
         """Hits the small-K opaque-op route in _gemm_with_dynamic_quant (line 352)."""
         from quark.torch.kernel.mx import hip as hip_mod
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         _force_register_compiled_asm_ops()
 
@@ -1835,7 +1929,9 @@ class TestAiterMXFP4NativeInferenceLinear:
         )
 
     def _make_mod(self):
-        from quark.torch.quantization.nn.modules.aiter_fp4_inference_linear import AiterMXFP4NativeInferenceLinear
+        from quark.torch.quantization.nn.modules.aiter_fp4_inference_linear import (
+            AiterMXFP4NativeInferenceLinear,
+        )
 
         mod = AiterMXFP4NativeInferenceLinear.__new__(AiterMXFP4NativeInferenceLinear)
         nn.Module.__init__(mod)
@@ -1854,14 +1950,18 @@ class TestAiterMXFP4NativeInferenceLinear:
         backend: kernel buffers are materialized via ``_apply_kernel_state``
         rather than being randomly initialized by ``Linear`` semantics.
         """
-        from quark.torch.quantization.nn.modules.aiter_fp4_inference_linear import AiterMXFP4NativeInferenceLinear
+        from quark.torch.quantization.nn.modules.aiter_fp4_inference_linear import (
+            AiterMXFP4NativeInferenceLinear,
+        )
 
         mod = AiterMXFP4NativeInferenceLinear.__new__(AiterMXFP4NativeInferenceLinear)
         nn.Module.__init__(mod)
         mod.reset_parameters()
 
     def test_apply_kernel_state_uses_asm_by_default(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         mod = self._make_mod()
         kernel_weight = torch.ones(2, 16, dtype=torch.uint8)
@@ -1869,7 +1969,11 @@ class TestAiterMXFP4NativeInferenceLinear:
 
         with (
             patch.object(fp4, "_require_aiter"),
-            patch.object(fp4, "_get_mxfp4_float_weight", return_value=torch.randn(2, 32, dtype=torch.bfloat16)),
+            patch.object(
+                fp4,
+                "_get_mxfp4_float_weight",
+                return_value=torch.randn(2, 32, dtype=torch.bfloat16),
+            ),
             patch.object(fp4, "_pack_weight_asm", return_value=(kernel_weight, kernel_scale)) as mock_pack,
             patch.object(fp4, "_pack_weight_triton") as mock_triton_pack,
         ):
@@ -1884,7 +1988,9 @@ class TestAiterMXFP4NativeInferenceLinear:
         assert "_kernel_scale" not in mod.state_dict()
 
     def test_apply_kernel_state_asm_uses_asm_packer(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         mod = self._make_mod()
         kernel_weight = torch.ones(2, 16, dtype=torch.uint8)
@@ -1892,7 +1998,11 @@ class TestAiterMXFP4NativeInferenceLinear:
 
         with (
             patch.object(fp4, "_require_aiter"),
-            patch.object(fp4, "_get_mxfp4_float_weight", return_value=torch.randn(2, 32, dtype=torch.bfloat16)),
+            patch.object(
+                fp4,
+                "_get_mxfp4_float_weight",
+                return_value=torch.randn(2, 32, dtype=torch.bfloat16),
+            ),
             patch.object(fp4, "_pack_weight_asm", return_value=(kernel_weight, kernel_scale)) as mock_pack,
         ):
             mod._apply_kernel_state(self._make_state())
@@ -1902,7 +2012,9 @@ class TestAiterMXFP4NativeInferenceLinear:
         assert mod._get_kernel_weight() is kernel_weight
 
     def test_forward_calls_helper_and_restores_original_shape_with_bias(self):
-        from quark.torch.quantization.nn.modules import aiter_fp4_inference_linear as fp4
+        from quark.torch.quantization.nn.modules import (
+            aiter_fp4_inference_linear as fp4,
+        )
 
         mod = self._make_mod()
         mod.in_features = 4
@@ -1921,6 +2033,107 @@ class TestAiterMXFP4NativeInferenceLinear:
         assert out.shape == (2, 5, 3)
         assert torch.equal(out[0, 0], mod.bias)
         assert mock_gemm.call_args.kwargs["use_asm_gemm"] is True
+
+
+class TestFlyDSLA8W4NativeInferenceLinear:
+    def _make_state(self) -> _KernelState:
+        return _KernelState(
+            weight=torch.randn(256, 256, dtype=torch.bfloat16),
+            weight_scale=torch.tensor([[1.0]], dtype=torch.float32),
+            bias=None,
+            in_features=256,
+            out_features=256,
+            output_dtype=torch.bfloat16,
+            input_scale=None,
+        )
+
+    def _make_mod(self):
+        mod = FlyDSLA8W4NativeInferenceLinear.__new__(FlyDSLA8W4NativeInferenceLinear)
+        nn.Module.__init__(mod)
+        mod.in_features = 256
+        mod.out_features = 256
+        mod.weight = nn.Parameter(torch.randn(256, 256, dtype=torch.bfloat16), requires_grad=False)
+        mod.bias = None
+        mod.weight_quantizer = SimpleNamespace(
+            qspec=SimpleNamespace(dtype=Dtype.fp4, qscheme=QSchemeType.per_group, group_size=32),
+            scale=torch.ones(256, 8),
+        )
+        return mod
+
+    def test_reset_parameters_is_noop(self):
+        mod = FlyDSLA8W4NativeInferenceLinear.__new__(FlyDSLA8W4NativeInferenceLinear)
+        nn.Module.__init__(mod)
+        mod.reset_parameters()
+
+    def test_apply_kernel_state_packs_weight_for_flydsl(self):
+        from quark.torch.quantization.nn.modules import (
+            flydsl_a8w4_inference_linear as flydsl_a8w4,
+        )
+
+        mod = self._make_mod()
+        kernel_weight = torch.ones(256, 128, dtype=torch.uint8)
+        kernel_scale = torch.ones(256, 8, dtype=torch.uint8)
+
+        with (
+            patch.object(flydsl_a8w4, "_require_aiter"),
+            patch.object(
+                flydsl_a8w4,
+                "_get_mxfp4_float_weight",
+                return_value=torch.randn(256, 256, dtype=torch.bfloat16),
+            ),
+            patch.object(
+                flydsl_a8w4,
+                "_pack_weight_asm",
+                return_value=(kernel_weight, kernel_scale),
+            ) as mock_pack,
+        ):
+            mod._apply_kernel_state(self._make_state())
+
+        mock_pack.assert_called_once()
+        assert mod._kernel_weight is kernel_weight
+        assert mod._kernel_scale is kernel_scale
+        assert mod._get_kernel_weight() is kernel_weight
+        assert "_kernel_weight" not in mod.state_dict()
+        assert "_kernel_scale" not in mod.state_dict()
+
+    def test_forward_calls_flydsl_gemm_and_restores_original_shape_with_bias(self):
+        from quark.torch.quantization.nn.modules import (
+            flydsl_a8w4_inference_linear as flydsl_a8w4,
+        )
+
+        mod = self._make_mod()
+        mod.in_features = 4
+        mod.out_features = 3
+        mod.bias = nn.Parameter(torch.tensor([1.0, 2.0, 3.0], dtype=torch.bfloat16), requires_grad=False)
+        mod._kernel_weight = torch.ones(3, 2, dtype=torch.uint8)
+        mod._kernel_scale = torch.ones(3, 1, dtype=torch.uint8)
+        mod._output_dtype = torch.bfloat16
+        x = torch.randn(2, 5, 4, dtype=torch.bfloat16)
+        helper_out = torch.zeros(10, 3, dtype=torch.bfloat16)
+
+        with patch.object(flydsl_a8w4, "_gemm_flydsl_a8w4", return_value=helper_out) as mock_gemm:
+            out = mod.forward(x)
+
+        assert out.shape == (2, 5, 3)
+        # Bias is fused into the GEMM epilogue, not added afterwards, so the mocked
+        # GEMM's output passes through unchanged and the bias arrives as a kwarg.
+        assert torch.equal(out.reshape(-1, mod.out_features), helper_out)
+        assert mock_gemm.call_args.args[3] is torch.bfloat16
+        assert mock_gemm.call_args.kwargs["bias"] is mod.bias
+        assert mock_gemm.call_args.kwargs["epilogue"] == "bias"
+
+    def test_validate_a8w4_inputs_rejects_cpu_tensors(self):
+        from quark.torch.quantization.nn.modules.flydsl_a8w4_inference_linear import (
+            _validate_a8w4_inputs,
+        )
+
+        with pytest.raises(ValueError, match="CUDA/ROCm"):
+            _validate_a8w4_inputs(
+                torch.randn(1, 256, dtype=torch.bfloat16),
+                torch.ones(2, 128, dtype=torch.uint8),
+                torch.ones(2, 8, dtype=torch.uint8),
+                torch.bfloat16,
+            )
 
 
 class TestAiterNativeLinearFromModule:
@@ -1951,6 +2164,43 @@ class TestAiterNativeLinearFromModule:
 
         assert isinstance(mod, AiterFP8PerTensorNativeInferenceLinear)
 
+    def test_dispatch_with_flydsl_a8w4_forced_mode(self):
+        source = _make_stub_qparams_linear(
+            n=256,  # the FlyDSL A8W4 backend only accepts features >=256 and %256
+            k=256,
+            dtype=Dtype.fp4,
+            qscheme=QSchemeType.per_group,
+            group_size=32,
+            weight_dtype=torch.bfloat16,
+        )
+        kernel_weight = torch.ones(256, 128, dtype=torch.uint8)
+        kernel_scale = torch.ones(256, 8, dtype=torch.uint8)
+
+        with (
+            patch(
+                "quark.torch.quantization.nn.modules.native_inference_linear_common.is_aiter_available",
+                return_value=True,
+            ),
+            patch(
+                "quark.torch.quantization.nn.modules.flydsl_a8w4_inference_linear._require_aiter",
+            ),
+            patch(
+                "quark.torch.quantization.nn.modules.flydsl_a8w4_inference_linear._get_mxfp4_float_weight",
+                return_value=torch.randn(256, 256, dtype=torch.bfloat16),
+            ),
+            patch(
+                "quark.torch.quantization.nn.modules.flydsl_a8w4_inference_linear._pack_weight_asm",
+                return_value=(kernel_weight, kernel_scale),
+            ),
+        ):
+            mod = aiter_native_linear_from_module(
+                source,
+                forced_mode=NativeInferenceMode.FLYDSL_A8W4,
+            )
+
+        assert isinstance(mod, FlyDSLA8W4NativeInferenceLinear)
+        assert mod._kernel_weight is kernel_weight
+
 
 # ===========================================================================
 # Tests for quark/torch/quantization/api.py lines 428-429
@@ -1980,3 +2230,71 @@ class TestModelQuantizerFreezeWithRuntimeOptions:
             ModelQuantizer.freeze(model)
 
         mock_enable.assert_not_called()
+
+
+class TestFlyDSLAvailabilityProbes:
+    """The two probes that decide whether the FlyDSL paths are usable at all."""
+
+    def test_is_flydsl_available_requires_both_package_and_version(self):
+        """The proxy must be the conjunction: a new-enough version that is not installed,
+        or an installed version that is too old, both mean unusable."""
+        from quark.common.utils.import_utils import is_flydsl_available as pkg_present
+        from quark.common.utils.import_utils import is_flydsl_version_supported as version_ok
+        from quark.torch.quantization.utils import is_flydsl_available
+
+        assert is_flydsl_available() is (pkg_present() and version_ok())
+
+    def test_quant_kernel_probe_reports_false_when_the_kernel_is_missing(self):
+        """is_flydsl_quant_available swallows the ImportError so callers can branch on a
+        bool; the accessor itself still raises (with the install hint) when called."""
+        import quark.torch.kernel.flydsl as flydsl_kernels
+
+        with patch.object(flydsl_kernels, "get_mxfp8_quant", side_effect=ImportError("no flydsl")):
+            assert flydsl_kernels.is_flydsl_quant_available() is False
+
+
+class TestGpuArchHelpers:
+    """quark/torch/utils/device.py: get_gpu_arch / is_gfx950.
+
+    Their only call sites are in the FlyDSL native linears, which refuse to build off
+    gfx950 -- so no other test in the suite reaches these lines on CI hardware. Patch the
+    device probe instead, which also lets both branches be checked from a single host.
+    """
+
+    def test_get_gpu_arch_reports_no_arch_without_a_gpu(self):
+        from quark.torch.utils.device import get_gpu_arch
+
+        with patch("torch.cuda.is_available", return_value=False):
+            assert get_gpu_arch() == ""
+
+    def test_get_gpu_arch_strips_the_feature_suffix(self):
+        """torch reports "gfx950:sramecc+:xnack-"; callers compare against a bare arch."""
+        from quark.torch.utils.device import get_gpu_arch
+
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch(
+                "torch.cuda.get_device_properties",
+                return_value=SimpleNamespace(gcnArchName="gfx950:sramecc+:xnack-"),
+            ),
+        ):
+            assert get_gpu_arch() == "gfx950"
+
+    @pytest.mark.parametrize(
+        ("gcn_arch_name", "expected"),
+        [("gfx950:sramecc+:xnack-", True), ("gfx950", True), ("gfx942:sramecc+:xnack-", False)],
+    )
+    def test_is_gfx950_accepts_only_gfx950(self, gcn_arch_name, expected):
+        from quark.torch.utils.device import is_gfx950
+
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_properties", return_value=SimpleNamespace(gcnArchName=gcn_arch_name)),
+        ):
+            assert is_gfx950() is expected
+
+    def test_is_gfx950_is_false_without_a_gpu(self):
+        from quark.torch.utils.device import is_gfx950
+
+        with patch("torch.cuda.is_available", return_value=False):
+            assert is_gfx950() is False

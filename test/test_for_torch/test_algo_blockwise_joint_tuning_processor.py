@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from quark.experimental.torch.algorithm.blockwise_joint_tuning.quantize.learnable_linear import (
+from quark.experimental.torch.blockwise_joint_tuning.quantize.learnable_linear import (
     ExperimentalLearnableQuantizedLinear,
 )
 from quark.torch.algorithm.blockwise_joint_tuning.processor import (
@@ -271,10 +271,22 @@ class TestBlockwiseJointTuningProcessorInit:
 
 
 class TestBlockwiseJointTuningProcessorApply:
-    def _make_processor(self, num_layers: int = 1) -> BlockwiseJointTuningProcessor:
+    @staticmethod
+    def _config(use_cache: bool, nested: bool) -> SimpleNamespace:
+        if nested:
+            return SimpleNamespace(text_config=SimpleNamespace(use_cache=use_cache))
+        return SimpleNamespace(use_cache=use_cache)
+
+    @staticmethod
+    def _get_use_cache(config: SimpleNamespace, nested: bool) -> bool:
+        return config.text_config.use_cache if nested else config.use_cache
+
+    def _make_processor(self, num_layers: int = 1, nested_config: bool = False) -> BlockwiseJointTuningProcessor:
         proc = BlockwiseJointTuningProcessor.__new__(BlockwiseJointTuningProcessor)
-        proc.model = SimpleNamespace(config=SimpleNamespace(use_cache=True))
-        proc.fp_model = SimpleNamespace(config=SimpleNamespace(use_cache=True))
+        # Set by __init__; these tests bypass it. False keeps the offload path live.
+        proc.using_accelerate = False
+        proc.model = SimpleNamespace(config=self._config(use_cache=True, nested=nested_config))
+        proc.fp_model = SimpleNamespace(config=self._config(use_cache=False, nested=nested_config))
         proc.model_decoder_layers = "layers"
         proc.device_map = {f"layers.{i}": torch.device("cpu") for i in range(num_layers)}
         proc.module_kwargs = {}
@@ -295,8 +307,9 @@ class TestBlockwiseJointTuningProcessorApply:
         proc.modules_fp_val = [MagicMock(spec=nn.Module) for _ in range(num_layers)]
         return proc
 
-    def test_apply_restores_cache_and_invokes_core_steps(self):
-        proc = self._make_processor(num_layers=1)
+    @pytest.mark.parametrize("nested_config", [False, True])
+    def test_apply_restores_cache_and_invokes_core_steps(self, nested_config):
+        proc = self._make_processor(num_layers=1, nested_config=nested_config)
         layer0, fp0, fpv0 = proc.modules[0], proc.modules_fp[0], proc.modules_fp_val[0]
         fp_model_ref = proc.fp_model
 
@@ -322,8 +335,8 @@ class TestBlockwiseJointTuningProcessorApply:
             proc.apply()
 
         # cache flag must be restored after apply
-        assert proc.model.config.use_cache is True
-        assert fp_model_ref.config.use_cache is True
+        assert self._get_use_cache(proc.model.config, nested_config) is True
+        assert self._get_use_cache(fp_model_ref.config, nested_config) is False
         assert not hasattr(proc, "fp_model")
 
         # per-layer core steps

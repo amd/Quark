@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -22,12 +21,15 @@ from quark.torch.algorithm.rotation.rotation_utils import (
     add_qk_rotation_after_function_call_in_forward,
     get_rotation_matrix,
     rotate_in_channels_,
+    rotate_input_channels_hadamard,
     rotate_out_channels_,
     rotate_with_size,
+    scaling_layer_target_templates,
+    substitute_layer_id,
     transform_norm_and_linear,
 )
 from quark.torch.algorithm.utils.prepare import get_model_layers
-from quark.torch.algorithm.utils.utils import clear_memory
+from quark.torch.algorithm.utils.utils import clear_memory, get_model_type_norm_constant
 from quark.torch.quantization.config.config import OnlineRotationConfig
 from quark.torch.quantization.nn.modules.quantize_linear import QuantLinear
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
@@ -91,14 +93,27 @@ class TrainableRMSNorm(nn.Module):
         if not isinstance(self.smooth_values, nn.Parameter):
             raise ValueError(f"Expected smooth_values to be nn.Parameter, got {type(smooth_values)}.")
 
+        # `variance_epsilon` is the Llama naming, `eps` is used by e.g. Gemma.
+        for eps_attribute in ("variance_epsilon", "eps"):
+            if hasattr(normalization, eps_attribute):
+                self.variance_epsilon = getattr(normalization, eps_attribute)
+                break
+        else:
+            raise ValueError(
+                f"Could not find the epsilon of the normalization layer {normalization.__class__.__name__}, "
+                "expected an attribute `variance_epsilon` or `eps`. Please open an issue."
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        weight = self.original_normalization.weight
+        # The effective multiplier is `weight + c`, with `c == 1` for the centered norms (Gemma
+        # pre-gemma4, Qwen3.5) and `c == 0` otherwise.
+        weight = self.original_normalization.weight + get_model_type_norm_constant(self.original_normalization)
         weight = weight * self.smooth_values
 
         input_dtype = x.dtype
         x = x.to(torch.float32)
         variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.original_normalization.variance_epsilon)
+        x = x * torch.rsqrt(variance + self.variance_epsilon)
         return weight * x.to(input_dtype)
 
 
@@ -239,7 +254,7 @@ class RotationLinear(nn.Module):
 
         return weight, bias
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Any:
         # NOTE: self.linear.weight is never modified in the training.
         weight = self.linear.weight
         bias = self.linear.bias
@@ -275,6 +290,14 @@ class RotationLinear(nn.Module):
             raise ValueError(
                 f"Expected self.linear to be a QuantLinear or nn.Linear, got self.linear {self.linear.__class__}"
             )
+
+        # MoE router subclasses are linears for quantization and rotation, but
+        # their public forward contract returns router logits, scores, and
+        # indices. Preserve that contract after computing the rotated linear
+        # projection instead of exposing the tensor-only linear result.
+        router_outputs = getattr(self.linear, "_router_outputs_from_logits", None)
+        if router_outputs is not None:
+            return router_outputs(x)
 
         return x
 
@@ -328,12 +351,17 @@ class RotationProcessor(BaseAlgoProcessor):
         logger.debug(f"Using smooth_first={self.smooth_first}")
 
         online_rotation_layers = self.get_online_rotation_layers(rotation_config, model)
-        if rotation_config.online_config is None:
-            rotation_config.online_config = OnlineRotationConfig(
-                shared_parallel=None, online_rotation_layers=online_rotation_layers
-            )
-        else:
-            rotation_config.online_config.online_rotation_layers = online_rotation_layers
+        # Online rotation only applies to R1 (online) / R4. For R2-only configs there are no
+        # online rotation layers, and attaching an online_config there would later fail
+        # RotationConfig.__post_init__ validation ("online_config has no effect" when
+        # r1=False, r4=False). Only materialize online_config when there is something to rotate.
+        if online_rotation_layers:
+            if rotation_config.online_config is None:
+                rotation_config.online_config = OnlineRotationConfig(
+                    shared_parallel=None, online_rotation_layers=online_rotation_layers
+                )
+            else:
+                rotation_config.online_config.online_rotation_layers = online_rotation_layers
 
     def apply(self) -> None:
         # R1 needs to be applied on embed_tokens as:
@@ -588,34 +616,59 @@ class RotationProcessor(BaseAlgoProcessor):
         if smooth_positions is None:
             smooth_positions = []
 
-        def get_layer_config(layers_pattern: dict[str, Any], layer_index: int) -> dict[str, Any]:
+        # A template may be absent on some layers (hybrid stack), but must resolve on at
+        # least one; otherwise it's raised as a wrong name below.
+        requested_templates: set[str] = set()
+        resolved_templates: set[str] = set()
+
+        def filter_existing(layer_names: list[str]) -> list[str]:
+            """Drop names absent from `model`."""
+            existing = []
+            for layer_name in layer_names:
+                try:
+                    candidates = resolve_star([layer_name], model)
+                except AttributeError:
+                    continue
+                for candidate in candidates:
+                    try:
+                        getattr_recursive(model, candidate)
+                    except AttributeError:
+                        continue
+                    existing.append(candidate)
+            return existing
+
+        def resolve_existing(templates: list[str], layer_index: int) -> list[str]:
+            """Resolve `templates` for `layer_index`, dropping names absent on this layer."""
+            existing: list[str] = []
+            for template in templates:
+                requested_templates.add(template)
+                layer_name = substitute_layer_id(template, layer_index)
+                for candidate in filter_existing([layer_name]):
+                    resolved_templates.add(template)
+                    existing.append(candidate)
+            return existing
+
+        def get_layer_config(layers_pattern: dict[str, Any], layer_index: int) -> dict[str, Any] | None:
             prev_modules = []
-            norm_module = []
+            norm_module: str | list[Any] = []
             next_modules = []
 
             if "prev_modules" in layers_pattern:
-                prev_modules = [
-                    layer_name.replace("pre_layer_id", str(layer_index - 1)).replace("layer_id", str(layer_index))
-                    for layer_name in layers_pattern["prev_modules"]
-                ]
-                prev_modules = resolve_star(prev_modules, model)
+                prev_modules = resolve_existing(layers_pattern["prev_modules"], layer_index)
             elif r1 and not online_r1_rotation:
                 raise ValueError(
                     f"Expected layers_pattern={layers_pattern} to contain a key `'prev_modules'` when using online_r1_rotation=False. Make sure the provided configuration is correct."
                 )
 
             if "norm_module" in layers_pattern:
-                norm_module = layers_pattern["norm_module"].replace("layer_id", str(layer_index))
+                norm_module = substitute_layer_id(layers_pattern["norm_module"], layer_index)
             elif (r1 and not online_r1_rotation) or "r1" in smooth_positions:
                 raise ValueError(
                     f"Expected layers_pattern={layers_pattern} to contain a key `'norm_module'` when using online_r1_rotation=False, smooth_positions={smooth_positions}. Make sure the provided configuration is correct."
                 )
 
             if "next_modules" in layers_pattern:
-                next_modules = [
-                    layer_name.replace("layer_id", str(layer_index)) for layer_name in layers_pattern["next_modules"]
-                ]
-                next_modules = resolve_star(next_modules, model)
+                next_modules = resolve_existing(layers_pattern["next_modules"], layer_index)
                 for _, next_module_name in enumerate(next_modules):
                     next_module = getattr_recursive(model, next_module_name)
                     if not isinstance(next_module, nn.Linear):
@@ -627,13 +680,17 @@ class RotationProcessor(BaseAlgoProcessor):
                     f"Expected layers_pattern={layers_pattern} to contain a key `'next_modules'` when using online_r1_rotation=False, smooth_positions={smooth_positions}. Make sure the provided configuration is correct."
                 )
 
-            if "target_modules" in layers_pattern:
-                target_modules = [
-                    layer_name.replace("layer_id", str(layer_index)) for layer_name in layers_pattern["target_modules"]
-                ]
-                target_modules = resolve_star(target_modules, model)
-            else:
-                target_modules = next_modules  # type: ignore[assignment]
+            # Templates shared with the file-to-file flow, resolved through `resolve_existing` so a
+            # typo'd `target_modules` raises instead of silently resolving to `[]` and skipping the
+            # group's rotation. An explicitly empty `target_modules` requests nothing, so it stays legal.
+            target_modules = resolve_existing(scaling_layer_target_templates(layers_pattern), layer_index)
+
+            # Group belongs to the other half of the hybrid stack; skip rather than fuse
+            # the norm into nothing.
+            if "next_modules" in layers_pattern and len(next_modules) == 0:
+                return None
+            if "prev_modules" in layers_pattern and len(prev_modules) == 0:
+                return None
 
             result = {
                 "prev_modules": prev_modules,
@@ -649,17 +706,32 @@ class RotationProcessor(BaseAlgoProcessor):
             if layer_index == 0:
                 for layers_pattern in scaling_modules["first_layer"]:
                     scaling_layers_dict = get_layer_config(layers_pattern, layer_index=layer_index)
-                    scaling_layers.append(scaling_layers_dict)
+                    if scaling_layers_dict is not None:
+                        scaling_layers.append(scaling_layers_dict)
             else:
                 for layers_pattern in scaling_modules["middle_layers"]:
                     scaling_layers_dict = get_layer_config(layers_pattern, layer_index=layer_index)
 
-                    scaling_layers.append(scaling_layers_dict)
+                    if scaling_layers_dict is not None:
+                        scaling_layers.append(scaling_layers_dict)
 
                 if layer_index == len(layers) - 1 and not online_r1_rotation:
                     for layers_pattern in scaling_modules["last_layer"]:
                         scaling_layers_dict = get_layer_config(layers_pattern, layer_index=layer_index)
-                        scaling_layers.append(scaling_layers_dict)
+                        if scaling_layers_dict is not None:
+                            scaling_layers.append(scaling_layers_dict)
+
+        never_resolved = sorted(requested_templates - resolved_templates)
+        if never_resolved:
+            raise ValueError(
+                f"`RotationConfig.scaling_layers` names module path(s) not found in any layer: {never_resolved}."
+            )
+
+        if len(scaling_layers) == 0:
+            raise ValueError(
+                "None of the `RotationConfig.scaling_layers` groups matched a single module of this model. "
+                "Check `model_decoder_layers` and the module paths against `model.named_modules()`."
+            )
 
         return scaling_layers
 
@@ -892,6 +964,13 @@ class RotationProcessor(BaseAlgoProcessor):
         """
         Inserts InputRotationWrapper modules in a decoder layer, running activation rotations online.
         """
+
+        # The buffer `rotation_buffer` avoids recomputing the same hadamard matrices multiple times.
+        def cached_hadamard_K(size: int) -> tuple[torch.Tensor, int]:
+            if size not in self.rotation_buffer:
+                self.rotation_buffer[size] = _get_hadamard_K(size)
+            return self.rotation_buffer[size]
+
         for i, layer in enumerate(target_modules):
             full_layer_name = layers_pattern["target_modules"][i]
 
@@ -904,32 +983,11 @@ class RotationProcessor(BaseAlgoProcessor):
                 next_module_parent = getattr_recursive(self.model, next_module_parent_name)
             relative_layer_name = full_layer_name.split(".")[-1]
 
-            dtype = layer.weight.data.dtype
-            in_features = layer.weight.shape[-1]
-
-            # The buffer `rotation_buffer` avoids recomputing the same hadamard matrices multiple times.
-            if in_features not in self.rotation_buffer:
-                hadamard_K, K = _get_hadamard_K(rotation_size)
-                hadamard_K = hadamard_K.to(layer.weight.device)
-                self.rotation_buffer[in_features] = (hadamard_K, K)
-            else:
-                hadamard_K, K = self.rotation_buffer[in_features]
-
-            if rotation_size == layer.weight.data.shape[1]:
-                # `inverse=True` is not required here as nn.Linear already transpose the weight.
-                layer.weight.data = matmul_hadU(layer.weight.data, hadamard_K=hadamard_K, K=K).to(dtype)
-            else:
-                if hadamard_K.shape[0] != rotation_size:
-                    hadamard_1, _ = _get_hadamard_K(rotation_size // K)
-
-                    hadamard_1 = hadamard_1.to(layer.weight.device)
-                    hadamard_K = hadamard_K.to(layer.weight.device)
-
-                    hadamard_K = torch.kron(hadamard_K, hadamard_1)
-                    K = rotation_size
-
-                assert hadamard_K.shape[0] == rotation_size
-                rotate_in_channels_(layer, rotation=hadamard_K.to(torch.float64) / math.sqrt(rotation_size))
+            # Weight transform shared with the file-to-file flow so the two cannot drift; this
+            # path additionally installs the wrapper that applies the activation-side half.
+            layer.weight.data, hadamard_K, K = rotate_input_channels_hadamard(
+                layer.weight.data, rotation_size, hadamard_K_fn=cached_hadamard_K
+            )
 
             layer_with_input_rotation = InputRotationWrapperHadamard(
                 layer, hadamard_K=hadamard_K, K=K, rotation_size=rotation_size
@@ -1111,8 +1169,11 @@ class RotationProcessor(BaseAlgoProcessor):
         for name, submodule in named_modules_dict.items():
             if isinstance(submodule, TrainableRMSNorm):
                 logger.debug(f"Converting TrainableRMSNorm: {name}")
-                weight = submodule.original_normalization.weight.data * submodule.smooth_values.data
-                submodule.original_normalization.weight.data = weight
+                # Mirrors `TrainableRMSNorm.forward`, which applies `weight + c` (`c == 1` for
+                # Gemma pre-gemma4 / Qwen3.5), so the fuse-back must undo the same constant.
+                normalization = submodule.original_normalization
+                c = get_model_type_norm_constant(normalization)
+                normalization.weight.data = (normalization.weight.data + c) * submodule.smooth_values.data - c
                 setattr_recursive(model, submodule.norm_layer_name, submodule.original_normalization)
 
             if isinstance(submodule, RotationLinear):

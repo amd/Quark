@@ -164,15 +164,11 @@ class GPTQ:
         xmin[tmp] = -1
         xmax[tmp] = +1
 
-        if self.maxq < 0:
-            self.scale = xmax
-            self.zero = xmin
+        self.scale = (xmax - xmin) / self.maxq
+        if self.sym:
+            self.zero = np.ones(self.scale.shape) * (self.maxq + 1) / 2
         else:
-            self.scale = (xmax - xmin) / self.maxq
-            if self.sym:
-                self.zero = np.ones(self.scale.shape) * (self.maxq + 1) / 2
-            else:
-                self.zero = np.round(-xmin / self.scale)
+            self.zero = np.round(-xmin / self.scale)
         if self.mse:
             best = np.full([x.shape[1]], float("inf"))
             for i in range(int(self.maxshrink * self.grid)):
@@ -211,16 +207,12 @@ class GPTQ:
     def quantize_int(
         self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64], maxq: NDArray[Any]
     ) -> Any:
-        if maxq < 0:
-            return (x > scale / 2.0) * scale + (x < zero / 2.0) * zero
         q = np.clip(np.round(x / scale) + zero, 0, maxq).astype(x.dtype)
         return q
 
     def quantize_real(
         self, x: NDArray[Any], scale: NDArray[np.float64], zero: NDArray[np.float64], maxq: NDArray[Any]
     ) -> Any:
-        if maxq < 0:
-            return (x > scale / 2.0) * scale + (x < zero / 2.0) * zero
         q = np.clip(np.round(x / scale) + zero, 0, maxq).astype(x.dtype)
         return scale * (q - zero)
 
@@ -465,7 +457,7 @@ class GptqProcessor:
         graph.node.extend(new_nodes)
         self.remove_extend_output_node()
 
-        if self.use_external_data_format:
+        if self.use_external_data_format:  # pragma: no cover - >2GB external-data path
             self.onnx_model_float.save_model_to_file(
                 self.gptq_model_path,
                 use_external_data_format=self.use_external_data_format,

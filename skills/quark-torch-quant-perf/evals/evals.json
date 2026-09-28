@@ -1,0 +1,72 @@
+{
+  "skill_name": "quark-torch-quant-perf",
+  "skill_path": "skills/quark-torch-quant-perf",
+  "evals": [
+    {
+      "id": 1,
+      "category": "command",
+      "name": "mixed-precision-auto-optimize",
+      "prompt": "Use Qwen/Qwen3.5-35B-A3B for the managed mixed-precision workflow, allow at most 3% accuracy loss, require 2x throughput, use automatic vLLM and AITER discovery, and enable PerfOpt when quantization alone misses the target.",
+      "expected_skill": "quark-torch-quant-perf",
+      "expectations": [
+        "Uses quark-quant-perf and omits --quant-strategy so mixed-precision search is selected.",
+        "Maps 3% to --accuracy-gap 0.03 and 2x to --target-gain 2.0.",
+        "Uses --workspace-source auto and does not use removed flags such as --layer-mode or --geak-budget.",
+        "Treats PerfOpt as conditional and does not force it when quantization-only throughput already meets the target.",
+        "Runs and monitors the managed Orchestrator through FINAL reporting."
+      ]
+    },
+    {
+      "id": 2,
+      "category": "resume",
+      "name": "runtime-change-reopens-accuracy",
+      "prompt": "Resume my failed Quant-Perf session after switching from auto-discovered packages to explicit vLLM and AITER repositories.",
+      "expected_skill": "quark-torch-quant-perf",
+      "expectations": [
+        "Inspects state.json and the runtime fingerprint before selecting a retry flag.",
+        "Uses --retry-accuracy-gate when the source/runtime change invalidates prior accuracy evidence.",
+        "Does not manually edit state.json or bypass the managed gates."
+      ]
+    },
+    {
+      "id": 3,
+      "category": "command",
+      "name": "fixed-fp8-direct-ptq",
+      "prompt": "Quantize this HuggingFace model with a fixed FP8 recipe, then run accuracy and throughput validation.",
+      "expected_skill": "quark-torch-quant-perf",
+      "expectations": [
+        "Uses --quant-strategy with a normalized FP8 intent.",
+        "Does not add mixed-precision candidate flags because --quant-strategy selects the direct PTQ route.",
+        "Uses a discoverable Quark checkout containing quark-torch-ptq, with QUARK_ROOT only when explicit selection is needed.",
+        "Uses the Quant-Perf Orchestrator for evaluation and throughput."
+      ]
+    },
+    {
+      "id": 4,
+      "category": "routing",
+      "name": "onnx-boundary-negative",
+      "prompt": "Quantize resnet50.onnx with XINT8 and validate the ONNX Runtime output.",
+      "expected_skill": "quark-onnx-ptq",
+      "expectations": [
+        "Does not invoke quark-torch-quant-perf.",
+        "Routes the .onnx request to the ONNX workflow."
+      ]
+    },
+    {
+      "id": 5,
+      "category": "command",
+      "name": "accuracy-only-mixed-precision-search",
+      "prompt": "Quantize Qwen/Qwen3.5-35B-A3B with a target type of MXFP4. Not every layer has to be in MXFP4; some can be in FP8. Search multiple configurations and keep one or more results within 5% of baseline accuracy. Use GPUs 0-3 and do not use history records.",
+      "expected_skill": "quark-torch-quant-perf",
+      "expectations": [
+        "Uses quark-quant-perf and omits --quant-strategy so mixed-precision search is selected.",
+        "Maps 5% to --accuracy-gap 0.05 and GPUs 0-3 to --gpu-id 0 plus tensor parallel size 4.",
+        "Uses --layer-precision-candidates mxfp4 fp8 without adding mxfp4_fp8; explicitly named precision modes form a closed search set, while native is retained implicitly.",
+        "Preserves the default native/FP8 KV-cache search and does not narrow it to an fp8-only request.",
+        "Does not add --performance-mode, --target-gain, TraceLens, or GEAK options because performance was not requested.",
+        "Uses a fresh session and does not reuse history records.",
+        "Does not infer --workspace-source readonly from the no-history request; preserves the default auto source policy so runtime repair remains available."
+      ]
+    }
+  ]
+}

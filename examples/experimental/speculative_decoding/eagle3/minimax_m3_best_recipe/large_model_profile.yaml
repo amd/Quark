@@ -1,0 +1,19 @@
+# Asset map for the public large-model runner skeleton.
+# It deliberately records topology and file references, not quality-tuned values.
+schema_version: 1
+runner_profile: minimax_m3_best_recipe
+model_adapter: minimax_m3_mxfp4_adapter.yaml
+
+assets:
+  config_dir: configs
+  train_config: configs/large_model_eagle3.yaml
+
+topology:
+  world_size: 8
+  target_tp_size: 4
+  inference_num_gpus: 4
+  training_num_gpus: 4
+
+data_manifests:
+  smoke: domain_manifest.smoke.yaml
+  full_template: domain_manifest.full.example.yaml

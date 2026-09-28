@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
 
@@ -7,9 +7,21 @@
 import argparse
 import os
 
-from onnxruntime_genai.models.builder import create_model
-
+from quark.common.utils.import_utils import UnavailableObject, is_onnxruntime_genai_available
 from quark.experimental.cli import base_cli
+
+GENAI_INSTALL_MESSAGE = (
+    "The `export-oga` subcommand depends on ONNX Runtime GenAI. Please install ONNX Runtime GenAI by "
+    "following the instructions at: https://onnxruntime.ai/docs/genai/howto/install"
+)
+
+# `onnxruntime-genai` is not part of `amd-quark[cli]`: it floors `onnxruntime` above the range
+# Quark supports. `main.py` imports this module unconditionally, so the import is guarded here to
+# keep a missing install affecting only `export-oga` rather than every quark-cli subcommand.
+if is_onnxruntime_genai_available():
+    from onnxruntime_genai.models.builder import create_model  # pragma: no cover
+else:
+    create_model = UnavailableObject("onnxruntime-genai", message=GENAI_INSTALL_MESSAGE)  # type: ignore[assignment]
 
 
 class ExportOGA_CLI(base_cli.BaseQuarkCLICommand):

@@ -35,6 +35,7 @@ from quark.torch.quantization.graph.torch_utils import (
     is_mean_node,
     is_permute_node,
     is_pixel_shuffle_node,
+    is_prelu_node,
     is_relu6_act_node,
     is_relu_act_node,
     is_reshape_node,
@@ -292,7 +293,42 @@ def _is_call_function_act_node(node: Node) -> bool:
         or is_softmax_node(node)
         or is_gelu_node(node)
         or is_hardswish_node(node)
+        or is_prelu_node(node)
     )
+
+
+def _prelu_slope_qspec_map(act_node: Node, quantization_config: QLayerConfig | None) -> dict[Node, QTensorConfig]:
+    """Weight qspec for a PRelu slope, matching PTQ which quantizes it as a weight.
+
+    Returns ``{slope_param_node: weight_qspec}`` when ``act_node`` is a PRelu and
+    a weight qspec is configured, otherwise an empty dict (so callers can use it
+    unconditionally for any activation node).
+    """
+    if not is_prelu_node(act_node):
+        return {}
+    slope_node = act_node.args[1]
+    weight_qspec = get_weight_qspec(quantization_config)
+    if not isinstance(slope_node, Node) or weight_qspec is None:
+        return {}
+    return {slope_node: weight_qspec}
+
+
+def _hardsigmoid_input_qspec_map(
+    act_node: Node, input_node: Node, quantization_config: QLayerConfig | None
+) -> dict[Node, QTensorConfig]:
+    """Input-activation qspec for a HardSigmoid, matching PTQ which quantizes its input.
+
+    Returns ``{input_node: input_act_qspec}`` when ``act_node`` is a HardSigmoid and an
+    input-activation qspec is configured, otherwise an empty dict. The empty-config case
+    must return ``{}`` (not ``{input_node: None}``) so downstream quantizer insertion does
+    not try to build a fake-quantize from a ``None`` qspec.
+    """
+    if not is_hardsigmoid_node(act_node):
+        return {}
+    input_qspec = get_input_act_qspec(quantization_config)
+    if input_qspec is None:
+        return {}
+    return {input_node: input_qspec}
 
 
 #  ------- check whether shape change function/module
@@ -361,8 +397,10 @@ def _annotate_quantized_convbn_2d_act(
         quant_convbn_node.meta["quantization_annotation"] = QuantizationAnnotation(
             input_qspec_map=input_qspec_map, _annotated=True
         )
+        act_input_qspec_map = _hardsigmoid_input_qspec_map(act_node, quant_convbn_node, quantization_config)
+        act_input_qspec_map.update(_prelu_slope_qspec_map(act_node, quantization_config))
         act_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            output_qspec=get_output_act_qspec(quantization_config), _annotated=True
+            input_qspec_map=act_input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True
         )
 
         quant_convbn_node.meta["weight_quantizer_quant_config"] = get_weight_qspec(quantization_config)
@@ -547,8 +585,10 @@ def _annotate_conv_act(
         conv_node.meta["quantization_annotation"] = QuantizationAnnotation(
             input_qspec_map=input_qspec_map, _annotated=True
         )
+        act_input_qspec_map = _hardsigmoid_input_qspec_map(act_node, conv_node, quantization_config)
+        act_input_qspec_map.update(_prelu_slope_qspec_map(act_node, quantization_config))
         act_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            output_qspec=get_output_act_qspec(quantization_config), _annotated=True
+            input_qspec_map=act_input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True
         )
 
         _mark_nodes_as_annotated(partition)
@@ -642,8 +682,10 @@ def _annotate_add_relu(
             _annotated=True,
         )
 
+        act_input_qspec_map = _hardsigmoid_input_qspec_map(act_node, math_arithmetic_node, quantization_config)
+        act_input_qspec_map.update(_prelu_slope_qspec_map(act_node, quantization_config))
         act_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            output_qspec=get_output_act_qspec(quantization_config), _annotated=True
+            input_qspec_map=act_input_qspec_map, output_qspec=get_output_act_qspec(quantization_config), _annotated=True
         )
         _mark_nodes_as_annotated(partition)
         annotated_partitions.append(partition)
@@ -700,6 +742,9 @@ def _annotate_activation(
             continue
         clip_node = n
         if _annotate_single_input_output_node(clip_node, quantization_config, filter_fn):
+            slope_qspec_map = _prelu_slope_qspec_map(clip_node, quantization_config)
+            if slope_qspec_map:
+                clip_node.meta["quantization_annotation"].input_qspec_map.update(slope_qspec_map)
             _mark_nodes_as_annotated([clip_node])
             annotated_partitions.append([clip_node])
     return annotated_partitions

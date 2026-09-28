@@ -51,6 +51,9 @@ lint = [
   "opencv-python",
   "pre-commit",
   "pydantic",
+  # Spellcheck engine. Version mirrors the CI spellcheck action
+  # (.github/actions/spellcheck). Needs system aspell + aspell-en at runtime.
+  "pyspelling==2.11",
   "pytest",
   "pyyaml",
   "ruff",
@@ -62,6 +65,19 @@ profiling = [
   "psutil",
 ]
 
+flydsl = [
+  # FlyDSL A8W4 / SVDQuant native inference backends, gfx950.
+  # 0.2.4 is the validated version -- see the FlyDSL section of
+  # docs/source/pytorch/pytorch_troubleshooting.rst for the full rationale (the GEMM is
+  # vendored, so $FLYDSL_REPO is NOT a dependency; and do not downgrade to 0.1.2 for
+  # aiter's unused flydsl kernels).
+  #
+  # A floor rather than an exact pin: this is published package metadata, so `==0.2.4`
+  # would force version conflicts on anyone installing amd-quark alongside another
+  # flydsl consumer. Use tools/ci/setup_flydsl.sh for a reproducible environment.
+  "flydsl>=0.2.4,<0.3",
+]
+
 cli = [
   # Keep in sync with requirements-cli.txt at the repo root.
   "accelerate",
@@ -70,19 +86,32 @@ cli = [
   "langdetect",
   "onnx",
   "onnx_ir",
-  "onnxruntime>=1.22.2,<=1.25.1",
+  "onnxruntime>=1.22.2,<=1.28.0",
   "onnxruntime_extensions",
-  "onnxruntime_genai",
   "opencv-python",
   "Pillow",
   "protobuf",
   "psutil",
+  "pulp>=3.3,<4",
   "py7zr",
   "pydantic",
   "rich",
   "rouge_score",
   "timm",
-  "transformers>5,<5.3",
+  "transformers>5,<5.17",
+]
+
+quant_perf = [
+  "anthropic>=0.71,<1",
+  "anyio>=4,<5",
+  "claude-agent-sdk>=0.2.114,<0.3",
+  "huggingface-hub>=1.5,<2",
+  "lm-eval>=0.4.12,<0.5",
+  "python-dotenv>=1,<2",
+  "PyYAML>=6.0.3,<7",
+  "requests>=2.31,<3",
+  "safetensors>=0.6.2,<0.9",
+  "transformers>=5.5.3,<5.14",
 ]
 
 # Optional ONNX crypto mode (AES-256 model encryption). Floor pinned to
@@ -93,6 +122,8 @@ crypto = [
 
 [project.scripts]
 quark-cli = "quark.experimental.cli.main:main"
+quark-quant-perf = "quark.experimental.torch.quant_perf.cli:main"
+quark-skills = "quark.skills:main"
 
 [project.entry-points."vllm.general_plugins"]
 # ATOM-style CLI for Quark online quant; disable with QUARK_DISABLE_VLLM_PLUGIN=1.
@@ -114,7 +145,12 @@ target-version = "py311"
 exclude = [
   "setup.py",
   "docs/source/conf.py",
-  "quark/torch/algorithm/rotation/hadamard.py"
+  "quark/torch/algorithm/rotation/hadamard.py",
+  # Vendored snapshot of the FlyDSL repo's a8w4 preshuffle GEMM, carrying the fused
+  # SVD epilogue that is not upstream yet; kept diffable against upstream, so it is
+  # neither reformatted nor relinted to Quark's style. The MFMA epilogue and pipeline
+  # helpers it uses are imported from aiter instead of vendored.
+  "quark/torch/kernel/flydsl/kernels/preshuffle_gemm.py",
 ]
 
 [tool.ruff.lint]
@@ -144,6 +180,10 @@ ignore = [
     "SIM210", # Remove unnecessary `True if ... else False`
     "SIM401", # use .get() instead of if
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"test/test_for_torch/experimental/quant_perf/*.py" = ["SIM117"]
+"test/test_for_torch/experimental/quant_perf/**/*.py" = ["SIM117"]
 # extend-select = ["ALL"]
 
 [tool.mypy]
@@ -151,6 +191,7 @@ strict = true
 disable_error_code = ["method-assign", "unused-ignore"]
 plugins = ['pydantic.mypy']
 exclude_gitignore = true
+exclude = ['^skills/']
 
 [[tool.mypy.overrides]]
 module = ["quark.*"]
@@ -185,8 +226,8 @@ ignore_errors = true
 # vLLM is an optional dependency; these modules import it for quantization support
 [[tool.mypy.overrides]]
 module = [
-  "quark.experimental.plugin.vllm_plugin",
-  "quark.experimental.plugin.fakequant_worker",
+  "quark.experimental.torch.plugin.vllm_plugin",
+  "quark.experimental.torch.plugin.fakequant_worker",
 ]
 ignore_missing_imports = true
 
@@ -194,16 +235,38 @@ ignore_missing_imports = true
 module = ["quark.contrib.llm_eval.*"]
 ignore_errors = true
 
+# QAD/LoRA+KD dataset + task formatters: data-prep glue (many HF-dataset-shaped
+# dict transforms), typed at the same level as the example layer (examples.*).
+[[tool.mypy.overrides]]
+module = ["quark.torch.algorithm.qad_trainer.datasets.*"]
+ignore_errors = true
+
+# Vendored FlyDSL GEMM (see the matching [tool.ruff] exclude): upstream DSL code
+# that is kept diffable rather than annotated to Quark's strict-mypy standard.
+[[tool.mypy.overrides]]
+module = ["quark.torch.kernel.flydsl.kernels.preshuffle_gemm"]
+ignore_errors = true
+
 [[tool.mypy.overrides]]
 module = [
   "accelerate.*",
+  "aiter",
+  "aiter.*",
+  "anthropic",
+  "anthropic.*",
   "bokeh.*",
   "brevitas.*",
+  "claude_agent_sdk",
+  "claude_agent_sdk.*",
   "compressed_tensors.*",
   "cv2",
   "datasets.*",
   "diffusers.*",
+  "dotenv",
+  "dotenv.*",
   "evaluate.*",
+  "flydsl",
+  "flydsl.*",
   "gguf.*",
   "google.*",
   "lm_eval.*",
@@ -239,6 +302,8 @@ module = [
   "sympy.*",
   "timm.*",
   "torch.*",
+  "TraceLens",
+  "TraceLens.*",
   "transformers.*",
   "trl",
   "trl.*",
@@ -251,6 +316,17 @@ ignore_missing_imports = true
 # TODO: Fix this
 [[tool.mypy.overrides]]
 module = "torch.*"
+follow_imports = "skip"
+
+# transformers builds class members dynamically: `PreTrainedConfig.__init__` is
+# synthesized through `__init_subclass__` rather than declared, so following these
+# imports makes mypy flag calls that succeed at runtime (`call-arg` on
+# `super().__init__(tie_word_embeddings=...)`) plus `no-untyped-call` on the generated
+# hooks. torch.* is skipped for the same class of reason. The cost is that HF symbols
+# degrade to `Any`, so overrides of HF base classes are no longer signature-checked;
+# the forward-equivalence and cache tests cover that at runtime instead.
+[[tool.mypy.overrides]]
+module = "transformers.*"
 follow_imports = "skip"
 
 [tool.coverage.paths]
@@ -275,6 +351,12 @@ source = [
   omit = [
     "*/quark/onnx/tools/*",
     "*/quark/torch/kernel/mx/triton.py",
+    # Vendored snapshot of the FlyDSL repo's a8w4 preshuffle GEMM, kept diffable
+    # against upstream (see the matching [tool.ruff] exclude and mypy override).
+    # Its traced kernel bodies are only reachable by exercising every tile config on
+    # gfx950, so measuring upstream DSL source here reports a testing gap that is not
+    # ours to close.
+    "*/quark/torch/kernel/flydsl/kernels/preshuffle_gemm.py",
     "*/test/*",
     # Residual in-source test scaffolds (run as __main__ scripts, not collected by pytest).
     "*/quark/onnx/algorithm/finetuning/torch_utils_test.py",
@@ -330,6 +412,7 @@ addopts = [
   "-s"]
 markers = [
   "accelerate_test: Tests which requires `accelerate` library to run.",
+  "flydsl_gfx950: FlyDSL hardware tests requiring a gfx950 GPU",
   "require_dual_gpu: Tests which requires two GPU devices to run",
   "tensor_parallel: Tests for the Tensor Parallel feature",
 ]

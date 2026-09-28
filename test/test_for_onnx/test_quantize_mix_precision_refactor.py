@@ -2,6 +2,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
+import json
 import unittest
 from pathlib import Path
 
@@ -20,16 +21,30 @@ from quark.common.utils.testing_utils import (
 )
 from quark.onnx import (
     AutoMixprecisionConfig,
-    BFloat16Spec,
     CLEConfig,
     ExtendedQuantType,
-    Int8,
     ModelQuantizer,
     QConfig,
     QLayerConfig,
     get_library_path,
 )
-from quark.onnx.quantization.config.spec import BFP16Spec, Int16Spec, MXInt8Spec, XInt8Spec
+from quark.onnx.quantization.config.spec import (
+    BFloat16Spec,
+    BFP16Spec,
+    Int8Spec,
+    Int16Spec,
+    Int32Spec,
+    MX4Spec,
+    MX6Spec,
+    MX9Spec,
+    MXFP4E2M1Spec,
+    MXFP6E2M3Spec,
+    MXFP6E3M2Spec,
+    MXFP8E4M3Spec,
+    MXFP8E5M2Spec,
+    MXInt8Spec,
+    XInt8Spec,
+)
 
 
 def make_input_tensor():
@@ -60,6 +75,16 @@ def make_input_tensor():
 
 
 auto_mix_precision_output_golden = np.array([[-0.4639878]], dtype=np.float32)
+
+auto_mix_precision_with_other_settings_output_golden = np.array([[-0.4643402]], dtype=np.float32)
+
+auto_mix_precision_with_subgraph_output_golden = np.array([[-0.0356685]], dtype=np.float32)
+
+auto_mix_precision_with_parallel_output_golden = np.array([[-0.46964934]], dtype=np.float32)
+
+auto_mix_precision_with_sensitivity_analysis_only_output_golden = np.array([[-0.46433336]], dtype=np.float32)
+
+auto_mix_precision_with_candidates_output_golden = np.array([[-0.46348444]], dtype=np.float32)
 
 mix_precision_output_golden = np.array([[-0.46404064]], dtype=np.float32)
 
@@ -133,12 +158,141 @@ def prepare_model(output_dir):
 
 def prepare_auto_mix_precision_config():
     auto_mixprecision_algo = AutoMixprecisionConfig(
-        act_target_quant_type=Int8, weight_target_quant_type=Int8, l2_target=10000, output_index=0
+        target_layer_config=QLayerConfig(activation=Int8Spec(), weight=Int8Spec()),
+        metric_threshold=10000,
+        metric_output_index=0,
     )
     quant_config = QConfig(
         QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec()),
         algo_config=[auto_mixprecision_algo],
         extra_options={"Percentile": 99.9999, "Int32Bias": False, "Int16Bias": False},
+    )
+    return quant_config
+
+
+def prepare_auto_mix_precision_with_other_settings_config():
+    auto_mixprecision_algo = AutoMixprecisionConfig(
+        target_layer_config={
+            QLayerConfig(input_tensors=Int16Spec()): ["/Concat"],
+            QLayerConfig(weight=MXInt8Spec(), bias=MXInt8Spec(), output_tensors=MXInt8Spec()): ["/fc/Gemm"],
+        },
+        target_op_type=["Concat", "Gemm"],
+        metric_threshold=0.0005,
+        metric_optimize_object="quality",
+    )
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec()),
+        specific_layer_config={
+            QLayerConfig(
+                input_tensors=BFloat16Spec(),
+                weight=BFloat16Spec(),
+                bias=BFloat16Spec(),
+            ): ["/conv2/Conv"],
+        },
+        layer_type_config={
+            QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec(), bias=XInt8Spec()): ["Flatten"],
+        },
+        algo_config=[auto_mixprecision_algo],
+        extra_options={
+            "SimplifyModel": False,
+            "Int32Bias": False,
+        },
+    )
+    return quant_config
+
+
+def prepare_auto_mix_precision_with_subgraph_config(tmpdir: str):
+    subgraph_json = Path(tmpdir, "subgraph.json").as_posix()
+    with open(subgraph_json, "w") as f:
+        json.dump(
+            {
+                "quantized": False,
+                "num_subgraph": 2,
+                "subgraphs": [
+                    {"name": "stage1", "start_nodes": ["/conv1/Conv"], "end_nodes": ["/Concat"]},
+                    {"name": "stage2", "start_nodes": ["/conv2/Conv"], "end_nodes": ["/fc/Gemm"]},
+                ],
+            },
+            f,
+        )
+    auto_mixprecision_algo = AutoMixprecisionConfig(
+        target_layer_config={
+            QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec()): ["/fc/Gemm", "/conv1/Conv"],
+            QLayerConfig(input_tensors=BFP16Spec(), weight=Int8Spec()): ["/Concat", "/conv2/Conv"],
+            QLayerConfig(input_tensors=XInt8Spec(), weight=XInt8Spec(), bias=XInt8Spec()): [],
+            QLayerConfig(input_tensors=Int8Spec(), weight=Int8Spec(), bias=Int8Spec()): [],
+        },
+        target_op_type=["Concat", "Gemm", "Conv"],
+        subgraph_json=subgraph_json,
+        metric_threshold=0.6,
+    )
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int16Spec(), bias=Int32Spec()),
+        algo_config=[auto_mixprecision_algo],
+        extra_options={"SimplifyModel": False},
+    )
+    return quant_config
+
+
+def prepare_auto_mix_precision_with_parallel_config(tmpdir: str):
+    auto_mixprecision_algo = AutoMixprecisionConfig(
+        target_layer_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec(), bias=Int8Spec()),
+        target_op_type=["Concat", "Gemm", "Conv"],
+        include_layers=["/fc/Gemm", "/conv1/Conv"],
+        exclude_layers=["/Concat"],
+        worker_num=2,
+        metric_threshold=0.006,
+        dual_quant_nodes=True,
+        no_input_qdq_shared=True,
+    )
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=MXInt8Spec(), weight=MXInt8Spec(), bias=MXInt8Spec()),
+        algo_config=[auto_mixprecision_algo],
+        extra_options={"SimplifyModel": False},
+    )
+    return quant_config
+
+
+def prepare_auto_mix_precision_with_sensitivity_analysis_only_config(tmpdir: str):
+    auto_mixprecision_algo = AutoMixprecisionConfig(
+        target_layer_config=QLayerConfig(input_tensors=Int16Spec(), weight=Int8Spec(), bias=Int8Spec()),
+        target_op_type=["Concat", "Gemm", "Conv"],
+        metric_threshold=None,
+    )
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=MXInt8Spec(), weight=MXInt8Spec(), bias=MXInt8Spec()),
+        algo_config=[auto_mixprecision_algo],
+        extra_options={"SimplifyModel": False},
+    )
+    return quant_config
+
+
+def prepare_auto_mix_precision_with_candidates_config(tmpdir: str):
+    auto_mixprecision_algo = AutoMixprecisionConfig(
+        target_layer_config=[
+            QLayerConfig(
+                input_tensors=BFloat16Spec(symmetric=None, calibration_method=None),
+                weight=BFloat16Spec(symmetric=None, calibration_method=None),
+                bias=BFloat16Spec(symmetric=None, calibration_method=None),
+            ),
+            QLayerConfig(input_tensors=MX4Spec(), weight=MX4Spec(), bias=MX4Spec()),
+            QLayerConfig(input_tensors=MX6Spec(), weight=MX6Spec(), bias=MX6Spec()),
+            QLayerConfig(input_tensors=MX9Spec(), weight=MX9Spec(), bias=MX9Spec()),
+            QLayerConfig(input_tensors=MXFP4E2M1Spec(), weight=MXFP4E2M1Spec(), bias=MXFP4E2M1Spec()),
+            QLayerConfig(input_tensors=MXFP6E2M3Spec(), weight=MXFP6E2M3Spec(), bias=MXFP6E2M3Spec()),
+            QLayerConfig(input_tensors=MXFP6E3M2Spec(), weight=MXFP6E3M2Spec(), bias=MXFP6E3M2Spec()),
+            QLayerConfig(input_tensors=MXFP8E4M3Spec(), weight=MXFP8E4M3Spec(), bias=MXFP8E4M3Spec()),
+            QLayerConfig(input_tensors=MXFP8E5M2Spec(), weight=MXFP8E5M2Spec(), bias=MXFP8E5M2Spec()),
+        ],
+        target_op_type=["Concat", "Gemm", "Conv"],
+        worker_num=4,
+        metric_threshold=0.004,
+        dual_quant_nodes=True,
+    )
+    quant_config = QConfig(
+        global_config=QLayerConfig(input_tensors=MXInt8Spec(), weight=MXInt8Spec(), bias=MXInt8Spec()),
+        algo_config=[auto_mixprecision_algo],
+        extra_options={"SimplifyModel": False, "EnableDualQuantNodePairs": True},
     )
     return quant_config
 
@@ -299,6 +453,41 @@ class TestTensorQuantize(unittest.TestCase):
         assert_outputs_equivalent(out[0], auto_mix_precision_output_golden, atol=1e-1)
 
     @use_temporary_directory
+    def test_quantize_auto_mix_precision_with_other_settings(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_with_other_settings_config()
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_with_other_settings_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_auto_mix_precision_with_subgraph(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_with_subgraph_config(tmpdir)
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_with_subgraph_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_auto_mix_precision_with_parallel(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_with_parallel_config(tmpdir)
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_with_parallel_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_auto_mix_precision_with_sensitivity_analysis_only(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_with_sensitivity_analysis_only_config(tmpdir)
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_with_sensitivity_analysis_only_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
+    def test_quantize_auto_mix_precision_with_candidates(self, tmpdir: str):
+        quant_config = prepare_auto_mix_precision_with_candidates_config(tmpdir)
+        output = tensor_quantize(tmpdir, quant_config)
+        comp_equal = np.allclose(output, auto_mix_precision_with_candidates_output_golden, atol=1e-1)
+        self.assertEqual(np.all(comp_equal), True)
+
+    @use_temporary_directory
     def test_quantize_mix_precision(self, tmpdir: str):
         quant_config = prepare_mix_precision_config()
         output = tensor_quantize(tmpdir, quant_config)
@@ -312,7 +501,7 @@ class TestTensorQuantize(unittest.TestCase):
             output = tensor_quantize(tmpdir, quant_config)
         self.assertTrue(
             any(
-                "Inserted 10 quant nodes at the boundary tensors of two different precisions" in message
+                "Inserted 7 quant nodes at the boundary tensors of two different precisions" in message
                 for message in cm.output
             )
         )

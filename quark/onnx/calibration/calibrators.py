@@ -10,7 +10,6 @@
 # --------------------------------------------------------------------------
 
 import copy
-import math
 import os
 import time
 import uuid
@@ -22,7 +21,6 @@ import numpy as np
 import onnx
 import onnxruntime
 from joblib import Parallel, delayed  # type: ignore
-from numpy.typing import NDArray
 from onnx import numpy_helper
 from onnxruntime.quantization.calibrate import CalibraterBase, CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.calibrate import HistogramCalibrater as OrtHistogramCalibrater
@@ -35,7 +33,13 @@ from quark.onnx.quantization.quant_utils import ExtendedQuantType, get_qmin_qmax
 from quark.onnx.utils.file_utils import save_quantized_info
 from quark.onnx.utils.model_utils import create_infer_session_for_onnx_model, sanitize_model_outputs
 
-from .collectors import OverridedHistogramCollector, PowOfTwoCollector, loading_data_from_disk
+from .collectors import (
+    OverridedHistogramCollector,
+    PowOfTwoCollector,
+    compute_lwp_metric_from_histogram,
+    compute_lwp_scale_zp,
+    loading_data_from_disk,
+)
 from .methods import LayerWiseMethod, PowerOfTwoMethod
 
 logger = ScreenLogger(__name__)
@@ -90,11 +94,12 @@ _CALIB_METHOD_DEFAULTS: dict[Any, dict[str, Any]] = {
         "num_bins": 2048,
         "percentile": 99.999,
         "symmetric": True,
-        "optimize_disk": True,
-        "optimize_mem": False,
         "worker_num": 1,
         "lwp_metric": "mae",
         "percentile_candidates": [99.99, 99.999, 99.99999],
+        "lwp_use_histogram": True,
+        # In-memory scoring is the best-performing default for LayerWisePercentile.
+        "optimize_mem": False,
     },
 }
 
@@ -102,8 +107,6 @@ _CALIB_METHOD_DEFAULTS: dict[Any, dict[str, Any]] = {
 def resolve_calibrator_extra_defaults(
     calibrate_method: Any,
     extra_options: dict[str, Any],
-    *,
-    emit_warnings: bool = True,
 ) -> dict[str, Any]:
     """Return the effective ``{lowercase_key: value}`` overlay for the given
     ``calibrate_method`` based on user-provided ``extra_options`` and built-in
@@ -112,24 +115,11 @@ def resolve_calibrator_extra_defaults(
     Single source of truth for calibrator-internal defaults. Used by both the
     calibrator factories in this module and the effective-config summary
     printer in :mod:`quark.onnx.utils.print_utils` so the two never drift.
-
-    For :data:`LayerWiseMethod.LayerWisePercentile`, applies the
-    ``optimize_disk`` / ``optimize_mem`` mutex (when both are True the latter
-    is forced to False). Pass ``emit_warnings=False`` from the summary path
-    to avoid duplicate warnings.
     """
     defaults = _CALIB_METHOD_DEFAULTS.get(calibrate_method)
     if defaults is None:
         return {}
-    resolved = {k: extra_options.get(k, v) for k, v in defaults.items()}
-    if calibrate_method == LayerWiseMethod.LayerWisePercentile:
-        if resolved["optimize_disk"] and resolved["optimize_mem"]:
-            resolved["optimize_mem"] = False
-            if emit_warnings:
-                logger.warning(
-                    "CalibOptimizeDisk will also optimize memory usage, here CalibOptimizeMem is forced to be False."
-                )
-    return resolved
+    return {k: extra_options.get(k, v) for k, v in defaults.items()}
 
 
 def generate_an_empty_onnx_model(model_path: str) -> None:
@@ -555,6 +545,9 @@ class OverridedHistogramCalibrater(OrtHistogramCalibrater):  # type: ignore
             else:
                 clean_merged_dict = get_clean_merged_dict([fixed_outputs], output_names, self.tensors_to_calibrate)
             self.collector.collect(clean_merged_dict)
+            # Free this batch's activations early to lower peak memory.
+            if not self.optimize_mem and not layer_wise:
+                del clean_merged_dict, fixed_outputs, outputs
             collect_data_end_time = time.perf_counter()
 
             onnx_infer_time.append(collect_data_onnx_infer_time - collect_data_start_time)
@@ -1011,8 +1004,8 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
     :param str lwp_mtric: A str value which is use to judge the percentile's metric. One of ['mae', 'mse']. Defaults to ``"mae"``.
     :param int activation_type: Bitwidth setting for activations.QuantType.QInt8.
     :param List[float] percentile_candidates: Percentile candidates. Defaults to ``[99.99, 99.999, 99.99999]``.
-    :param bool optimize_mem: Whether to optimize memory consumption. Default is False.
-    :param bool optimize_disk: Whether to optimize disk usage. Default is True.
+    :param bool lwp_use_histogram: Score the optimal percentile from each tensor's histogram. Default is ``True``.
+    :param bool optimize_mem: Keep activations in memory (``False``) or cache to disk (``True``) during scoring. Default is ``False``.
     """
 
     def __init__(
@@ -1025,12 +1018,12 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         symmetric: bool = False,
         num_bins: int = 2048,
         percentile: float = 99.999,
-        optimize_mem: bool = False,
-        optimize_disk: bool = True,
         worker_num: int = 1,
         lwp_metric: str = "mae",
         activation_type: QuantType | ExtendedQuantType = QuantType.QInt8,
         percentile_candidates: list[float] = [99.99, 99.999, 99.99999],
+        lwp_use_histogram: bool = True,
+        optimize_mem: bool = True,
     ):
         super().__init__(
             model_input,
@@ -1045,12 +1038,11 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
             worker_num=worker_num,
         )
         self.minmax_dict: dict[str, float] = {}
-        self.percentile_dict: dict[str, float] = {}
         self.lwp_metric = lwp_metric
         self.activation_qType = get_tensor_type_from_qType(activation_type)
         self.q_min, self.q_max = get_qmin_qmax_for_qType(self.activation_qType, reduce_range=False)
         self.percentile_candidates = percentile_candidates
-        self.optimize_disk = optimize_disk
+        self.lwp_use_histogram = lwp_use_histogram
 
     def cal_one_layer_metric(self, input_tensor: list[Any], temp_scale: float, temp_zp: int) -> float:
         """
@@ -1086,8 +1078,10 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         chunk_diff = input_tensor - buffer
         if self.lwp_metric == "mse":
             temp_metric = float(np.mean(chunk_diff * chunk_diff))
-        else:
+        elif self.lwp_metric == "mae":
             temp_metric = float(np.mean(np.abs(chunk_diff)))
+        else:
+            raise ValueError(f"Unknown lwp_metric {self.lwp_metric!r}. Expected 'mae' or 'mse'.")
 
         return temp_metric
 
@@ -1096,156 +1090,90 @@ class LayerWisePercentileCalibrater(PercentileCalibrater):
         data_reader: CalibrationDataReader,
         layer_wise: bool = False,
     ) -> None:
-        # Call the parent class method to calculate the histogram
-
-        if self.optimize_disk:
-            super().collect_data(data_reader, layer_wise=False)
-        else:
-            super().collect_data(data_reader, layer_wise=True)
+        use_raw_data = not self.lwp_use_histogram
+        super().collect_data(data_reader, layer_wise=use_raw_data)
+        del self.infer_session
+        if use_raw_data:
+            # clean_merged_dict is only populated on the raw path.
             assert self.clean_merged_dict, "No data for the layerwise percentile"
-            del self.infer_session
 
-        # Assign different percentiles to compute the tensors range. Note that the list
-        # stores dictionaries that the key is tensor name and the value is the range
-        tensors_ranges_percentiles = []
-
+        percentile_tensor_minmax = []
         for temp_percentile in self.percentile_candidates:
             self.collector.percentile = temp_percentile
-            temp_ranges = self.collector.compute_percentile()
-            tensors_ranges_percentiles.append(temp_ranges)
+            percentile_tensor_minmax.append(self.collector.compute_percentile())
 
-        baseline_tensors_range = tensors_ranges_percentiles[0]
+        if use_raw_data:
+            self.compute_data_from_raw(percentile_tensor_minmax)
+        else:
+            self.compute_data_from_histogram(percentile_tensor_minmax)
 
-        def cal_layers_minmax(key: str) -> None:
-            """
-            Compute layer min-max values by finding the optimal percentile for a given tensor.
-            This function evaluates different percentile candidates for a tensor and selects
-            the one that minimizes the quantization error (MSE or MAE). It updates the
-            minmax_dict and percentile_dict with the best values found.
-            :param key: The tensor name/key to compute min-max values for.
-            """
-
-            data_arr = self.clean_merged_dict[key]
+    def compute_data_from_raw(self, percentile_tensor_minmax: list[Any]) -> None:
+        def cal_layers_minmax(tensor_name: str) -> None:
+            data_arr = self.clean_merged_dict[tensor_name]
             assert isinstance(data_arr, list)
-            chunk_metrics = np.zeros(len(tensors_ranges_percentiles))
+            metrics = np.zeros(len(percentile_tensor_minmax))
 
             if self.worker_num <= 1:
-                chunk_size = 1
-                for chunk_idx in range(math.ceil(len(data_arr) / chunk_size)):
-                    start_idx = chunk_idx * chunk_size
-                    end_idx = start_idx + chunk_size
-                    data_list = loading_data_from_disk(data_arr, start_idx, end_idx)
+                for chunk_idx in range(len(data_arr)):
+                    data_list = loading_data_from_disk(data_arr, chunk_idx, chunk_idx + 1)
                     temp_tensor = np.asarray(data_list, dtype=np.float32).reshape(-1)
-
-                    for percentile_idx in range(len(tensors_ranges_percentiles)):
-                        temp_value = tensors_ranges_percentiles[percentile_idx][key]
-                        temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
-                        # Preventing spills of scale value
-                        temp_scale = temp_scale + 1e-6
-                        temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
-                        chunk_metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
+                    for percentile_idx in range(len(percentile_tensor_minmax)):
+                        candidate = percentile_tensor_minmax[percentile_idx][tensor_name]
+                        temp_scale, temp_zp = compute_lwp_scale_zp(candidate[0], candidate[1], self.q_min, self.q_max)
+                        metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
             else:
-                # Parallel can only include less than one 'for' loop
                 data_list = loading_data_from_disk(data_arr, 0, len(data_arr))
                 temp_tensor = np.asarray(data_list, dtype=np.float32).reshape(-1)
+                for percentile_idx in range(len(percentile_tensor_minmax)):
+                    candidate = percentile_tensor_minmax[percentile_idx][tensor_name]
+                    temp_scale, temp_zp = compute_lwp_scale_zp(candidate[0], candidate[1], self.q_min, self.q_max)
+                    metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
 
-                for percentile_idx in range(len(tensors_ranges_percentiles)):
-                    temp_value = tensors_ranges_percentiles[percentile_idx][key]
-                    temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
-                    # Preventing spills of scale value
-                    temp_scale = temp_scale + 1e-6
-                    temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
-                    chunk_metrics[percentile_idx] += self.cal_one_layer_metric(temp_tensor, temp_scale, temp_zp)
+            min_metric_index = np.argmin(metrics)
+            self.minmax_dict[tensor_name] = percentile_tensor_minmax[min_metric_index][tensor_name]
 
-            min_metric_index = np.argmin(chunk_metrics)
-            self.percentile_dict[key] = self.percentile_candidates[min_metric_index]
-            self.minmax_dict[key] = tensors_ranges_percentiles[min_metric_index][key]
-
-            return None
-
-        if self.optimize_disk:
-            self.compute_data_online(data_reader, tensors_ranges_percentiles, baseline_tensors_range)
-
-        elif self.worker_num > 1:
+        if self.worker_num > 1:
             Parallel(n_jobs=self.worker_num, backend="threading")(
-                delayed(cal_layers_minmax)(key) for key in tqdm(baseline_tensors_range)
+                delayed(cal_layers_minmax)(tensor_name) for tensor_name in tqdm(percentile_tensor_minmax[0])
             )
         else:
-            for key in tqdm(baseline_tensors_range):
-                cal_layers_minmax(key)
+            for tensor_name in tqdm(percentile_tensor_minmax[0]):
+                cal_layers_minmax(tensor_name)
 
-    def compute_data_online(
+    def compute_data_from_histogram(
         self,
-        data_reader: CalibrationDataReader,
-        tensors_ranges_percentiles: list[Any],
-        baseline_tensors_range: dict[str, tuple[NDArray[Any], NDArray[Any]]],
+        percentile_tensor_minmax: list[Any],
     ) -> None:
         """
-        Compute calibration metrics for multiple tensors across percentile-based quantization ranges
-        using an online inference pass over a dataset.
+        Select the optimal percentile per tensor from each tensor's histogram, scoring
+        every candidate via :func:`compute_lwp_metric_from_histogram` and keeping the one
+        with the minimum error metric. Updates ``self.minmax_dict`` in place.
 
-        The procedure is:
-            1. Reset the data reader and determine dataset size.
-            2. Iterate over calibration samples:
-                a. Fetch input batch from data_reader.
-                b. Run model inference using self.infer_session.
-                c. Sanitize and merge model outputs into a clean tensor dictionary.
-            3. For each tensor in the merged outputs:
-                a. For each candidate percentile range:
-                    i. Derive quantization parameters:
-                        scale = (max_val - min_val) / (q_max - q_min) + 1e-6
-                        zero_point = round(min_val / scale - q_min)
-                    ii. Compute quantization error metric using cal_one_layer_metric.
-            4. Accumulate metrics across all data samples.
-            5. For each tensor in baseline_tensors_range:
-                a. Select the percentile configuration with the minimum accumulated metric.
-                b. Store the best percentile and corresponding min/max range.
-
-        :param CalibrationDataReader data_reader:
-            Iterator-like object providing calibration input batches. Must support reset_iter(), get_next(), and len().
-
-        :param list[Any] tensors_ranges_percentiles:
-            List of candidate percentile-based min/max ranges for each tensor. Each element is a dictionary mapping tensor names to (min, max) tuples.
-
-        :param dict[str, tuple[NDArray[Any], NDArray[Any]]] baseline_tensors_range:
-            Baseline tensor range dictionary used to determine which tensors to optimize and to store final selected percentile ranges.
-
-        :return None:
-            This function updates self.percentile_dict and self.minmax_dict in-place with the best calibration configuration per tensor.
+        :param list[Any] percentile_tensor_minmax: One dict per percentile candidate,
+            each mapping tensor name to its ``(min, max)`` range. Every dict shares the
+            same keys, so the first one enumerates the tensors to calibrate.
         """
-        data_reader.reset_iter()
-        data_size = len(data_reader)
+        histogram_dict = self.collector.histogram_dict
 
-        output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
-        pbar = tqdm(range(data_size))
-        metrics: dict[str, Any] = {}
-        for _ in pbar:
-            inputs = data_reader.get_next()
+        def select_from_histogram(tensor_name: str) -> None:
+            candidate_minmax = [percentile_minmax[tensor_name] for percentile_minmax in percentile_tensor_minmax]
+            candidate_metrics = compute_lwp_metric_from_histogram(
+                histogram_dict[tensor_name],
+                candidate_minmax,
+                self.q_min,
+                self.q_max,
+                self.lwp_metric,
+            )
+            min_metric_index = int(np.argmin(candidate_metrics))
+            self.minmax_dict[tensor_name] = candidate_minmax[min_metric_index]
 
-            outputs = self.infer_session.run(None, inputs)
-            sanitize_model_outputs(outputs)
-
-            clean_merged_dict = get_clean_merged_dict([outputs], output_names, self.tensors_to_calibrate)
-
-            for node_key, node_value in clean_merged_dict.items():
-                chunk_metrics = np.zeros(len(tensors_ranges_percentiles))
-                node_output = node_value[0]
-                for percentile_idx in range(len(tensors_ranges_percentiles)):
-                    temp_value = tensors_ranges_percentiles[percentile_idx][node_key]
-                    temp_scale = (temp_value[1] - temp_value[0]) / (self.q_max - self.q_min)
-                    # Preventing spills of scale value
-                    temp_scale = temp_scale + 1e-6
-                    temp_zp = np.round(temp_value[0] / temp_scale - self.q_min).astype(int)
-                    chunk_metrics[percentile_idx] += self.cal_one_layer_metric(node_output, temp_scale, temp_zp)
-                if node_key not in list(metrics.keys()):
-                    metrics[node_key] = copy.deepcopy(chunk_metrics)
-                else:
-                    metrics[node_key] = metrics[node_key] + copy.deepcopy(chunk_metrics)
-
-        for key in tqdm(baseline_tensors_range):
-            min_metric_index = np.argmin(metrics[key])
-            self.percentile_dict[key] = self.percentile_candidates[min_metric_index]
-            self.minmax_dict[key] = tensors_ranges_percentiles[min_metric_index][key]
+        if self.worker_num > 1:
+            Parallel(n_jobs=self.worker_num, backend="threading")(
+                delayed(select_from_histogram)(tensor_name) for tensor_name in tqdm(percentile_tensor_minmax[0])
+            )
+        else:
+            for tensor_name in tqdm(percentile_tensor_minmax[0]):
+                select_from_histogram(tensor_name)
 
     def compute_data(self) -> TensorsData:
         """
@@ -1409,12 +1337,12 @@ def create_calibrator_float_scale(
             symmetric=overlay["symmetric"],
             num_bins=overlay["num_bins"],
             percentile=overlay["percentile"],
-            optimize_mem=overlay["optimize_mem"],
-            optimize_disk=overlay["optimize_disk"],
             worker_num=overlay["worker_num"],
             lwp_metric=overlay["lwp_metric"],
             activation_type=activation_type,
             percentile_candidates=overlay["percentile_candidates"],
+            lwp_use_histogram=overlay["lwp_use_histogram"],
+            optimize_mem=overlay["optimize_mem"],
         )
 
     if calibrator:

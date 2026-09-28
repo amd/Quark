@@ -5,11 +5,14 @@
 
 import os
 import sys
+import time
 import uuid
+from datetime import timedelta
 
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -117,7 +120,11 @@ class TrainingArguments(TrainingArguments):
     metric_for_best_model: str = field(default="eval_loss")
     gradient_checkpointing: bool = field(default=False)
     logging_strategy: str = field(default="epoch")
-    attn_implementation: str = field(default="eager")
+    optim: str = field(
+        default="adamw_8bit",
+        metadata={"help": "The optimizer to use. Defaults to adamw_8bit for Quark LLM QAT."},
+    )
+    attn_implementation: str = field(default="sdpa")
     report_to: str | None = field(default="none")
     only_train_scaling_factor: bool = field(default=False)
 
@@ -337,8 +344,10 @@ def run(training_args, data_args, export_args):
 
         trainer.train()
 
-        # Obtain FSDP Model for further modification
-        if hasattr(trainer.model, "module"):
+        # Obtain FSDP Model for further modification. FSDP2 shards in place instead of wrapping,
+        # so probing for a `.module` attribute would miss it and leave the parameters as DTensor,
+        # which export cannot mix with the plain tensors it allocates for scales.
+        if trainer.is_fsdp_enabled:
             # Prepare for obtaining full state dict under FSDP training setting
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
             trainer.save_model(export_args.model_export_dir)
@@ -359,6 +368,7 @@ def run(training_args, data_args, export_args):
     if export_args.model_export is not None:
         if trainer.is_world_process_zero():
             os.makedirs(export_args.model_export_dir, exist_ok=True)
+            export_started_at = time.perf_counter()
             with torch.no_grad():
                 export_safetensors(
                     model=model,
@@ -368,6 +378,9 @@ def run(training_args, data_args, export_args):
                     pack_method="reorder",
                 )
                 tokenizer.save_pretrained(export_args.model_export_dir)
+            # Every other rank is blocked in the wait_for_everyone() below for this whole window,
+            # so this is the duration --ddp_timeout has to cover.
+            accelerator.print(f"Export took {time.perf_counter() - export_started_at:.1f}s (rank 0 only)")
 
     accelerator.wait_for_everyone()
 
@@ -395,8 +408,15 @@ def run(training_args, data_args, export_args):
 
 if __name__ == "__main__":
     trainer_parser = HfArgumentParser((TrainingArguments, DataArguments, ExportArguments))
-    accelerator = Accelerator()
     training_args, data_args, export_args = trainer_parser.parse_args_into_dataclasses()
+
+    # Only rank 0 runs export_safetensors while every other rank blocks in wait_for_everyone(),
+    # and real quantization plus reorder packing outlives accelerate's 600 s default, after which
+    # the NCCL watchdog aborts the waiting ranks. Building the Accelerator after parsing is what
+    # lets --ddp_timeout reach init_process_group, which otherwise runs before the flag is known.
+    accelerator = Accelerator(
+        kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(seconds=training_args.ddp_timeout))]
+    )
 
     msg = "\n".join([f"{k:<26}: {v}" for k, v in vars(data_args).items()])
     accelerator.print(f"\n{msg}")

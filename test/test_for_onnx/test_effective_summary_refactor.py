@@ -61,7 +61,7 @@ def _capture(func, **call_kwargs) -> str:
             {
                 "symmetric": True,
                 "percentile": 99.999,
-                "optimize_disk": True,
+                "lwp_use_histogram": True,
                 "optimize_mem": False,
                 "percentile_candidates": [99.99, 99.999, 99.99999],
                 "lwp_metric": "mae",
@@ -70,7 +70,7 @@ def _capture(func, **call_kwargs) -> str:
     ],
 )
 def test_calibrator_defaults(method, expected):
-    overlay = resolve_calibrator_extra_defaults(method, {}, emit_warnings=False)
+    overlay = resolve_calibrator_extra_defaults(method, {})
     for k, v in expected.items():
         assert overlay[k] == v
 
@@ -83,27 +83,6 @@ def test_user_override_wins():
 
 def test_unknown_method_returns_empty():
     assert resolve_calibrator_extra_defaults("not-a-real-method", {}) == {}
-
-
-def test_lwp_disk_mem_mutex_warns():
-    # Exercise the mutex + warning branch.
-    # ScreenLogger doesn't propagate to root, so attach a handler directly.
-    target = logging.getLogger("quark.onnx.calibration.calibrators_screen")
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[assignment]
-    target.addHandler(handler)
-    try:
-        overlay = resolve_calibrator_extra_defaults(
-            LayerWiseMethod.LayerWisePercentile,
-            {"optimize_disk": True, "optimize_mem": True},
-            emit_warnings=True,
-        )
-    finally:
-        target.removeHandler(handler)
-    assert overlay["optimize_mem"] is False
-    assert overlay["optimize_disk"] is True
-    assert any("CalibOptimizeMem is forced to be False" in r.getMessage() for r in records)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +214,7 @@ def test_lwp_defaults_show_in_summary():
     )
     for s in [
         "CalibTensorRangeSymmetric --- True",
-        "CalibOptimizeDisk --- True",
+        "LWPUseHistogram --- True",
         "CalibOptimizeMem --- False",
         "Percentile --- 99.999",
         "PercentileCandidates --- [99.99, 99.999, 99.99999]",

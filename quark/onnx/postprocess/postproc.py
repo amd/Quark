@@ -6,7 +6,7 @@
 from typing import Any
 
 import onnx
-from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod
+from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.quant_utils import QuantType
 
 from quark.common.profiler import ProfileStep, profile_scope
@@ -88,7 +88,7 @@ def apply_post_optimization_before_algo(
     if extra_options.get("Int16Bias", False):
         try:
             quant_model, _ = convert_bias_int32_to_int16(quant_model)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires int32->int16 bias conversion failure
             logger.warning(
                 f"Failed to convert bias from int32 to int16 beacuse {e}skip converting bias from int32 to int16."
             )
@@ -122,6 +122,7 @@ def apply_post_quantization_algorithms(
     float_model: onnx.ModelProto,
     quant_model: onnx.ModelProto,
     data_reader: CachedDataReader,
+    tensors_range: TensorsData | None = None,
     calibrate_method: CalibrationMethod = CalibrationMethod.MinMax,
     activation_type: QuantType = QuantType.QInt8,
     weight_type: QuantType = QuantType.QInt8,
@@ -136,6 +137,7 @@ def apply_post_quantization_algorithms(
     :param onnx.ModelProto float_model: The float model for reference.
     :param onnx.ModelProto quant_model: The quantized model to be optimized.
     :param CachedDataReader data_reader: Data reader for the algorithm.
+    :param TensorsData tensors_range: Tensors range for the algorithm.
     :param CalibrationMethod calibrate_method: Calibration method, the default is CalibrationMethod.MinMax.
     :param QuantType activation_type: The quantization type to mix in activation tensors.
     :param QuantType weight_type: The quantization type to mix in weight tensors.
@@ -176,8 +178,7 @@ def apply_post_quantization_algorithms(
             float_model,
             quant_model,
             data_reader,
-            activation_type=activation_type,
-            weight_type=weight_type,
+            tensors_range=tensors_range,
             use_external_data_format=use_external_data_format,
             extra_options=extra_options,
             algorithm="AutoMixprecision",
@@ -263,7 +264,7 @@ def apply_post_optimization_after_algo(
             # Fill value info for all tensors because the compilers need it to
             # infer all shapes
             quant_model = fill_all_tensors_value_info(quant_model, data_reader)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - requires ORT shape-inference failure
             logger.warning(f"Fail to fill value info for all tensors beacuse of {e}.")
 
     return quant_model
@@ -275,6 +276,7 @@ def apply_post_process(
     float_model: onnx.ModelProto,
     quant_model: onnx.ModelProto,
     data_reader: CalibrationDataReader,
+    tensors_range: TensorsData | None = None,
     calibrate_method: CalibrationMethod = CalibrationMethod.MinMax,
     activation_type: QuantType = QuantType.QInt8,
     weight_type: QuantType = QuantType.QInt8,
@@ -292,6 +294,7 @@ def apply_post_process(
     :param onnx.ModelProto float_model: The float model for reference.
     :param onnx.ModelProto quant_model: The quantized model to be optimized.
     :param CalibrationDataReader data_reader: Data reader for the algorithm.
+    :param TensorsData tensors_range: Tensors range for the algorithm.
     :param CalibrationMethod calibrate_method: Calibration method, the default is CalibrationMethod.MinMax.
     :param QuantType activation_type: The quantization type to mix in activation tensors.
     :param QuantType weight_type: The quantization type to mix in weight tensors.
@@ -318,6 +321,7 @@ def apply_post_process(
         float_model,
         quant_model,
         data_reader,
+        tensors_range,
         calibrate_method,
         activation_type,
         weight_type,

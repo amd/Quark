@@ -1,0 +1,21 @@
+schema_version: 1
+id: quant.mxfp4.format-contract.v1
+domain: quantization
+kind: reference
+status: validated
+applicability: {}
+match:
+  symptoms: []
+  keywords: [mxfp4, e8m0, block32, kv_cache]
+summary: OCP MXFP4 uses E2M1 elements with an E8M0 scale shared by each block of 32 values.
+guidance:
+  - Keep MXFP4 distinct from relaxed FP4 and NVFP4.
+  - Validate scale layout and post-RoPE KV-cache handling against the selected serving backend.
+required_checks: [export_config, load]
+evidence:
+  level: E3
+provenance:
+  kind: external_snapshot
+  repo_commit: 3609695323d84d536c83f6b56f2a987b81843f40
+  path: knowledge/concepts/fp4-mxfp4-quantization.md
+  sha256: dd817c021f80ae443ee3de0d3b74af1cd53138a58bba036ff6907088b0e9a958

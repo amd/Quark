@@ -339,6 +339,36 @@ def test_infer_layers_path_nested():
     assert not path.endswith("experts")
 
 
+def test_infer_layers_path_prefers_language_layers_over_vision_layers():
+    class LanguageModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(60)])
+
+    class VisionEncoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(32)])
+
+    class VisionTower(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder = VisionEncoder()
+
+    class InnerModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vision_tower = VisionTower()
+            self.language_model = LanguageModel()
+
+    class M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = InnerModel()
+
+    assert infer_decoder_layers_path(M()) == "model.language_model.layers"
+
+
 def test_infer_layers_path_no_modulelist():
     model = nn.Linear(4, 4)
     assert infer_decoder_layers_path(model) == ""

@@ -3,18 +3,23 @@
 # SPDX-License-Identifier: MIT
 #
 
+import copy
 import json
 import re
 from collections import defaultdict
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from quark.common.utils.import_utils import is_safetensors_available, is_transformers_available
 from quark.common.utils.log import ScreenLogger
 from quark.torch.export.utils import (
+    get_source_name_or_path,
     get_state_dict_for_export,
+    resolve_checkpoint_dir,
 )
 
 try:
@@ -27,64 +32,76 @@ if TYPE_CHECKING and is_transformers_available():  # pragma: no cover
 
 if is_safetensors_available():
     import safetensors
-    from safetensors.torch import load_file, save_file
+    from safetensors.torch import load_file
 
 _DEFAULT_IGNORE_PATTERNS = [r"^mtp.*"]
+
+# High-precision (unquantized) floating dtypes. A restored weight in one of these
+# dtypes is BF16-on-disk with no quantization scales, so downstream loaders (vLLM)
+# must be told to skip it via ``quantization_config.exclude``. Anything else (packed
+# int/uint, fp8) is an already-quantized source tensor and must NOT be excluded.
+_HIGH_PRECISION_DTYPES = frozenset({torch.bfloat16, torch.float16, torch.float32, torch.float64})
+
+# Field name holding the unquantized-layer list, per exported custom mode: ``exclude``
+# for quark mode (NVFP4/etc.), ``ignored_layers`` for the fp8 custom config.
+_EXCLUDE_FIELDS = ("exclude", "ignored_layers")
 
 SAFE_WEIGHTS_NAME = "model.safetensors"
 SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 logger = ScreenLogger(__name__)
 
 
-def patch_missing_weights(export_dir: str | Path, model: "torch.nn.Module") -> None:
-    """
-    After hf_format export, compare the exported safetensors against the original checkpoint
-    and copy any keys that are present in the source but absent from the export (e.g. mtp.* layers
-    that transformers silently drops via _keys_to_ignore_on_load_unexpected).
+def _resolve_source_model_dir(model: "torch.nn.Module") -> Path | None:
+    """Locate the source checkpoint, or ``None`` if it cannot be located.
 
-    The missing weights are written back into the existing exported safetensors file(s) in-place.
-    For sharded exports the missing weights are appended to the last shard and the index is updated.
+    Only the ``quantization_config`` description of restored layers needs this, so anything that
+    goes wrong degrades to ``None`` rather than ending an export whose weights are all present.
+    Hence the unconditional ``except``.
+    """
+    name_or_path = get_source_name_or_path(model)
+    if not name_or_path:
+        return None
+
+    try:
+        return resolve_checkpoint_dir(name_or_path)
+    except Exception as error:
+        logger.warning(
+            "[export_hf_model] Cannot resolve source checkpoint %r (%s: %s).",
+            name_or_path,
+            type(error).__name__,
+            error,
+        )
+        return None
+
+
+def _find_missing_weights_from_source(
+    model: "torch.nn.Module", existing_keys: Iterable[str]
+) -> dict[str, torch.Tensor]:
+    """
+    Compare the keys about to be exported (``existing_keys``) against the original source
+    checkpoint, and return the tensors for keys that are present in the source but not in
+    ``existing_keys`` (e.g. mtp.* layers that transformers silently drops via
+    ``_keys_to_ignore_on_load_unexpected``), so they can be merged back into the state_dict
+    before ``model.save_pretrained`` is called.
 
     The source checkpoint directory is resolved automatically from ``model.config._name_or_path``
     (works for both local paths and HuggingFace model IDs).
     """
-    export_dir = Path(export_dir)
+    existing_keys = set(existing_keys)
 
     # Resolve source checkpoint directory from the model's config.
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    name_or_path = get_source_name_or_path(model)
     if not name_or_path:
         logger.warning(
-            "[patch_missing_weights] Cannot determine source model path from model.config._name_or_path, skipping."
+            "[_find_missing_weights_from_source] Cannot determine source model path from "
+            "model.config._name_or_path, skipping."
         )
-        return
+        return {}
 
-    source_model_dir = Path(name_or_path)
-    if not source_model_dir.exists():
-        # model ID (e.g. "Qwen/Qwen3.5-9B") -- resolve via transformers cache.
-        # The source checkpoint is expected to be resolvable here, so let any failure propagate.
-        from transformers.utils import cached_file  # type: ignore[attr-defined]
-
-        local_config = cached_file(name_or_path, "config.json", local_files_only=True)
-        source_model_dir = Path(local_config).parent
-        logger.info("[patch_missing_weights] Resolved source checkpoint to: %s", source_model_dir)
-
-    # --- collect exported keys (header-only, no tensor data) ---
-    exported_keys: dict[str, str] = {}  # key -> shard filename
-    index_path = export_dir / SAFE_WEIGHTS_INDEX_NAME
-    single_path = export_dir / SAFE_WEIGHTS_NAME
-    is_sharded_export = index_path.exists()
-
-    if is_sharded_export:
-        with open(index_path) as f:
-            index = json.load(f)
-        for key, fname in index["weight_map"].items():
-            exported_keys[key] = fname
-    elif single_path.exists():
-        with safetensors.safe_open(str(single_path), framework="pt", device="cpu") as f:
-            exported_keys = {k: SAFE_WEIGHTS_NAME for k in f.keys()}  # noqa: SIM118,C420
-    else:
-        logger.warning("[patch_missing_weights] No safetensors found in export_dir=%s, skipping.", export_dir)
-        return
+    # Unlike the config description above, a source that cannot be resolved here means weights
+    # are about to be dropped from the export, so let the failure propagate.
+    source_model_dir = resolve_checkpoint_dir(name_or_path)
+    logger.info("[_find_missing_weights_from_source] Resolved source checkpoint to: %s", source_model_dir)
 
     # --- collect source keys (header-only, no tensor data) ---
     source_keys: dict[str, Path] = {}  # key -> source shard path
@@ -100,9 +117,10 @@ def patch_missing_weights(export_dir: str | Path, model: "torch.nn.Module") -> N
             source_keys = {k: src_single for k in f.keys()}  # noqa: SIM118,C420
     else:
         logger.warning(
-            "[patch_missing_weights] No safetensors found in source_model_dir=%s, skipping.", source_model_dir
+            "[_find_missing_weights_from_source] No safetensors found in source_model_dir=%s, skipping.",
+            source_model_dir,
         )
-        return
+        return {}
 
     # --- find missing keys ---
     # Only restore keys that match the model's _keys_to_ignore_on_load_unexpected patterns.
@@ -121,14 +139,14 @@ def patch_missing_weights(export_dir: str | Path, model: "torch.nn.Module") -> N
     def _matches_ignore_pattern(key: str) -> bool:
         return any(re.search(pattern, key) for pattern in ignore_patterns)
 
-    missing = {k: v for k, v in source_keys.items() if k not in exported_keys and _matches_ignore_pattern(k)}
+    missing = {k: v for k, v in source_keys.items() if k not in existing_keys and _matches_ignore_pattern(k)}
 
     if not missing:
-        return
+        return {}
 
     logger.info(
-        "[patch_missing_weights] Found %d weight tensor(s) present in the source checkpoint at %s "
-        "but missing from the export (restoring): %s%s",
+        "[_find_missing_weights_from_source] Found %d weight tensor(s) present in the source checkpoint at %s "
+        "but missing from the export: %s%s",
         len(missing),
         source_model_dir,
         list(missing.keys())[:10],
@@ -152,53 +170,260 @@ def patch_missing_weights(export_dir: str | Path, model: "torch.nn.Module") -> N
     if pbar is not None:
         pbar.close()
 
-    # --- write missing tensors back into the export ---
-    if is_sharded_export:
-        # Append the missing weights into the last existing shard, keeping the standard shard
-        # naming (`model-00015-of-00015.safetensors`) intact. Creating an extra shard would
-        # require either an out-of-range index (e.g. 00016-of-00015) or renumbering every
-        # shard; both are error-prone and some downstream loaders (vLLM / SGLang) reject the
-        # former. safetensors has no hard per-file size limit, so reusing the last shard is safe.
-        shard_files = sorted(set(index["weight_map"].values()))
-        last_shard_name = shard_files[-1]
-        last_shard_path = export_dir / last_shard_name
-        merged: dict[str, torch.Tensor] = {}
-        with safetensors.safe_open(str(last_shard_path), framework="pt", device="cpu") as f:
-            shard_meta = f.metadata()
-            for k in f.keys():  # noqa: SIM118
-                merged[k] = f.get_tensor(k)
-        merged.update(missing_tensors)
-        tmp_shard = last_shard_path.with_suffix(".tmp")
-        save_file(merged, str(tmp_shard), metadata=shard_meta or {})
-        tmp_shard.replace(last_shard_path)
-        for key in missing_tensors:
-            index["weight_map"][key] = last_shard_name
-        # Update total_size in index metadata to account for added tensors.
-        added_bytes = sum(t.numel() * t.element_size() for t in missing_tensors.values())
-        if "metadata" in index and "total_size" in index["metadata"]:
-            index["metadata"]["total_size"] = int(index["metadata"]["total_size"]) + added_bytes
-        with open(index_path, "w") as f:
-            json.dump(index, f, indent=2)
-        logger.info(
-            "[patch_missing_weights] Appended %d weight(s) to last shard %s.",
-            len(missing_tensors),
-            last_shard_name,
+    return missing_tensors
+
+
+def _is_module_parameter_key(key: str) -> bool:
+    """Return True for a module's own parameter, i.e. not a companion tensor like ``weight_scale_inv``."""
+    return key.endswith((".weight", ".bias"))
+
+
+def _reject_unsupported_packed_modules(missing_tensors: dict[str, torch.Tensor]) -> None:
+    """Fail when a restored module uses the unsupported compressed-tensors packed wire format."""
+    packed_module_names = {
+        key.removesuffix(".weight_packed") for key in missing_tensors if key.endswith(".weight_packed")
+    }
+    if not packed_module_names:
+        return
+
+    raise NotImplementedError(
+        "Cannot export restored packed compressed-tensors module(s); "
+        f"aborting instead of writing an incomplete checkpoint: {sorted(packed_module_names)[:10]}"
+    )
+
+
+def _derive_exclude_entries(restored_keys: set[str]) -> set[str]:
+    """Turn restored parameter keys into the module names ``quantization_config`` refers to.
+
+    Each restored key becomes its exact module name (``.weight``/``.bias`` stripped), matched by
+    vLLM's ``should_ignore_layer`` by equality -- no regex, so MTP / Next-N modules (``mtp.*``,
+    ``model.layers.{N}.*``) are listed by their full names rather than a pattern.
+
+    Both destinations need those names: ``exclude`` for the high-precision layers and
+    ``layer_quant_config`` for the ones already quantized in the source.
+    """
+    entries: set[str] = set()
+    for key in restored_keys:
+        module_name = key
+        for suffix in (".weight", ".bias"):
+            if module_name.endswith(suffix):
+                module_name = module_name[: -len(suffix)]
+                break
+        entries.add(module_name)
+    return entries
+
+
+def _merge_exclude_entries_into_quantization_config(model: "torch.nn.Module", restored_keys: set[str]) -> None:
+    """Add exact-name exclude entries for restored BF16 layers to ``model.config.quantization_config``.
+
+    ``_find_missing_weights_from_source`` restores unquantized MTP / Next-N weights into the
+    state_dict right before ``model.save_pretrained`` is called, but ``quantization_config`` was
+    already built earlier from the model's live module tree (see ``QuarkSafetensorsExporter``),
+    so it never lists them -- those modules never existed as ``nn.Module`` instances in the first
+    place, since transformers silently drops them at load. Without this, downstream loaders (e.g.
+    vLLM) treat the restored BF16 layers as quantized and fail to load them. See Quark issue #6067.
+
+    This mutates ``model.config.quantization_config`` in-place *before* ``save_pretrained`` is
+    called, so the exported ``config.json`` is correct on the first (and only) write -- unlike a
+    post-export patch, there is no second read/rewrite pass over the exported file.
+
+    No-op when nothing was restored, when there is no ``quantization_config``, or when it uses no
+    recognized exclude field (e.g. awq's ``modules_to_not_convert``).
+    """
+    if not restored_keys:
+        return
+
+    quant_config = getattr(model.config, "quantization_config", None)
+    if not isinstance(quant_config, dict):
+        return
+
+    module_param_keys = {key for key in restored_keys if _is_module_parameter_key(key)}
+    if not module_param_keys:
+        return
+
+    _add_exclude_entries(quant_config, _derive_exclude_entries(module_param_keys), "restored BF16 layers")
+
+
+def _add_exclude_entries(quant_config: dict[str, Any], entries: set[str], description: str) -> None:
+    """Add module names to whichever exclude field this config uses.
+
+    Only the first recognized field is written: a config carries ``exclude`` (quark mode) or
+    ``ignored_layers`` (fp8 custom mode), never both.
+    """
+    for field in _EXCLUDE_FIELDS:
+        existing = quant_config.get(field)
+        if not isinstance(existing, list):
+            continue
+        additions = sorted(entry for entry in entries if entry not in existing)
+        if additions:
+            existing.extend(additions)
+            logger.info(
+                "[export_hf_model] Added %d exclude ent(ies) for %s to %s: %s",
+                len(additions),
+                description,
+                field,
+                additions,
+            )
+        return
+
+
+def _merge_layer_quant_config_for_restored_quantized_layers(
+    model: "torch.nn.Module", missing_tensors: dict[str, torch.Tensor]
+) -> dict[str, Any] | None:
+    """Return quantization config describing restored already-quantized Linear layers.
+
+    Restored FP8 / MXFP4 MTP weights are merged back into the export ``state_dict`` but were
+    never part of the in-memory ``quantization_config`` built from the live module tree.
+    Reuse the file2file exclude-aware builder against the *source* checkpoint so each restored
+    Linear module is described with the scheme it already uses on disk.
+    """
+    quant_config = getattr(model.config, "quantization_config", None)
+    if not isinstance(quant_config, dict):
+        return None
+    merged_quant_config = copy.deepcopy(quant_config)
+
+    quantized_linear_weight_keys = {
+        key
+        for key, tensor in missing_tensors.items()
+        if _is_module_parameter_key(key)
+        and key.endswith(".weight")
+        and tensor.dtype not in _HIGH_PRECISION_DTYPES
+        and tensor.dim() >= 2
+    }
+    if not quantized_linear_weight_keys:
+        return merged_quant_config
+
+    source_model_dir = _resolve_source_model_dir(model)
+    if source_model_dir is None:
+        logger.warning(
+            "[export_hf_model] Cannot resolve source checkpoint for restored FP8/MXFP4 layers; "
+            "skipping layer_quant_config merge."
         )
-    else:
-        # Use safe_open to read existing tensors + preserve original file metadata.
-        # NOTE: all tensors in the exported file must be loaded into memory before rewriting —
-        # this is unavoidable with the safetensors format. Peak memory is roughly 2× the
-        # exported file size. Users on memory-constrained machines should be aware.
-        merged = {}
-        with safetensors.safe_open(str(single_path), framework="pt", device="cpu") as f:
-            file_meta = f.metadata()
-            for k in f.keys():  # noqa: SIM118
-                merged[k] = f.get_tensor(k)
-        merged.update(missing_tensors)
-        tmp_single = single_path.with_suffix(".tmp")
-        save_file(merged, str(tmp_single), metadata=file_meta or {})
-        tmp_single.replace(single_path)
-        logger.info("[patch_missing_weights] Appended %d weight(s) to %s.", len(missing_tensors), single_path.name)
+        return merged_quant_config
+
+    source_config_path = source_model_dir / "config.json"
+    if not source_config_path.exists():
+        logger.warning(
+            "[export_hf_model] Source config.json not found at %s; skipping layer_quant_config merge.",
+            source_config_path,
+        )
+        return merged_quant_config
+
+    from quark.torch.quantization.config.config import QConfig, QLayerConfig
+    from quark.torch.quantization.file2file_quantization import _build_exclude_aware_quant_config
+
+    module_names = sorted(_derive_exclude_entries(quantized_linear_weight_keys))
+
+    # Source quantization metadata is optional. If it cannot be read or converted,
+    # keep the restored weights and continue the export without adding layer_quant_config entries.
+    try:
+        with open(source_config_path, encoding="utf-8") as config_file:
+            source_hf_model_config = json.load(config_file)
+
+        restored_config = _build_exclude_aware_quant_config(
+            str(source_model_dir),
+            QConfig(global_quant_config=QLayerConfig(), exclude=module_names),
+            source_hf_model_config,
+            keep_excluded_layers_as_original_model_state=True,
+        )
+    except Exception as error:
+        logger.warning(
+            "[export_hf_model] Cannot describe %d restored quantized layer(s) in layer_quant_config "
+            "from %s (%s: %s). The weights are still exported, but downstream loaders may need the "
+            "scheme supplied manually.",
+            len(module_names),
+            source_config_path,
+            type(error).__name__,
+            error,
+        )
+        return merged_quant_config
+
+    # The builder splits the modules in two: the ones it can describe, and the ones it decided to
+    # leave excluded (source lists them as unquantized, or offers no scheme to copy). Reading only
+    # the first half would drop the rest from `layer_quant_config` and `exclude` alike.
+    undescribed = sorted(restored_config.exclude or [])
+    if undescribed:
+        logger.warning(
+            "[export_hf_model] %s describes no scheme for %d restored layer(s); excluding them instead: %s",
+            source_config_path,
+            len(undescribed),
+            undescribed,
+        )
+        _add_exclude_entries(merged_quant_config, set(undescribed), "restored layers the source leaves undescribed")
+
+    layer_quant_config = restored_config.layer_quant_config or {}
+    if not layer_quant_config:
+        return merged_quant_config
+
+    # `or {}` also covers legacy (quark<1.0) configs that serialize `layer_quant_config: null`.
+    existing_entries = merged_quant_config.get("layer_quant_config") or {}
+    if not isinstance(existing_entries, dict):
+        # Merging into this would raise, and taking it over would discard whatever is in there.
+        logger.warning(
+            "[export_hf_model] quantization_config['layer_quant_config'] is a %s rather than a "
+            "mapping; leaving it alone and skipping %d restored layer(s).",
+            type(existing_entries).__name__,
+            len(layer_quant_config),
+        )
+        return merged_quant_config
+
+    merged_quant_config["layer_quant_config"] = existing_entries
+    source_entries = {module_name: layer_config.to_dict() for module_name, layer_config in layer_quant_config.items()}
+
+    if source_entries:
+        existing_entries.update(source_entries)
+        logger.info(
+            "[export_hf_model] Set %d layer_quant_config ent(ies) from restored quantized layers: %s",
+            len(source_entries),
+            sorted(source_entries.keys())[:10],
+        )
+    return merged_quant_config
+
+
+def _quantizer_builds_own_state_dict(model: "torch.nn.Module") -> bool:
+    """Return whether the attached quantizer replaces the state dict passed to ``save_pretrained``."""
+    hf_quantizer = getattr(model, "hf_quantizer", None)
+    if hf_quantizer is None or not hf_quantizer.is_serializable():
+        return False
+
+    from transformers.quantizers.base import HfQuantizer  # type: ignore[attr-defined]
+
+    return type(hf_quantizer).get_state_dict_and_metadata is not HfQuantizer.get_state_dict_and_metadata
+
+
+@contextmanager
+def _quantizer_detached_for_save(model: "torch.nn.Module", restored_tensor_count: int) -> Iterator[None]:
+    """Detach a no-op ``hf_quantizer`` for the duration of ``save_pretrained``.
+
+    ``save_pretrained`` rebinds its ``state_dict`` argument from
+    ``hf_quantizer.get_state_dict_and_metadata()`` whenever a quantizer is attached, so for
+    pre-quantized sources (e.g. Qwen3.5-*-FP8, which carry a ``quantization_config`` and
+    therefore get a quantizer) the restored tensors would be dropped on the floor.
+
+    Quantizers that only inherit the base no-op have nothing to contribute and are detached.
+    mxfp4/torchao build their own state dict and must keep ownership, so they are left alone
+    and the caller is warned that the restored weights will not make it into the checkpoint.
+    """
+    hf_quantizer = getattr(model, "hf_quantizer", None)
+    if not restored_tensor_count or hf_quantizer is None or not hf_quantizer.is_serializable():
+        yield
+        return
+
+    if _quantizer_builds_own_state_dict(model):
+        logger.warning(
+            "Cannot restore %d weight(s) (e.g. mtp.*) because quant_method=%s builds its own export "
+            "state_dict; they will be missing from the exported checkpoint.",
+            restored_tensor_count,
+            hf_quantizer.quantization_config.quant_method,
+        )
+        yield
+        return
+
+    model.hf_quantizer = None
+    try:
+        yield
+    finally:
+        model.hf_quantizer = hf_quantizer
 
 
 def export_hf_model(model: "PreTrainedModel", export_dir: str | Path) -> None:
@@ -209,6 +434,27 @@ def export_hf_model(model: "PreTrainedModel", export_dir: str | Path) -> None:
     logger.info("Start exporting huggingface_format quantized model ...")
 
     state_dict = get_state_dict_for_export(model)
+
+    # Patch `state_dict` adding any weight that may have been silently dropped (e.g. mtp.* in Qwen3.5 that is part of `_keys_to_ignore_on_load_unexpected` in Transformers).
+    missing_tensors = _find_missing_weights_from_source(model, state_dict.keys())
+    _reject_unsupported_packed_modules(missing_tensors)
+    if not _quantizer_builds_own_state_dict(model):
+        state_dict.update(missing_tensors)
+
+        # Restored MTP / Next-N weights were never part of `quantization_config` (built earlier from
+        # the model's live module tree). Update the export config in-memory before `save_pretrained`:
+        #   - high-precision `.weight` tensors -> exclude
+        #   - already-quantized 2D Linear weights (FP8/MXFP4) -> layer_quant_config
+        module_param_keys = {key for key in missing_tensors if _is_module_parameter_key(key)}
+        high_precision_keys = {
+            key
+            for key in module_param_keys
+            if key.endswith(".weight") and missing_tensors[key].dtype in _HIGH_PRECISION_DTYPES
+        }
+        _merge_exclude_entries_into_quantization_config(model, high_precision_keys)
+        updated_config = _merge_layer_quant_config_for_restored_quantized_layers(model, missing_tensors)
+        if updated_config is not None:
+            model.config.quantization_config = updated_config
 
     # Sanitize generation_config: transformers v5 strictly validates flags such as
     # `top_p`/`top_k`/`temperature` requiring `do_sample=True`. Some upstream HF
@@ -231,11 +477,8 @@ def export_hf_model(model: "PreTrainedModel", export_dir: str | Path) -> None:
 
     # Save model to safetensors.
     # NOTE: Tied weights sharing the same `tensor.data_ptr()` are removed in the `save_pretrained` call.
-    model.save_pretrained(export_dir, state_dict=state_dict)  # type: ignore[attr-defined]
-
-    # Some transformers model classes silently drop weights that are not instantiated in __init__
-    # (e.g. mtp.* in Qwen3.5). Patch them back from the original checkpoint automatically.
-    patch_missing_weights(export_dir, model)
+    with _quantizer_detached_for_save(model, len(missing_tensors)):
+        model.save_pretrained(export_dir, state_dict=state_dict)  # type: ignore[attr-defined]
 
     logger.info(f"hf_format quantized model exported to {export_dir} successfully.")
 

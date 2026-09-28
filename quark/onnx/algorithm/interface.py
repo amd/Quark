@@ -4,10 +4,11 @@
 #
 
 import time
+from pathlib import Path
 from typing import Any
 
 import onnx
-from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod
+from onnxruntime.quantization.calibrate import CalibrationDataReader, CalibrationMethod, TensorsData
 from onnxruntime.quantization.onnx_model import ONNXModel
 from onnxruntime.quantization.quant_utils import QuantType
 
@@ -233,8 +234,7 @@ def apply_AutoMixedPrecision(
     float_model: onnx.ModelProto,
     quant_model: onnx.ModelProto,
     data_reader: CalibrationDataReader,
-    activation_type: QuantType = QuantType.QInt8,
-    weight_type: QuantType = QuantType.QInt8,
+    tensors_range: TensorsData,
     use_external_data_format: bool = False,
     extra_options: dict[str, Any] = {},
 ) -> onnx.ModelProto:
@@ -244,8 +244,7 @@ def apply_AutoMixedPrecision(
     :param onnx.ModelProto float_model: The float model for reference.
     :param onnx.ModelProto quant_model: The quantized model to be optimized.
     :param CalibrationDataReader data_reader: Data reader for the algorithm.
-    :param QuantType activation_type: The quantization type to mix in activation tensors.
-    :param QuantType weight_type: The quantization type to mix in weight tensors.
+    :param TensorsData tensors_range: Tensors range for the algorithm.
     :param bool use_external_data_format: Option used for large size (>2GB) model.
     :param Dict[str, Any] extra_options: Options for the algorithm.
 
@@ -257,15 +256,14 @@ def apply_AutoMixedPrecision(
         quant_model,
         use_external_data_format,
         data_reader,
-        activation_type,
-        weight_type,
+        tensors_range,
         extra_options,
     )
 
 
 def apply_FastFinetune(
-    float_model: onnx.ModelProto,
-    quant_model: onnx.ModelProto,
+    float_model: str | Path | onnx.ModelProto,
+    quant_model: str | Path | onnx.ModelProto,
     data_reader: CalibrationDataReader,
     use_external_data_format: bool = False,
     extra_options: dict[str, Any] = {},
@@ -283,8 +281,8 @@ def apply_FastFinetune(
 
     Based on the original algorithms, we have made improvements to deliver better accuracy and applicability.
 
-    :param onnx.ModelProto float_model: The float model for reference.
-    :param onnx.ModelProto quant_model: The quantized model to be optimized.
+    :param str | Path | onnx.ModelProto float_model: The float model for reference.
+    :param str | Path | onnx.ModelProto quant_model: The quantized model to be optimized.
     :param CalibrationDataReader data_reader: Data reader for the algorithm.
     :param bool use_external_data_format: Option used for large size (>2GB) model.
     :param Dict[str, Any] extra_options: Options for the algorithm.
@@ -330,6 +328,7 @@ def apply_post_quant_algorithms(
     float_model: onnx.ModelProto,
     quant_model: onnx.ModelProto,
     data_reader: CalibrationDataReader,
+    tensors_range: TensorsData | None = None,
     calibrate_method: CalibrationMethod = CalibrationMethod.MinMax,
     activation_type: QuantType = QuantType.QInt8,
     weight_type: QuantType = QuantType.QInt8,
@@ -343,6 +342,7 @@ def apply_post_quant_algorithms(
     :param onnx.ModelProto float_model: The float model for reference.
     :param onnx.ModelProto quant_model: The quantized model to be optimized.
     :param CalibrationDataReader data_reader: Data reader for the algorithm.
+    :param TensorsData tensors_range: Tensors range for the algorithm.
     :param CalibrationMethod calibrate_method: Calibration method, the default is CalibrationMethod.MinMax.
     :param QuantType activation_type: The quantization type to mix in activation tensors.
     :param QuantType weight_type: The quantization type to mix in weight tensors.
@@ -368,7 +368,7 @@ def apply_post_quant_algorithms(
         )
     elif algorithm == "AutoMixprecision":
         optimized_model = apply_AutoMixedPrecision(
-            float_model, quant_model, data_reader, activation_type, weight_type, use_external_data_format, extra_options
+            float_model, quant_model, data_reader, tensors_range, use_external_data_format, extra_options
         )
     elif algorithm == "FastFinetune":
         optimized_model = apply_FastFinetune(

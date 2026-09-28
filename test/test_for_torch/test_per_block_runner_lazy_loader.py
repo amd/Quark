@@ -6,6 +6,7 @@
 
 import json
 
+import pytest
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
@@ -49,7 +50,8 @@ class TinyModel(nn.Module):
 
 def _save_fake_checkpoint(model: TinyModel, tmp_path) -> str:
     """Save model weights as a sharded safetensors checkpoint and return the directory."""
-    tensors = {k: v.contiguous() for k, v in model.state_dict().items()}
+    # Clone: safetensors refuses to serialize tensors sharing storage, e.g. tied weights.
+    tensors = {k: v.detach().clone().contiguous() for k, v in model.state_dict().items()}
 
     # Split into two shards (shard-1: embed+norm, shard-2: layers)
     shard1 = {k: v for k, v in tensors.items() if not k.startswith("layers")}
@@ -136,11 +138,45 @@ def test_swap_out_returns_to_meta():
 # ---------------------------------------------------------------------------
 
 
-def test_prepare_missing_index(tmp_path):
-    """prepare() with a directory that has no index.json should be a no-op."""
+def test_prepare_without_index_uses_cpu_ram(tmp_path):
+    """RAM offloading reads weights from the model, so a missing index is fine."""
     model = TinyModel()
-    prepare(model, str(tmp_path))
-    assert not hasattr(model, "_pbr_lazy_state")
+    prepare(model, str(tmp_path), target_device="cpu")
+
+    assert model._pbr_lazy_state.use_cpu_ram
+    assert model._pbr_lazy_state.weight_map == {}
+    for block in model.layers:
+        assert all(p.is_meta for p in block.parameters())
+
+    finalize(model)
+
+
+def test_prepare_without_index_raises_in_disk_mode(tmp_path, monkeypatch):
+    """Disk streaming needs the index, so say so instead of silently doing nothing."""
+    from quark.torch.utils.per_block_runner import lazy_loader
+
+    monkeypatch.setattr(lazy_loader.PerBlockLazyLoader, "_choose_backend", lambda *args, **kwargs: False)
+
+    model = TinyModel()
+    with pytest.raises(NotImplementedError, match="model.safetensors.index.json"):
+        prepare(model, str(tmp_path), target_device="cpu")
+
+
+def test_prepare_raises_when_checkpoint_keys_do_not_match_module_paths(tmp_path, monkeypatch):
+    """A checkpoint whose keys use another prefix would load zero tensors per block."""
+    from quark.torch.utils.per_block_runner import lazy_loader
+
+    monkeypatch.setattr(lazy_loader.PerBlockLazyLoader, "_choose_backend", lambda *args, **kwargs: False)
+
+    model = TinyModel()
+    _save_fake_checkpoint(model, tmp_path)
+    index_path = tmp_path / "model.safetensors.index.json"
+    weight_map = json.loads(index_path.read_text())["weight_map"]
+    renamed = {key.replace("layers.", "inner.layers.", 1): shard for key, shard in weight_map.items()}
+    index_path.write_text(json.dumps({"weight_map": renamed}))
+
+    with pytest.raises(NotImplementedError, match="No key in"):
+        prepare(model, str(tmp_path), target_device="cpu")
 
 
 def test_prepare_no_modulelist(tmp_path):
@@ -307,6 +343,50 @@ def test_cpu_offload_non_block_params_unchanged(tmp_path):
     finalize(model)
 
 
+def test_prepare_moves_non_decoder_params_and_buffers_to_target(tmp_path):
+    """prepare() should leave non-decoder modules ready on the target device."""
+    model = TinyModel()
+    model.register_buffer("global_buffer", torch.ones(1))
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+
+    prepare(model, model_dir, target_device="meta")
+
+    assert model.embed.weight.is_meta
+    assert model.norm.weight.is_meta
+    assert model.norm.bias.is_meta
+    assert model.global_buffer.is_meta
+
+
+def test_prepare_keeps_tied_weights_tied(tmp_path):
+    """prepare() must not untie `lm_head.weight` from `embed.weight`."""
+
+    class TiedModel(TinyModel):
+        def __init__(self, vocab: int = 32, dim: int = 8):
+            super().__init__(vocab=vocab, dim=dim)
+            self.lm_head = nn.Linear(dim, vocab, bias=False)
+            self.lm_head.weight = self.embed.weight
+
+    model = TiedModel()
+    assert model.lm_head.weight is model.embed.weight
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+
+    prepare(model, model_dir, target_device="cpu")
+
+    assert model.lm_head.weight is model.embed.weight
+    assert model.lm_head.weight.data_ptr() == model.embed.weight.data_ptr()
+
+
+def test_prepare_preserves_attributes_attached_to_non_decoder_params(tmp_path):
+    """Attributes hung on a parameter object must survive the move to the target device."""
+    model = TinyModel()
+    model.embed.weight.scale = torch.ones(1)
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+
+    prepare(model, model_dir, target_device="cpu")
+
+    assert hasattr(model.embed.weight, "scale")
+
+
 def test_cpu_offload_end_to_end_correctness(tmp_path):
     """RAM-offload output must match the original model output."""
     torch.manual_seed(42)
@@ -370,7 +450,7 @@ def test_ram_offload_selected_when_ram_available(tmp_path):
     model_dir = _save_fake_checkpoint(model, tmp_path)
     prepare(model, model_dir, target_device="cpu")
     # TinyModel is tiny — RAM offload should always be selected.
-    assert len(model._pbr_lazy_state["cpu_caches"]) == len(model.layers)
+    assert len(model._pbr_lazy_state.cpu_caches) == len(model.layers)
     finalize(model)
 
 
@@ -380,16 +460,40 @@ def test_ram_offload_selected_when_ram_available(tmp_path):
 
 
 def _force_disk_mode(monkeypatch) -> None:
-    """Make the ``/proc/meminfo`` probe raise so ``free_ram_bytes`` falls back to 0,
-    which forces the disk-streaming branch regardless of the host's real RAM."""
-    real_open = open
+    """Select the disk-streaming branch regardless of how the backend is chosen.
 
-    def fake_open(file, *args, **kwargs):
-        if file == "/proc/meminfo":
-            raise OSError("forced meminfo failure for test")
-        return real_open(file, *args, **kwargs)
+    The selection rule itself is covered by `test_backend_selection_*`; these tests are
+    about the streaming behaviour, so they pin the branch rather than the rule.
+    """
+    from quark.torch.utils.per_block_runner import lazy_loader
 
-    monkeypatch.setattr("builtins.open", fake_open)
+    monkeypatch.setattr(lazy_loader.PerBlockLazyLoader, "_choose_backend", lambda *args, **kwargs: False)
+
+
+def test_backend_selection_prefers_cpu_ram_for_materialised_weights(tmp_path):
+    """Caching resident weights costs no extra RAM, so it must always win."""
+    model = TinyModel()
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+
+    prepare(model, model_dir, target_device="cpu")
+
+    assert model._pbr_lazy_state.use_cpu_ram
+    assert any(cache is not None for cache in model._pbr_lazy_state.cpu_caches)
+    finalize(model)
+
+
+def test_backend_selection_falls_back_to_disk_for_meta_weights(tmp_path):
+    """A block with nothing materialised has nothing to cache; it has to come from disk."""
+    model = TinyModel()
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    for block in model.layers:
+        _offload_block_params_to_meta(block)
+
+    prepare(model, model_dir, target_device="cpu")
+
+    assert not model._pbr_lazy_state.use_cpu_ram
+    assert all(cache is None for cache in model._pbr_lazy_state.cpu_caches)
+    finalize(model)
 
 
 def test_disk_mode_no_cpu_cache(tmp_path, monkeypatch):
@@ -399,7 +503,7 @@ def test_disk_mode_no_cpu_cache(tmp_path, monkeypatch):
     model = TinyModel()
     model_dir = _save_fake_checkpoint(model, tmp_path)
     prepare(model, model_dir, target_device="cpu")
-    assert all(cache is None for cache in model._pbr_lazy_state["cpu_caches"])
+    assert all(cache is None for cache in model._pbr_lazy_state.cpu_caches)
     finalize(model)
 
 
@@ -469,7 +573,7 @@ def test_ram_offload_state_dict_transform(tmp_path):
 
     prepare(model, model_dir, target_device="cpu", state_dict_transform=transform)
     # TinyModel is tiny, so the CPU-RAM backend is selected (cpu_caches populated).
-    assert any(cache is not None for cache in model._pbr_lazy_state["cpu_caches"])
+    assert any(cache is not None for cache in model._pbr_lazy_state.cpu_caches)
 
     ids = torch.randint(0, 32, (1, 4))
     with torch.no_grad():
@@ -482,9 +586,8 @@ def test_ram_offload_state_dict_transform(tmp_path):
     finalize(model)
 
 
-def test_prepare_warns_on_live_buffers(tmp_path, monkeypatch):
-    """prepare() must warn when an offloaded block carries a live (non-meta) buffer,
-    since buffers are not moved with the block and can cause a runtime device mismatch."""
+def test_prepare_moves_live_buffers_to_target(tmp_path):
+    """prepare() should move live buffers to the target device with the runnable model."""
 
     class BlockWithBuffer(nn.Module):
         def __init__(self, dim: int = 8):
@@ -511,22 +614,10 @@ def test_prepare_warns_on_live_buffers(tmp_path, monkeypatch):
     model = ModelWithBuffer()
     model_dir = _save_fake_checkpoint(model, tmp_path)
 
-    # ScreenLogger sets propagate=False, so caplog cannot see it; capture the
-    # warning message directly from the module logger instead.
-    from quark.torch.utils.per_block_runner import lazy_loader
+    prepare(model, model_dir, target_device="meta")
 
-    warnings_seen: list[str] = []
-    original_warning = lazy_loader.logger.warning
-
-    def record_warning(message, *args, **kwargs):
-        warnings_seen.append(message % args if args else message)
-        return original_warning(message, *args, **kwargs)
-
-    monkeypatch.setattr(lazy_loader.logger, "warning", record_warning)
-    prepare(model, model_dir, target_device="cpu")
-
-    assert any("live buffers" in message for message in warnings_seen)
-    finalize(model)
+    for block in model.layers:
+        assert block.inv_freq.is_meta
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +632,7 @@ def test_n_gpu_blocks_keeps_leading_block_resident(tmp_path):
     model_dir = _save_fake_checkpoint(model, tmp_path)
     prepare(model, model_dir, target_device="cpu", n_gpu_blocks=1)
 
-    cpu_caches = model._pbr_lazy_state["cpu_caches"]
+    cpu_caches = model._pbr_lazy_state.cpu_caches
     assert cpu_caches[0] is None  # resident block has no cache entry
     for parameter in model.layers[0].parameters():
         assert not parameter.is_meta
@@ -627,4 +718,85 @@ def test_n_gpu_blocks_reattaches_weight_scale(tmp_path):
     model_dir = _save_fake_checkpoint(model, tmp_path)
     prepare(model, model_dir, target_device="cpu", n_gpu_blocks=1)
     assert hasattr(model.layers[0].fc.weight, "scale")
+    finalize(model)
+
+
+def test_disk_mode_refuses_weights_modified_in_memory(tmp_path, monkeypatch):
+    """Algorithms edit weights before the loader exists; disk streaming would undo that."""
+    _force_disk_mode(monkeypatch)
+    model = TinyModel()
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+
+    with pytest.raises(NotImplementedError, match="weight modifications"):
+        prepare(model, model_dir, target_device="cpu", weights_modified_in_memory=True)
+
+
+def test_cpu_ram_mode_allows_weights_modified_in_memory(tmp_path):
+    """RAM caching snapshots the live weights, so edited weights survive."""
+    model = TinyModel()
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    with torch.no_grad():
+        model.layers[0].fc.weight.mul_(3.0)
+    modified = model.layers[0].fc.weight.detach().clone()
+
+    prepare(model, model_dir, target_device="cpu", weights_modified_in_memory=True)
+    finalize(model)
+
+    assert torch.equal(model.layers[0].fc.weight, modified)
+
+
+# ---------------------------------------------------------------------------
+# Progress label
+# ---------------------------------------------------------------------------
+
+
+def test_progress_label_without_batch_count(tmp_path):
+    """A single pass over the blocks is labelled ``idx/n`` with no batch suffix."""
+    model = TinyModel(n_layers=2)
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    prepare(model, model_dir, target_device="cpu")
+    loader = model._pbr_lazy_state
+
+    assert loader._progress_label(0, 2) == "1/2"
+    assert loader._progress_label(1, 2) == "2/2"
+    finalize(model)
+
+
+def test_progress_label_counts_batches_when_total_unknown(tmp_path):
+    """With n_batches unknown, replaying the stack bumps an open-ended batch counter."""
+    model = TinyModel(n_layers=2)
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    prepare(model, model_dir, target_device="cpu")
+    loader = model._pbr_lazy_state
+
+    loader._progress_label(0, 2)
+    loader._progress_label(1, 2)
+    # Second pass: block 0 is the first hooked block, so it opens batch 2.
+    assert loader._progress_label(0, 2) == "1/2 (batch 2)"
+    assert loader._progress_label(1, 2) == "2/2 (batch 2)"
+    finalize(model)
+
+
+def test_progress_label_with_known_batch_count(tmp_path):
+    """A known n_batches shows ``batch i/n`` from the very first block."""
+    model = TinyModel(n_layers=2)
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    prepare(model, model_dir, target_device="cpu", n_batches=3)
+    loader = model._pbr_lazy_state
+
+    assert loader._progress_label(0, 2) == "1/2 (batch 1/3)"
+    assert loader._progress_label(1, 2) == "2/2 (batch 1/3)"
+    assert loader._progress_label(0, 2) == "1/2 (batch 2/3)"
+    finalize(model)
+
+
+def test_progress_label_counts_batches_off_first_hooked_block(tmp_path):
+    """With n_gpu_blocks=1 the resident block 0 is never hooked, so block 1 opens the batch."""
+    model = TinyModel(n_layers=2)
+    model_dir = _save_fake_checkpoint(model, tmp_path)
+    prepare(model, model_dir, target_device="cpu", n_gpu_blocks=1, n_batches=2)
+    loader = model._pbr_lazy_state
+
+    assert loader._progress_label(1, 2) == "2/2 (batch 1/2)"
+    assert loader._progress_label(1, 2) == "2/2 (batch 2/2)"
     finalize(model)

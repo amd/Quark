@@ -48,7 +48,7 @@ fi
 
 # Optional: path to a prebuilt quark wheel to install for docs instead of
 # rebuilding from source (see the install step below). Empty for standalone
-# callers (upload_whl docs job), which rebuild as before.
+# callers, which rebuild as before.
 reuse_wheel=${7:-""}
 
 # Common functions needed by the unit test script

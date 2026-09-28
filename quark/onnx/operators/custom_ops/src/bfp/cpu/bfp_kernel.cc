@@ -249,9 +249,10 @@ void BFPPrimeCPUKernel(
       uint32_t num_bits_shifting =
         shared_exp - shift - exp + m_float - m_bfp + 1;
       int sign = input_x & 0x80000000 ? -1 : 1;
+      // The element field is m_bfp + 1 bits including the sign, so the largest
+      // representable magnitude is 2^m_bfp - 1. Do not round up past it.
       mantissa = round_bits(
-        sign, mantissa, num_bits_shifting, ((1 << (m_bfp + 1)) - 1),
-        rounding_mode
+        sign, mantissa, num_bits_shifting, ((1 << m_bfp) - 1), rounding_mode
       );
 
       if (shared_exp == 0xff) {

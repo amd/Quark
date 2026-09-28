@@ -33,9 +33,12 @@ files one at a time, without loading the full model into GPU memory. This is par
 useful for quantizing very large models that exceed available GPU memory.
 """
 
+import concurrent.futures
 import copy
+import dataclasses
 import fnmatch
 import json
+import multiprocessing
 import os
 import shutil
 from collections.abc import Iterable
@@ -58,6 +61,8 @@ from quark.common.utils.log import ScreenLogger
 from quark.torch.kernel import mx as _quark_mx
 from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTensorConfig
 from quark.torch.quantization.config.type import Dtype, ScaleType
+from quark.torch.quantization.file2file_rotation import RotationPlan, apply_rotation_to_tensor, build_rotation_plan
+from quark.torch.quantization.file2file_utils import _is_mxfp4_source_pattern
 from quark.torch.quantization.tensor_quantize import FakeQuantizeBase
 from quark.torch.utils.llm.config import get_quantization_config
 from quark.torch.utils.numerics import to_e8m0_uint8
@@ -65,7 +70,8 @@ from quark.torch.utils.pack import create_pack_method
 
 logger = ScreenLogger(__name__)
 
-_FILE2FILE_DEFAULT_MODEL_DTYPE = torch.float32
+_FILE2FILE_DEFAULT_MODEL_DTYPE = torch.bfloat16
+
 
 if is_triton_available():
     import triton  # type: ignore[import-not-found, import-untyped]
@@ -115,6 +121,7 @@ def _get_safetensor_files(model_dir_path: str) -> list[str]:
 def _apply_weight_converters(
     tensors: dict[str, torch.Tensor],
     weight_converters: list[Any],
+    converted_from: dict[str, str] | None = None,
 ) -> dict[str, torch.Tensor]:
     """
     Apply ``WeightConverter`` rules to transform tensors after precision recovery.
@@ -125,6 +132,11 @@ def _apply_weight_converters(
     :param dict[str, torch.Tensor] tensors: Input tensor dict (name -> tensor).
     :param list weight_converters: List of ``WeightConverter`` instances. Each must
         have ``source_patterns``, ``target_patterns``, and ``operations`` attributes.
+    :param dict[str, str] | None converted_from: Optional output mapping, filled with
+        ``generated name -> source name`` for every tensor a converter produced. Callers
+        holding decisions keyed on source checkpoint names need this to follow the rename;
+        the generated names cannot be derived from the patterns alone, since operations
+        such as ``SplitFusedExperts`` mint one key per expert from the tensor's own shape.
 
     :return: New tensor dict with matched tensors replaced by converted results.
     :rtype: dict[str, torch.Tensor]
@@ -162,12 +174,18 @@ def _apply_weight_converters(
                 for target_key, target_tensor in result.items():
                     full_key = prefix + target_key
                     converted_tensors[full_key] = target_tensor
+                    if converted_from is not None:
+                        converted_from[full_key] = tensor_name
                 logger.info(f"Weight converter: {tensor_name} -> {[prefix + k for k in result]}")
                 matched = True
                 break
         if not matched:
             converted_tensors[tensor_name] = tensor
     return converted_tensors
+
+
+#: safetensors dtype strings that mean "stored at high precision", i.e. not quantized.
+_FLOATING_POINT_DTYPE_STRS = {"F16", "BF16", "F32"}
 
 
 def _peek_dtype_str(f: Any, tensor_name: str) -> str | None:
@@ -186,6 +204,19 @@ def _peek_shape(f: Any, tensor_name: str) -> tuple[int, ...] | None:
         return tuple(f.get_slice(tensor_name).get_shape())  # type: ignore[no-untyped-call]
     except Exception:
         return None
+
+
+def _is_linear_weight_in_file(f: Any, tensor_name: str) -> bool:
+    """Return True if ``tensor_name`` is a Linear weight that should be quantized.
+
+    Combines the name heuristic (:func:`_is_linear_weight_tensor`) with a shape check:
+    1-D tensors (e.g. RMSNorm weights whose names pass the name filter) are excluded.
+    Fails open when peeking is unavailable (``None`` shape is treated as >=2-D).
+    """
+    if not _is_linear_weight_tensor(tensor_name.removesuffix("_packed")):
+        return False
+    shape = _peek_shape(f, tensor_name)
+    return shape is None or len(shape) >= 2
 
 
 def _is_linear_weight_tensor(tensor_name: str) -> bool:
@@ -315,7 +346,6 @@ if is_triton_available():
         s: torch.Tensor,
         block_size: int = 128,
         *,
-        model_dtype: torch.dtype,
         chunk_rows: int | None = None,
     ) -> torch.Tensor:
         """
@@ -351,7 +381,7 @@ if is_triton_available():
                 f"ceil(chunk_rows / block_size) ({chunk_scale_rows}) "
                 f"for presharded dequant"
             )
-            y = torch.empty_like(x, dtype=model_dtype)
+            y_fp32 = torch.empty_like(x, dtype=torch.float32)
 
             def chunk_grid(meta: dict[str, int]) -> tuple[int, int]:
                 return (
@@ -362,18 +392,18 @@ if is_triton_available():
             for ci in range(n_chunks):
                 cw = x[ci * chunk_rows : (ci + 1) * chunk_rows].contiguous()
                 cs = s[ci * chunk_scale_rows : (ci + 1) * chunk_scale_rows].contiguous()
-                cy = torch.empty_like(cw, dtype=model_dtype)
-                _weight_dequant_kernel[chunk_grid](cw, cs, cy, chunk_rows, N, BLOCK_SIZE=block_size)
-                y[ci * chunk_rows : (ci + 1) * chunk_rows] = cy
-            return y
+                cy_fp32 = torch.empty_like(cw, dtype=torch.float32)
+                _weight_dequant_kernel[chunk_grid](cw, cs, cy_fp32, chunk_rows, N, BLOCK_SIZE=block_size)
+                y_fp32[ci * chunk_rows : (ci + 1) * chunk_rows] = cy_fp32
+            return y_fp32
 
-        y = torch.empty_like(x, dtype=model_dtype)
+        y_fp32 = torch.empty_like(x, dtype=torch.float32)
 
         def grid(meta: dict[str, int]) -> tuple[int, int]:
             return (triton.cdiv(M, meta["BLOCK_SIZE"]), triton.cdiv(N, meta["BLOCK_SIZE"]))
 
-        _weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
-        return y
+        _weight_dequant_kernel[grid](x, s, y_fp32, M, N, BLOCK_SIZE=block_size)
+        return y_fp32
 
 else:
 
@@ -407,7 +437,10 @@ def _get_model_dtype_from_hf_model_config(
     4. Root ``dtype`` for legacy or alternate checkpoints.
 
     If the config does not provide a concrete dtype string, or provides ``"auto"``,
-    this function falls back to explicit ``torch.float32``.
+    this function falls back to explicit ``torch.bfloat16``: every LLM checkpoint
+    Quark targets is served in a 16-bit format, so bf16 is the useful guess when the
+    config declares nothing. Note this only sets the *pass-through* dtype -- FP8 and
+    compressed-tensors recovery still dequantizes through fp32 internally.
 
     :param MappingProxyType[str, Any] | dict[str, Any] | None hf_model_config: Hugging Face
         model config loaded from ``config.json``.
@@ -427,6 +460,9 @@ def _get_model_dtype_from_hf_model_config(
         or hf_model_config.get("dtype")
     )
     if isinstance(huggingface_config_dtype_string, str) and huggingface_config_dtype_string.lower() != "auto":
+        torch_dtype = getattr(torch, huggingface_config_dtype_string.lower(), None)
+        if isinstance(torch_dtype, torch.dtype):
+            return torch_dtype
         return Dtype.from_str(huggingface_config_dtype_string).to_torch_packed_dtype()
     return _FILE2FILE_DEFAULT_MODEL_DTYPE
 
@@ -537,12 +573,28 @@ def _recover_compressed_tensors_weights(
             if key not in quantized_tensor_keys:
                 recovered_tensors[key] = f.get_tensor(key)
 
+    if compression_format == "mxfp4-pack-quantized":
+        # MXFP4 shares Quark's packed bytes and E8M0 scales; only the weight
+        # suffix differs. Normalize preserved weights without dequantizing them.
+        for key in list(recovered_tensors):
+            if key.endswith(".weight_packed"):
+                recovered_tensors[key.removesuffix("_packed")] = recovered_tensors.pop(key)
+
     logger.info(f"Decompressing {len(quantized_module_paths)} compressed_tensors quantized weights...")
 
     # Decompress each module's state dict individually via the public
     # ``BaseCompressor.decompress`` API.
+    # Upcast weight_scale to fp32 before decompression: the compressor's dequantize
+    # step does `x_q.to(scale.dtype) * scale`, so the multiply precision is
+    # determined by scale.dtype.  Upcasting scale here ensures the INT4 × scale
+    # multiply runs in fp32 rather than bf16/fp16.
     scheme = QuantizationScheme(targets=[], weights=quant_args)
     for module_path, module_state_dict in module_state_dicts.items():
+        if "weight_scale" in module_state_dict and module_state_dict["weight_scale"].is_floating_point():
+            module_state_dict = {
+                **module_state_dict,
+                "weight_scale": module_state_dict["weight_scale"].to(torch.float32),
+            }
         recovered_tensors[f"{module_path}.weight"] = compressor.decompress(state_dict=module_state_dict, scheme=scheme)[
             "weight"
         ]
@@ -569,45 +621,6 @@ def _load_weight_map(model_dir_path: str) -> dict[str, str] | None:
     return None
 
 
-# Safetensors dtypes recognized as packed-byte containers for FP4 nibbles
-# (2 FP4 elements per byte). The standard convention is U8; deepseek-native
-# DSV4 uses I8 for its expert weights.
-_SAFETENSORS_FP4_PACKED_DTYPES = frozenset({"I8", "U8"})
-# MXFP4 block size (OCP MX standard): 32 FP4 elements share one e8m0 scale.
-_MXFP4_BLOCK_SIZE = 32
-
-
-def _is_mxfp4_source_pattern(
-    weight_dtype_str: str | None,
-    scale_dtype_str: str | None,
-    weight_shape: tuple[int, ...] | None,
-    scale_shape: tuple[int, ...] | None,
-) -> bool:
-    """Detect a (weight, scale) pair that matches the MXFP4 wire format:
-    I8/U8 packed weight + F8_E8M0 scale with 1x32 block ratio along the inner
-    dim. Used to recognize DSV4 expert weights stored in the deepseek
-    sibling-``.scale`` convention.
-
-    Logical FP4 width = packed_width * 2 (two nibbles per byte). MXFP4 has one
-    scale per 32 FP4 elements, so scale_width == packed_width / 16.
-    """
-    if weight_dtype_str not in _SAFETENSORS_FP4_PACKED_DTYPES:
-        return False
-    if scale_dtype_str != "F8_E8M0":
-        return False
-    if weight_shape is None or scale_shape is None:
-        return False
-    if len(weight_shape) < 2 or len(scale_shape) < 2:
-        return False
-    # 1×32 block: outer dim matches
-    if weight_shape[-2] != scale_shape[-2]:
-        return False
-    # 1×32 block: inner ratio is exactly 16 (packed bytes per scale)
-    if weight_shape[-1] != scale_shape[-1] * (_MXFP4_BLOCK_SIZE // 2):
-        return False
-    return True
-
-
 def _dequantize_mxfp4_source(
     weight_packed: torch.Tensor,
     scale_e8m0: torch.Tensor,
@@ -628,6 +641,83 @@ def _dequantize_mxfp4_source(
     if hasattr(torch, "float8_e8m0fnu") and scale_e8m0.dtype == torch.float8_e8m0fnu:
         scale_e8m0 = scale_e8m0.view(torch.uint8)
     return _quark_mx.dq_mxfp4(weight_packed, scale_e8m0, model_dtype)
+
+
+# Dot-separated sibling scale suffix (DeepSeek-V4): ``<module>.weight`` has a
+# companion ``<module>.scale`` rather than ``<module>.weight_scale_inv``.
+_SIBLING_SCALE_SUFFIX = ".scale"
+
+
+def _quantized_module_key(tensor_name: str) -> str | None:
+    """
+    Return the key identifying the quantized module a tensor belongs to, or
+    ``None`` if the tensor is an independent (non-companion) weight.
+
+    All companion tensors of one quantized module hang off a single ``.weight``
+    parameter, regardless of format:
+
+    - FP8 (DeepSeek-V3):   ``m.weight`` + ``m.weight_scale_inv``
+    - compressed-tensors:  ``m.weight_packed`` + ``m.weight_scale`` +
+                           ``m.weight_shape`` + ``m.weight_zero_point`` +
+                           ``m.weight_g_idx`` + ``m.weight_global_scale``
+    - NVFP4/scale-quant:   ``m.weight`` + ``m.weight_scale`` + ``m.weight_scale_2``
+
+    Every such name contains the token ``.weight``; truncating at (and including)
+    ``.weight`` collapses the whole family to the same key ``m.weight``. This is
+    robust to nested suffixes (``_scale`` vs ``_weight_global_scale``) because it
+    does not strip suffixes — it anchors on the ``.weight`` token.
+
+    The dot-sibling convention (``m.weight`` + ``m.scale``) is the one case where
+    the companion has no ``.weight`` token; it is mapped explicitly to ``m.weight``.
+
+    Independent weights with no companion (e.g. fused ``m.mlp.experts.gate_up_proj``
+    / ``down_proj`` in a MoE block, which carry no scale/packed tensors) contain no
+    ``.weight`` token and are not a dot-sibling, so they return ``None`` and never
+    group with anything.
+
+    :param str tensor_name: Full tensor name from the weight map.
+
+    :return: The ``<module>.weight`` key, or ``None`` for an independent weight.
+    :rtype: str | None
+    """
+    weight_token = ".weight"
+    index = tensor_name.find(weight_token)
+    if index != -1:
+        return tensor_name[: index + len(weight_token)]
+    # Dot-separated sibling scale: "<module>.scale" belongs to "<module>.weight".
+    if tensor_name.endswith(_SIBLING_SCALE_SUFFIX):
+        return tensor_name[: -len(_SIBLING_SCALE_SUFFIX)] + weight_token
+    return None
+
+
+def _weight_map_has_cross_shard_dependency(weight_map: dict[str, str]) -> bool:
+    """
+    Return ``True`` if any quantized module has its tensors (the base weight plus
+    its companion dequantization tensors such as scale, packed weight, shape,
+    zero-point) spread across more than one safetensors shard file.
+
+    Tensors are grouped by their quantized-module key (:func:`_quantized_module_key`),
+    which collapses every member of a quantized module — across FP8, compressed-tensors,
+    NVFP4, and sibling-scale layouts — to a single ``<module>.weight`` key. Independent
+    weights that carry no companion tensors (e.g. fused ``gate_up_proj`` / ``down_proj``
+    in a MoE FFN block) return ``None`` and are never grouped, so they are never falsely
+    flagged.
+
+    :param dict[str, str] weight_map: Tensor name to shard filename mapping from
+        ``model.safetensors.index.json``.
+
+    :return: ``True`` if at least one quantized module spans multiple shards.
+    :rtype: bool
+    """
+    # module key -> set of shard files that hold any tensor of this module.
+    module_to_shard_files: dict[str, set[str]] = {}
+    for tensor_name, shard_filename in weight_map.items():
+        module_key = _quantized_module_key(tensor_name)
+        if module_key is None:
+            continue
+        module_to_shard_files.setdefault(module_key, set()).add(shard_filename)
+
+    return any(len(shard_files) > 1 for shard_files in module_to_shard_files.values())
 
 
 def _build_cross_file_scale_inv_cache(
@@ -718,14 +808,13 @@ def _get_non_quantized_tensor_names_from_model_safetensors(
         :return: A list of tensor names that are not quantized, or ``None`` if the file
             could not be read.
         """
-        floating_point_dtypes = {"F16", "BF16", "F32"}
         non_quantized_tensors = []
         try:
             with safe_open(file_path, framework="pt") as f:  # type: ignore[no-untyped-call]
                 all_tensor_names = f.keys()  # noqa: SIM118 - SafeOpen requires .keys()
                 for tensor_name in all_tensor_names:
                     tensor_dtype = f.get_slice(tensor_name).get_dtype()
-                    if "scale" not in tensor_name and tensor_dtype in floating_point_dtypes:
+                    if "scale" not in tensor_name and tensor_dtype in _FLOATING_POINT_DTYPE_STRS:
                         non_quantized_tensors.append(tensor_name)
         except Exception as e:
             logger.error(f"Error reading safetensor: {e}")
@@ -741,9 +830,42 @@ def _get_non_quantized_tensor_names_from_model_safetensors(
     return non_quantized_tensor_names
 
 
+def _collect_rotation_tensor_names(pretrained_model_path: str) -> tuple[set[str], set[str]]:
+    """Collect Linear weight and bias tensor names in a single shard pass.
+
+    Combines :func:`_collect_linear_weight_tensor_names` and
+    :func:`_collect_bias_tensor_names` to avoid opening every shard twice
+    when the rotation planner needs both sets.
+
+    :param str pretrained_model_path: Path to the pretrained model directory.
+
+    :return: ``(linear_weight_names, bias_tensor_names)`` where
+        ``linear_weight_names`` contains ``*.weight`` tensors that pass
+        the Linear heuristic and are >=2-D (used by the rotation planner to
+        resolve rotation targets), and ``bias_tensor_names`` contains all
+        ``*.bias`` tensors (used to guard R2 output-channel rotation on
+        biased ``v_proj`` layers).
+    :rtype: tuple[set[str], set[str]]
+    """
+    linear_weight_names: set[str] = set()
+    bias_tensor_names: set[str] = set()
+    for safetensor_path in _get_safetensor_files(pretrained_model_path):
+        try:
+            with safe_open(safetensor_path, framework="pt") as f:  # type: ignore[no-untyped-call]
+                for tensor_name in f.keys():  # noqa: SIM118 - SafeOpen requires .keys()
+                    if _is_linear_weight_in_file(f, tensor_name):
+                        linear_weight_names.add(tensor_name)
+                    elif tensor_name.endswith(".bias"):
+                        bias_tensor_names.add(tensor_name)
+        except Exception as e:
+            logger.error(f"Error reading safetensor while collecting rotation tensor names: {e}")
+    return linear_weight_names, bias_tensor_names
+
+
 def _collect_tensor_names_matching_quark_exclude(
     pretrained_model_path: str,
     quant_config: QConfig,
+    source_floating_names: set[str] | None = None,
 ) -> set[str]:
     """
     Collect tensor names matching ``quant_config.exclude`` patterns from all safetensor files.
@@ -754,6 +876,12 @@ def _collect_tensor_names_matching_quark_exclude(
 
     :param str pretrained_model_path: Path to the pretrained model directory.
     :param QConfig quant_config: Quantization configuration containing ``exclude`` patterns.
+    :param set[str] | None source_floating_names: Optional output set, filled with the
+        subset of the returned names that the source checkpoint stores at floating-point
+        precision. Peeked from the same open shard, so asking for it costs no extra pass.
+        Classifying the excluded weight by its own dtype is what keeps a module whose name
+        merely contains ``"scale"`` (``rescale_proj``) from being mistaken for a companion
+        scale tensor.
 
     :return: Tensor names that match the exclusion patterns.
     :rtype: set[str]
@@ -762,7 +890,7 @@ def _collect_tensor_names_matching_quark_exclude(
     def _get_safetensor_excluded_module_names(
         safetensor_path: str,
         quant_config: QConfig,
-    ) -> list[str] | None:
+    ) -> tuple[list[str], list[str]] | None:
         """
         Get excluded tensor names from a single safetensor file.
 
@@ -772,34 +900,85 @@ def _collect_tensor_names_matching_quark_exclude(
         :param str safetensor_path: Path to the ``.safetensors`` file.
         :param QConfig quant_config: Quantization configuration containing ``exclude`` patterns.
 
-        :return: A list of excluded tensor names, or ``None`` if the file could not be read.
-        :rtype: list[str] | None
+        :return: ``(excluded names, those of them stored floating point)``, or ``None`` if
+            the file could not be read.
+        :rtype: tuple[list[str], list[str]] | None
         """
         excluded_tensor_names = []
+        floating_tensor_names = []
         try:
             with safe_open(safetensor_path, framework="pt") as f:  # type: ignore[no-untyped-call]
                 all_tensor_names = f.keys()  # noqa: SIM118 - SafeOpen requires .keys()
                 for tensor_name in all_tensor_names:
-                    if not _is_linear_weight_tensor(tensor_name):
+                    if not _is_linear_weight_in_file(f, tensor_name):
                         continue
-                    _shape = _peek_shape(f, tensor_name)
-                    if _shape is not None and len(_shape) < 2:
-                        continue
-                    module_name = _convert_linear_weight_tensor_name_to_module_name(tensor_name)
+                    weight_name = tensor_name.removesuffix("_packed")
+                    module_name = _convert_linear_weight_tensor_name_to_module_name(weight_name)
                     if any(fnmatch.fnmatch(module_name, pattern) for pattern in quant_config.exclude):
-                        excluded_tensor_names.append(tensor_name)
+                        excluded_tensor_names.append(weight_name)
+                        if _peek_dtype_str(f, tensor_name) in _FLOATING_POINT_DTYPE_STRS:
+                            floating_tensor_names.append(tensor_name)
         except Exception as e:
             logger.error(f"Error reading safetensor: {e}")
             return None
-        return excluded_tensor_names
+        return excluded_tensor_names, floating_tensor_names
 
     safetensor_files = _get_safetensor_files(pretrained_model_path)
     excluded_tensor_names: set[str] = set()
     for safetensor_path in safetensor_files:
-        shard_excluded = _get_safetensor_excluded_module_names(safetensor_path, quant_config)
-        if shard_excluded is not None:
-            excluded_tensor_names.update(shard_excluded)
+        shard_result = _get_safetensor_excluded_module_names(safetensor_path, quant_config)
+        if shard_result is None:
+            continue
+        shard_excluded, shard_floating = shard_result
+        excluded_tensor_names.update(shard_excluded)
+        if source_floating_names is not None:
+            source_floating_names.update(shard_floating)
     return excluded_tensor_names
+
+
+def _collect_mxfp4_source_module_names(
+    pretrained_model_path: str,
+    excluded_tensor_names: set[str],
+) -> set[str]:
+    """Collect module names from ``excluded_tensor_names`` whose on-disk weights
+    use the MXFP4 wire format.
+
+    A single source ``quantization_config["fmt"]`` field describes the whole
+    checkpoint with one dtype, but mixed-format checkpoints (e.g. DeepSeek-V4
+    with Block FP8 shared experts and MXFP4 routed experts) violate that assumption.
+    This inspects each excluded Linear weight's actual (weight, sibling ``.scale``)
+    dtype pair via ``_is_mxfp4_source_pattern`` so an excluded MXFP4 layer is
+    described as MXFP4 in the emitted config instead of inheriting the source ``fmt``.
+
+    :param str pretrained_model_path: Path to the source checkpoint directory.
+    :param set[str] excluded_tensor_names: Tensor names (with ``.weight`` suffix)
+        to check; typically the result of ``_collect_tensor_names_matching_quark_exclude``.
+    :return: Module names (stripped ``.weight``) from ``excluded_tensor_names``
+        that are MXFP4 on disk.
+    :rtype: set[str]
+    """
+    mxfp4_module_names: set[str] = set()
+    for safetensor_path in _get_safetensor_files(pretrained_model_path):
+        try:
+            with safe_open(safetensor_path, framework="pt") as f:  # type: ignore[no-untyped-call]
+                all_keys = set(f.keys())  # noqa: SIM118 - SafeOpen requires .keys()
+                # Only check the subset of weights in excluded_tensor_names that
+                # are present in this shard.
+                excluded_in_this_shard = excluded_tensor_names & all_keys
+                for weight_name in excluded_in_this_shard:
+                    sibling_scale_name = f"{weight_name.removesuffix('.weight')}.scale"
+                    if sibling_scale_name not in all_keys:
+                        continue
+                    if _is_mxfp4_source_pattern(
+                        _peek_dtype_str(f, weight_name),
+                        _peek_dtype_str(f, sibling_scale_name),
+                        _peek_shape(f, weight_name),
+                        _peek_shape(f, sibling_scale_name),
+                    ):
+                        mxfp4_module_names.add(_convert_linear_weight_tensor_name_to_module_name(weight_name))
+        except Exception as e:
+            logger.error(f"Error reading safetensor: {e}")
+    return mxfp4_module_names
 
 
 def _resolve_presharded_chunk_rows(
@@ -864,8 +1043,9 @@ def _recover_fp8_weights(
         (pre-quantized) weights during recovery instead of being skipped or zeroed out.
     :param set[str] | None keep_original_model_state_tensor_names_set: Tensor names that must bypass FP8
         dequantization and keep source tensors unchanged. Defaults to ``None``.
-    :param torch.dtype model_dtype: Floating-point dtype to use for dequantized FP8
-        output tensors. Defaults to explicit ``torch.float32``.
+    :param torch.dtype model_dtype: Floating-point dtype used for pass-through tensors
+        (excluded layers not re-quantized by Quark). Dequantized FP8 weights are
+        always returned as ``float32`` to preserve precision for downstream quantizers.
     :param dict[str, int] | None presharded_weights: Optional ``{glob: chunk_rows}``
         map identifying weight tensors stored in a presharded TP layout
         (i.e. row-wise concatenation of ``n_chunks`` chunks of
@@ -957,17 +1137,21 @@ def _recover_fp8_weights(
                     recovered_tensors[quark_scale_name] = f.get_tensor(sibling_scale_name)
                     continue
                 recovered_tensors[weight_name] = f.get_tensor(weight_name)
+                quark_scale_name = f"{weight_name}_scale"
                 if scale_inv_name in all_keys:
                     # DeepSeek-V3 / standard FP8: scale stored as "{weight}_scale_inv"
-                    quark_scale_name = f"{weight_name}_scale"
                     recovered_tensors[quark_scale_name] = f.get_tensor(scale_inv_name)
                 elif sibling_scale_name is not None and sibling_scale_name in all_keys:
                     # DeepSeek-V4: scale stored as "{base}.scale" alongside "{base}.weight"
-                    quark_scale_name = f"{weight_name}_scale"
                     recovered_tensors[quark_scale_name] = f.get_tensor(sibling_scale_name)
+                elif scale_inv_cache is not None and scale_inv_name in scale_inv_cache:
+                    # Cross-shard _scale_inv: pre-loaded by _build_cross_file_scale_inv_cache;
+                    # mirrors the same cache lookup in the dequantization branch below.
+                    # .to(device) is required: cache tensors are pre-loaded independently of
+                    # safe_open, so they may be on a different device than the target.
+                    recovered_tensors[quark_scale_name] = scale_inv_cache[scale_inv_name].to(device)
                 continue
-            _w_shape = _peek_shape(f, weight_name)
-            if _is_linear_weight_tensor(weight_name) and (_w_shape is None or len(_w_shape) >= 2):
+            if _is_linear_weight_in_file(f, weight_name):
                 chunk_rows = _resolve_presharded_chunk_rows(weight_name, presharded_weights)
                 # Pass ``chunk_rows`` only when explicitly set, so callers that
                 # monkeypatch ``_weight_dequant_fp8`` with the previous
@@ -990,7 +1174,6 @@ def _recover_fp8_weights(
                     recovered_tensors[weight_name] = _weight_dequant_fp8(
                         weight,
                         scale_inv,
-                        model_dtype=model_dtype,
                         **_extra_kwargs,
                     )
                     fp8_weight_count += 1
@@ -1004,7 +1187,6 @@ def _recover_fp8_weights(
                     recovered_tensors[weight_name] = _weight_dequant_fp8(
                         weight,
                         scale_inv,
-                        model_dtype=model_dtype,
                     )
                     fp8_weight_count += 1
                     del weight, scale_inv
@@ -1016,7 +1198,6 @@ def _recover_fp8_weights(
                     recovered_tensors[weight_name] = _weight_dequant_fp8(
                         weight,
                         scale_inv,
-                        model_dtype=model_dtype,
                         **_extra_kwargs,
                     )
                     fp8_weight_count += 1
@@ -1088,8 +1269,9 @@ def _load_safetensor_with_recover(
         Defaults to ``True``.
     :param set[str] | None keep_original_model_state_tensor_names_set: Tensor names that must keep original
         source data and bypass recovery logic. Defaults to ``None``.
-    :param torch.dtype model_dtype: Floating-point dtype to use for recovered FP8
-        tensors. Defaults to explicit ``torch.float32``.
+    :param torch.dtype model_dtype: Floating-point dtype used for pass-through tensors
+        that are not re-quantized by Quark. Dequantized FP8 weights are always
+        ``float32`` to preserve precision for downstream quantizers.
 
     :return: Dictionary of tensor name to tensor with decompressed/dequantized weights.
     :rtype: dict[str, torch.Tensor]
@@ -1136,7 +1318,6 @@ def _single_stage_quantize_weight(
     layer_name: str,
     weight_config: QTensorConfig,
     quantized_tensors: dict[str, torch.Tensor],
-    output_weight_map: dict[str, str] | None,
     safetensor_filename: str,
 ) -> None:
     """
@@ -1151,7 +1332,6 @@ def _single_stage_quantize_weight(
     :param str layer_name: The layer name (e.g., ``"model.layers.0.self_attn.q_proj"``).
     :param QTensorConfig weight_config: Quantization configuration for the weight.
     :param dict[str, torch.Tensor] quantized_tensors: Output dictionary to store quantized tensors (modified in-place).
-    :param dict[str, str] | None output_weight_map: Output weight map to update (modified in-place). Can be ``None``.
     :param str safetensor_filename: The safetensor filename for weight map entries.
 
     :return: None
@@ -1192,9 +1372,6 @@ def _single_stage_quantize_weight(
     else:
         quantized_tensors[tensor_name + "_scale"] = quantizer.scale.contiguous()
 
-    if output_weight_map is not None:
-        output_weight_map[tensor_name + "_scale"] = safetensor_filename
-
 
 def _scale_quantize_weight(
     tensor: torch.Tensor,
@@ -1202,7 +1379,6 @@ def _scale_quantize_weight(
     layer_name: str,
     weight_config_stages: list[QTensorConfig],
     quantized_tensors: dict[str, torch.Tensor],
-    output_weight_map: dict[str, str] | None,
     safetensor_filename: str,
     device: str | torch.device,
 ) -> None:
@@ -1239,7 +1415,6 @@ def _scale_quantize_weight(
     :param list[QTensorConfig] weight_config_stages: List of exactly 2 ``QTensorConfig`` objects
         from ``ScaleQuantSpec.to_quantization_spec()`` (second stage has ``is_scale_quant=True``).
     :param dict[str, torch.Tensor] quantized_tensors: Output dictionary to store quantized tensors (modified in-place).
-    :param dict[str, str] | None output_weight_map: Output weight map to update (modified in-place). Can be ``None``.
     :param str safetensor_filename: The safetensor filename for weight map entries.
     :param str | torch.device device: Device used for tensor operations, needed for cache cleanup.
 
@@ -1288,9 +1463,6 @@ def _scale_quantize_weight(
     quantized_tensors[tensor_name] = packed_weight.contiguous()
     quantized_tensors[tensor_name + "_scale"] = weight_scale_fp8.contiguous()
     quantized_tensors[tensor_name + "_scale_2"] = weight_scale_2
-    if output_weight_map is not None:
-        output_weight_map[tensor_name + "_scale"] = safetensor_filename
-        output_weight_map[tensor_name + "_scale_2"] = safetensor_filename
 
     del packed_weight, weight_scale_fp8, real_quantizer, sequential_quantizer
     _empty_cache_if_cuda(device)
@@ -1302,7 +1474,6 @@ def _progressive_quantize_weight(
     layer_name: str,
     weight_config_stages: list[QTensorConfig],
     quantized_tensors: dict[str, torch.Tensor],
-    output_weight_map: dict[str, str] | None,
     safetensor_filename: str,
     device: str | torch.device,
 ) -> None:
@@ -1327,7 +1498,6 @@ def _progressive_quantize_weight(
     :param list[QTensorConfig] weight_config_stages: List of exactly 2 ``QTensorConfig`` objects
         from ``ProgressiveSpec.to_quantization_spec()``.
     :param dict[str, torch.Tensor] quantized_tensors: Output dictionary to store quantized tensors (modified in-place).
-    :param dict[str, str] | None output_weight_map: Output weight map to update (modified in-place). Can be ``None``.
     :param str safetensor_filename: The safetensor filename for weight map entries.
     :param str | torch.device device: Device used for tensor operations, needed for cache cleanup.
 
@@ -1404,13 +1574,8 @@ def _progressive_quantize_weight(
     quantized_tensors[tensor_name] = pack_method.pack(second_stage_quantized_weight, True)
     # Store first stage scale (e.g., FP8 scale)
     quantized_tensors[tensor_name + "_scale"] = first_stage_scale
-    if output_weight_map is not None:
-        output_weight_map[tensor_name + "_scale"] = safetensor_filename
-
     # Store second stage scale (e.g., INT4 scale)
     quantized_tensors[tensor_name + "_scale_2"] = second_stage_quantizer.scale.contiguous()
-    if output_weight_map is not None:
-        output_weight_map[tensor_name + "_scale_2"] = safetensor_filename
 
     # Free intermediate tensors
     del first_stage_quantized_weight, first_stage_weight_as_float, second_stage_quantized_weight
@@ -1426,14 +1591,15 @@ def _quantize_and_save_safetensor_shard(
     keep_excluded_layers_as_original_model_state: bool,
     model_dtype: torch.dtype,
     keep_original_model_state_tensor_names_set: set[str] | None = None,
+    excluded_source_floating_tensor_names: set[str] | None = None,
     weight_converters: list[Any] | None = None,
-    output_weight_map: dict[str, str] | None = None,
     input_scale_dict: dict[str, torch.Tensor] | None = None,
     hf_model_config: dict[str, Any] | None = None,
     source_weight_map: dict[str, str] | None = None,
     scale_inv_cache: dict[str, torch.Tensor] | None = None,
     presharded_weights: dict[str, int] | None = None,
-) -> None:
+    rotation_plan: RotationPlan | None = None,
+) -> dict[str, str]:
     """
     Quantize weights in a single safetensors shard file and save the result.
 
@@ -1460,14 +1626,20 @@ def _quantize_and_save_safetensor_shard(
     :param dict[str, torch.Tensor] | None scale_inv_cache: Pre-loaded cache of scale_inv
         tensors that are stored in different files from their weights. Defaults to ``None``.
     :param torch.dtype model_dtype: Floating-point dtype to use for recovered FP8
-        tensors in this shard. Defaults to explicit ``torch.float32``.
+        tensors in this shard. Defaults to explicit ``torch.bfloat16``.
     :param set[str] | None keep_original_model_state_tensor_names_set: Tensor names that must keep original
         source data and bypass recovery logic. Defaults to ``None``.
+    :param set[str] | None excluded_source_floating_tensor_names: Names of excluded Linear
+        weights that are already floating point in the source checkpoint. These are never
+        dequantized, so they are written out at their source dtype instead of being
+        normalized to ``model_dtype``. Defaults to ``None``.
     :param list | None weight_converters: Optional list of ``WeightConverter`` instances
         applied after recovery and before quantization. File-to-file mode supports
         only single-source converters.
-    This function writes the quantized shard to disk. If ``output_weight_map`` is provided,
-    it will be updated in-place.
+
+    :return: Dictionary mapping every output tensor name produced by this shard to the
+        safetensors filename it was written into.
+    :rtype: dict[str, str]
     """
     safetensor_filename = os.path.basename(safetensor_path)
     logger.info(f"Loading {safetensor_filename}...")
@@ -1484,10 +1656,38 @@ def _quantize_and_save_safetensor_shard(
         presharded_weights=presharded_weights,
     )
 
+    converted_from: dict[str, str] = {}
     if weight_converters:
-        tensors = _apply_weight_converters(tensors, weight_converters)
+        tensors = _apply_weight_converters(tensors, weight_converters, converted_from=converted_from)
+
+    # Apply Hadamard rotation (model-free) to recovered weights before quantization.
+    # Online rotations (R1/R4) additionally emit an ``input_rotation`` buffer that is
+    # written into the shard so inference can reconstruct the matching activation
+    # transform. R2 is a pure weight edit (no extra buffer).
+    if rotation_plan is not None:
+        rotated_tensors: dict[str, torch.Tensor] = {}
+        rotation_buffers: dict[str, torch.Tensor] = {}
+        for tensor_name, tensor in tensors.items():
+            rotated, extra_buffers = apply_rotation_to_tensor(tensor_name, tensor, rotation_plan)
+            rotated_tensors[tensor_name] = rotated
+            rotation_buffers.update(extra_buffers)
+        tensors = rotated_tensors
+        # Merge in the rotation buffers so they are copied through as-is by the loop below.
+        tensors.update(rotation_buffers)
+
+    # Both name sets were resolved against the source checkpoint, so a converter that
+    # renamed or split a tensor takes its outputs out of them. Follow the rename instead,
+    # or an excluded weight loses its provenance the moment a converter touches it.
+    preserved_names = set(keep_original_model_state_tensor_names_set or ())
+    source_floating_names = set(excluded_source_floating_tensor_names or ())
+    for generated_name, source_name in converted_from.items():
+        if source_name in preserved_names:
+            preserved_names.add(generated_name)
+        if source_name in source_floating_names:
+            source_floating_names.add(generated_name)
 
     quantized_tensors: dict[str, torch.Tensor] = {}
+    shard_weight_map: dict[str, str] = {}
 
     for tensor_name, tensor in tensors.items():
         if tensor_name.endswith((".weight_packed", ".weight_shape")):
@@ -1497,9 +1697,6 @@ def _quantize_and_save_safetensor_shard(
             quantized_tensors[tensor_name] = tensor
             weight_tensor_name = tensor_name[: -len("_scale")]
             quantized_tensors[weight_tensor_name] = tensors[weight_tensor_name]
-
-        if output_weight_map is not None:
-            output_weight_map[tensor_name] = safetensor_filename
 
         layer_name = ".".join(tensor_name.split(".")[:-1])
         layer_config = _get_layer_quant_config_by_tensor_name(
@@ -1527,7 +1724,6 @@ def _quantize_and_save_safetensor_shard(
                         layer_name=layer_name,
                         weight_config_stages=weight_config,
                         quantized_tensors=quantized_tensors,
-                        output_weight_map=output_weight_map,
                         safetensor_filename=safetensor_filename,
                         device=device,
                     )
@@ -1538,7 +1734,6 @@ def _quantize_and_save_safetensor_shard(
                         layer_name=layer_name,
                         weight_config_stages=weight_config,
                         quantized_tensors=quantized_tensors,
-                        output_weight_map=output_weight_map,
                         safetensor_filename=safetensor_filename,
                         device=device,
                     )
@@ -1551,7 +1746,6 @@ def _quantize_and_save_safetensor_shard(
                     layer_name=layer_name,
                     weight_config=weight_config,
                     quantized_tensors=quantized_tensors,
-                    output_weight_map=output_weight_map,
                     safetensor_filename=safetensor_filename,
                 )
 
@@ -1561,22 +1755,120 @@ def _quantize_and_save_safetensor_shard(
                     input_scale = input_scale_dict[layer_name]
                     input_scale_key = layer_name + ".input_scale"
                     quantized_tensors[input_scale_key] = input_scale.contiguous()
-                    if output_weight_map is not None:
-                        output_weight_map[input_scale_key] = safetensor_filename
                 else:
                     logger.warning(f"Input scale not found for layer: {layer_name}")
         else:
+            # Only recovered Linear weights (dequantized to a higher precision and
+            # not re-quantized this pass) are brought back to model_dtype here.
+            # Non-Linear tensors that never go through quantization -- embeddings
+            # and norms -- pass through untouched, as do excluded-layer weights and
+            # their scales preserved verbatim in the source quantized wire format.
+            # Excluded weights that were already floating point in the source went
+            # through no dequantization at all, so they keep their source dtype: a
+            # single model_dtype cannot represent a checkpoint that mixes, say, bf16
+            # projections with an fp32 router.
+            is_preserved_original = keep_excluded_layers_as_original_model_state and (
+                tensor_name in preserved_names
+                or (tensor_name.endswith("_scale") and tensor_name[: -len("_scale")] in preserved_names)
+            )
+            if (
+                not is_preserved_original
+                and tensor_name not in source_floating_names
+                and _is_linear_weight_tensor(tensor_name)
+                and tensor.is_floating_point()
+                and tensor.dtype != model_dtype
+            ):
+                tensor = tensor.to(model_dtype)
             quantized_tensors[tensor_name] = tensor
 
     # Free device memory before saving
     del tensors
     _empty_cache_if_cuda(device)
 
+    # Every tensor actually written to this shard -- weights plus all quantization
+    # companions (_scale, _scale_2, input_scale, ...) produced above -- must be
+    # recorded in the weight_map so the output index mirrors the saved file exactly.
+    for output_tensor_name in quantized_tensors:
+        shard_weight_map[output_tensor_name] = safetensor_filename
+
     output_path = os.path.join(export_path, safetensor_filename)
     save_file(quantized_tensors, output_path)
     output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
     logger.info(f"Saved {safetensor_filename} ({output_size_mb:.1f}MB)")
-    return None
+    return shard_weight_map
+
+
+@dataclasses.dataclass
+class _QuantizeWorkerArgs:
+    """
+    Arguments passed to each worker process in the multi-device quantization path.
+
+    Bundling all parameters into a dataclass eliminates the fragile positional
+    argument list that ``concurrent.futures.ProcessPoolExecutor.submit`` would
+    otherwise require, making call-site mismatches a type-checker error rather
+    than a silent runtime bug.
+    """
+
+    safetensor_paths: list[str]
+    export_path: str
+    quant_config: QConfig
+    device: str | torch.device
+    keep_excluded_layers_as_original_model_state: bool
+    model_dtype: torch.dtype
+    keep_original_model_state_tensor_names_set: set[str]
+    excluded_source_floating_tensor_names: set[str]
+    weight_converters: list[Any] | None
+    hf_model_config: dict[str, Any] | None
+    source_weight_map: dict[str, str] | None
+    scale_inv_cache: dict[str, torch.Tensor] | None
+    presharded_weights: dict[str, int] | None
+    rotation_plan: RotationPlan | None
+    total_shards: int
+    shard_global_indices: list[int]
+
+
+def _quantize_shards_on_device(worker_args: "_QuantizeWorkerArgs") -> dict[str, str]:
+    """
+    Process a subset of safetensors shards on a single device.
+
+    Intended to run inside a worker process spawned by
+    ``quantize_model_per_safetensor`` when multiple devices are available.
+    Each worker receives a non-overlapping slice of the full shard list.
+
+    :param _QuantizeWorkerArgs worker_args: All arguments for this worker,
+        bundled to avoid a fragile positional argument list across the
+        process boundary.
+
+    :return: Merged weight_map covering all shards processed by this worker.
+    :rtype: dict[str, str]
+    """
+    merged_weight_map: dict[str, str] = {}
+    for local_index, safetensor_path in enumerate(worker_args.safetensor_paths):
+        global_index = worker_args.shard_global_indices[local_index]
+        logger.info(
+            "Processing %d/%d: %s",
+            global_index + 1,
+            worker_args.total_shards,
+            os.path.basename(safetensor_path),
+        )
+        shard_weight_map = _quantize_and_save_safetensor_shard(
+            safetensor_path=safetensor_path,
+            export_path=worker_args.export_path,
+            quant_config=worker_args.quant_config,
+            device=worker_args.device,
+            keep_excluded_layers_as_original_model_state=worker_args.keep_excluded_layers_as_original_model_state,
+            model_dtype=worker_args.model_dtype,
+            keep_original_model_state_tensor_names_set=worker_args.keep_original_model_state_tensor_names_set,
+            excluded_source_floating_tensor_names=worker_args.excluded_source_floating_tensor_names,
+            weight_converters=worker_args.weight_converters,
+            hf_model_config=worker_args.hf_model_config,
+            source_weight_map=worker_args.source_weight_map,
+            scale_inv_cache=worker_args.scale_inv_cache,
+            presharded_weights=worker_args.presharded_weights,
+            rotation_plan=worker_args.rotation_plan,
+        )
+        merged_weight_map.update(shard_weight_map)
+    return merged_weight_map
 
 
 def _resolve_legacy_positional_device_arg(
@@ -1615,7 +1907,7 @@ def quantize_model_per_safetensor(
     keep_excluded_layers_as_original_model_state: bool = False,
     *legacy_device_args: str | torch.device,
     weight_converters: list[Any] | None = None,
-    device: str | torch.device | None = None,
+    device: str | torch.device | list[str | torch.device] | None = None,
     presharded_weights: dict[str, int] | None = None,
 ) -> None:
     """
@@ -1625,6 +1917,12 @@ def quantize_model_per_safetensor(
     one safetensors shard at a time, rather than loading the entire model into memory.
     The quantized shards and all configuration files (``config.json``,
     ``model.safetensors.index.json``, tokenizer files, etc.) are written to ``save_path``.
+
+    When ``device`` is a list of more than one device, shards are distributed evenly across
+    the devices and processed in parallel using ``concurrent.futures.ProcessPoolExecutor``,
+    one worker process per device.  Each worker writes its output shards directly to
+    ``save_path`` (no inter-process tensor transfer), and the per-shard weight-map dicts
+    are merged in the main process after all workers finish.
 
     For FP8 models where weight and scale_inv tensors may be stored in different files,
     this function pre-loads the cross-file scale_inv tensors into a cache before processing.
@@ -1642,15 +1940,31 @@ def quantize_model_per_safetensor(
         into ``gate_proj`` + ``up_proj``). Applied per-shard before quantization.
         File-to-file mode supports only single-source converters.
         Defaults to ``None``.
-    :param str | torch.device device: Device for tensor operations (e.g., ``"cuda"``,
-        ``"cuda:0"``, ``"cpu"``). Defaults to ``"cuda"``. Legacy positional callers may
-        still pass ``device`` after ``keep_excluded_layers_as_original_model_state``.
+    :param str | torch.device | list | None device: Device(s) for tensor operations.
+        Pass a single device (e.g., ``"cuda"``, ``"cuda:0"``, ``"cpu"``) for single-device
+        mode (the default, ``"cuda"`` when ``None``). Pass a list (e.g.,
+        ``["cuda:0", "cuda:1"]``) to distribute shards round-robin across those devices and
+        quantize them in parallel, one worker process per device.
+        Legacy positional callers may still pass ``device`` after
+        ``keep_excluded_layers_as_original_model_state``.
+    :param dict[str, int] | None presharded_weights: Optional ``{glob: chunk_rows}``
+        map for presharded TP checkpoints. Defaults to ``None``.
     """
-    device = _resolve_legacy_positional_device_arg(
-        legacy_device_args,
-        device,
-        "quantize_model_per_safetensor",
-    )
+    if isinstance(device, list):
+        if legacy_device_args:
+            raise TypeError(
+                "quantize_model_per_safetensor: cannot combine a device list with legacy positional device args."
+            )
+        if len(device) == 0:
+            raise ValueError("quantize_model_per_safetensor: 'device' list must not be empty.")
+        effective_devices: list[str | torch.device] = list(device)
+    else:
+        resolved_device: str | torch.device = _resolve_legacy_positional_device_arg(
+            legacy_device_args,
+            device,
+            "quantize_model_per_safetensor",
+        )
+        effective_devices = [resolved_device]
 
     # Pre-load cross-file scale_inv tensors into cache (only for FP8 models)
     source_weight_map: dict[str, str] | None = None
@@ -1661,56 +1975,207 @@ def quantize_model_per_safetensor(
     quant_config_dict = get_quantization_config(hf_model_config)
     is_fp8_model = quant_config_dict is not None and quant_config_dict.get("quant_method") == "fp8"
 
-    if is_fp8_model and not str(device).startswith("cuda"):
+    if is_fp8_model and any(not str(d).startswith("cuda") for d in effective_devices):
         logger.error(
             "FP8 model dequantization requires a CUDA device (Triton kernel), "
-            f"but got device='{device}'. Please use device='cuda' or 'cuda:<id>'."
+            f"but got device='{effective_devices[0]}'. Please use device='cuda' or 'cuda:<id>'."
         )
         return
 
-    if is_fp8_model:
-        source_weight_map = _load_weight_map(pretrained_model_path)
-        if source_weight_map is not None:
-            logger.info(f"Loaded weight_map with {len(source_weight_map)} entries from model.safetensors.index.json")
-            scale_inv_cache = _build_cross_file_scale_inv_cache(pretrained_model_path, source_weight_map, device=device)
+    # Multi-device FP8 is not supported yet. Reject it at entry so an FP8 job is never
+    # accepted on a path that cannot complete, instead of failing partway through.
+    # (Internal tracking: issue #6219.)
+    if is_fp8_model and len(effective_devices) > 1:
+        error_message = (
+            "Multi-device (parallel) quantization is not supported for FP8 source models yet. "
+            "Please quantize this FP8 model on a single device, e.g. device='cuda:0'."
+        )
+        logger.error(error_message)
+        raise ValueError(error_message)
+
+    # Guard: save_path must differ from the source model directory to prevent
+    # accidentally overwriting the original checkpoint.
+    if os.path.realpath(save_path) == os.path.realpath(pretrained_model_path):
+        raise ValueError(f"save_path '{save_path}' must differ from pretrained_model_path '{pretrained_model_path}'.")
+
+    # Resolve the (optional) Hadamard rotation plan once, model-free, before the shard
+    # loop. Raises for unsupported rotation modes (trainable/offline-R1/r3/random) or when
+    # an online rotation target is also excluded from quantization.
+    rotation_plan: RotationPlan | None = None
+    if quant_config.get_rotation_config() is not None:
+        _linear_names, _bias_names = _collect_rotation_tensor_names(pretrained_model_path)
+        rotation_plan = build_rotation_plan(
+            quant_config,
+            dict(hf_model_config),
+            _linear_names,
+            _bias_names,
+        )
 
     output_weight_map: dict[str, str] = {}
     safetensor_files = _get_safetensor_files(pretrained_model_path)
     logger.info(f"Found {len(safetensor_files)} safetensors files to process")
-    os.makedirs(save_path, exist_ok=True)
 
-    keep_original_model_state_tensor_names_set: set[str] = set()
-    if keep_excluded_layers_as_original_model_state:
-        # Find tensors that are already quantized in the HF model but excluded from Quark quantization,
-        # these must be kept as-is from the original model state.
-        non_quantized_tensor_names = _get_non_quantized_tensor_names_from_model_safetensors(pretrained_model_path)
-        excluded_tensor_names = _collect_tensor_names_matching_quark_exclude(pretrained_model_path, quant_config)
-        for excluded_tensor_name in excluded_tensor_names:
-            if excluded_tensor_name not in non_quantized_tensor_names:
-                keep_original_model_state_tensor_names_set.add(excluded_tensor_name)
+    if not safetensor_files:
+        logger.warning("No safetensors files found in '%s'; nothing to quantize.", pretrained_model_path)
+        return
 
-    for index, safetensor_path in enumerate(safetensor_files):
-        logger.info(f"Processing {index + 1}/{len(safetensor_files)}: {os.path.basename(safetensor_path)}")
-        _quantize_and_save_safetensor_shard(
-            safetensor_path=safetensor_path,
-            export_path=save_path,
-            quant_config=quant_config,
-            device=device,
-            keep_excluded_layers_as_original_model_state=keep_excluded_layers_as_original_model_state,
-            model_dtype=model_dtype,
-            keep_original_model_state_tensor_names_set=keep_original_model_state_tensor_names_set,
-            weight_converters=weight_converters,
-            output_weight_map=output_weight_map,
-            hf_model_config=hf_model_config,
-            source_weight_map=source_weight_map,
-            scale_inv_cache=scale_inv_cache,
-            presharded_weights=presharded_weights,
+    # Start from a clean output directory. This guarantees that partial results
+    # from a previous interrupted run are never mixed with the current one,
+    # making the output predictable and failure cleanup trivial.
+    if os.path.exists(save_path):
+        shutil.rmtree(save_path)
+    os.makedirs(save_path)
+
+    # Split the excluded Linear weights by what the source checkpoint actually holds:
+    # already-quantized ones may need their original wire format preserved, while
+    # floating-point ones are never dequantized and must keep their source dtype. One
+    # shard pass answers both, since the split is a property of each weight's own dtype.
+    excluded_source_floating_tensor_names: set[str] = set()
+    excluded_tensor_names = _collect_tensor_names_matching_quark_exclude(
+        pretrained_model_path, quant_config, source_floating_names=excluded_source_floating_tensor_names
+    )
+    keep_original_model_state_tensor_names_set: set[str] = (
+        excluded_tensor_names - excluded_source_floating_tensor_names
+        if keep_excluded_layers_as_original_model_state
+        else set()
+    )
+
+    num_devices = len(effective_devices)
+    # Clamp active device count to number of shards: extra devices would get no work.
+    active_device_count = min(num_devices, len(safetensor_files))
+    if active_device_count < num_devices:
+        logger.warning(
+            "%d devices requested but only %d shards available; %d device(s) will not be used.",
+            num_devices,
+            len(safetensor_files),
+            num_devices - active_device_count,
         )
+    active_devices = effective_devices[:active_device_count]
+
+    # Load the weight_map once here. It is used by both the FP8 cross-file
+    # scale_inv cache and the cross-shard dependency check, so loading it once
+    # avoids redundant I/O regardless of which paths are taken below.
+    source_weight_map = _load_weight_map(pretrained_model_path)
+    if source_weight_map is not None:
+        logger.info(f"Loaded weight_map with {len(source_weight_map)} entries from model.safetensors.index.json")
+
+    if is_fp8_model and source_weight_map is not None:
+        scale_inv_cache = _build_cross_file_scale_inv_cache(
+            pretrained_model_path, source_weight_map, device=active_devices[0]
+        )
+
+    # Cross-shard dependency check: if any module has tensors spread across
+    # multiple shards, parallel workers cannot safely quantize independently
+    # (each worker only owns a subset of shards and cannot reach the companion
+    # tensors it needs). Fall back to single-device to avoid silent data loss.
+    # The check uses the already-loaded weight_map (no extra I/O) and is
+    # format-agnostic — it catches _scale_inv, sibling .scale, weight_packed,
+    # and any future suffix without needing to enumerate them.
+    if active_device_count > 1:
+        if source_weight_map is None or _weight_map_has_cross_shard_dependency(source_weight_map):
+            logger.warning(
+                "Cross-shard tensor dependencies detected (or no index file found); "
+                "falling back to single-device quantization to ensure data completeness."
+            )
+            active_device_count = 1
+            active_devices = active_devices[:1]
+
+    if active_device_count <= 1:
+        # Single-device path: process shards serially. Covers both device="cuda" and
+        # device=["cuda:0"] (single-element list) to keep one stable code path.
+        try:
+            for index, safetensor_path in enumerate(safetensor_files):
+                logger.info(f"Processing {index + 1}/{len(safetensor_files)}: {os.path.basename(safetensor_path)}")
+                shard_weight_map = _quantize_and_save_safetensor_shard(
+                    safetensor_path=safetensor_path,
+                    export_path=save_path,
+                    quant_config=quant_config,
+                    device=active_devices[0],
+                    keep_excluded_layers_as_original_model_state=keep_excluded_layers_as_original_model_state,
+                    model_dtype=model_dtype,
+                    keep_original_model_state_tensor_names_set=keep_original_model_state_tensor_names_set,
+                    excluded_source_floating_tensor_names=excluded_source_floating_tensor_names,
+                    weight_converters=weight_converters,
+                    hf_model_config=hf_model_config,
+                    source_weight_map=source_weight_map,
+                    scale_inv_cache=scale_inv_cache,
+                    presharded_weights=presharded_weights,
+                    rotation_plan=rotation_plan,
+                )
+                output_weight_map.update(shard_weight_map)
+        except Exception:
+            try:
+                shutil.rmtree(save_path)
+            except OSError:
+                logger.warning("Failed to remove partial output directory: %s", save_path)
+            raise
+    else:
+        # Multi-device path: distribute shards round-robin across devices and run one
+        # worker process per device.
+        logger.info(f"Launching {active_device_count} worker processes for {len(safetensor_files)} shards")
+        # shard_global_indices[w] holds the global shard indices for worker w,
+        # used for accurate progress logging inside each worker.
+        shard_buckets: list[list[str]] = [[] for _ in range(active_device_count)]
+        shard_global_indices: list[list[int]] = [[] for _ in range(active_device_count)]
+        for shard_index, safetensor_path in enumerate(safetensor_files):
+            worker_index = shard_index % active_device_count
+            shard_buckets[worker_index].append(safetensor_path)
+            shard_global_indices[worker_index].append(shard_index)
+
+        # ``hf_model_config`` is a read-only ``MappingProxyType`` (see
+        # ``_get_hf_model_config``), which cannot be pickled for the "spawn" workers.
+        # Convert it to a plain, deep-copied dict once so every worker receives a
+        # picklable, independent copy.
+        picklable_hf_model_config = copy.deepcopy(dict(hf_model_config)) if hf_model_config is not None else None
+
+        # Use "spawn" to avoid forking a process that may already have an
+        # initialised CUDA context; forking after CUDA init is undefined behaviour.
+        _spawn_context = multiprocessing.get_context("spawn")
+        worker_futures = []
+        try:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=active_device_count, mp_context=_spawn_context
+            ) as executor:
+                for worker_index, (worker_device, worker_shards) in enumerate(
+                    zip(active_devices, shard_buckets, strict=True)
+                ):
+                    worker_args = _QuantizeWorkerArgs(
+                        safetensor_paths=worker_shards,
+                        export_path=save_path,
+                        quant_config=quant_config,
+                        device=worker_device,
+                        keep_excluded_layers_as_original_model_state=keep_excluded_layers_as_original_model_state,
+                        model_dtype=model_dtype,
+                        keep_original_model_state_tensor_names_set=keep_original_model_state_tensor_names_set,
+                        excluded_source_floating_tensor_names=excluded_source_floating_tensor_names,
+                        weight_converters=weight_converters,
+                        hf_model_config=picklable_hf_model_config,
+                        source_weight_map=source_weight_map,
+                        scale_inv_cache=scale_inv_cache,
+                        presharded_weights=presharded_weights,
+                        rotation_plan=rotation_plan,
+                        total_shards=len(safetensor_files),
+                        shard_global_indices=shard_global_indices[worker_index],
+                    )
+                    future = executor.submit(_quantize_shards_on_device, worker_args)
+                    worker_futures.append(future)
+
+                for future in concurrent.futures.as_completed(worker_futures):
+                    worker_weight_map = future.result()
+                    output_weight_map.update(worker_weight_map)
+        except Exception:
+            # save_path was created empty at the start of this run, so removing
+            # it entirely on failure leaves no partial state behind.
+            try:
+                shutil.rmtree(save_path)
+            except OSError:
+                logger.warning("Failed to remove partial output directory: %s", save_path)
+            raise
 
     # Free the cache after processing
     if scale_inv_cache is not None:
         del scale_inv_cache
-        _empty_cache_if_cuda(device)
+        _empty_cache_if_cuda(active_devices[0])
 
     quant_config = _build_exclude_aware_quant_config(
         pretrained_model_path, quant_config, hf_model_config, keep_excluded_layers_as_original_model_state
@@ -1861,7 +2326,7 @@ def _build_exclude_aware_from_quark_source(
     """
     source_layer_qc = source_quantization_config.get("layer_quant_config") or {}
     source_global_qc = source_quantization_config.get("global_quant_config")
-    source_exclude = set(source_quantization_config.get("exclude") or [])
+    source_exclude = source_quantization_config.get("exclude") or []
 
     non_quantized_module_names = _convert_linear_weight_tensor_names_to_module_names(
         _get_non_quantized_tensor_names_from_model_safetensors(pretrained_model_path)
@@ -1871,17 +2336,24 @@ def _build_exclude_aware_from_quark_source(
     layer_quant_config: dict[str, QLayerConfig] = {}
 
     for module_name in excluded_module_names:
-        if module_name in source_exclude or module_name in non_quantized_module_names:
+        if any(fnmatch.fnmatch(module_name, pattern) for pattern in source_exclude) or (
+            module_name in non_quantized_module_names
+        ):
             # Source already kept this module unquantized
             retained_exclude_names.append(module_name)
-        elif module_name in source_layer_qc:
-            # Source has an explicit per-layer entry; copy verbatim.
-            layer_quant_config[module_name] = QLayerConfig.from_dict(source_layer_qc[module_name])
-        elif source_global_qc is not None:
-            layer_quant_config[module_name] = QLayerConfig.from_dict(source_global_qc)
         else:
-            # No description available, fall back to plain exclude (loader sees raw bytes).
-            retained_exclude_names.append(module_name)
+            source_layer_config = next(
+                (config for pattern, config in source_layer_qc.items() if fnmatch.fnmatch(module_name, pattern)),
+                None,
+            )
+            if source_layer_config is not None:
+                # Source has a matching per-layer entry; copy it verbatim.
+                layer_quant_config[module_name] = QLayerConfig.from_dict(source_layer_config)
+            elif source_global_qc is not None:
+                layer_quant_config[module_name] = QLayerConfig.from_dict(source_global_qc)
+            else:
+                # No description available, fall back to plain exclude (loader sees raw bytes).
+                retained_exclude_names.append(module_name)
 
     quant_config.exclude = sorted(retained_exclude_names)
     if quant_config.layer_quant_config is None:
@@ -1935,29 +2407,47 @@ def _build_exclude_aware_quant_config(
         quant_config.exclude = sorted(excluded_module_names)
         return quant_config
 
-    source_quantization_config = hf_model_config.get("quantization_config", {})
+    source_quantization_config = get_quantization_config(hf_model_config) or {}
+
+    if source_quantization_config.get("format") == "mxfp4-pack-quantized":
+        from quark.torch.quantization.config.template import MXFP4Scheme
+
+        floating_modules = _convert_linear_weight_tensor_names_to_module_names(
+            _get_non_quantized_tensor_names_from_model_safetensors(pretrained_model_path)
+        )
+        quant_config.exclude = sorted(excluded_module_names & floating_modules)
+        quant_config.layer_quant_config = dict(quant_config.layer_quant_config or {})
+        quant_config.layer_quant_config.update(
+            {name: MXFP4Scheme().config for name in excluded_module_names - floating_modules}
+        )
+        return quant_config
 
     if source_quantization_config.get("quant_method") == "quark":
         return _build_exclude_aware_from_quark_source(
             quant_config, source_quantization_config, excluded_module_names, pretrained_model_path
         )
 
+    # ``quant_method: "fp8"`` block quantization is E4M3 by default (weights are
+    # ``fp8_e4m3`` unless the config's ``fmt`` field explicitly says ``e5m2``).
     SUPPORTED_FMT_TO_DTYPE = {
         "e4m3": "fp8_e4m3",
         "e5m2": "fp8_e5m2",
     }
+    # Normalize ``fmt`` spellings some exporters emit (e.g. MiniMax sets
+    # ``fmt: "float8_e4m3fn"``)
+    _FMT_ALIASES = {
+        "float8_e4m3fn": "e4m3",
+        "float8_e4m3": "e4m3",
+        "float8_e5m2": "e5m2",
+    }
     source_fmt = source_quantization_config.get("fmt")
-    if source_fmt is None:
-        raise ValueError(
-            "The 'fmt' field is missing in the model's quantization_config. "
-            "Cannot determine the quantization dtype for excluded layers."
-        )
-    dtype_str = SUPPORTED_FMT_TO_DTYPE.get(source_fmt)
-    if dtype_str is None:
+    source_fmt = _FMT_ALIASES.get(source_fmt, source_fmt)
+    if source_fmt is not None and source_fmt not in SUPPORTED_FMT_TO_DTYPE:
         raise ValueError(
             f"Unsupported quantization format 'fmt={source_fmt}' in the model's quantization_config. "
             f"Currently supported formats: {sorted(SUPPORTED_FMT_TO_DTYPE.keys())}."
         )
+    dtype_str = SUPPORTED_FMT_TO_DTYPE.get(source_fmt, "fp8_e4m3")
 
     if source_quantization_config.get("activation_scheme") != "dynamic":
         raise ValueError(
@@ -2013,15 +2503,21 @@ def _build_exclude_aware_quant_config(
     non_quantized_tensor_names = _get_non_quantized_tensor_names_from_model_safetensors(pretrained_model_path)
     non_quantized_module_names = _convert_linear_weight_tensor_names_to_module_names(non_quantized_tensor_names)
 
-    # Split excluded modules into two groups:
+    mxfp4_module_names = _collect_mxfp4_source_module_names(pretrained_model_path, excluded_tensor_names)
+
+    from quark.torch.quantization.config.template import MXFP4Scheme
+
+    # Split excluded modules into three groups:
     # - retained_exclude_names: not quantized in HF model and excluded by Quark, keep as exclude.
-    # - layer_quant_config: already quantized in HF model but excluded by Quark,
-    #   need a per-layer quant config to re-quantize with the source model's scheme.
+    # - MXFP4 layers: described with the MXFP4 per-group scheme matching their on-disk bytes.
+    # - other quantized layers: described with the config derived from the source model's ``fmt``.
     retained_exclude_names = []
     layer_quant_config = {}
     for module_name in excluded_module_names:
         if module_name in non_quantized_module_names:
             retained_exclude_names.append(module_name)
+        elif module_name in mxfp4_module_names:
+            layer_quant_config[module_name] = MXFP4Scheme().config
         else:
             layer_quant_config[module_name] = QLayerConfig.from_dict(
                 {

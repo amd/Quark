@@ -121,11 +121,17 @@ class StaticRealQuantizer(RealQuantizerBase, ABC):
     def unpack_params(self) -> tuple[torch.Tensor, torch.Tensor | None]:
         zero_point = None
         if getattr(self, "zero_point", None) is not None:
-            zero_point = self.pack_method.unpack(
-                self.zero_point,
-                self.reorder,
-                **({"origin_packed_axis_size": self.scale.shape[-1]} if self.scale.shape != torch.Size([]) else {}),
-            )
+            if getattr(self.qspec, "zero_point_type", None) == ZeroPointType.float32:
+                # Float zero-point is stored unpacked; align it with scale (same
+                # per-group transpose as the scale below).
+                zp = self.zero_point
+                zero_point = zp.t().contiguous() if (self.transpose_scale and zp.ndim == 2) else zp
+            else:
+                zero_point = self.pack_method.unpack(
+                    self.zero_point,
+                    self.reorder,
+                    **({"origin_packed_axis_size": self.scale.shape[-1]} if self.scale.shape != torch.Size([]) else {}),
+                )
 
         if self.transpose_scale:
             # transpose_scale of bias is always false in qparamslinear.py
@@ -172,12 +178,16 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
                 self.register_buffer("scale", torch.empty((), device=self.device, dtype=float_dtype))
             # self.zero_point = None
             if self.qspec.dtype in INT_QUANT_DTYPES:
+                # Float zero-point (ZeroPointType.float32) is stored unpacked in the
+                # model's float dtype; integer zero-point uses the packed int dtype.
+                zp_is_float = getattr(self.qspec, "zero_point_type", None) == ZeroPointType.float32
+                zp_dtype = float_dtype if zp_is_float else quant_torch_dtype
                 if self.zero_point_shape is not None:
                     self.register_buffer(
-                        "zero_point", torch.empty(self.zero_point_shape, device=self.device, dtype=quant_torch_dtype)
+                        "zero_point", torch.empty(self.zero_point_shape, device=self.device, dtype=zp_dtype)
                     )
                 else:
-                    self.register_buffer("zero_point", torch.empty((), device=self.device, dtype=quant_torch_dtype))
+                    self.register_buffer("zero_point", torch.empty((), device=self.device, dtype=zp_dtype))
         else:
             # TODO: check here
             self.register_buffer("scale", quantizer.scale)
@@ -289,6 +299,12 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
     # Pack zero point
     def pack_zero_point(self) -> None:
         if getattr(self, "zero_point", None) is not None and self.qspec and hasattr(self.qspec, "dtype"):
+            # Float zero-points are stored unpacked (mirrors `unpack_params`, which
+            # reads float zero-points without bit-unpacking). Only integer
+            # zero-points are bit-packed. Without this guard, packing a float
+            # zero-point (e.g. uint2 with ZeroPointType.float32) crashes.
+            if getattr(self.qspec, "zero_point_type", None) == ZeroPointType.float32:
+                return
             self.zero_point: torch.Tensor = self.pack_method.pack(self.zero_point, self.reorder)
 
     # Try to convert scale to int8 and transpose scale
@@ -296,11 +312,21 @@ class StaticScaledRealQuantizer(StaticRealQuantizer):
         if getattr(self.qspec, "scale_format", None) == "e8m0":
             self.scale = to_e8m0_uint8(self.scale)
 
-        if getattr(self.qspec.dtype, "value", None) in ["int8", "uint8", "int4", "uint4", "int2"]:
+        if self.qspec.dtype in PER_GROUP_INT_TRANSPOSE_DTYPES:
             if self.scale.ndim > 2:
                 raise ValueError("Only supports self.scale with dimensions not greater than 2.")
             if getattr(self.qspec.qscheme, "value", None) == "per_group":
                 self.scale = self.scale.t().contiguous()
+                # Float zero-points are stored unpacked (see pack_zero_point) and
+                # must follow the same per-group transpose as the scale, so that
+                # import (`unpack_params`) reads them back with the expected shape.
+                zp = getattr(self, "zero_point", None)
+                if (
+                    zp is not None
+                    and getattr(self.qspec, "zero_point_type", None) == ZeroPointType.float32
+                    and zp.ndim == 2
+                ):
+                    self.zero_point = zp.t().contiguous()
 
         if getattr(self.qspec, "scale_format", None) == "e5m3":
             # Quantize the scale to E5M3 format

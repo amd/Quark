@@ -14,6 +14,7 @@ import torch
 from quark.common.utils.import_utils import is_diffusers_available
 from quark.common.utils.testing_utils import use_temporary_directory
 from quark.torch import ModelQuantizer, export_safetensors
+from quark.torch.export.nn.modules.qparamslinear import QParamsLinear
 from quark.torch.quantization.config.config import Int8PerTensorSpec, QConfig, QLayerConfig
 from quark.torch.quantization.nn.modules.mixin import QuantMixin
 
@@ -219,10 +220,20 @@ def test_quantized_export_reload_roundtrip(weight_format: str):
         the reloaded model contains QuantLinear/QuantConv2d layers with
         matching weights and produces the same forward-pass output.
 
-    Note: the diffusers export path currently ignores weight_format
-    (ModelMixin.save_pretrained always saves the current state), but we
-    parametrize to guard against future regressions if format-specific
-    logic is added.
+    The two formats reload into different module types, which is the point of
+    parametrizing:
+
+    * ``fake_quantized`` -- QuantLinear/QuantConv2d with FakeQuantize submodules,
+      scales stored as ``<layer>._weight_quantizer.scale``.
+    * ``real_quantized`` -- packed ``QParamsLinear`` (not a ``QuantMixin``) with scales at
+      ``<layer>.weight_quantizer.scale``, plus fake-quantized QuantConv2d for the module
+      types that have no packed form.
+
+    Regression guard: running ModelPostProcessor unconditionally renamed the Linear
+    scales to the packed convention even for ``fake_quantized``, so the rebuilt
+    ``_weight_quantizer.scale`` buffers had nothing to load from and stayed on the
+    meta device. The key *count* was unchanged (only Linear scales moved, Conv were
+    untouched), so only a name-aware check catches it.
     """
     model, _ = _quantize_tiny_unet(_make_tiny_unet())
     assert any(isinstance(m, QuantMixin) for m in model.modules()), (
@@ -241,8 +252,24 @@ def test_quantized_export_reload_roundtrip(weight_format: str):
         reloaded = UNet2DModel.from_pretrained(tmpdir)
         reloaded.eval()
 
-        has_quant_module = any(isinstance(m, QuantMixin) for m in reloaded.modules())
-        assert has_quant_module, "Reloaded model should contain at least one quantized module"
+        # real_quantized reloads as packed QParamsLinear, which is deliberately NOT a
+        # QuantMixin (MRO: QParamsLinear -> Linear -> QparamsOperator -> QuarkLinearBase).
+        quantized_types: tuple[type, ...] = (QuantMixin, QParamsLinear)
+        has_quant_module = any(isinstance(m, quantized_types) for m in reloaded.modules())
+        assert has_quant_module, (
+            f"Reloaded model should contain at least one quantized module "
+            f"(QuantMixin or QParamsLinear) for weight_format={weight_format}"
+        )
+        if weight_format == "real_quantized":
+            assert any(isinstance(m, QParamsLinear) for m in reloaded.modules()), (
+                "real_quantized reload should produce packed QParamsLinear modules"
+            )
+            # Only nn.Linear has a packed form. The other quantized module types must
+            # still come back carrying their quantizers -- a plain Conv2d here means the
+            # layer reloaded on its full-precision master weight and runs unquantized.
+            assert not any(type(m) is torch.nn.Conv2d for m in reloaded.modules()), (
+                "quantized Conv must not reload as a plain Conv2d holding the master weight"
+            )
 
         with torch.no_grad():
             reloaded_output = reloaded(sample, timestep).sample
@@ -250,4 +277,28 @@ def test_quantized_export_reload_roundtrip(weight_format: str):
         assert original_output.shape == reloaded_output.shape
         assert torch.allclose(original_output, reloaded_output, atol=1e-5), (
             f"Max diff: {(original_output - reloaded_output).abs().max().item()}"
+        )
+
+
+@requires_diffusers
+def test_diffusers_export_defaults_to_fake_quantized():
+    """Packed output is opt-in for diffusers.
+
+    ``export_safetensors`` defaults to ``real_quantized`` for LLMs, but a packed
+    diffusers checkpoint is only readable by a Quark that has the packed reload path,
+    so the diffusers exporter keeps the fake-quantized layout unless asked otherwise.
+    """
+    model, _ = _quantize_tiny_unet(_make_tiny_unet())
+    model.eval()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        export_safetensors(model, tmpdir)
+
+        with open(Path(tmpdir) / "config.json") as f:
+            config = json.load(f)
+        assert config["quantization_config"]["export"]["weight_format"] == "fake_quantized"
+
+        reloaded = UNet2DModel.from_pretrained(tmpdir)
+        assert not any(isinstance(m, QParamsLinear) for m in reloaded.modules()), (
+            "the default diffusers export must not write a packed checkpoint"
         )

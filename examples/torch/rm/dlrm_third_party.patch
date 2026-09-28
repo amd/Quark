@@ -1,0 +1,122 @@
+# Applies the source edits that examples/torch/rm/README.md describes, after copying
+# the MLCommons inference_results_v3.1 DLRM reference code into
+# examples/torch/rm/utils/.
+#
+# Upstream: https://github.com/mlcommons/inference_results_v3.1
+#           closed/Intel/code/dlrm-v2-99/pytorch-cpu-int8/python
+# Pinned commit: 951b4a7686692d1a0d9b9067a36a7fc26d72ada5
+#
+# 1. multihot_criteo.py  - EmbeddingBag offsets need batchsize + 1 entries, otherwise
+#                          the last sample in every batch is dropped.
+# 1b. multihot_criteo.py - read the .npy header through the public
+#                          read_array_header_{1,0}/{2,0} entry points. NumPy 2.0 made
+#                          numpy.lib private internals unreachable, so the original
+#                          np.lib.format._read_array_header call raises AttributeError.
+# 2. model/dlrm_model.py - replace MergedEmbeddingBagCat.forward() with a plain
+#                          EmbeddingBag loop. The original int8 branch calls
+#                          torch.ops.torch_ipex.merged_emb_with_cat, which requires
+#                          intel-extension-for-pytorch.
+# 3. backend_pytorch_native.py + model/dlrm_model.py - drop the module-level
+#                          intel-extension-for-pytorch imports. After edit 2 the only
+#                          remaining consumer is ipex.optimize() on the --use-bf16 path,
+#                          which this example never takes, so the import moves into that
+#                          branch instead of forcing an Intel CPU library onto every run.
+#
+# Apply it after copying the upstream code, from this directory:
+#     patch -p1 -d utils --forward < dlrm_third_party.patch
+diff -ruN a/backend_pytorch_native.py b/backend_pytorch_native.py
+--- a/backend_pytorch_native.py
++++ b/backend_pytorch_native.py
+@@ -12,7 +12,6 @@
+ from dataset import Dataset
+ from model.dlrm_model import DLRMMLPerf
+ from torch import nn
+-import intel_extension_for_pytorch as ipex
+ 
+ # Modules for distributed running
+ import torch.multiprocessing as mp
+@@ -166,6 +165,8 @@
+         # to understand sharding, --print_sharding_plan flag should be used while running dlrm_main.py in
+         # torcherec implementation
+         if args.use_bf16:
++            import intel_extension_for_pytorch as ipex
++
+             if not self.debug:
+                 print("Loading model weights...")
+                 model.load_state_dict(torch.load(model_path))
+diff -ruN a/model/dlrm_model.py b/model/dlrm_model.py
+--- a/model/dlrm_model.py
++++ b/model/dlrm_model.py
+@@ -3,7 +3,6 @@
+ import numpy as np
+ import torch
+ from torch import nn
+-import intel_extension_for_pytorch as ipex
+ 
+ from torch.autograd.profiler import record_function
+ from functools import partial
+@@ -201,25 +200,20 @@
+         self.bf16 = use_bf16
+         return
+ 
+-    def forward(self, index: List[torch.Tensor], offset: List[torch.Tensor], dense) -> torch.Tensor:
++    def forward(
++        self, index: List[torch.Tensor], offset: List[torch.Tensor], dense
++    ) -> torch.Tensor:
+         B = offset[0].numel() - 1
+-        if self.int8:
+-            # sparse = torch.ops.torch_ipex.merged_emb_with_cat(self.weights, index, self._multi_hot).reshape(B, self._num_embeddings * self._embedding_dim)
+-            # data = torch.cat([dense, sparse], dim=1).reshape(B, (self._num_embeddings + 1) * self._embedding_dim)
+-            # return data
+-            return torch.ops.torch_ipex.merged_emb_with_cat(self.weights, index, dense, self._multi_hot)
+-        elif self.bf16:
+-            include_last = [True for i in range(26)]
+-            pooled_embeddings: List[torch.Tensor] = []
+-            res = [e(i.long(), o.long()) for (e, i, o) in zip(self.embedding_bags, index, offset)]
+-            res = [dense] + res
+-            data = torch.cat(res, dim=1).reshape(B, (self._num_embeddings + 1) * self._embedding_dim)
+-            return data
+-        else:
+-            res = [e(i.long(), o.long()) for (e, i, o) in zip(self.embedding_bags, index, offset)]
+-            res = [dense] + res
+-            data = torch.cat(res, dim=1).reshape(B, (self._num_embeddings + 1) * self._embedding_dim)
+-            return data
++
++        res = []  # removed list comprehension
++        for idx in range(len(self.embedding_bags)):
++            e, i, o = self.embedding_bags[idx], index[idx], offset[idx]
++            res.append(e(i, o))
++        res = [dense] + res
++        data = torch.cat(res, dim=1).reshape(
++            B, (self._num_embeddings + 1) * self._embedding_dim
++        )
++        return data
+ 
+ class SparseArch(nn.Module):
+     """
+diff -ruN a/multihot_criteo.py b/multihot_criteo.py
+--- a/multihot_criteo.py
++++ b/multihot_criteo.py
+@@ -397,7 +397,12 @@
+         # read .npy header
+         zf.open(npy_name, "r")
+         version = np.lib.format.read_magic(zf.fp)
+-        shape, fortran_order, dtype = np.lib.format._read_array_header(zf.fp, version)
++        if version == (1, 0):
++            shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(zf.fp)
++        elif version == (2, 0):
++            shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(zf.fp)
++        else:
++            raise ValueError(f"unsupported .npy header version {version}")
+         assert (
+             dtype == "int32"
+         ), f"sparse multi-hot dtype is {dtype} but should be int32"
+@@ -415,7 +415,7 @@
+     def _get_offsets(self, batchsize):
+         offsets = []
+         for multi_hot_size in self.multi_hot_sizes:
+-            offsets.append(torch.arange(0, batchsize*multi_hot_size, multi_hot_size))
++            offsets.append(torch.arange(0, (batchsize + 1)*multi_hot_size, multi_hot_size))
+         return tuple(offsets)
+ 
+     def _np_arrays_to_batch(
