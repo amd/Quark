@@ -6,8 +6,6 @@ version: 2
 sphinx:
    configuration: docs/source/conf.py
 
-formats: [htmlzip]
-
 python:
    install:
    - requirements: docs/source/sphinx/requirements.txt
@@ -19,12 +17,15 @@ build:
    jobs:
      pre_install:
        - pip install "cmake<4.0"
-       - pip install torch==2.13.0  # The latest version
-       - bash -c "cd $READTHEDOCS_REPOSITORY_PATH && pip install ."
-       - bash -c "cd docs && ./install_requirements.sh"
+       # CPU torch, onnxruntime and transformers are needed for autodoc to import the full public quark.torch / quark.onnx API
+       - bash -c "cd docs && ./install_requirements.sh --include-torch --include-onnxruntime --include-transformers"
+       # Reuse the CPU torch installed above instead of pulling the CUDA torch wheel into an isolated build env
+       - bash -c "cd $READTHEDOCS_REPOSITORY_PATH && pip install --no-build-isolation ."
      build:
-       htmlzip:
-         - echo "Overriding default build command for htmlzip format to use Quark doc build script!"
+       html:
+         - echo "Overriding default build command for html format to use Quark doc build script!"
          - mkdir -p $READTHEDOCS_OUTPUT/html
-         - bash -c "export QUARK_SPHINX_SKIP_BUILD_TUTORIALS=1; cd docs && ./build_docs.sh"
+         # ci_doc.yml sets the same variable. build_docs.sh then passes --fail-on-warning,
+         # so an autodoc ImportError or ModuleNotFoundError fails this build instead of publishing an empty page.
+         - bash -c "export QUARK_SPHINX_SKIP_BUILD_TUTORIALS=1 QUARK_DOC_FAIL_ON_WARNING=1; cd docs && ./build_docs.sh"
          - bash -c "cp -rv _docs_build/html/* $READTHEDOCS_OUTPUT/html/"

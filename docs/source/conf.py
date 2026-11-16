@@ -91,6 +91,36 @@ autoapi_ignore = [
 # TODO: include contrib into documentation soon
 # TODO: https://github.com/readthedocs/sphinx-autoapi/issues/312 must use *subfolder* pattern
 
+def _deny_autoapi_inference(package_names):
+    """Keep AutoAPI's static astroid analysis from parsing the given third-party packages.
+
+    autodoc still imports them for real; only AutoAPI's inference skips them. Parsing all of
+    ``transformers`` adds about 1 GB to the peak memory of the docs build, which then no longer
+    fits the 2 GiB memory limit of the Read the Docs build container.
+    astroid matches ``module_denylist`` on full module names, so every submodule is listed.
+    """
+    import importlib.util
+
+    import astroid
+
+    for package_name in package_names:
+        spec = importlib.util.find_spec(package_name)
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        astroid.MANAGER.module_denylist.add(package_name)
+        for package_dir in spec.submodule_search_locations:
+            for dirpath, _, filenames in os.walk(package_dir):
+                relative_parts = os.path.relpath(dirpath, package_dir).split(os.sep)
+                prefix = ".".join([package_name] + [p for p in relative_parts if p != "."])
+                for filename in filenames:
+                    if filename == "__init__.py":
+                        astroid.MANAGER.module_denylist.add(prefix)
+                    elif filename.endswith(".py"):
+                        astroid.MANAGER.module_denylist.add(f"{prefix}.{filename[:-3]}")
+
+
+_deny_autoapi_inference(["transformers"])
+
 FACTORY_TYPES = {"typing.List": "[]", "list": "[]", "typing.Dict": "{}", "dict": "{}", "str": "''"}
 
 def fix_signature(app, what, name, obj, options, signature, return_annotation):
