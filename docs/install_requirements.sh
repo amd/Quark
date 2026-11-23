@@ -32,6 +32,11 @@ for arg in "$@"; do
     esac
 done
 
+# Upgrade pip before any install: the pip 23.1 seeded into fresh virtualenvs (e.g. on Read the Docs) rejects
+# the typing_extensions wheel on the PyTorch CPU index and falls back to an sdist it cannot build.
+# TODO: Install latest `pip` when https://github.com/jazzband/pip-tools/issues/2252 is fixed
+pip install --upgrade pip==25.2 pip-tools
+
 set -e
 
 if [[ ${include_torch} -eq 1 ]]; then
@@ -47,8 +52,6 @@ fi
 set +e
 
 # Update source/sphinx/requirements.txt from source/sphinx/requirements.in
-# TODO: Install latest `pip` when https://github.com/jazzband/pip-tools/issues/2252 is fixed
-pip install --upgrade pip==25.2 pip-tools
 rm -f source/sphinx/requirements.txt
 LC_ALL=C pip-compile source/sphinx/requirements.in
 
